@@ -15,6 +15,8 @@ use crate::error::{Error, Result};
 use crate::state::StateDependencies;
 use crate::types::{AppearanceMode, AppearanceStorage, DocsConfig, ShowMode};
 
+pub(crate) const BOOTSTRAP_SCRIPT: &str = include_str!("../template/appearance-bootstrap.js");
+
 #[derive(Serialize)]
 pub(crate) struct FamilyMetadata {
     pub(crate) id: String,
@@ -183,7 +185,7 @@ impl PreparedAppearance {
         )
     }
 
-    pub(crate) fn head_tags(&self, show: ShowMode) -> Result<String> {
+    pub(crate) fn head_tags(&self, show: ShowMode, bootstrap_url: &str) -> Result<String> {
         if show == ShowMode::Content {
             return Ok(String::new());
         }
@@ -195,8 +197,8 @@ impl PreparedAppearance {
             .replace('\u{2028}', "\\u2028")
             .replace('\u{2029}', "\\u2029");
         Ok(format!(
-            "<script type=\"application/json\" id=\"webui-press-appearance\">{json}</script>\n<script>{}</script>",
-            include_str!("../template/appearance-bootstrap.js")
+            "<script type=\"application/json\" id=\"webui-press-appearance\">{json}</script>\n<script src=\"{}\"></script>",
+            html_escape::encode_double_quoted_attribute(bootstrap_url)
         ))
     }
 }

@@ -1608,6 +1608,8 @@ Theme family and System/Light/Dark preferences are independent; single-family
 sites omit the family picker. A palette button opens an Appearance popover with
 a themeable native family select and System/Light/Dark icon buttons. On narrow
 screens the same controls appear directly in the navigation menu.
+Deploy and CSP-authorize the generated same-origin initialization asset; it
+restores preferences before styles and hydration.
 Use `header.themePicker` or `header.modePicker` regions for custom controls and
 `@microsoft/webui-press/appearance.js` for shared selection/subscriptions.
 Do not duplicate preference storage, media listeners, or theme transitions.

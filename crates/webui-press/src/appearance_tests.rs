@@ -41,12 +41,19 @@ fn metadata_is_normalized_safe_and_shared_with_ssr() -> TestResult {
     assert_eq!(state["resolvedMode"], "dark");
     assert_eq!(state["themes"][1]["id"], "compact");
     assert!(state.get("tokens").is_none());
-    let head = appearance.head_tags(ShowMode::All)?;
+    let head = appearance.head_tags(ShowMode::All, "/docs/appearance-init.js")?;
     let metadata = head.split("</script>").next().ok_or("missing JSON")?;
     assert!(metadata.contains("\\u003c/script\\u003e"));
     assert!(metadata.contains("\"theme\":\"mai-design-theme\""));
     assert!(!metadata.contains("<script>bad"));
-    assert!(appearance.head_tags(ShowMode::Content)?.is_empty());
+    assert!(head.contains("<script src=\"/docs/appearance-init.js\"></script>"));
+    assert!(!head.contains(BOOTSTRAP_SCRIPT));
+    assert!(appearance
+        .head_tags(ShowMode::Content, "/docs/appearance-init.js")?
+        .is_empty());
+    assert!(appearance
+        .head_tags(ShowMode::All, "/docs/\"init.js")?
+        .contains("/docs/&quot;init.js"));
     assert_eq!(appearance.state(ShowMode::Content)["mode"], "system");
     Ok(())
 }
@@ -160,7 +167,9 @@ fn legacy_and_content_contracts_remain_separate() -> TestResult {
     assert!(!content.css.contains("data-theme"));
     assert!(!content.css.contains("data-press-theme"));
     assert!(content.css.contains("--color: #000;"));
-    assert!(content.head_tags(config.show)?.is_empty());
+    assert!(content
+        .head_tags(config.show, "/docs/appearance-init.js")?
+        .is_empty());
     Ok(())
 }
 
@@ -197,6 +206,27 @@ fn build_emits_shared_artifacts_and_metadata_for_pages_and_404() -> TestResult {
     config.state = Some(serde_json::from_str(r#"{"appearance":"subtle"}"#)?);
     crate::build::build_docs(&config, dir.path(), &template)?;
     let output = Path::new(&config.out_dir);
+    let mut bootstrap_file = None;
+    for entry in fs::read_dir(output)? {
+        let path = entry?.path();
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("appearance-init-") && name.ends_with(".js"))
+        {
+            assert!(bootstrap_file.is_none(), "bootstrap must be shared");
+            bootstrap_file = Some(path);
+        }
+    }
+    let bootstrap_file = bootstrap_file.ok_or("missing bootstrap asset")?;
+    assert_eq!(fs::read_to_string(&bootstrap_file)?, BOOTSTRAP_SCRIPT);
+    let bootstrap_tag = format!(
+        "<script src=\"/docs/{}\"></script>",
+        bootstrap_file
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or("invalid asset name")?
+    );
     for path in ["index.html", "404.html"] {
         let html = fs::read_to_string(output.join(path))?;
         assert!(html.contains("data-press-theme=\"official\""));
@@ -206,17 +236,22 @@ fn build_emits_shared_artifacts_and_metadata_for_pages_and_404() -> TestResult {
         let bootstrap = html
             .find("id=\"webui-press-appearance\"")
             .ok_or("missing bootstrap")?;
+        let script = html
+            .find(&bootstrap_tag)
+            .ok_or("missing bootstrap script")?;
         let appearance = html
             .find("/docs/appearance.css")
             .ok_or("missing appearance CSS")?;
         let custom = html.find("/docs/theme.css").ok_or("missing consumer CSS")?;
-        assert!(bootstrap < appearance && appearance < custom);
+        assert!(bootstrap < script && script < appearance && appearance < custom);
+        assert!(!html.contains(BOOTSTRAP_SCRIPT));
         assert!(!html.contains("#fff"));
     }
 
     assert!(fs::read_to_string(output.join("appearance.css"))?.contains("--surface: #000;"));
     config.show = ShowMode::Content;
     crate::build::build_docs(&config, dir.path(), &template)?;
+    assert!(!bootstrap_file.exists());
     for path in ["index.html", "404.html"] {
         let html = fs::read_to_string(output.join(path))?;
         assert!(!html.contains("id=\"webui-press-appearance\""));

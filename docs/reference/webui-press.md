@@ -218,11 +218,17 @@ Override `--docs-appearance-color`, `--docs-appearance-background`,
 `--docs-appearance-control-height`, or `--docs-appearance-theme-width` in your
 site CSS for control-specific styling.
 
-Press restores saved preferences before external scripts load. Choosing System
-resumes OS tracking without changing the selected design theme. Already-open
-tabs on the same origin using the same storage keys adopt preference changes.
-Storage failures produce a warning while selection continues in the current
-page. Unknown saved family IDs use the configured default.
+Press restores saved preferences with a small, shared same-origin JavaScript
+asset loaded before stylesheet links and hydration. Deploy this generated asset
+with the rest of the site and allow it in your Content Security Policy. It does not need
+an inline-script exception or a per-request nonce; other generated page scripts
+still need their own CSP authorization.
+
+Choosing System resumes OS tracking without changing the selected design
+theme. Already-open tabs on the same origin using the same storage keys adopt
+preference changes. Storage failures produce a warning while selection
+continues in the current page. Unknown saved family IDs use the configured
+default.
 
 To preserve preferences from an existing integration, configure its keys:
 

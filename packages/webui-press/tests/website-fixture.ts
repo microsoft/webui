@@ -54,7 +54,7 @@ export function contrastRatio(color: string, background: string): number {
   return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
 }
 
-export async function startWebsite(root = docsDist, basePath = '/webui/') {
+export async function startWebsite(root = docsDist, basePath = '/webui/', headers: Record<string, string> = {}) {
   const directory = path.resolve(root);
   assert.ok(basePath.startsWith('/') && basePath.endsWith('/'));
   assert.ok(fs.existsSync(path.join(directory, 'index.html')), 'Build the documentation before testing the website.');
@@ -84,6 +84,7 @@ export async function startWebsite(root = docsDist, basePath = '/webui/') {
     response.writeHead(200, {
       'content-type': contentTypes[path.extname(file)] ?? 'application/octet-stream',
       'cache-control': 'no-store',
+      ...headers,
     });
     fs.createReadStream(file).on('error', error => response.destroy(error)).pipe(response);
   });

@@ -6,6 +6,7 @@ import type { Page } from '@playwright/test';
 import { buildSync } from 'esbuild';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
@@ -21,10 +22,12 @@ declare global {
     stopAppearance: () => void;
     transitionCount: number;
     themeMutations: number;
+    appearancePaints: { name: string; theme: string | null; mode: string | null }[];
   }
 }
 
-async function appearanceSite(t: TestContext, customHeader = false) {
+async function appearanceSite(t: TestContext, options: { customHeader?: boolean; csp?: boolean } = {}) {
+  const { customHeader = false, csp = false } = options;
   const f = fixture();
   t.after(() => removeFixtureRoot(f.root));
   const probe = path.join(f.site, 'content/local/appearance-probe/appearance-probe');
@@ -60,7 +63,20 @@ window.stopAppearance = press.subscribeAppearance(value => window.updates.push(v
   }));
   build(f.site);
   const root = path.join(f.site, 'dist');
-  const server = await startWebsite(root, '/fixture/');
+  const headers: Record<string, string> = {};
+  if (csp) {
+    const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+    const bootstrap = fs.readFileSync(
+      path.resolve(import.meta.dirname, '../../../crates/webui-press/template/appearance-bootstrap.js'), 'utf8',
+    ).trim();
+    const hashes = [];
+    for (const match of html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)) {
+      if (/\bsrc\s*=|type=["']application\/json/i.test(match[1]) || match[2].trim() === bootstrap) continue;
+      hashes.push(`'sha256-${createHash('sha256').update(match[2]).digest('base64')}'`);
+    }
+    headers['content-security-policy'] = `script-src 'self' ${hashes.join(' ')}`;
+  }
+  const server = await startWebsite(root, '/fixture/', headers);
   t.after(() => server.close());
   return { ...f, dist: root, url: `${server.origin}/fixture/` };
 }
@@ -70,6 +86,19 @@ async function ready(page: Page, url: string): Promise<void> {
   await page.waitForFunction(() => !!window.press);
   await openAppearance(page);
   await expect(page.getByRole('group', { name: 'Color mode' }).getByRole('button', { name: 'Light', exact: true })).toBeEnabled();
+}
+
+async function blockHydrationScripts(page: Page, url: string): Promise<void> {
+  const origin = new URL(url).origin;
+  await page.route('**/*', route => {
+    const request = route.request();
+    const source = new URL(request.url());
+    if (request.resourceType() !== 'script' ||
+      (source.origin === origin && /\/appearance-init-[a-f0-9]+\.js$/.test(source.pathname))) {
+      return route.continue();
+    }
+    return route.abort();
+  });
 }
 
 test('full-shell sourced families validate bundled and authored CSS without changing snapshots', t => {
@@ -105,6 +134,88 @@ test('full-shell sourced families validate bundled and authored CSS without chan
     assert.match(error.message, /help:/);
     return true;
   });
+});
+
+test('same-origin appearance initialization works under CSP without authorizing inline bootstrap', async t => {
+  const f = await appearanceSite(t, { csp: true });
+  const browser = await chromium.launch();
+  t.after(() => browser.close());
+  const context = await browser.newContext({
+    colorScheme: 'light', reducedMotion: 'reduce', storageState: {
+      cookies: [], origins: [{ origin: new URL(f.url).origin, localStorage: [
+        { name: 'fixture-family', value: 'colorful' }, { name: 'fixture-mode', value: 'dark' },
+      ] }],
+    },
+  });
+  const page = await context.newPage();
+  const errors: string[] = [];
+  const initializationRequests: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
+  page.on('request', request => {
+    if (/\/appearance-init-[a-f0-9]+\.js$/.test(new URL(request.url()).pathname)) {
+      initializationRequests.push(request.url());
+    }
+  });
+  await ready(page, f.url);
+  assert.equal(initializationRequests.length, 1);
+  assert.equal(await page.locator('script[src*="appearance-init-"]').evaluate(script =>
+    script instanceof HTMLScriptElement && !script.async && !script.defer), true);
+  const family = page.getByRole('combobox', { name: 'Design theme', exact: true });
+  await expect(family).toHaveValue('colorful');
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await family.selectOption('neutral');
+  await setColorMode(page, 'light');
+  await page.reload();
+  await openAppearance(page);
+  await expect(family).toHaveValue('neutral');
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+  await setColorMode(page, 'system');
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  assert.deepEqual(errors, []);
+
+  const prepaint = await browser.newPage({
+    colorScheme: 'light', storageState: {
+      cookies: [], origins: [{ origin: new URL(f.url).origin, localStorage: [
+        { name: 'fixture-family', value: 'colorful' }, { name: 'fixture-mode', value: 'dark' },
+      ] }],
+    },
+  });
+  await prepaint.addInitScript(() => {
+    window.appearancePaints = [];
+    new PerformanceObserver(list => {
+      for (const entry of list.getEntries()) {
+        window.appearancePaints.push({
+          name: entry.name,
+          theme: document.documentElement.getAttribute('data-press-theme'),
+          mode: document.documentElement.getAttribute('data-theme'),
+        });
+      }
+    }).observe({ type: 'paint', buffered: true });
+  });
+  await blockHydrationScripts(prepaint, f.url);
+  await prepaint.route('**/appearance-init-*.js', async route => {
+    await new Promise(resolve => setTimeout(resolve, 150));
+    await route.continue();
+  });
+  await prepaint.goto(f.url);
+  await expect(prepaint.locator('html')).toHaveAttribute('data-press-theme', 'colorful');
+  await expect(prepaint.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await expect(prepaint.getByRole('button', { name: 'Appearance', exact: true })).toBeDisabled();
+  await expect.poll(() => prepaint.evaluate(() =>
+    window.appearancePaints.some(entry => entry.name === 'first-contentful-paint'))).toBe(true);
+  for (const paint of await prepaint.evaluate(() => window.appearancePaints)) {
+    assert.equal(paint.theme, 'colorful', `${paint.name}: family must be restored before paint`);
+    assert.equal(paint.mode, 'dark', `${paint.name}: mode must be restored before paint`);
+  }
+
+  const unavailable = await browser.newPage();
+  const failures: string[] = [];
+  unavailable.on('pageerror', error => failures.push(error.message));
+  await unavailable.route('**/appearance-init-*.js', route => route.abort());
+  await unavailable.goto(f.url);
+  await expect.poll(() => failures.some(error => error.includes('Deploy the generated appearance-init script, allow it in your CSP'))).toBe(true);
 });
 
 test('shared appearance controls, prepaint restore, cross-tab state, OS changes and packed API', async t => {
@@ -290,7 +401,7 @@ test('bootstrap validates stored choices, preserves legacy keys and works withou
       { name: 'fixture-family', value: 'colorful' }, { name: 'fixture-mode', value: 'dark' },
     ] }],
   } });
-  await prepaint.route('**/*.js*', route => route.abort());
+  await blockHydrationScripts(prepaint, f.url);
   await prepaint.goto(f.url);
   await expect(prepaint.locator('html')).toHaveAttribute('data-press-theme', 'colorful');
   await expect(prepaint.locator('html')).toHaveAttribute('data-theme', 'dark');
@@ -403,7 +514,7 @@ test('native transitions are latest-wins, scoped, skippable and surface unexpect
 });
 
 test('custom headers follow System before the API adopts the bootstrap listener', async t => {
-  const f = await appearanceSite(t, true);
+  const f = await appearanceSite(t, { customHeader: true });
   buildSync({
     entryPoints: [path.resolve(import.meta.dirname, '../../../crates/webui-press/template/appearance.ts')],
     outfile: path.join(f.dist, 'late-appearance.js'), format: 'esm', bundle: true,

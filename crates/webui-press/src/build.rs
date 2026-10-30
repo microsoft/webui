@@ -17,7 +17,7 @@ use webui::BuildOptions;
 use webui_handler::{Protocol, RenderOptions, WebUIHandler};
 use webui_tokens::TokenFile;
 
-use crate::appearance::PreparedAppearance;
+use crate::appearance::{PreparedAppearance, BOOTSTRAP_SCRIPT};
 use crate::bundler::{
     bundle_assets, collect_component_scripts_for_html, discover_component_scripts,
     extract_bundle_scripts, inject_module_script_tags, inject_script_tag, module_script_tag,
@@ -322,6 +322,7 @@ pub fn build_docs_with_cache(
         .and_then(|p| fs::read_to_string(p).ok())
         .unwrap_or_default();
     let mut appearance = PreparedAppearance::prepare(config, config_dir, &mut cache.dependencies)?;
+    let appearance_bootstrap = format!("appearance-init-{:x}.js", fxhash(BOOTSTRAP_SCRIPT));
 
     print_header(cache, &config.site.title);
     eprintln!();
@@ -352,7 +353,8 @@ pub fn build_docs_with_cache(
     };
     let head_injection = {
         let mut parts: Vec<String> = Vec::with_capacity(4 + config.head.len());
-        let appearance_head = appearance.head_tags(config.show)?;
+        let appearance_head =
+            appearance.head_tags(config.show, &format!("{base_path}{appearance_bootstrap}"))?;
         if !appearance_head.is_empty() {
             parts.push(appearance_head);
         }
@@ -470,6 +472,10 @@ pub fn build_docs_with_cache(
     }
     fs::write(site_dir.join("appearance.css"), &appearance.css)
         .map_err(|e| Error::Io(format!("Cannot write appearance.css: {e}")))?;
+    if config.show != ShowMode::Content {
+        fs::write(site_dir.join(&appearance_bootstrap), BOOTSTRAP_SCRIPT)
+            .map_err(|e| Error::Io(format!("Cannot write appearance bootstrap: {e}")))?;
+    }
 
     let handler = WebUIHandler::with_plugin(|| {
         Box::new(webui_handler::plugin::webui::WebUIHydrationPlugin::new())
@@ -1548,7 +1554,7 @@ fn restore_pre_blocks(html: &str, blocks: &[String]) -> String {
     out
 }
 
-/// Cheap deterministic hash for building unique temp directory names.
+/// Cheap deterministic hash for build-time artifact and temporary-file identities.
 fn fxhash(s: &str) -> u64 {
     fxhash_bytes(s.as_bytes())
 }

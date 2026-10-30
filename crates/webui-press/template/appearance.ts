@@ -60,7 +60,7 @@ function createOwner(): Owner {
   const resolvedMode = root.getAttribute("data-theme");
   if (!validTheme(theme) || !isMode(mode) ||
     (resolvedMode !== "light" && resolvedMode !== "dark")) {
-    throw new Error("WebUI Press appearance bootstrap must run before the browser API.");
+    throw new Error("WebUI Press appearance initialization did not run. Deploy the generated appearance-init script, allow it in your CSP, and load it before the browser API.");
   }
   let state: Appearance = Object.freeze({ theme, mode, resolvedMode });
   let desired = { theme, mode };

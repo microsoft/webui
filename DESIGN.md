@@ -387,10 +387,11 @@ directly rather than loading their dependencies into the core CLI. Package
 installation can use Node, but command dispatch has no JavaScript wrapper.
 Press's optional browser appearance layer owns document preferences and native
 theme transitions, independently of control presentation. Pre-paint restoration
-and interactive controls consume the same build-validated family metadata;
-token maps remain compiled CSS, not browser application state. Header
-integrations participate in normal component discovery and hydration rather
-than modifying the generated shell after rendering.
+uses a build-generated, shared same-origin script loaded before stylesheet
+links, not a per-response inline script. It and interactive controls consume the same
+build-validated family metadata; token maps remain compiled CSS, not browser
+application state. Header integrations participate in normal component discovery
+and hydration rather than modifying the generated shell after rendering.
 Desktop browser IPC assets are compiled from their TypeScript source into
 build output, not retained as generated source files. Release staging includes
 those compiled bytes in the Rust crate archive, so downstream Cargo builds
