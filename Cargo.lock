@@ -2254,6 +2254,7 @@ dependencies = [
  "microsoft-webui-dev-server",
  "microsoft-webui-discovery",
  "microsoft-webui-handler",
+ "microsoft-webui-parser",
  "microsoft-webui-tokens",
  "rayon",
  "serde",

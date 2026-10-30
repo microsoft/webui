@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "declaration": true,
+    "rootDir": "../../crates/webui-press/template",
+    "outDir": "dist",
+    "types": [],
+    "lib": ["ES2022", "DOM"]
+  },
+  "include": ["../../crates/webui-press/template/appearance.ts"]
+}

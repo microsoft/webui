@@ -91,3 +91,49 @@ test('mobile readers can move between a lesson and its reference without leaving
   await dialog.getByRole('link', { name: 'Your first page', exact: true }).click();
   await expect(page).toHaveURL(`${server.origin}/webui/start/first-page`);
 });
+
+test('mobile navigation covers the header, slides in, and respects reduced motion', async t => {
+  const server = await startWebsite();
+  t.after(() => server.close());
+  const browser = await chromium.launch();
+  t.after(() => browser.close());
+  const page = await browser.newPage({
+    viewport: { width: 390, height: 844 }, reducedMotion: 'no-preference',
+  });
+  await page.goto(`${server.origin}/webui/reference/webui-press/`);
+  const opener = page.getByRole('button', { name: 'Open navigation', exact: true });
+  const dialog = page.locator('docs-site-navigation dialog.mobile-navigation');
+  await dialog.evaluate(element => {
+    for (const type of ['transitionrun', 'transitionend']) {
+      element.addEventListener(type, event => {
+        if (!(event instanceof TransitionEvent) || event.propertyName !== 'transform' || event.pseudoElement) return;
+        const attribute = event.type === 'transitionrun' ? 'data-slide-start-x' : 'data-slide-end-x';
+        element.setAttribute(attribute, String(element.getBoundingClientRect().x));
+      });
+    }
+  });
+  await opener.click();
+  await expect(dialog).toBeVisible();
+  await expect.poll(async () => (await dialog.boundingBox())?.y).toBe(0);
+  await expect(dialog).toHaveCSS('height', '844px');
+  await expect(dialog).toHaveAttribute('data-slide-end-x', /.+/);
+  const slide = await dialog.evaluate(element => ({
+    start: Number(element.getAttribute('data-slide-start-x')),
+    end: Number(element.getAttribute('data-slide-end-x')),
+  }));
+  assert.ok(slide.start > slide.end, 'The drawer must move in from the right.');
+  await dialog.getByRole('button', { name: 'Close navigation' }).click();
+  await expect(dialog).toBeHidden();
+  await expect(opener).toBeFocused();
+
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.setViewportSize({ width: 320, height: 568 });
+  await opener.click();
+  await expect(dialog).toBeVisible();
+  await expect.poll(async () => (await dialog.boundingBox())?.y).toBe(0);
+  await expect(dialog).toHaveCSS('height', '568px');
+  assert.equal(await dialog.evaluate(element => element.getAnimations().length), 0);
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+  await expect(opener).toBeFocused();
+});

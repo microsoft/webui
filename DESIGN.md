@@ -471,7 +471,7 @@ non-streaming output does not acquire streaming markers or state.
 | `webui` Rust library and CLI | Build/inspect protocols, render requests, and serve development apps. Watch rebuilds replace the served artifact only after a successful build. |
 | `@microsoft/webui` | Node build API and native-addon runtime; its projection subpath is build-only. Browser framework and router are separate packages. |
 | C FFI, .NET, Python, WASM | Load a protocol once and expose the same logical rendering, partial, token, and streaming capabilities with host-native ownership and errors. WASM can also build protocols when its parser feature is selected. |
-| `webui-press` | Convert Markdown/site templates to WebUI page inputs and share a validated client projection across page builds. |
+| `webui-press` | Convert Markdown/site templates to WebUI page inputs, resolve nested site regions and theme-family styles at build time, and share a validated client projection across page builds. |
 | `webui-desktop` | Run a compiled artifact through a native webview and Rust host, or opt into a native window for an existing loopback HTTP host without rendering its artifact again. |
 
 FFI uses opaque handles and explicit ownership; .NET wraps those lifetimes in
@@ -485,6 +485,13 @@ Press and desktop are opt-in native command sidecars. The Rust CLI discovers
 their installed binaries, verifies compatible versions, and launches them
 directly rather than loading their dependencies into the core CLI. Package
 installation can use Node, but command dispatch has no JavaScript wrapper.
+Press's optional browser appearance layer owns document preferences and native
+theme transitions, independently of control presentation. Pre-paint restoration
+uses a build-generated, shared same-origin script loaded before stylesheet
+links, not a per-response inline script. It and interactive controls consume the same
+build-validated family metadata; token maps remain compiled CSS, not browser
+application state. Header integrations participate in normal component discovery
+and hydration rather than modifying the generated shell after rendering.
 Desktop browser IPC assets are compiled from their TypeScript source into
 build output, not retained as generated source files. Release staging includes
 those compiled bytes in the Rust crate archive, so downstream Cargo builds

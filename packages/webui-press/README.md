@@ -104,6 +104,21 @@ or `outline: true`. Only eligible `doc`/`page` layouts load its assets.
 See the [page outline reference](https://microsoft.github.io/webui/reference/webui-press/#page-outlines)
 for heading eligibility, browser support, and theming.
 
+## Appearance and header integrations
+
+Configure `appearance.themes` with named light/dark token sources to enable
+the built-in Design theme picker alongside System/Light/Dark selection.
+Single-family sites omit the family picker. A palette button opens a native
+Appearance popover with a themeable family select and System/Light/Dark icon
+buttons. The same controls appear inline in the navigation menu on narrow screens.
+
+Named header regions support additional actions and custom controls without
+replacing the shell. Browser integrations share preferences through
+`@microsoft/webui-press/appearance.js` rather than implementing storage or
+transitions themselves. See the
+[appearance and header reference](https://microsoft.github.io/webui/reference/webui-press/#theme-families-and-appearance)
+for configuration, CSS hooks, and region contracts.
+
 ---
 
 ## Project layout

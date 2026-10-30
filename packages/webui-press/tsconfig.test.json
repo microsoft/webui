@@ -4,16 +4,22 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "strict": true,
+    "experimentalDecorators": true,
+    "useDefineForClassFields": false,
     "skipLibCheck": true,
     "verbatimModuleSyntax": true,
     "types": ["node"],
     "paths": {
-      "@microsoft/webui-framework": ["../webui-framework/dist/index.d.ts"]
+      "@microsoft/webui-framework": ["../webui-framework/dist/index.d.ts"],
+      "@microsoft/webui-press/appearance.js": ["../../crates/webui-press/template/appearance.ts"]
     }
   },
   "include": [
     "tests",
     "../../crates/webui-press/template/docs-outline",
+    "../../crates/webui-press/template/docs-appearance",
+    "../../crates/webui-press/template/docs-theme-picker",
+    "../../crates/webui-press/template/docs-theme-toggle",
     "../../docs/.webui-press/components/**/*.test.ts",
     "../../docs/.webui-press/regions/**/*.test.ts",
     "../../docs/.webui-press/scripts/**/*.test.ts",
