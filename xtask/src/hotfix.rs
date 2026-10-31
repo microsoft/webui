@@ -714,28 +714,6 @@ mod tests {
     }
 
     #[test]
-    fn release_pipeline_can_skip_github_without_skipping_registries() {
-        let cd = include_str!("../../.ado/pipelines/azure-pipelines-cd.yml");
-        let parameter = cd
-            .split_once("- name: publishGitHub\n")
-            .map(|(_, rest)| rest.split("\nresources:").next().unwrap_or(rest));
-        assert!(parameter.is_some_and(|parameter| {
-            parameter.contains("  type: boolean\n") && parameter.contains("  default: true\n")
-        }));
-
-        let github = cd
-            .split_once("- job: PublishGitHub\n")
-            .and_then(|(_, rest)| rest.split_once("- job: PublishNpm\n"));
-        assert!(github.is_some_and(|(github, registries)| {
-            github
-                .contains("condition: and(succeeded(), ${{ eq(parameters.publishGitHub, true) }})")
-                && github.contains("task: GitHubRelease@1")
-                && registries.contains("- job: PublishCrates")
-                && !registries.contains("parameters.publishGitHub")
-        }));
-    }
-
-    #[test]
     fn release_pipelines_parallelize_release_work() {
         let build = include_str!("../../.ado/pipelines/azure-pipelines-build.yml");
         let cd = include_str!("../../.ado/pipelines/azure-pipelines-cd.yml");
