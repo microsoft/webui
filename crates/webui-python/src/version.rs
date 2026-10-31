@@ -2,4 +2,4 @@
 // Licensed under the MIT license.
 
 /// PEP 440 package version exposed by the Python module.
-pub(crate) const PYTHON_PACKAGE_VERSION: &str = "3.0.4";
+pub(crate) const PYTHON_PACKAGE_VERSION: &str = "3.0.5";

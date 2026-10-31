@@ -19,11 +19,11 @@ name = "webui"
 cli = ["microsoft-webui-parser/cli"]
 
 [dependencies]
-microsoft-webui-parser = { path = "../webui-parser", version = "3.0.4" }
-microsoft-webui-protocol = { path = "../webui-protocol", version = "3.0.4", features = ["projection-manifest", "content-identity"] }
-microsoft-webui-handler = { path = "../webui-handler", version = "3.0.4", features = ["packs"] }
-microsoft-webui-discovery = { path = "../webui-discovery", version = "3.0.4" }
-microsoft-webui-tokens = { path = "../webui-tokens", version = "3.0.4" }
+microsoft-webui-parser = { path = "../webui-parser", version = "3.0.5" }
+microsoft-webui-protocol = { path = "../webui-protocol", version = "3.0.5", features = ["projection-manifest", "content-identity"] }
+microsoft-webui-handler = { path = "../webui-handler", version = "3.0.5", features = ["packs"] }
+microsoft-webui-discovery = { path = "../webui-discovery", version = "3.0.5" }
+microsoft-webui-tokens = { path = "../webui-tokens", version = "3.0.5" }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -47,8 +47,8 @@ actix-web = { workspace = true }
 reqwest = { workspace = true }
 futures-util = { workspace = true }
 libc = { workspace = true }
-microsoft-webui-handler = { path = "../webui-handler", version = "3.0.4" }
-microsoft-webui-protocol = { path = "../webui-protocol", version = "3.0.4", features = ["projection-manifest"] }
+microsoft-webui-handler = { path = "../webui-handler", version = "3.0.5" }
+microsoft-webui-protocol = { path = "../webui-protocol", version = "3.0.5", features = ["projection-manifest"] }
 
 [target.'cfg(windows)'.dev-dependencies]
 windows-sys = { workspace = true }

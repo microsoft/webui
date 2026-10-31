@@ -20,9 +20,9 @@ name = "webui_handler"
 packs = ["dep:sha2"]
 
 [dependencies]
-microsoft-webui-protocol = { path = "../webui-protocol", version = "3.0.4" }
-microsoft-webui-expressions = { path = "../webui-expressions", version = "3.0.4" }
-microsoft-webui-state = { path = "../webui-state", version = "3.0.4" }
+microsoft-webui-protocol = { path = "../webui-protocol", version = "3.0.5" }
+microsoft-webui-expressions = { path = "../webui-expressions", version = "3.0.5" }
+microsoft-webui-state = { path = "../webui-state", version = "3.0.5" }
 memchr = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -30,8 +30,8 @@ sha2 = { workspace = true, optional = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-microsoft-webui-test-utils = { path = "../webui-test-utils", version = "3.0.4" }
-microsoft-webui-parser = { path = "../webui-parser", version = "3.0.4" }
+microsoft-webui-test-utils = { path = "../webui-test-utils", version = "3.0.5" }
+microsoft-webui-parser = { path = "../webui-parser", version = "3.0.5" }
 criterion = { workspace = true }
 
 [[bench]]
