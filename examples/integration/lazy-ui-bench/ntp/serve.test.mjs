@@ -26,6 +26,10 @@ test('the benchmark server preserves valid load holds and the 5000 ms boundary',
   assert.equal(held.status, 200);
   assert.match(await held.text(), /__hold\.gif\?ms=5000/);
 
+  const background = await fetch(`${origin}bg.jpg?ms=5001`);
+  assert.equal(background.status, 200);
+  assert.equal(await background.text(), 'image');
+
   for (const milliseconds of [0, 10]) {
     const response = await fetch(`${origin}__hold.gif?ms=${milliseconds}`);
     assert.equal(response.status, 200);

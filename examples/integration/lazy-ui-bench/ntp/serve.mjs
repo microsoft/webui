@@ -84,14 +84,13 @@ export async function serve(fixtures, state, image) {
     const fixture = fixtures.get(key);
     if (!fixture) return response.writeHead(404).end();
     const path = rest.join('/');
-    let hold = 0;
-    if (path === '' || path === '__hold.gif') {
-      hold = Number(url.searchParams.get(path === '' ? 'hold' : 'ms') ?? 0);
-      if (!Number.isInteger(hold) || hold < 0 || hold > MAX_HOLD_MS) {
-        return response.writeHead(400, {
-          'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store',
-        }).end('Load hold must be whole milliseconds between 0 and 5000.');
-      }
+    const hold = path === '' || path === '__hold.gif'
+      ? Number(url.searchParams.get(path === '' ? 'hold' : 'ms') ?? 0)
+      : 0;
+    if (!Number.isInteger(hold) || hold < 0 || hold > MAX_HOLD_MS) {
+      return response.writeHead(400, {
+        'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store',
+      }).end('Load hold must be whole milliseconds between 0 and 5000.');
     }
     const acceptsBrotli = /\bbr\b/.test(String(request.headers['accept-encoding'] ?? ''));
     const send = (type, cache, body) => {
