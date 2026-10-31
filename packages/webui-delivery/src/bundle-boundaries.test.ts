@@ -207,7 +207,7 @@ test('lazy regions add one small framework runtime and no delivery code', async 
   // The rendering core holds no lazy logic, so this is the whole cost of the
   // feature, including script loading through `defineLazyScripts()`.
   const added = lazy.initialBrotli - core.initialBrotli;
-  assert.ok(added <= 2_550, `lazy runtime adds ${added} brotli bytes`);
+  assert.ok(added <= 2_600, `lazy runtime adds ${added} brotli bytes`);
 });
 test('early progressive HTML remains separate from network partial decoding and authored rendering', async () => {
   const progressive = await bundle('progressive');

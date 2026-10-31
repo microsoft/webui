@@ -305,9 +305,9 @@ templates, and hydrate that DOM. In the browser, a region loads its pack, its
 linked stylesheets, and its components' scripts in parallel when its condition
 becomes true, its trigger fires, or its owner prefetches it, then mounts through
 normal conditional rendering in the existing owner once the pack and scripts
-have arrived. Speculative loading never competes with startup: it uses low
-fetch priority until the page has loaded and waits while the document is
-prerendering, while activation never waits.
+have arrived. Speculative loading limits competition with startup by using low
+fetch priority until the page has loaded and waiting while the document is
+prerendering; activation bypasses those speculative delays.
 Failures surface as a cancelable event on the owner. That loading lives in an
 opt-in runtime that extends the renderer; the rendering core holds no lazy
 logic, so pages without lazy regions ship none. State remains

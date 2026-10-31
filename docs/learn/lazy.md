@@ -56,7 +56,7 @@ component scripts; it never renders or requests application state.
 | `lazy="eager"` | Right after startup hydration | UI that is needed almost immediately |
 | `lazy="demand"` | Only when the condition becomes true, or when code calls `$prefetch()` | Rare UI, UI prefetched from a specific control, and regions nested in other lazy regions |
 
-Prefetching never competes with the page's own startup work:
+Prefetching limits competition with the page's startup work:
 
 - Eager and idle prefetches use low fetch priority. Intent and `$prefetch()` use
   low priority until the window `load` event and high priority after it. Opening
@@ -71,13 +71,18 @@ Prefetching never competes with the page's own startup work:
   waits.
 - Idle and eager prefetch are skipped when the user has enabled data saving.
 
-Focus inside the owner counts as intent even when it happened before the
-runtime started, such as an `autofocus` search box whose owner holds its
-suggestions.
+Focus that is already inside the owner when the page starts, such as an
+`autofocus` search box whose owner holds its suggestions, also prefetches the
+owner's regions, but only once the page has loaded and is idle. Initial focus
+is not treated as an immediate gesture. A pointer, focus, or touch event inside
+the owner before then prefetches at once, and opening a region bypasses these
+speculative delays.
 
 Prefer `intent` for UI that opens from a control in the owner. With `demand`, the
-body appears at least one network round trip after the condition becomes true,
-even when the pack comes from the HTTP cache, unless code prefetched it first.
+body waits for its pack when the condition becomes true unless the pack is
+already available. A cold fetch adds a network round trip; loading from the
+HTTP cache can still add asynchronous work. Prefetch ahead of use when that
+first-open delay is unacceptable.
 
 ## Prefetch from code
 

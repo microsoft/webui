@@ -289,7 +289,7 @@ async function holdWindowLoad(page: Page): Promise<() => void> {
   return image.resolve;
 }
 
-test('focus inside an intent owner before the runtime listens prefetches only its pack until load', async ({ page }) => {
+test('focus inside an intent owner before the runtime listens prefetches its pack once the loaded page is idle', async ({ page }) => {
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
   const sent: [url: string, priority: string][] = [];
@@ -308,21 +308,22 @@ test('focus inside an intent owner before the runtime listens prefetches only it
   const started = sent.length;
   runtime.resolve();
   await ready(page, ['test-lazy-search']);
-  await page.waitForFunction(() => window.__lazyFixture.registered('test-lazy-search'));
+  await page.evaluate(() => new Promise<void>(resolve => setTimeout(resolve, 100)));
   expect(await page.evaluate(() => document.readyState)).not.toBe('complete');
-  // Everything the runtime requested before the window loaded was speculative.
-  const speculative = sent.slice(started).filter(([url]) => !url.endsWith('/favicon.ico'));
-  expect(speculative.filter(([, priority]) => priority === 'High' || priority === 'VeryHigh')).toEqual([]);
-  expect(speculative).toEqual([[await packUrl(page, 'test-lazy-search'), 'Low']]);
-  expect(await page.evaluate(() => window.__lazyFixture.imports()), 'scripts wait for the load event').toEqual([]);
-  expect(await page.evaluate(() => window.__lazyFixture.registered('test-lazy-shadow'))).toBe(false);
+  // Focus that predates the runtime is no gesture, so startup requests nothing.
+  expect(sent.slice(started).filter(([url]) => !url.endsWith('/favicon.ico'))).toEqual([]);
+  expect(await page.evaluate(() => window.__lazyFixture.registered('test-lazy-search'))).toBe(false);
 
   finishLoading();
+  await page.waitForFunction(() => window.__lazyFixture.registered('test-lazy-search'));
+  const pack = await packUrl(page, 'test-lazy-search');
+  expect(sent.filter(([url]) => url === pack)).toEqual([[pack, 'Low']]);
   await page.waitForFunction(() => window.__lazyFixture.imports().length > 0);
   expect(await page.evaluate(() => window.__lazyFixture.imports())).toEqual(['complete']);
   await page.locator('test-lazy-search .query').fill('w');
   await expect(page.locator('test-lazy-search .suggestions')).toHaveCount(1);
   expect(await page.evaluate(() => window.__lazyFixture.imports())).toHaveLength(1);
+  expect(await page.evaluate(() => window.__lazyFixture.registered('test-lazy-shadow'))).toBe(false);
   expect(errors).toEqual([]);
   await session.detach();
 });

@@ -63,6 +63,7 @@ const INTENT = 1;
 const EAGER = 3;
 const DEMAND = 4;
 const INTENT_EVENTS = ['pointerover', 'focusin', 'touchstart', 'pointerdown'];
+const LISTEN = { capture: true, passive: true };
 /** Matches the delivery request deadline. */
 const PACK_TIMEOUT_MS = 10_000;
 const noop = (): void => {};
@@ -376,23 +377,24 @@ export function prefetchRegions(template: TemplateMeta | undefined, path?: strin
 function arm(regions: readonly Armed[]): void {
   for (let i = 0; i < regions.length; i++) {
     const armed = regions[i];
-    const [region, url, trigger, styles] = armed;
+    const [region, url, trigger] = armed;
     if (resolve(region)) continue;
     if (trigger === INTENT) {
       if (!intent) {
         intent = new Map();
-        for (const type of INTENT_EVENTS) {
-          document.addEventListener(type, onIntent, { capture: true, passive: true });
-        }
+        listen(document);
       }
       // Region identities start with their owner's tag.
       const owner = region.slice(0, region.indexOf('::'));
       const waiting = intent.get(owner);
       if (waiting) waiting.set(url, armed);
-      // Focus that entered the owner before anything listened, such as
-      // autofocus, is intent that no event will report.
-      else if (focusWithin(owner)) prefetch(region, url, styles);
-      else intent.set(owner, new Map([[url, armed]]));
+      else {
+        intent.set(owner, new Map([[url, armed]]));
+        // Focus that entered the owner before anything listened, such as
+        // autofocus, is no gesture, so it prefetches once the loaded page is
+        // idle; a real event before then still prefetches at once.
+        if (focusWithin(owner)) afterLoad(() => intend(owner, true));
+      }
     } else if (
       // A region shown and released before is not speculatively pinned again.
       !released.has(region)
@@ -428,16 +430,37 @@ function speculate(armed: Armed): void {
   queue.set(armed[1], armed);
 }
 
-/** One delegated listener prefetches the waiting regions of every owner on the event path. */
+/**
+ * Listen for intent on an owner host whose regions still wait for it.
+ *
+ * A move between two elements of one shadow tree stops its `pointerover` or
+ * `focusin` path before that tree's host, so the document never hears it, but
+ * an event that enters a host's subtree from outside always reaches the host.
+ * The element calls this after a host mounts and after its structure changes,
+ * since a block rendered later can arm regions; registering the same listener
+ * again adds nothing. Once the owner's regions are prefetched, its listeners
+ * find nothing to do.
+ */
+export function watch(host: Element): void {
+  if (intent?.has(host.localName)) listen(host);
+}
+
+function listen(target: EventTarget): void {
+  for (const type of INTENT_EVENTS) target.addEventListener(type, onIntent, LISTEN);
+}
+
+/** Prefetch the waiting regions of every owner on the event path. */
 function onIntent(event: Event): void {
   const path = event.composedPath();
-  for (let i = 0; i < path.length; i++) {
-    const owner = (path[i] as Partial<Element>).localName;
-    const regions = owner ? intent!.get(owner) : undefined;
-    if (!regions) continue;
-    intent!.delete(owner!);
-    prefetchAll(regions);
-  }
+  for (let i = 0; i < path.length; i++) intend((path[i] as Element).localName);
+}
+
+/** Prefetch an owner's regions that wait for intent. */
+function intend(owner: string, background?: boolean): void {
+  const regions = intent!.get(owner);
+  if (!regions) return;
+  intent!.delete(owner);
+  prefetchAll(regions, background);
 }
 
 function prefetchAll(regions: Map<string, Armed>, background?: boolean): void {
@@ -447,10 +470,10 @@ function prefetchAll(regions: Map<string, Armed>, background?: boolean): void {
 /**
  * Load a region speculatively, never while the page is prerendering.
  *
- * Background (eager and idle) loads always use low fetch priority. Intent and
- * explicit prefetch stay low until the window has loaded so they never
- * compete with the critical path. Failures are silent: activation reports
- * them and retries.
+ * Background loads (eager, idle, and focus that predates the runtime) always
+ * use low fetch priority. Intent and explicit prefetch stay low until the
+ * window has loaded so they never compete with the critical path. Failures
+ * are silent: activation reports them and retries.
  */
 function prefetch(region: string, url: string, styles?: readonly string[], background?: boolean): void {
   if ((document as { prerendering?: boolean }).prerendering) {

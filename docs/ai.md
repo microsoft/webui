@@ -261,6 +261,9 @@ this.settingsDialog.showModal();
   event, and waits while the page is prerendering. Prefer `intent` for UI opened
   from a control; inside a large owner, use `lazy="demand"` plus
   `@pointerenter="{$prefetch('settingsOpen')}"` on the specific button.
+- Focus already inside an intent owner when the runtime starts, such as
+  `autofocus`, schedules prefetch after window load when idle. A later intent
+  event or an activation can start loading sooner.
 - State is application-owned and loaded as usual; lazy regions never fetch it.
   Await `this.$rendered()` only before touching body DOM, such as refs, focus, or
   `showModal()`. It rejects on a failed pack or script and retries on the next

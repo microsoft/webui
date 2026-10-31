@@ -2,9 +2,10 @@
 // Licensed under the MIT license.
 
 import { strict as assert } from 'node:assert';
+import { getEventListeners } from 'node:events';
 import { after, test } from 'node:test';
 import type { CondBinding, TemplateInstance } from './element/types.js';
-import type { TemplateMeta } from './template-types.js';
+import type { TemplateBlockMeta, TemplateMeta } from './template-types.js';
 
 const restore: [string, PropertyDescriptor | undefined][] = [];
 
@@ -121,6 +122,7 @@ interface Shell extends EventTarget {
   $meta?: TemplateMeta;
   $toggleCond(binding: CondBinding): void;
   $mount(...steps: (TemplateMeta | (() => void))[]): void;
+  $changeStructure(): void;
   $rendered(): Promise<void>;
   $prefetch(path?: string): void;
 }
@@ -131,6 +133,14 @@ function shell(packs: Record<string, string>): Shell {
   const host = new Owner() as unknown as Shell;
   Object.defineProperty(host, 'localName', { value: 'test-shell' });
   host.$meta = { v: 3, h: '', lp: packs };
+  return host;
+}
+
+/** A component host with the given tag. */
+function ownerHost(tag: string): Shell {
+  const Owner = class extends TemplateElement {};
+  const host = new Owner() as unknown as Shell;
+  Object.defineProperty(host, 'localName', { value: tag });
   return host;
 }
 
@@ -378,6 +388,54 @@ test('hydrated bodies belong to the host that is mounting them, also across nest
   await tick();
   assert.deepEqual(failures.get(parent), ['outer failed']);
   assert.deepEqual(failures.get(child), ['inner failed']);
+});
+
+test('an owner host hears intent that the shadow tree around it keeps from the document', async () => {
+  // A move between two elements of one shadow tree stops the event path before
+  // that tree's host. An owner nested in the tree is on the path when the move enters it.
+  const id = 'tree-owner::lazy:@0';
+  const url = '_webui/packs/tree-owner.0000.json';
+  const meta: TemplateMeta = { v: 3, h: '', c: [[[0, ['open']], id, [0, 0], 1]], lp: { [id]: url } };
+  const owner = ownerHost('tree-owner');
+  const sibling = ownerHost('tree-sibling');
+  sibling.$mount({ v: 3, h: '' });
+  owner.$mount(meta);
+  owner.$mount(meta);
+  assert.equal(getEventListeners(sibling, 'pointerover').length, 0, 'a host without waiting intent regions is not watched');
+  for (const type of ['pointerover', 'focusin', 'touchstart', 'pointerdown']) {
+    assert.equal(getEventListeners(owner, type).length, 1, `one ${type} listener across mounts`);
+  }
+  requests.length = 0;
+  owner.dispatchEvent(new Event('pointerover'));
+  assert.deepEqual(requests, [{ url, priority: 'high' }]);
+  owner.dispatchEvent(new Event('focusin'));
+  assert.equal(requests.length, 1, 'once prefetched, the owner listeners find nothing to do');
+  serve(id, url);
+  await tick();
+  const later = ownerHost('tree-owner');
+  later.$mount(meta);
+  assert.equal(getEventListeners(later, 'pointerover').length, 0, 'an owner mounted after the install is not watched');
+});
+
+test('an owner host hears intent for a region that a block reveals after the owner mounted', () => {
+  const id = 'reveal-owner::lazy:@0';
+  const url = '_webui/packs/reveal-owner.0000.json';
+  const block: TemplateBlockMeta = { h: '', c: [[[0, ['open']], id, [0, 0], 1]] };
+  const meta: TemplateMeta = { v: 3, h: '', b: [block], lp: { [id]: url } };
+  const owner = ownerHost('reveal-owner');
+  owner.$mount(meta);
+  assert.equal(getEventListeners(owner, 'pointerover').length, 0, 'the closed block arms nothing');
+  // A conditional or repeat renders the block later, which arms its region,
+  // and then reports the structural change.
+  contract.lazyBlockOwner(block);
+  owner.$changeStructure();
+  owner.$changeStructure();
+  for (const type of ['pointerover', 'focusin', 'touchstart', 'pointerdown']) {
+    assert.equal(getEventListeners(owner, type).length, 1, `one ${type} listener across structural changes`);
+  }
+  requests.length = 0;
+  owner.dispatchEvent(new Event('pointerover'));
+  assert.deepEqual(requests, [{ url, priority: 'high' }]);
 });
 
 test('development warns once about lazy-only tags that a static import defined at startup', async () => {

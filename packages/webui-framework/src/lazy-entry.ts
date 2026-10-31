@@ -24,6 +24,7 @@ import {
   rendered,
   resolve,
   unloaded,
+  watch,
   type LazyHost,
 } from './lazy-runtime.js';
 import { addScripts, warnStartupDefinitions, type LazyScripts } from './lazy-scripts.js';
@@ -83,6 +84,7 @@ declare global {
 /** Element internals this runtime extends. */
 interface Host extends LazyHost {
   $meta?: TemplateMeta;
+  $changeStructure(removedFrom?: TemplateInstance): void;
   $conditionResolver(): (path: string, scope?: unknown) => unknown;
   $disposeInstance(root: TemplateInstance, removeNodes: boolean, retainFragments?: boolean): void;
   $flushUpdates(): void;
@@ -95,6 +97,7 @@ const element = TemplateElement.prototype as unknown as Host;
 const toggle = element.$toggleCond;
 const dispose = element.$disposeInstance;
 const mount = element.$mount;
+const change = element.$changeStructure;
 /** The host whose template is hydrating or mounting. */
 let mounting: Host | undefined;
 
@@ -124,6 +127,14 @@ element.$mount = function (this: Host, ...args: unknown[]): void {
   } finally {
     mounting = previous;
   }
+  watch(this);
+};
+
+// Conditionals and repeats report each batch of blocks they render after the
+// host mounted; a block may arm intent regions.
+element.$changeStructure = function (this: Host, removedFrom?: TemplateInstance): void {
+  change.call(this, removedFrom);
+  watch(this);
 };
 
 element.$disposeInstance = function (

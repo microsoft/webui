@@ -352,24 +352,52 @@ test('after the window loads, every load of a region preloads its link styleshee
   }
 });
 
-test('focus already inside an intent owner prefetches its regions as they arm', async () => {
+test('focus that predates the runtime prefetches its owner once the loaded page is idle', async () => {
   // Autofocus put focus on an input in <app-search>'s shadow root, which sits
   // in <app-shell>'s shadow root, before the runtime listened for focus.
   const input = { closest: () => null, shadowRoot: null };
   const search = { closest: (tag: string) => (tag === 'app-search' ? search : null), shadowRoot: { activeElement: input } };
   page.activeElement = { closest: () => null, shadowRoot: { activeElement: search } };
+  const searched = (): typeof requests => requests.filter(request => request.url.includes('app-search'));
   page.readyState = 'interactive';
   runtime.blockOwner(owner('app-search', [[0, 1]]));
-  assert.deepEqual(requests, [{ url: pack('app-search'), priority: 'low' }], 'focus counts as intent');
   runtime.blockOwner(owner('app-other', [[0, 1]]));
-  assert.equal(requests.length, 1, 'other owners still wait for intent');
+  runIdle();
+  assert.equal(requests.length, 0, 'focus is no gesture, so startup loads nothing');
+  // Another region of the focused owner arms before the window loads.
+  runtime.blockOwner(owner('app-search', [[1, 1]]));
+  page.readyState = 'complete';
+  browser.dispatchEvent(new Event('load'));
+  assert.deepEqual(searched(), [], 'the prefetch waits for the loaded page to idle');
 
   page.prerendering = true;
-  runtime.blockOwner(owner('app-search', [[1, 1]]));
-  assert.equal(requests.length, 1, 'it waits for prerendering like any speculative load');
+  runIdle();
+  assert.deepEqual(searched(), [], 'it waits for prerendering like any speculative load');
   page.prerendering = false;
   fire('prerenderingchange');
-  assert.deepEqual(requests.at(-1), { url: pack('app-search', 1), priority: 'low' });
+  assert.deepEqual(searched(), [
+    { url: pack('app-search', 0), priority: 'low' },
+    { url: pack('app-search', 1), priority: 'low' },
+  ]);
+  assert.equal(requests.some(request => request.url.includes('app-other')), false, 'other owners still wait for intent');
+  fire('pointerover', { composedPath: () => [{ localName: 'app-search' }] } as unknown as Event);
+  assert.equal(searched().length, 2, 'the owner no longer waits for intent');
+  await tick();
+  assert.deepEqual(reported, []);
+});
+
+test('a real gesture during startup prefetches a focused owner at once', async () => {
+  const typed = { closest: (tag: string) => (tag === 'app-typed' ? typed : null), shadowRoot: null };
+  page.activeElement = typed;
+  page.readyState = 'interactive';
+  runtime.blockOwner(owner('app-typed', [[0, 1]]));
+  assert.equal(requests.length, 0);
+  fire('focusin', { composedPath: () => [{ localName: 'input' }, { localName: 'app-typed' }] } as unknown as Event);
+  assert.deepEqual(requests, [{ url: pack('app-typed'), priority: 'low' }], 'before load, at low priority');
+  page.readyState = 'complete';
+  browser.dispatchEvent(new Event('load'));
+  runIdle();
+  assert.equal(requests.filter(request => request.url === pack('app-typed')).length, 1, 'nothing is left to prefetch at idle');
   await tick();
   assert.deepEqual(reported, []);
 });

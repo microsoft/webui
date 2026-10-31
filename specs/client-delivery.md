@@ -264,21 +264,29 @@ Triggers arm when the block containing a closed region renders or hydrates:
 intent through one delegated document listener for pointer, focus, and touch
 events whose composed path includes an element with the owner's tag; idle in an
 idle callback after the window load event; eager in the task after hydration.
-Demand regions load only on activation or explicit prefetch. Intent also fires
-when arming finds the focused element (followed through shadow roots) already
-inside an element with the owner's tag, so focus that predates the runtime, such
-as `autofocus`, counts. Idle and eager
+A pointer or focus move between two elements of one shadow tree is not
+dispatched past that tree's host, so the document never sees it. Each owner
+host with regions waiting for intent gets the same passive listeners after
+mounting, hydration, or a structural update that reveals another block. An
+event that enters the host's subtree from outside always reaches the host.
+Repeated registration does not accumulate listeners. Once the owner's regions
+are prefetched, those listeners find nothing to do.
+Demand regions load only on activation or explicit prefetch. When arming finds
+the focused element (followed through shadow roots) already inside an element
+with the owner's tag, as with `autofocus`, that focus is not a gesture: the
+owner's regions prefetch in the background once the window has loaded and the
+browser is idle, unless an intent event arrives first. Idle and eager
 prefetch yield to `navigator.connection.saveData` and skip regions that were
 already released. Every speculative load (eager, idle, intent, and `$prefetch`)
 waits while `document.prerendering` is true and runs on `prerenderingchange`;
-activation never waits. Eager and idle use fetch priority `low`; intent and
-`$prefetch` use `low` until the document is complete and `high` after it;
-activation uses `high`. Bundler `import()` takes no priority and Chromium
-raises stylesheet preloads to at least high, so a speculative load before the
-document is complete fetches only its pack and starts the region's scripts and
-stylesheets at the window `load` event; its readiness does not wait for that
-deferred work. Prefetch failures are silent; activation surfaces errors and
-retries.
+activation never waits. Eager, idle, and background focus prefetches use fetch
+priority `low`; intent and `$prefetch` use `low` until the document is complete
+and `high` after it; activation uses `high`. Bundler `import()` takes no
+priority and Chromium raises stylesheet preloads to at least high, so a
+speculative load before the document is complete fetches only its pack and
+starts the region's scripts and stylesheets at the window `load` event; its
+readiness does not wait for that deferred work. Prefetch failures are silent;
+activation surfaces errors and retries.
 
 The runtime remembers, weakly, the bindings that mounted each region it
 registered. After instances are removed, a region that none of them still shows

@@ -84,8 +84,10 @@ region's scripts and stylesheets start once it has, because neither a bundler's
 `import()` nor a stylesheet preload fetches at low priority, and nothing waits
 for the stylesheets until then. An activation starts both at once. Link builds
 otherwise start a region's stylesheets beside its pack at the load's priority.
-Focus already inside an owner, such as an autofocused search box, counts as
-intent. A failed activation dispatches a cancelable `lazyerror` event on the
+Focus already inside an owner when the page starts, such as an autofocused
+search box, prefetches its regions at low priority once the page has loaded and
+is idle. Intent also reaches owners nested in another component's shadow tree.
+A failed activation dispatches a cancelable `lazyerror` event on the
 owner and otherwise goes to `reportError()`. Packs and component stylesheets
 resolve against the asset base the server publishes, as
 `window.__webui.assetBase` or, before the runtime reads its data,
