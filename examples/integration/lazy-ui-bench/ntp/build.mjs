@@ -132,8 +132,10 @@ export async function buildFixture({ key, scratch, root, build, Protocol, bundle
   if (variant !== 'eager') {
     // The generated modules never depend on the projection, so they come first.
     first = build(options);
-    if (variant === 'lazy') writeModules(modulesOut, [first.lazyScriptsModule.fileName, first.lazyScriptsModule.content]);
-    else writeModules(modulesOut, first.componentAssetFiles);
+    if (variant === 'lazy') {
+      const { fileName, content, declaration } = first.lazyScriptsModule;
+      writeModules(modulesOut, [fileName, content, declaration.fileName, declaration.content]);
+    } else writeModules(modulesOut, first.componentAssetFiles);
   }
   const regions = variant === 'lazy' ? regionsOf(first.lazyPackFiles) : {};
   if (variant === 'lazy') assert.equal(Object.keys(regions).length, Object.keys(UIS).length, `${key}: every UI is a lazy region`);
@@ -159,7 +161,7 @@ export async function buildFixture({ key, scratch, root, build, Protocol, bundle
   }
   const built = build({ ...options, projectionManifests: [manifest], metafile: true });
   if (variant === 'lazy') {
-    assert.equal(built.lazyScriptsModule.content, first.lazyScriptsModule.content, `${key}: lazy.webui.js is stable across passes`);
+    assert.deepEqual(built.lazyScriptsModule, first.lazyScriptsModule, `${key}: lazy.webui.js is stable across passes`);
   }
   if (variant === 'assets') {
     assert.deepEqual(built.componentAssetFiles, first.componentAssetFiles, `${key}: component assets are stable across passes`);
@@ -201,8 +203,9 @@ export async function buildFixture({ key, scratch, root, build, Protocol, bundle
       }
     }
     const pack = packs.find(entry => entry.region === regions[id]);
+    // Packs report the stylesheet files a link build fetches for them; component assets name them in their modules.
     const styles = new Set(css === 'link' && UIS[id].kind === 'dialog'
-      ? (pack ? hrefs(pack.content) : UIS[id].scripts.flatMap(tag => hrefs(assetText).filter(href => href.startsWith(tag))))
+      ? (pack ? pack.stylesheets : UIS[id].scripts.flatMap(tag => hrefs(assetText).filter(href => href.startsWith(tag))))
       : []);
     ui[id] = {
       pack: pack?.brotli ?? 0,

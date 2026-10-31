@@ -276,6 +276,7 @@ async function generate() {
         if (generated) {
           mkdirSync(options.modulesOut, { recursive: true });
           writeFileSync(join(options.modulesOut, generated.fileName), generated.content);
+          writeFileSync(join(options.modulesOut, generated.declaration.fileName), generated.declaration.content);
         }
         const manifest = join(dir, 'webui-projection.json');
         const outfile = join(dir, 'dist', 'app.js');
@@ -291,7 +292,7 @@ async function generate() {
           throw new Error(`${error.message}\n${notes.join('\n')}`);
         });
         const built = build({ ...options, projectionManifests: [manifest] });
-        assert.equal(built.lazyScriptsModule?.content, generated?.content, 'lazy.webui.js is stable across builds');
+        assert.deepEqual(built.lazyScriptsModule, generated, 'lazy.webui.js is stable across builds');
         const packs = new Map();
         for (const pack of built.lazyPackFiles) {
           packs.set(pack.fileName, compress(Buffer.from(pack.content)));

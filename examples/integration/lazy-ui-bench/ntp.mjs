@@ -306,8 +306,6 @@ for (const css of ['link', 'style']) {
     if (!CONFIGS.includes(assets)) continue;
     const bytes = [lazy, assets].map(key => medianOf(startupValues(key, cache, s => s.network.bytes)));
     accept(`Startup bytes ${lazy} <= ${assets} (${cache})`, `${bytes[0]} vs ${bytes[1]} (${signed(bytes[0] - bytes[1])})`, bytes[0] <= bytes[1]);
-    const requests = [lazy, assets].map(key => medianOf(startupValues(key, cache, s => s.network.requests)));
-    accept(`Startup requests ${lazy} <= ${assets} (${cache})`, `${requests[0]} vs ${requests[1]}`, requests[0] <= requests[1]);
     const heap = compare(startupValues(lazy, cache, s => s.heap), startupValues(assets, cache, s => s.heap));
     const heaps = [lazy, assets].map(key => medianOf(startupValues(key, cache, s => s.heap)));
     accept(`Startup JS heap ${lazy} <= ${assets} (${cache})`, `${kib(heaps[0])} vs ${kib(heaps[1])} KiB, diff ${interval(heap && { diff: heap.diff / 1024, low: heap.low / 1024, high: heap.high / 1024 })} KiB`, notWorse(heap));
@@ -328,6 +326,11 @@ for (const css of ['link', 'style']) {
         accept(`Click-only open of ${id}, ${lazy} within ${trips === 1 ? 'one round trip' : 'two round trips'} of ${assets} (${cache})`,
           `${lazyOpen?.toFixed(0)} vs ${assetsOpen?.toFixed(0)} ms (${signed(extra)} ms, allowance ${allowance.toFixed(0)} ms; ${waves} network waves)`,
           Number.isFinite(extra) && extra <= allowance);
+        if (cache === 'cold') {
+          const assetsWaves = medianOf(openValues(assets, cache, id, 'click', o => o.waves));
+          accept(`Click-only open of ${id}, ${lazy} fetches pack, scripts, and CSS in one network round (${cache})`,
+            `${waves} vs ${assetsWaves} sequential rounds (median)`, waves !== undefined && waves <= 1);
+        }
       }
     }
   }

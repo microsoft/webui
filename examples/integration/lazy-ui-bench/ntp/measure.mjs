@@ -112,15 +112,32 @@ export function network(net, fixture, include) {
   return result;
 }
 
+/**
+ * When each request started, on the page's own clock: Resource Timing start
+ * times and the navigation's `loadEventStart`. CDP reports the load event only
+ * after its listeners ran, so a request a `load` listener starts would look
+ * earlier than the event on the CDP clock.
+ */
+export async function pageClock(page) {
+  return page.evaluate(() => {
+    const starts = {};
+    for (const entry of performance.getEntriesByType('resource')) starts[entry.name] ??= entry.startTime;
+    return { loadStart: performance.getEntriesByType('navigation')[0]?.loadEventStart ?? 0, starts };
+  });
+}
+
 /** Pack, chunk, and deferred CSS requests with their initial priority and timing relative to `load`. */
-export function speculativeRequests(net, fixture) {
+export function speculativeRequests(net, fixture, clock) {
   const rows = [];
   for (const request of net.requests.values()) {
     const kind = kindOf(request.url, fixture);
     if (!SPECULATIVE.has(kind)) continue;
+    const start = clock?.starts[request.url];
+    const beforeLoad = !clock?.loadStart ? request.start < net.loadAt
+      : start !== undefined ? start < clock.loadStart : request.start < net.loadAt;
     rows.push({
       kind, path: pathOf(request.url), priority: request.priority, phase: request.phase,
-      beforeLoad: request.start < net.loadAt, cached: request.cached,
+      beforeLoad, cached: request.cached,
     });
   }
   return rows;
@@ -261,6 +278,7 @@ export async function visit({ context, url, fixture, mode, targets, profile, set
       };
     });
     const memory = await heap(cdp);
+    const clock = await pageClock(page);
     const startup = {
       fcpMs: page0.fcp,
       lcpMs: page0.lcp,
@@ -274,7 +292,7 @@ export async function visit({ context, url, fixture, mode, targets, profile, set
       focus: page0.focus,
       loadedRegions: page0.loadedRegions,
       network: network(net, fixture, phase => phase === 'startup'),
-      speculative: speculativeRequests(net, fixture).filter(request => request.phase === 'startup'),
+      speculative: speculativeRequests(net, fixture, clock).filter(request => request.phase === 'startup'),
     };
     const opens = {};
     for (const id of targets) opens[id] = await open(page, net, fixture, id, mode, dwellMs);
@@ -357,7 +375,7 @@ export async function priorityProbe({ browser, url, fixture, viewport, profile, 
     await page.mouse.move(point.x, point.y);
     await delay(100);
     await quiet(net, 500);
-    return { hydratedBeforeLoad, quietBeforeLoad, requests: speculativeRequests(net, fixture) };
+    return { hydratedBeforeLoad, quietBeforeLoad, requests: speculativeRequests(net, fixture, await pageClock(page)) };
   } finally {
     await context.close();
   }
