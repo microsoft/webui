@@ -379,7 +379,9 @@ stages:
           targetTriple: aarch64-unknown-linux-gnu
           artifactName: stage-desktop-linux-arm64
     pool:
-      vmImage: ubuntu-latest
+      # Ubuntu 24.04 is required to match Chromium's build baseline.
+      # Match desktop-npm-native in .github/workflows/pr.yml.
+      vmImage: ubuntu-24.04
     steps:
     - checkout: self
       clean: true
