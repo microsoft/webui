@@ -105,6 +105,9 @@ Two probes check speculative loading, three runs per build:
   `Network.requestWillBeSent`. A request counts as before `load` when its Resource
   Timing start precedes `loadEventStart`; CDP reports `load` only after its
   listeners have run.
+- The fixture server accepts load holds only as whole milliseconds from 0 to
+  5000. Invalid values return HTTP 400, and disconnecting a held request cancels
+  its timer.
 - The prerender probe forces `document.prerendering` to true with an init script,
   waits for eager and idle triggers to come due, hovers every button and
   prefetches every UI, then dispatches `prerenderingchange`.

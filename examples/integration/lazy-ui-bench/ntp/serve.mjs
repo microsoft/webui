@@ -9,6 +9,7 @@ import { brotli } from './build.mjs';
 
 const IMMUTABLE = 'public, max-age=31536000, immutable';
 const PIXEL = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
+const MAX_HOLD_MS = 5000;
 
 /**
  * A deterministic 1600x1000 landscape JPEG (about 170 KB), drawn by the
@@ -74,7 +75,7 @@ export async function backgroundImage(browser) {
  * Serve fixtures at `/<key>/`. HTML is rendered and Brotli-5 compressed per
  * request with `no-store`; scripts, CSS, packs, and the image are immutable
  * static files (Brotli 11). `?hold=<ms>` adds an image that holds the window
- * `load` event for that long.
+ * `load` event for that long. Holds must be whole milliseconds from 0 to 5000.
  */
 export async function serve(fixtures, state, image) {
   const server = createServer((request, response) => {
@@ -83,6 +84,15 @@ export async function serve(fixtures, state, image) {
     const fixture = fixtures.get(key);
     if (!fixture) return response.writeHead(404).end();
     const path = rest.join('/');
+    let hold = 0;
+    if (path === '' || path === '__hold.gif') {
+      hold = Number(url.searchParams.get(path === '' ? 'hold' : 'ms') ?? 0);
+      if (!Number.isInteger(hold) || hold < 0 || hold > MAX_HOLD_MS) {
+        return response.writeHead(400, {
+          'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store',
+        }).end('Load hold must be whole milliseconds between 0 and 5000.');
+      }
+    }
     const acceptsBrotli = /\bbr\b/.test(String(request.headers['accept-encoding'] ?? ''));
     const send = (type, cache, body) => {
       const bytes = acceptsBrotli && body.br ? body.br : body.raw;
@@ -94,7 +104,6 @@ export async function serve(fixtures, state, image) {
     };
     if (path === '') {
       let html = fixture.protocol.render(state).toString();
-      const hold = Number(url.searchParams.get('hold') ?? 0);
       if (hold > 0) {
         html = html.replace('</body>', `<img src="__hold.gif?ms=${hold}" alt="" width="1" height="1" style="position:absolute;opacity:0"></body>`);
       }
@@ -102,7 +111,8 @@ export async function serve(fixtures, state, image) {
       return send('text/html; charset=utf-8', 'no-store', { raw, br: brotli(raw, 5) });
     }
     if (path === '__hold.gif') {
-      setTimeout(() => send('image/gif', 'no-store', { raw: PIXEL }), Number(url.searchParams.get('ms') ?? 0));
+      const timer = setTimeout(() => send('image/gif', 'no-store', { raw: PIXEL }), hold);
+      response.once('close', () => clearTimeout(timer));
       return undefined;
     }
     if (path === 'bg.jpg') return send('image/jpeg', IMMUTABLE, { raw: image });

@@ -81,7 +81,7 @@ pub const INTEGRATION_BUILDS: &[IntegrationBuild] = &[
             },
             BuildCommand {
                 cmd: "node",
-                args: &["--test", "responsiveness.test.mjs"],
+                args: &["--test", "responsiveness.test.mjs", "ntp/serve.test.mjs"],
                 cwd: Some("examples/integration/lazy-ui-bench"),
             },
         ],
