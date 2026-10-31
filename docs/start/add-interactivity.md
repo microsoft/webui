@@ -111,7 +111,7 @@ MyCounter.define('my-counter');
 
 `@attr` reads the `label` attribute. `@observable` connects `count` to the
 template, so assigning a new value updates its text. `@click` calls
-`increment()`. The `define()` call registers the component.
+`increment()`. The `define()` call declares the component.
 
 The [interactivity guide](/learn/interactivity) covers attributes,
 observable state, and events in more detail.
@@ -126,10 +126,15 @@ Create a browser entry that imports the component:
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+import { startRuntime } from '@microsoft/webui-framework/runtime.js';
+import '@microsoft/webui-framework/styles.js';
 import './my-counter/my-counter.js';
+
+startRuntime();
 ```
 
 The `.js` import is intentional: esbuild resolves it to the TypeScript source.
+`startRuntime()` registers the imported component and starts hydration.
 
 Replace the entry template with this complete file:
 

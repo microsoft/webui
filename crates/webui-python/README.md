@@ -27,6 +27,10 @@ a Python string.
 `render_component_templates()` accepts either one component tag as a string or
 an iterable of tags.
 
+Lazy template bodies need no Python API: `webui build` writes their
+content-addressed packs to `_webui/packs/`. Serve that directory as static
+files with long-lived caching, as you would JavaScript chunks.
+
 Host-driven streaming discovers runtime occurrences instead of resolving
 compile-time names:
 
@@ -79,3 +83,17 @@ separately installed native library or separately published WebUI crates.
 See the [Python integration
 guide](https://microsoft.github.io/webui/build/integrations/python) for partial
 navigation and host-driven streaming examples.
+
+## Testing from source
+
+After installing a wheel built from this checkout, run
+`python -m pytest crates/webui-python/tests` from the workspace root. Tests
+compile the authored fixtures once per session using the current CLI.
+`WEBUI_BINARY_PATH` can select an already-built CLI.
+
+To reuse fixtures for the wheel matrix or benchmarks, run
+`python crates/webui-python/tests/build_fixtures.py`. It writes to
+`target/python-fixtures`, checks current template metadata and semantic
+repeatability, and preserves the authored stylesheet. Set `WEBUI_TEST_FIXTURES`
+to that directory when running the tests. CI downloads the same generated
+fixtures on every wheel-test platform; no compiled fixture binaries are committed.

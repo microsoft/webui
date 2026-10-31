@@ -47,4 +47,14 @@
     <Exec WorkingDirectory="$(MSBuildProjectDirectory)"
           Command="cargo run --quiet -p microsoft-webui-cli -- build fixtures/streaming-app --out &quot;$(OutDir)fixtures/streaming-app/protocol.bin&quot; --plugin webui" />
   </Target>
+
+  <Target Name="BuildLazyFixtureProtocol"
+          Condition="'$(TargetFramework)' != ''"
+          BeforeTargets="Build"
+          Inputs="fixtures/lazy-app/index.html;fixtures/lazy-app/test-panel.html"
+          Outputs="$(OutDir)fixtures/lazy-app/protocol.bin">
+    <MakeDir Directories="$(OutDir)fixtures/lazy-app" />
+    <Exec WorkingDirectory="$(MSBuildProjectDirectory)"
+          Command="cargo run --quiet -p microsoft-webui-cli -- build fixtures/lazy-app --out &quot;$(OutDir)fixtures/lazy-app/protocol.bin&quot; --plugin webui" />
+  </Target>
 </Project>

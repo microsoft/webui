@@ -11,7 +11,9 @@ import { describe, test } from 'node:test';
  * instance with its own state, instead of sharing counters across tests.
  */
 async function freshLifecycle(): Promise<typeof import('./lifecycle.js')> {
-  return import(`./lifecycle.js?case=${Math.random()}`);
+  const lifecycle = await import(`./lifecycle.js?case=${Math.random()}`);
+  lifecycle.installHydrationLifecycle();
+  return lifecycle;
 }
 
 function withPerformanceAndWindow<T>(run: (dispatched: Event[]) => T): T {
@@ -209,6 +211,40 @@ describe('hydration lifecycle — non-streaming pages', () => {
       lifecycle.hydrationEnd();
       assert.equal(dispatched.length, 1);
       assert.equal(lifecycle.__getLifecycleStateForTests().pendingCount, 0);
+    });
+  });
+
+  test('a synchronous batch retains completion until every queued root hydrates', async () => {
+    const lifecycle = await freshLifecycle();
+    withPerformanceAndWindow(dispatched => {
+      const result = lifecycle.runHydrationBatch(() => {
+        lifecycle.hydrationStart();
+        lifecycle.hydrationEnd();
+        assert.equal(dispatched.length, 0);
+        lifecycle.runHydrationBatch(() => {
+          lifecycle.hydrationStart();
+          lifecycle.hydrationEnd();
+        });
+        assert.equal(dispatched.length, 0);
+        return 42;
+      });
+      assert.equal(result, 42);
+      assert.equal(dispatched.length, 1);
+      assert.equal(lifecycle.__getLifecycleStateForTests().pendingCount, 0);
+    });
+  });
+
+  test('empty and failed batches neither invent hydration nor leave a pending count', async () => {
+    const lifecycle = await freshLifecycle();
+    withPerformanceAndWindow(dispatched => {
+      lifecycle.runHydrationBatch(() => {});
+      const failure = new Error('definition failed');
+      assert.throws(() => lifecycle.runHydrationBatch(() => { throw failure; }), failure);
+      assert.equal(dispatched.length, 0);
+      assert.equal(lifecycle.__getLifecycleStateForTests().pendingCount, 0);
+      lifecycle.hydrationStart();
+      lifecycle.hydrationEnd();
+      assert.equal(dispatched.length, 1);
     });
   });
 });

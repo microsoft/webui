@@ -143,6 +143,20 @@ message WebUIProtocol {
   // Entries are sorted by root tag. Builds without component assets omit the
   // field from the wire.
   repeated ComponentAssetStylePreload component_asset_style_preloads = 12;
+  // Opaque content identity supplied by the compiler. Inventory positions may
+  // only be reused against this same compiled artifact.
+  string build_id = 13;
+  // Client-only template sections extracted from lazy if bodies. Keys are
+  // resource identities, not custom-element names.
+  map<string, ClientFragmentData> client_fragments = 14;
+  // Build-default public URL or path for the build output directory, ending
+  // in "/". Empty when the build set none. Every asset path in this protocol
+  // (stylesheet hrefs, lazy pack paths) is relative to it. Handlers prefix
+  // compiler-emitted stylesheet links and style preload hints with it and pass
+  // it to the browser, unless the request state supplies its own
+  // `$webui.assetBase`. Module preload hints are never prefixed: they name the
+  // application's own scripts, which stay where the application put them.
+  string asset_base = 15;
 }
 
 // Compile-time component style resources for one CSS tree.
@@ -312,6 +326,24 @@ message WebUIFragmentSignal {
 message WebUIFragmentIf {
   ConditionExpr condition = 1;
   string fragment_id = 2;
+  // Keep this ordinary template body out of eager client delivery when inactive.
+  // Scope, events, refs, DOM ownership, and SSR condition semantics are unchanged.
+  bool lazy = 3;
+}
+
+// Compiled client metadata for a template section, without a component host.
+message ClientFragmentData {
+  string owner = 1;
+  reserved 2;
+  reserved "name";
+  string template_json = 3;
+  string template_functions = 4;
+  // Ordinary template resources required by this section; nested lazy edges
+  // are separate roots and are not implicit preload dependencies.
+  repeated string dependencies = 5;
+  repeated string state_keys = 6;
+  optional StateProjectionMode state_mode = 7;
+  bool entry = 8;
 }
 
 // Dynamic attribute binding.

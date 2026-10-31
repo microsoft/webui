@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+import { startRuntime } from '@microsoft/webui-framework/runtime.js';
+import '@microsoft/webui-framework/styles.js';
 /**
  * WebUI Store — WebUI Framework hydration + client-side routing.
  *
@@ -14,13 +16,17 @@
  *     fetches JSON partial with state + templates, mounts page component
  *  3. Shell (mp-app: navbar, footer, cart) persists across navigations
  */
-import { Router } from '@microsoft/webui-router';
+import { navigationCache, routePreload, routeBoundaries, viewTransitions } from '@microsoft/webui-delivery/router.js';
+import { ndjson } from '@microsoft/webui-delivery/resources.js';
+import { router } from './router.js';
 
 // Shell and interactive children — eagerly loaded.
 import '#organisms/mp-app/mp-app.js';
 import '#organisms/mp-category-nav/mp-category-nav.js';
 import '#organisms/mp-filter-list/mp-filter-list.js';
 import '#organisms/mp-product-card/mp-product-card.js';
+
+startRuntime();
 
 // Listen for the framework's global hydration-complete event.
 // NOTE: ES module imports are hoisted, so hydration may complete before
@@ -33,8 +39,12 @@ function onHydrationComplete(): void {
 
   // Start client-side router after hydration. Scriptless routes use document
   // navigation; the product page keeps its authored interactive class.
-  Router.start({
-    preload: true,
+  router.start({
+    transport: ndjson(),
+    boundaries: routeBoundaries,
+    transitions: viewTransitions,
+    cache: navigationCache(),
+    preload: routePreload(),
     loaders: {
       'mp-page-product': () => import('#pages/mp-page-product/mp-page-product.js'),
     },

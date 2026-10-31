@@ -54,7 +54,7 @@ The **compiler** (`webui`, `webui-discovery`, `webui-parser`,
 artifact. The **handler** (`webui-handler`, `webui-state`,
 `webui-expressions`) owns request-scoped evaluation and output; it does not
 know how to find source files. The **browser** (`@microsoft/webui-framework`
-and, independently, `@microsoft/webui-router`) consumes compiler output and
+and, independently, `@microsoft/webui-delivery`) consumes compiler output and
 server HTML rather than compiling templates again. CLI, desktop, and language
 bindings are hosts around the same protocol and handler.
 
@@ -62,6 +62,28 @@ These are separable boundaries: an application can render without a router or
 browser runtime, and a host can load `protocol.bin` without shipping the
 compiler. Only the selected optional browser entry points should reach an
 application's JavaScript bundle.
+
+Browser resource data, rendering, and delivery are separate layers. Template
+registration and style catalogs do not require a renderer or navigation
+orchestrator. Buffered rendering selects its style adapter explicitly; routing
+selects transport and optional navigation policies. Public API imports do not
+install runtimes or construct application singletons. Applications select
+renderer/style installers explicitly, start rendering after their selected
+modules have loaded, and configure routing once at startup;
+selected request-critical policies are ready before interaction begins.
+Unselected implementations must not reach production output through either
+static or dynamic imports. Application feature code can load on demand without
+changing global routing policy.
+
+Shared browser delivery remains hydration-agnostic. Navigation consumes one
+request-lifetime, resource availability, build identity, and transport
+contract; route reconciliation owns early commits and per-level state.
+Resource-only preloading does not cache application state. A renderer adapter
+registers opaque compiled payloads, reports readiness and release, and owns its
+live views. Delivery does not import the WebUI element renderer or turn a
+template section into a component. Lazy regions do not use delivery at all:
+their templates are static build artifacts that the renderer's optional lazy
+runtime fetches itself.
 
 ## Compilation and artifact ownership
 
@@ -95,6 +117,33 @@ become typed instructions or references. `<if>`, `<for>`, `<route>`,
 `{{value}}` is escaped on output; `{{{value}}}` is trusted raw output. The
 parser rejects invalid structure and unsupported syntax with source-located
 diagnostics, rather than trying to repair arbitrary browser HTML.
+
+A lazy `<if>` is an ordinary conditional with a delivery annotation and an
+optional prefetch trigger (intent, idle, eager, or demand). Its body retains the
+enclosing template's state, lexical scope, refs, and event ownership; identities
+are compiler-owned. Compilation separates that body's client payload from eager
+owner metadata without introducing a custom-element host. The protocol retains
+both server instructions and independently deliverable client sections; private
+sub-blocks travel together, while genuinely shared blocks remain reusable.
+
+At build time each lazy region becomes an immutable, content-addressed template
+pack: its client closure minus what the owner already guarantees, plus the
+inventory bits that closure sets. Nested regions are separate packs. The
+template containing a region's condition records the pack's path, and in link
+builds the stylesheets the pack registers, so the browser can fetch them in
+parallel instead of discovering them inside the pack. Packs that reference
+other packs are therefore rendered in dependency order and build identity is
+assigned afterwards over final metadata. Packs are static files with no
+per-request rendering, state, or host API.
+
+Packs carry template data only. The code of the components a region introduces
+belongs to the application's bundler: the build emits a loader module, which
+the application imports in place of the lazy runtime, mapping each region to
+dynamic imports of the component modules the startup page does not already
+load. Region scripts therefore follow the bundler's splitting, public path,
+fingerprinting, and manifests, while template data stays a JSON artifact the
+browser can free when the region closes. WebUI never fetches or evaluates
+application JavaScript itself.
 
 Component templates may share named loop bodies without expanding them at each
 callsite. Structural recursion through component templates is invalid; finite
@@ -136,6 +185,11 @@ not belong on the serialized message. A host loads it once, shares it across
 requests, and creates separate render contexts for state, route, nonce,
 inventory, writer, and plugin instance. No render should decode or re-index
 the protocol per request.
+
+The compiler assigns an artifact identity over the complete protocol content.
+Availability bits are meaningful only for that identity. A response from another
+build is rejected rather than applied to a document with different resource
+positions or template definitions.
 
 ### CSS and themes
 
@@ -191,7 +245,9 @@ Initial hydration and partial navigation have separate state surfaces.
 state is required. Initial state includes proven authored observable/attribute
 properties; navigation additionally includes compiled template roots.
 Reachability follows the active route but conservatively includes conditional
-and loop branches it might render. Projection is a payload/performance
+and loop branches it might render. Explicitly deferred edges are separate
+delivery roots: initial delivery follows the ones active in the request's actual
+scope. They do not create independent component state. Projection is a payload/performance
 optimization, **not a secrecy boundary**: any browser render state may be
 sent to the client. Never put secrets in it.
 
@@ -223,11 +279,40 @@ Browser-executable condition closures are carried separately from JSON-safe
 template metadata. Server output is useful without these extras when no
 client plugin is selected.
 
+Build output does not depend on where it is deployed. Compiled asset
+references, such as stylesheet files and lazy packs, are paths relative to one
+asset base that maps to the output directory. The protocol stores an optional
+default base, and a request can override it through reserved host state, so a
+host that learns its CDN or build path at request time needs no rebuild. The
+handler prefixes the stylesheet links it writes with the effective base and
+hands the base to the browser, in the document head, where application code
+can read it before any runtime starts, and in the bootstrap data. The browser
+resolves runtime asset fetches against it; serialized metadata, packs, and
+partial responses never embed it. The base covers WebUI's own outputs only:
+application scripts and their module preload hints stay where the application
+put them, and the bundler's public path, which the application may set from the
+same base, decides where its code loads from.
+
 Rendering targets a `ResponseWriter`, allowing buffered HTML or bounded,
 backpressured transport writers. Writer failures and disconnects propagate;
 the handler does not finish rendering into an abandoned channel. Host entry
 points may render a whole document, a component fragment, a route partial,
 or a host-paced streaming session from the same loaded protocol.
+
+Lazy regions add no server request path. Closed regions render no body and only
+reference their pack; initially active regions use ordinary SSR, inline their
+templates, and hydrate that DOM. In the browser, a region loads its pack, its
+linked stylesheets, and its components' scripts in parallel when its condition
+becomes true, its trigger fires, or its owner prefetches it, then mounts through
+normal conditional rendering in the existing owner once the pack and scripts
+have arrived. Speculative loading limits competition with startup by using low
+fetch priority until the page has loaded and waiting while the document is
+prerendering; activation bypasses those speculative delays.
+Failures surface as a cancelable event on the owner. That loading lives in an
+opt-in runtime that extends the renderer; the rendering core holds no lazy
+logic, so pages without lazy regions ship none. State remains
+application-owned. Inactive regions release their templates and inventory bits
+at idle; a reopened region reuses live metadata or reloads its pack.
 
 ### Server-authoritative routing
 
@@ -243,12 +328,18 @@ location.
 For soft navigation, the server returns the authoritative route chain and
 projected state, filters templates against the client's component inventory,
 and supplies separately tracked style resources required by the destination.
-The router registers those resources, waits for their readiness, and reconciles
+The resource delivery layer registers those resources and acknowledges inventory
+only after registration/readiness succeeds. Concurrent responses merge availability;
+local cache collection invalidates older inventory acknowledgements without
+turning template retention into a cache of application state.
+The router waits for resource readiness and reconciles
 changed route levels while preserving
 unchanged parents. It may fall back to document navigation when client-side
 mounting cannot complete. Partial responses can be complete JSON or an NDJSON
 pair that sends chain/templates first and state later; neither is the
-progressive HTML streaming protocol. Cache tags, mutation invalidation,
+progressive HTML streaming protocol. A bounded record reader owns framing and
+body cancellation; the route adapter owns positional state and commit ordering.
+JSON-only navigation does not import that record reader. Cache tags, mutation invalidation,
 pending/error components, and speculative preloading are optional router
 features, not dependencies of the SSR handler.
 
@@ -304,6 +395,15 @@ reinterpret authoring syntax,
 re-render the first paint, or do a document-wide search per binding.
 Client-created components clone compiled static HTML and fill the recorded
 slots. Raw HTML ranges retain explicit ownership for later replacement.
+
+Native custom-element definitions retain only the identity and observer surface
+needed for future instances, not complete template bodies. Optional template
+collection uses compiler-derived direct dependencies: a live component's
+metadata retains the ordinary descendants that its conditions and repeats can
+instantiate synchronously. Cache ownership may be released without breaking
+those consumers. Constructor registration, behavior modules, and CSS still
+required by a live tree have distinct lifetimes and are not promised to unload
+when a template cache is cleared.
 
 `WebUIElement` is the authored behavior layer. Compiler-owned scriptless hosts
 need no application module and can stay dormant until state or client creation
@@ -511,7 +611,8 @@ engineering another; they are not public application-authoring guides.
 | Rust render and streaming APIs | `crates/webui-handler/src/`, `crates/webui/src/streaming.rs` |
 | Progressive response wire and host-step invariants | [`specs/streaming.md`](specs/streaming.md); `crates/webui-handler/src/streaming/`, `packages/webui-framework/src/streaming-protocol.ts` |
 | Client template metadata, SSR markers, and hydration | [`specs/hydration.md`](specs/hydration.md); `crates/webui-handler/src/plugin/webui.rs`, `packages/webui-framework/src/element/markers.ts`, `docs/build/hydration.md` |
-| Browser routing | `packages/webui-router/`, `docs/build/routing.md` |
+| Browser routing | `packages/webui-delivery/`, `docs/build/routing.md` |
+| Optional client delivery and inventory ownership | [`specs/client-delivery.md`](specs/client-delivery.md); `packages/webui-delivery/src/`, `packages/webui-framework/src/template-cache.ts` |
 | Desktop IPC trust, admission, and envelope contract | [`specs/desktop-ipc.md`](specs/desktop-ipc.md); `crates/webui-desktop/src/ipc/`, `packages/webui-desktop/src/envelope.ts` |
 | Desktop website data ownership | [`specs/desktop-website-data.md`](specs/desktop-website-data.md); `crates/webui-desktop/src/local_server.rs`, `crates/webui-desktop/src/macos/website_data.rs` |
 | Desktop app and window APIs | `docs/build/desktop.md`, `crates/webui-desktop/src/` |

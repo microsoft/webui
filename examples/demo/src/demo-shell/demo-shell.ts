@@ -85,7 +85,7 @@ export class DemoShell extends WebUIElement {
   }
 
   // Replace the iframe with a fresh element. The hosted apps install a
-  // Navigation-API listener (webui-router) that intercepts every navigation
+  // Navigation-API listener (webui-delivery) that intercepts every navigation
   // in their frame, including external `iframe.src` changes — leaving the
   // iframe stuck on the previous document. A fresh iframe has no router
   // installed yet, so the navigation completes normally.

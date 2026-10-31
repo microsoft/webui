@@ -218,6 +218,67 @@ Each side of a comparison is either a literal (number, quoted string, `true`,
 server send a precomputed `lastIndex` (or `isLast`) instead. Bare `.length` on an
 array or string does work: `<if condition="items.length > 3">`.
 
+### Lazy conditional bodies
+
+```html
+<if condition="settingsOpen" lazy>
+  <h2>Settings</h2>
+  <p>{{displayName}}</p>
+</if>
+```
+
+```typescript
+// Setting the condition is the whole API: the framework loads and renders the body.
+this.settingsOpen = true;
+
+// Only when code needs the body's DOM right away, such as before showModal():
+await this.$rendered();
+this.settingsDialog.showModal();
+```
+
+- The body is an ordinary template fragment, not a component. It keeps owner
+  state, event methods, refs, and loop scope. Shadow/Light behavior is unchanged.
+- The build emits each body as a static, content-addressed template pack under
+  `_webui/packs/`. Initially false omits the body and references its pack;
+  initially true renders normally, inlines its templates, and hydrates.
+- Import the generated `lazy.webui.js` (written by `webui build` to
+  `--modules-out`, default `--out`) once before `startRuntime()`, instead of
+  `@microsoft/webui-framework/lazy.js`. It registers a dynamic `import()` of
+  every scripted component each region introduces that the page does not
+  already load at startup (outside lazy regions and routes), so your bundler
+  splits and serves that code; never import those components statically. A
+  region loads its pack and scripts in parallel and renders after both. Map
+  components without a sibling `.ts`/`.js` module with
+  `--component-module tag=specifier`. The import also adds `$rendered()` and
+  `$prefetch()`; the generated `lazy.webui.d.ts` beside it types them for
+  TypeScript without `allowJs`. Without lazy regions, skip it and the app ships
+  no lazy code.
+- Choose when the pack loads with the attribute value: `lazy`
+  (= `lazy="intent"`) on pointer/focus/touch in the owner; `lazy="idle"` after
+  load when idle; `lazy="eager"` right after hydration; `lazy="demand"` only when
+  the condition becomes true or code calls `this.$prefetch(path?)`. Prefetch never
+  renders or fetches state, uses low fetch priority before the window `load`
+  event, and waits while the page is prerendering. Prefer `intent` for UI opened
+  from a control; inside a large owner, use `lazy="demand"` plus
+  `@pointerenter="{$prefetch('settingsOpen')}"` on the specific button.
+- Focus already inside an intent owner when the runtime starts, such as
+  `autofocus`, schedules prefetch after window load when idle. A later intent
+  event or an activation can start loading sooner.
+- State is application-owned and loaded as usual; lazy regions never fetch it.
+  Await `this.$rendered()` only before touching body DOM, such as refs, focus, or
+  `showModal()`. It rejects on a failed pack or script and retries on the next
+  call. Failures also dispatch a cancelable, bubbling `lazyerror` event on the
+  owner with `detail.error`; uncanceled errors go to `reportError()`.
+- Shown regions release their body templates at idle once closed; reopening
+  reuses or refetches them. Do not cache pack contents yourself.
+- `<if>` accepts only `condition` and `lazy`. `id` and other attributes fail
+  the build. Rebuild protocol, packs, and client together.
+- Small or immediately used UI is cheaper as an ordinary `<if>`.
+- Do not combine this protocol-backed feature with `--emit-component-assets`.
+
+See [lazy UI](/learn/lazy) for triggers, hosting packs, and complete
+examples.
+
 ### Loops
 
 ```html
@@ -334,6 +395,9 @@ with `invalid-w-ref`. Declare the property in the class:
 Use `w-ref` only for imperative browser APIs - `focus()`, `scrollIntoView()`,
 `showModal()`, `showPopover()`, measurement. Never use it to read or write
 state that a template binding could express.
+
+Refs inside conditional or repeated content are cleared to `undefined` when
+their owning view is removed. Declare those refs as optional properties.
 
 `w-ref` is scalar. Reusing one ref name inside `<for>` overwrites the same
 property, so the last wired occurrence wins; repeat `key` and position do not
@@ -561,8 +625,8 @@ Always honor `prefers-reduced-motion`.
 
 ### View transitions
 
-The router wraps every client-side navigation in `document.startViewTransition()`
-automatically. **Do not** wrap `Router.navigate()` in your own
+Select `transitions: viewTransitions` from the delivery `router.js` entry to wrap
+route commits in `document.startViewTransition()`. **Do not** wrap `router.navigate()` in your own
 `startViewTransition()` - that would double-transition.
 
 Name the transitioning element in **component CSS**:
@@ -595,7 +659,7 @@ reached from inside a shadow root:
 While the router is active it installs a nonce-bearing
 `@view-transition { navigation: none; }` override, because automatic
 cross-document transitions conflict with intercepted routes that fall back to
-SSR document requests. `Router.destroy()` removes the override. The router
+SSR document requests. `router.destroy()` removes the override. The router
 awaits `updateCallbackDone` (not `.finished`) so rapid navigations supersede
 each other without queuing. Resizing or superseding the animation does not fail
 a committed route; route commit errors still follow normal navigation error handling
@@ -751,7 +815,7 @@ use:
 This keeps rendering containment active while interaction defers JavaScript and
 heap. It is a singleton interaction boundary, not a repeated-item policy.
 
-Import the optional coordinator once before component definitions:
+Import the optional coordinator in the application entry before `startRuntime()`:
 
 ```typescript
 import '@microsoft/webui-framework/lazy-hydration.js';
@@ -780,23 +844,21 @@ import {
   installInteractionHydration,
   wakeInteractionHydration,
 } from '@microsoft/webui-framework/interaction-hydration.js';
-import { prepareRoutePreload } from '@microsoft/webui-router/preload.js';
+import { routePreload } from '@microsoft/webui-delivery/router.js';
 
-let prepared: ReturnType<typeof prepareRoutePreload> | undefined;
+const preload = routePreload({ onIntent: () => wakeInteractionHydration() });
 const disposeHydration = installInteractionHydration({
-  onError: () => prepared?.destroy(),
+  onError: () => preload.destroy(),
   load: async () => {
-    const [, { Router }] = await Promise.all([
+    const [, { WebUIRouter, navigationCache }] = await Promise.all([
       import('./component-definitions.js'),
-      import('@microsoft/webui-router'),
+      import('@microsoft/webui-delivery/router.js'),
     ]);
-    Router.start({ preload: prepared, loaders });
+    new WebUIRouter().start({ preload, cache: navigationCache(), loaders });
   },
 });
 try {
-  prepared = prepareRoutePreload({
-    onIntent: () => wakeInteractionHydration(),
-  });
+  preload.prepare();
 } catch (error) {
   disposeHydration();
   throw error;
@@ -849,12 +911,34 @@ onItemSelected(e: CustomEvent): void {
 
 ```typescript
 // index.ts
+import { startRuntime } from '@microsoft/webui-framework/runtime.js';
+import '@microsoft/webui-framework/styles.js';
 import './app-shell/app-shell.js';
 import './user-card/user-card.js';
+
+startRuntime();
 ```
 
-Importing a component module registers it as a custom element, which triggers
-hydration. Nothing else is required.
+Component modules declare classes with `.define()`. `startRuntime()` registers
+available declarations synchronously; missing metadata waits for delivery.
+Later imports register immediately when their metadata is available. Runtime
+setup belongs in the application entry, not in every component module.
+
+With a nonce-based CSP, give authored module scripts and host-authored
+module-preload links the same response nonce passed to the renderer.
+See [CSP and delivery](/build/hydration#csp-and-delivery).
+
+The package root and `runtime.js` are pure API entries. Call `startRuntime()`
+after importing selected installers and component modules, including in an
+interaction-loaded component-definitions entry. `styles.js` installs managed CSS
+and can be omitted for an unstyled app. Streaming and visibility
+coordinators remain explicit opt-ins.
+
+Optional template collection requires
+`@microsoft/webui-framework/template-cache.js` before `startRuntime()` or template lookups and a
+matching rebuilt protocol. `collectTemplates(keep?)` releases cache ownership,
+not live component dependencies or browser module definitions. See
+[runtime entrypoints](/learn/interactivity#runtime-entrypoints).
 
 ### The hydration boundary
 
@@ -991,7 +1075,7 @@ because a lazily loaded component has no template representation until fetched.
 Prefer the template-driven form, which needs no DOM insertion at all:
 
 ```typescript
-await Router.ensureLoaded('settings-dialog');
+await router.ensureLoaded('settings-dialog');
 this.showSettings = true;
 ```
 
@@ -1007,13 +1091,13 @@ hidden; the component may be unstyled. See
 </if>
 ```
 
-Without `@microsoft/webui-router`, prebuild the asset and mount it into a
+Without `@microsoft/webui-delivery`, prebuild the asset and mount it into a
 `w-ref` slot:
 
 ```bash
 webui build ./src --out ./dist --plugin=webui \
   --emit-component-assets settings-dialog \
-  --component-assets-out ./.webui \
+  --modules-out ./.webui \
   --metafile ./dist/component-assets-meta.json
 ```
 
@@ -1099,7 +1183,10 @@ All attributes are validated at build time. Referencing a non-existent `pending`
 or `error` component is a compile error.
 
 ```typescript
-Router.start({
+import { WebUIRouter } from '@microsoft/webui-delivery/router.js';
+
+const router = new WebUIRouter();
+router.start({
   loaders: {
     'home-page': () => import('./pages/home-page.js'),
     'user-detail': () => import('./pages/user-detail.js'),
@@ -1107,11 +1194,21 @@ Router.start({
 });
 ```
 
+The default is JSON-only. Configure selected policies once in `start()`:
+`transport: ndjson()` from `resources.js`; `cache: navigationCache(options)`,
+`actions: routeActions()`, `preload: routePreload()`,
+`boundaries: routeBoundaries`, and `transitions: viewTransitions` from
+`router.js`. Preload requires a configured cache. There is no singleton or
+second constructor configuration. Do not mutate configuration while running;
+destroy before restarting.
+See [selecting router capabilities](/build/routing#selecting-router-capabilities)
+for the import/configuration pairs.
+
 Route loaders (`static loader({ params, query, signal })`) and actions
 (`static action({ formData, params, signal })`, enabled by
-`Router.start({ actions: true })`) live on the component class. Cache and
-preload are optional runtime tiers; a default `Router.start()` does not load the
-cache module.
+`router.start({ actions: routeActions() })`) live on the component class.
+Unselected policies are excluded by tree-shaking. Selected event listeners
+are ready at startup; route/component behavior modules remain lazy imports.
 
 Every route intended for partial navigation must register a custom element.
 Scriptless templates are registered by the compiler-owned host runtime. If a
@@ -1146,24 +1243,30 @@ bandwidth and render time.
 
 ### Reserved `$webui` state
 
-The top-level `"$webui"` object is reserved for trusted host HTML emitted at
-document boundaries:
+The top-level `"$webui"` object is reserved for trusted host metadata: HTML
+emitted at document boundaries and the response's asset base:
 
 ```json
 {
   "$webui": {
     "headEnd": "<link rel=\"preload\" as=\"image\" href=\"/hero.avif\">",
     "bodyStart": "<!-- immediately after <body> -->",
-    "bodyEnd": "<script src=\"/livereload.js\"></script>"
+    "bodyEnd": "<script src=\"/livereload.js\"></script>",
+    "assetBase": "https://cdn.example.com/b123/"
   }
 }
 ```
 
-All three members are optional strings. `headEnd`, `bodyStart`, and `bodyEnd`
+All members are optional strings. `headEnd`, `bodyStart`, and `bodyEnd`
 are emitted raw immediately before `</head>`, after `<body>`, and before
-`</body>`, respectively. Missing, empty, `null`, or non-string members are
-ignored. WebUI strips the reserved object from hydration and partial-navigation
-state, so client-side templates and code cannot read it.
+`</body>`, respectively. Missing, empty, `null`, or non-string HTML members are
+ignored. `assetBase` overrides the build's `--asset-base` for this response
+(see [CLI reference](/reference/cli/)); `null` keeps the build value, and an
+invalid value fails the render. WebUI strips the reserved object from hydration
+and partial-navigation state, so client-side templates and code cannot read it.
+The response's asset base is the exception: the rendered head carries it as
+`<meta name="webui-asset-base" content="...">`, so an entry module can set its
+bundler's public path from it.
 
 **Never put request-derived or otherwise untrusted content in `$webui`.** The
 values are not escaped and can create an XSS vulnerability. See
@@ -1393,7 +1496,8 @@ Common flags on `build` and `serve`: `--entry`, `--css <link|style|module>`,
 `--css-bundle` (merge component stylesheets into shared chunks; not valid with
 `--css module`), `--components`, `--theme`,
 `--projection-manifest`, `--emit-component-assets`, `--metafile`,
-`--format json`.
+`--asset-base <BASE>` (public URL or path ending in `/` for the build output;
+override per request with `$webui.assetBase`), `--format json`.
 
 WebUI overwrites current component roots but does not delete older generated
 payloads or unrelated files from a developer-owned output directory. Remove and
@@ -1630,7 +1734,7 @@ See [Press appearance](/reference/webui-press#theme-families-and-appearance).
 }
 ```
 
-Add `@microsoft/webui-router` for client-side navigation. Passing
+Add `@microsoft/webui-delivery` for client-side navigation. Passing
 `--projection-manifest` narrows hydration state to exactly the `@observable` and
 `@attr` fields your bundle uses; omitting it keeps full state.
 
@@ -1713,7 +1817,7 @@ fails the response, because bytes already flushed cannot be rewound.
 
 Bindings are available for WebAssembly, Python, and .NET; Go can call the C ABI
 through cgo. Python wheels are distributed on GitHub Releases, not yet PyPI.
-For `Router.ensureLoaded()`, expose
+For `router.ensureLoaded()`, expose
 `GET /_webui/templates?t=tag1,tag2` backed by
 `render_component_templates(&tags, &inv)`.
 

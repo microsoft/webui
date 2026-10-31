@@ -21,10 +21,39 @@ Ordinary native SSR does not require browser WASM or a browser download of
 |---------|-------------|---------|----------|
 | Handler | `wasm/handler/webui_wasm_handler.js` | `Protocol` | You already have protocol bytes and only need rendering |
 | Parser | `wasm/parser/webui_wasm_parser.js` | `build_protocol` | You need to compile virtual browser files into protocol bytes |
-| All | `wasm/all/webui_wasm_all.js` | Parser and handler exports | You need both sides in one module, such as the docs playground |
+| All | `wasm/all/webui_wasm_all.js` | Parser and handler exports, plus `buildApp` | You need both sides in one module, such as the docs playground |
 
 Use the narrowest bundle your application needs. The handler excludes the
 parser, and the parser excludes the renderer.
+
+## Lazy template packs
+
+[Lazy bodies](/learn/lazy) compile to static template packs, so
+`build_protocol` rejects templates that contain them. Use
+`buildApp(files, entry, options?)` from the combined bundle. `options` is an
+optional object:
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `projectionManifests` | `object[]` | Bundler manifest fragments |
+| `dom` | `"shadow" \| "light"` | Unwrapped-component fallback; defaults to `"shadow"` |
+| `assetBase` | `string` | Public URL or path ending in `/` for the output. Stored in the protocol; a render can override it with `$webui.assetBase` |
+| `componentModules` | `Record<string, string>` | Module specifiers keyed by custom element tag, written verbatim in `lazy.webui.js` |
+| `modulesOut` | `string` | Virtual directory that will receive `lazy.webui.js`; relative specifiers start here, at the file map root by default |
+
+Unknown options throw. `buildApp` returns
+`{ protocol, lazyPackFiles, lazyScriptsModule?, warnings }`. `protocol` is a
+`Uint8Array`. Each `lazyPackFiles` item has `fileName`, `content`, `path`,
+`region`, `owner`, `trigger`, `hash`, `bytes`, `scripts`, and `stylesheets`, as
+in the [Node API](/build/integrations/node#lazy-template-packs); publish
+`content` at `path` in the output. WASM builds inline component CSS, so
+`stylesheets` is always empty, and they do not measure brotli sizes, so items
+have no `brotliBytes`. `lazyScriptsModule` is
+`{ fileName, content, declaration }` for the generated `lazy.webui.js` when the
+build has lazy regions; `declaration` is `{ fileName, content }` for the
+`lazy.webui.d.ts` to write next to it. A virtual component's module is its
+`<tag>.ts` file, else its `<tag>.js` file. Rendering needs no lazy API; the
+handler renders closed regions as references to their packs.
 
 ## Building the WASM bundles
 

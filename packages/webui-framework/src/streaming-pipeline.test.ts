@@ -1421,6 +1421,7 @@ describe('streaming coordinator pipeline', () => {
   test('merges inventory, css, and style checkpoint deltas cumulatively', async () => {
     const first = buildBoundary(0, 0, [], {
       inventory: '01',
+      styleInventory: '0100',
       css: ['a.css'],
       styles: ['my-a'],
     });
@@ -1429,6 +1430,7 @@ describe('streaming coordinator pipeline', () => {
 
     const second = buildBoundary(1, 0, [], {
       inventory: '02',
+      styleInventory: '0002',
       css: ['b.css'],
       styles: ['my-b'],
     });
@@ -1436,17 +1438,20 @@ describe('streaming coordinator pipeline', () => {
     await flush();
 
     assert.equal(webuiGlobal().inventory, '03', '01 OR 02 is retained as compact 03');
+    assert.equal(webuiGlobal().styleInventory, '0102');
     assert.deepEqual(webuiGlobal().css, ['a.css', 'b.css']);
     assert.deepEqual(webuiGlobal().styles, ['my-a', 'my-b']);
 
     const repeated = buildBoundary(2, 0, [], {
       inventory: '01',
+      styleInventory: '01',
       css: ['a.css'],
       styles: ['my-a'],
     });
     enqueue(repeated.sentinel);
     await flush();
     assert.equal(webuiGlobal().inventory, '03', 'a repeated delta cannot erase prior bits');
+    assert.equal(webuiGlobal().styleInventory, '0102', 'a shorter repeated style delta preserves bits');
     assert.deepEqual(webuiGlobal().css, ['a.css', 'b.css'], 'a repeated CSS delta is deduplicated');
     assert.deepEqual(webuiGlobal().styles, ['my-a', 'my-b'], 'a repeated style delta is deduplicated');
 
@@ -1454,6 +1459,7 @@ describe('streaming coordinator pipeline', () => {
     enqueue(empty.sentinel);
     await flush();
     assert.equal(webuiGlobal().inventory, '03', 'an empty delta cannot erase prior bits');
+    assert.equal(webuiGlobal().styleInventory, '0102');
   });
 
   test('ORs inventory bytes by position when checkpoint lengths differ', async () => {

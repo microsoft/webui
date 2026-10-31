@@ -143,15 +143,15 @@ fn directive_attributes_use_html_scanner() -> Result<()> {
         "<for each=\"item in items\"><span>{{item.label}}</span></for>",
     )?;
     assert_same_metadata(
-        "<if data-condition=\"ignored\" condition = 'count > 0'><p>yes</p></if\n>",
-        "<if condition=\"count > 0\"><p>yes</p></if>",
+        "<div data-condition=\"ignored\"><if condition = 'count > 0'><p>yes</p></if\n></div>",
+        "<div data-condition=\"ignored\"><if condition=\"count > 0\"><p>yes</p></if></div>",
     )
 }
 
 #[test]
 fn matching_ignores_directive_text_in_attributes_and_comments() -> Result<()> {
     let control = concat!(
-        "<article><if condition=\"enabled\" data-end=\"</if>\">",
+        "<article data-end=\"</if>\"><if condition=\"enabled\">",
         "<!-- <if condition='fake'> </if> <for each='x in xs'> -->",
         "<p title=\"<if fake> </if> <for fake> </for>\">&lt;if&gt; native text</p>",
         "<iframe title=\"native\"></iframe><if-example>literal</if-example>",

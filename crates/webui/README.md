@@ -23,7 +23,9 @@ let result = build(BuildOptions {
 // result.protocol_bytes — serialized protocol (protobuf binary)
 // result.css_files — extracted component CSS files
 // result.component_asset_files — root/chunk `.webui.js` assets
-// result.metafile — optional esbuild-compatible graph JSON
+// result.lazy_pack_files — lazy template packs with their region cost data
+// result.lazy_scripts_module — generated `lazy.webui.js` and its `lazy.webui.d.ts` when lazy regions exist
+// result.metafile — optional metafile JSON (esbuild-compatible graph plus `lazyPacks`)
 // result.stats — build timing and fragment counts
 ```
 
@@ -34,7 +36,7 @@ let result = build(BuildOptions {
 | Function | Description |
 |----------|-------------|
 | `build(options)` | Parse templates, discover components, compile protocol |
-| `build_to_disk(options, out_dir)` | Build and write `protocol.bin`, CSS, and generated component ESM inputs to disk |
+| `build_to_disk(options, out_dir)` | Build and write `protocol.bin`, CSS, and lazy packs to `out_dir`, and component ESM inputs, `lazy.webui.js`, and `lazy.webui.d.ts` to `modules_out` (default `out_dir`) |
 
 ```rust
 use webui::{build_to_disk, BuildOptions, CssStrategy, DomStrategy, LegalComments, Plugin};
@@ -67,10 +69,16 @@ For CDN/cache-friendly Link-mode CSS, override the asset output fields:
 BuildOptions {
     app_dir: "src".into(),
     css_file_name_template: "[name]-[hash].[ext]".into(),
-    css_public_base: Some("https://cdn.example.com/assets".into()),
+    asset_base: Some("https://cdn.example.com/assets/".into()),
     ..BuildOptions::default()
 }
 ```
+
+`asset_base` is a URL or path ending in `/` that maps to the output directory.
+Build output keeps base-relative paths; the handler prefixes stylesheet links
+with the base when it renders and passes it to the browser. Module preload
+hints keep their paths, because they name your own scripts. Override the base
+per request with the reserved `{"$webui": {"assetBase": "..."}}` state member.
 
 To emit lazy static component assets from Rust, set `component_asset_roots` and
 use the WebUI plugin:
@@ -94,6 +102,16 @@ inputs: the bundler owns final chunks, hashes, public paths, and caching.
 Entry-reachable dependencies remain external prerequisites. Asset-only
 component records are removed from `protocol.bin`. Component assets cannot be
 combined with `<route>`.
+
+`<if lazy>` regions compile to template packs in `BuildResult::lazy_pack_files`
+and to `BuildResult::lazy_scripts_module`, the generated `lazy.webui.js` that
+maps each region to dynamic imports of the scripted components it introduces
+and the page does not already load at startup. Import it from the application
+entry so the bundler loads that code. Its `declaration` is `lazy.webui.d.ts`,
+written next to it so TypeScript entries get the lazy runtime's types without
+`allowJs`. Set `modules_out` to the directory they will be written to (relative
+specifiers start there; `build_to_disk` defaults it to `out_dir`), and
+`component_modules` for components without a `.ts` or `.js` sibling module.
 
 `LegalComments::Inline` is the default and preserves legal CSS comments
 containing `@license` or `@preserve`, or starting with `/*!` or `//!`. Use
@@ -193,8 +211,8 @@ let partial = protocol.render_partial_json(
 
 | Type | Description |
 |------|-------------|
-| `BuildOptions` | Build configuration (app_dir, entry, css, plugin, components, css_file_name_template, css_public_base) |
-| `BuildResult` | Build output (protocol, css_files, component_templates with metadata/closures, stats) |
+| `BuildOptions` | Build configuration (app_dir, entry, css, plugin, components, css_file_name_template, asset_base, component_modules, modules_out) |
+| `BuildResult` | Build output (protocol, css_files, component_templates with metadata/closures, lazy_pack_files, lazy_scripts_module, stats) |
 | `BuildStats` | Build metrics (duration, fragment_count, protocol_size_bytes) |
 | `Protocol` | Loaded immutable runtime protocol with reusable indices |
 | `WebUIHandler` | Rendering engine (stateless, thread-safe) |

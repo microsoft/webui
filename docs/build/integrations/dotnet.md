@@ -37,6 +37,13 @@ string html = handler.Render(
     "/");
 ```
 
+## Lazy template packs
+
+[Lazy bodies](/learn/lazy) need no .NET API. `webui build` writes their
+template packs to `<out>/_webui/packs/`; serve that directory as immutable
+static files, for example with `UseStaticFiles`, and render pages with the same
+`Protocol`.
+
 ## Progressive streaming
 
 `StreamResponse` creates a single-driver session. `Start`, `Resume`, and

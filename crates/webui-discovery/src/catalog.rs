@@ -10,7 +10,7 @@ use walkdir::{DirEntry, WalkDir};
 use crate::npm::{
     package_asset_metadata, read_optional_file, read_required_file, validate_package_asset_path,
 };
-use crate::{has_sibling_script, ComponentFile, ComponentFileSource, DiscoveredComponent};
+use crate::{sibling_script, ComponentFile, ComponentFileSource, DiscoveredComponent};
 
 mod package;
 pub(crate) use package::PackageCatalog;
@@ -101,10 +101,12 @@ fn prepare_components(
         let tag_name = template_tag(&template)
             .context("Component template has no valid tag name")?
             .to_string();
+        let script_path = sibling_script(&mut sibling, Some(package_root))?;
         components.push(ComponentFileSource {
             tag_name,
             css,
-            is_client_owned: has_sibling_script(&mut sibling, Some(package_root))?,
+            is_client_owned: script_path.is_some(),
+            script_path,
             html: ComponentFile::new(Arc::clone(package_root), &template)?,
         });
     }
@@ -145,11 +147,15 @@ fn append_components(
             .file_stem()
             .and_then(|stem| stem.to_str())
             .context("Component template has no valid tag name")?;
+        let html_content = read_required_file(&template, "component template")?;
+        let css_content = read_styles(&sibling, package_root)?;
+        let script_path = sibling_script(&mut sibling, package_root)?;
         components.push(DiscoveredComponent {
             tag_name: tag_name.to_string(),
-            html_content: read_required_file(&template, "component template")?,
-            css_content: read_styles(&sibling, package_root)?,
-            is_client_owned: has_sibling_script(&mut sibling, package_root)?,
+            html_content,
+            css_content,
+            is_client_owned: script_path.is_some(),
+            script_path,
             source: source.to_string(),
         });
     }
@@ -195,6 +201,7 @@ mod tests {
             },
             css: None,
             is_client_owned: true,
+            script_path: Some(component.join("test-text.ts")),
         }];
         let loaded = prepared::load(
             "fixture-catalog",
@@ -216,6 +223,43 @@ mod tests {
         let result = crate::discover_source("fixture-catalog", root.path())?;
         assert_eq!(result.components.len(), 1);
         assert!(!result.components[0].is_client_owned);
+        assert!(result.components[0].script_path.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn package_catalog_records_the_sibling_module_inside_the_package() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let package = root.path().join("node_modules/fixture-scripted");
+        let component = package.join("components/test-dialog");
+        fs::create_dir_all(&component)?;
+        fs::write(component.join("test-dialog.html"), "<dialog></dialog>")?;
+        fs::write(component.join("test-dialog.js"), "export {};")?;
+        fs::write(
+            package.join("package.json"),
+            r#"{"name":"fixture-scripted"}"#,
+        )?;
+        let expected = |extension: &str| -> Result<Option<std::path::PathBuf>> {
+            // Join component-wise: canonical Windows paths are verbatim, where
+            // `/` is not a separator.
+            let path = package
+                .canonicalize()?
+                .join("components")
+                .join("test-dialog")
+                .join("test-dialog")
+                .with_extension(extension);
+            Ok(Some(path))
+        };
+
+        let first = crate::discover_source("fixture-scripted", root.path())?;
+        assert!(first.components[0].is_client_owned);
+        assert_eq!(first.components[0].script_path, expected("js")?);
+        // A cached result keeps the path, and a new sibling invalidates it.
+        let cached = crate::discover_source("fixture-scripted", root.path())?;
+        assert_eq!(cached.components[0].script_path, expected("js")?);
+        fs::write(component.join("test-dialog.ts"), "export {};")?;
+        let preferred = crate::discover_source("fixture-scripted", root.path())?;
+        assert_eq!(preferred.components[0].script_path, expected("ts")?);
         Ok(())
     }
 }

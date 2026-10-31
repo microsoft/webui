@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+import { startRuntime } from '../../../src/runtime.js';
+import '../../../src/styles-entry.js';
 import {
   registerTemplateData,
   WebUIElement,
@@ -8,6 +10,8 @@ import {
 import {
   preloadComponentAssetStyles,
 } from '../../../src/element/link-styles.js';
+
+startRuntime();
 
 const TAG_NAME = 'test-preloaded-stylesheet';
 const STYLESHEET_HREF = '/stylesheet-preload/early.css';
@@ -35,6 +39,7 @@ declare global {
 window.__registerPreloadedStylesheetFixture = (): void => {
   registerTemplateData({
     [TAG_NAME]: {
+      v: 3,
       h:
         `<link rel="stylesheet" href="${STYLESHEET_HREF}">` +
         '<p class="early-label">Preloaded stylesheet</p>',
@@ -56,6 +61,7 @@ window.__preloadUnsupportedStylesheetFixture = (): void => {
 window.__registerAttributeStylesheetFixture = (): void => {
   registerTemplateData({
     [ATTRIBUTE_TAG_NAME]: {
+      v: 3,
       h:
         `<link rel="stylesheet" href="${ATTRIBUTE_STYLESHEET_HREF}" ` +
         'crossorigin="anonymous" referrerpolicy="no-referrer">' +

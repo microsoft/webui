@@ -7,6 +7,7 @@ import { startFixtureServer } from '@microsoft/webui-test-support/fixture-server
 import { prepareStreamingFixture } from '@microsoft/webui-test-support/fixture-streaming';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { lazyFixtureHandler } from './lazy-server.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixturesRoot = resolve(here, 'fixtures');
@@ -38,6 +39,7 @@ const rendered = renderFixtures({
   fixturesRoot,
   projectionManifest,
 });
+const handleDeferred = lazyFixtureHandler(rendered.get('lazy-ui'));
 const handleStreaming = await prepareStreamingFixture({
   fixturePath: resolve(fixturesRoot, 'streaming-bootstrap'),
   outDir: resolve(outDir, 'streaming-bootstrap'),
@@ -49,6 +51,7 @@ startFixtureServer({
   fixturesRoot,
   port,
   handleRequest(context) {
+    if (handleDeferred(context)) return true;
     if (handleStreaming(context)) return true;
     const { url, send, serveStatic } = context;
     if (url.pathname === '/') {
@@ -63,6 +66,17 @@ startFixtureServer({
       const fixture = rendered.get(match[1]);
       if (fixture) {
         send(200, fixture.html, 'text/html; charset=utf-8');
+        return true;
+      }
+    }
+
+    // Serve other fixtures' lazy-region packs beside their page.
+    // URL pattern: /<fixture-name>/_webui/packs/<file>
+    const pack = url.pathname.match(/^\/([^/]+)\/_webui\/packs\/([^/]+)$/);
+    if (pack) {
+      const content = rendered.get(pack[1])?.packs?.get(pack[2]);
+      if (content !== undefined) {
+        send(200, content, 'application/json');
         return true;
       }
     }

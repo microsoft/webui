@@ -28,6 +28,7 @@ import {
   hydrationEnd,
   hydrationStart,
   isHydrationStartupPending,
+  installHydrationLifecycle,
 } from './lifecycle.js';
 
 const pendingTargets = new WeakSet<LazyHydrationTarget>();
@@ -133,6 +134,7 @@ function isStreamedActivation(target: LazyHydrationTarget): boolean {
 export function installLazyHydrationCoordinator(): void {
   if (installed) return;
   installed = true;
+  installHydrationLifecycle();
   registerLazyHydrationCoordinator({
     supportsLazyHydration,
     observe,

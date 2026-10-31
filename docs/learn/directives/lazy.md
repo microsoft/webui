@@ -75,7 +75,8 @@ This application-root policy keeps the trusted SSR DOM active while deferring
 the authored component graph and router until interaction. The compiler marks
 the rendered root. Compose
 `@microsoft/webui-framework/interaction-hydration.js` with the
-framework-agnostic `@microsoft/webui-router/preload.js` handle to prefetch one
+framework-agnostic `routePreload()` policy from
+`@microsoft/webui-delivery/router.js`. Its `prepare()` method can prefetch one
 hovered route partial, then activate components and router without refetching.
 
 Use this only once in the active document, on a component with a matching

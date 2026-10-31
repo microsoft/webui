@@ -21,8 +21,17 @@ pub mod plugin;
 #[cfg(feature = "projection-manifest")]
 pub mod projection_manifest;
 
+mod asset_base;
 /// Attribute-name ↔ property-name mapping for irregular HTML attributes.
 pub mod attrs;
+pub use asset_base::{validate_asset_base, AssetBaseError, AssetBaseProblem};
+mod lazy;
+pub use lazy::{lazy_block_id, lazy_fragment_id};
+
+#[cfg(any(feature = "content-identity", feature = "projection-manifest"))]
+mod build_hash;
+#[cfg(feature = "content-identity")]
+mod content_identity;
 
 /// Generated protobuf types from `proto/webui.proto`.
 pub mod proto {
@@ -52,8 +61,45 @@ pub type ComponentData = proto::ComponentData;
 pub type ComponentStyleClosure = proto::ComponentStyleClosure;
 pub type StyleChunk = proto::StyleChunk;
 
+/// Borrowed client payload for a component template or a hostless template section.
+pub struct ClientTemplatePayload<'a> {
+    /// Canonical resource identity.
+    pub id: &'a str,
+    /// JSON-safe metadata, when emitted by the selected compiler plugin.
+    pub metadata: &'a str,
+    /// Separately delivered executable condition closures.
+    pub functions: &'a str,
+    /// Non-WebUI template markup for legacy plugin payloads.
+    pub legacy_html: &'a str,
+}
+
 /// A mapping of unique fragment identifiers to their corresponding fragment lists.
 pub type WebUIFragmentRecords = HashMap<String, FragmentList>;
+
+impl ClientFragmentData {
+    /// Combine this body's template-read keys with its owner's authored state contract.
+    ///
+    /// A lazy body keeps the existing owner; it does not introduce an
+    /// independent component state boundary. Unproven authored state stays full.
+    pub fn inherit_owner_state(&mut self, owner: &ComponentData) {
+        match StateProjectionMode::try_from(owner.hydration_mode) {
+            Ok(StateProjectionMode::None | StateProjectionMode::Keys) => {
+                self.state_keys.extend(owner.hydration_keys.iter().cloned());
+                self.state_keys.sort_unstable();
+                self.state_keys.dedup();
+                self.state_mode = Some(if self.state_keys.is_empty() {
+                    StateProjectionMode::None as i32
+                } else {
+                    StateProjectionMode::Keys as i32
+                });
+            }
+            Ok(StateProjectionMode::All) | Err(_) => {
+                self.state_mode = Some(StateProjectionMode::All as i32);
+                self.state_keys.clear();
+            }
+        }
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum ProtocolError {
@@ -209,6 +255,19 @@ impl WebUiFragment {
             fragment: Some(web_ui_fragment::Fragment::IfCond(WebUiFragmentIf {
                 condition: Some(condition),
                 fragment_id: fragment_id.into(),
+                lazy: false,
+            })),
+        }
+    }
+
+    /// Create a conditional boundary whose client resources are delivered on demand.
+    #[must_use]
+    pub fn lazy_if(condition: ConditionExpr, fragment_id: impl Into<String>) -> Self {
+        Self {
+            fragment: Some(web_ui_fragment::Fragment::IfCond(WebUiFragmentIf {
+                condition: Some(condition),
+                fragment_id: fragment_id.into(),
+                lazy: true,
             })),
         }
     }
@@ -424,6 +483,42 @@ impl CssStrategy {
 }
 
 impl WebUiProtocol {
+    /// Borrow a client template payload without assigning a component host to it.
+    #[must_use]
+    pub fn client_template(&self, id: &str) -> Option<ClientTemplatePayload<'_>> {
+        if let Some((name, data)) = self.components.get_key_value(id) {
+            return Some(ClientTemplatePayload {
+                id: name,
+                metadata: &data.template_json,
+                functions: &data.template_functions,
+                legacy_html: &data.template,
+            });
+        }
+        self.client_fragments
+            .get_key_value(id)
+            .map(|(name, data)| ClientTemplatePayload {
+                id: name,
+                metadata: &data.template_json,
+                functions: &data.template_functions,
+                legacy_html: "",
+            })
+    }
+
+    /// Assign a deterministic content identity before publishing an artifact.
+    ///
+    /// Hashes every protocol field except the identity itself in canonical map
+    /// order, borrowing payloads rather than cloning the protocol. This is a
+    /// build-time cache-compatibility identity, not an authentication mechanism.
+    ///
+    /// # Errors
+    ///
+    /// Returns a validation error if the protocol cannot be serialized.
+    #[cfg(feature = "content-identity")]
+    pub fn assign_build_id(&mut self) -> Result<()> {
+        self.build_id = content_identity::compute(self)?;
+        Ok(())
+    }
+
     /// Return whether a component authored a declarative Shadow DOM root.
     #[must_use]
     pub fn component_uses_shadow_dom(&self, tag_name: &str) -> bool {
@@ -715,6 +810,9 @@ impl WebUiProtocol {
             style_closures: HashMap::new(),
             style_chunks: Vec::new(),
             component_asset_style_preloads: Vec::new(),
+            build_id: String::new(),
+            client_fragments: HashMap::new(),
+            asset_base: String::new(),
         }
     }
 
@@ -731,6 +829,9 @@ impl WebUiProtocol {
             style_closures: HashMap::new(),
             style_chunks: Vec::new(),
             component_asset_style_preloads: Vec::new(),
+            build_id: String::new(),
+            client_fragments: HashMap::new(),
+            asset_base: String::new(),
         }
     }
 }
@@ -746,6 +847,10 @@ impl WebUiProtocol {
                 protocol.css_strategy
             ))
         })?;
+        if !protocol.asset_base.is_empty() {
+            validate_asset_base(&protocol.asset_base)
+                .map_err(|error| ProtocolError::Validation(error.to_string()))?;
+        }
         let fragments = &protocol.fragments;
 
         let invalid_ref = fragments.iter().find_map(|(_, fragment_list)| {
@@ -975,6 +1080,61 @@ impl WebUiProtocol {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lazy_is_an_extended_if_without_legacy_json_aliases() {
+        let lazy = WebUIFragment::lazy_if(ConditionExpr::identifier("shown"), "body");
+        assert!(
+            matches!(lazy.fragment, Some(web_ui_fragment::Fragment::IfCond(ref condition)) if condition.lazy)
+        );
+        for legacy in [
+            r#"{"condition":null,"fragment_id":"body"}"#,
+            r#"{"condition":null,"fragment_id":"body","deferred":true}"#,
+            r#"{"condition":null,"fragment_id":"body","lazy":true,"deferred":true}"#,
+        ] {
+            assert!(serde_json::from_str::<WebUIFragmentIf>(legacy).is_err());
+        }
+        let current: WebUIFragmentIf =
+            serde_json::from_str(r#"{"condition":null,"fragment_id":"body","lazy":true}"#).unwrap();
+        assert!(current.lazy);
+    }
+
+    #[test]
+    fn client_fragments_are_payloads_without_component_ownership() {
+        let mut protocol = WebUIProtocol::new(HashMap::new());
+        protocol.client_fragments.insert(
+            "owner::lazy:body".into(),
+            ClientFragmentData {
+                owner: "owner".into(),
+                template_json: r#"{"h":"<p>Body</p>"}"#.into(),
+                ..Default::default()
+            },
+        );
+        let payload = protocol.client_template("owner::lazy:body").unwrap();
+        assert_eq!(payload.metadata, r#"{"h":"<p>Body</p>"}"#);
+        assert!(payload.legacy_html.is_empty());
+        assert!(protocol.components.is_empty());
+    }
+
+    #[test]
+    fn fragment_state_inherits_authored_owner_contract_without_a_new_state_boundary() {
+        let mut fragment = ClientFragmentData {
+            state_keys: vec!["body".into()],
+            ..Default::default()
+        };
+        let mut owner = ComponentData {
+            hydration_mode: StateProjectionMode::Keys as i32,
+            hydration_keys: vec!["owner".into(), "body".into()],
+            ..Default::default()
+        };
+        fragment.inherit_owner_state(&owner);
+        assert_eq!(fragment.state_keys, ["body", "owner"]);
+        assert_eq!(fragment.state_mode, Some(StateProjectionMode::Keys as i32));
+        owner.hydration_mode = StateProjectionMode::All as i32;
+        fragment.inherit_owner_state(&owner);
+        assert_eq!(fragment.state_mode, Some(StateProjectionMode::All as i32));
+        assert!(fragment.state_keys.is_empty());
+    }
 
     fn sample_protocol() -> WebUIProtocol {
         let mut fragments = HashMap::new();
@@ -1564,6 +1724,39 @@ mod tests {
             !bytes.windows(2).any(|w| w == [0x3a, 0x00]),
             "an empty repeated field must not be encoded"
         );
+    }
+
+    #[test]
+    fn test_protobuf_asset_base_roundtrips_and_is_free_when_unset() {
+        let mut protocol = sample_protocol();
+        let without = protocol.to_protobuf().expect("encode failed");
+        assert!(WebUIProtocol::from_protobuf(&without)
+            .expect("decode failed")
+            .asset_base
+            .is_empty());
+
+        protocol.asset_base = "https://cdn.example.com/app/".to_string();
+        let with = protocol.to_protobuf().expect("encode failed");
+        let decoded = WebUIProtocol::from_protobuf(&with).expect("decode failed");
+        assert_eq!(decoded.asset_base, "https://cdn.example.com/app/");
+        assert_eq!(protocol, decoded);
+        // One tag byte and one length byte: an unset base costs nothing.
+        assert_eq!(with.len(), without.len() + 2 + protocol.asset_base.len());
+    }
+
+    #[test]
+    fn test_protobuf_decode_rejects_an_invalid_asset_base() {
+        for (base, rule) in [
+            ("https://cdn.example.com/app", "must end with '/'"),
+            ("/static\"><script>/", "must not contain"),
+            ("javascript:alert(1)/", "only http:// and https://"),
+        ] {
+            let mut protocol = sample_protocol();
+            protocol.asset_base = base.to_string();
+            let bytes = protocol.to_protobuf().expect("encode failed");
+            let error = WebUIProtocol::from_protobuf(&bytes).expect_err(base);
+            assert!(error.to_string().contains(rule), "{error}");
+        }
     }
 
     #[test]

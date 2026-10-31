@@ -38,6 +38,7 @@ export type {
   TemplateCondition,
   CompiledTextRunMeta,
   TemplateBlockMeta,
+  TemplateBlockReference,
   TemplateMeta,
   TemplateNodeIndex,
   TemplateSlot,
@@ -64,12 +65,13 @@ import type {
 } from './template-types.js';
 
 import { registerTrustedTemplateBlock } from './trusted-types-policy.js';
+import { noteTemplateRead, templateCacheHooks } from './template-cache-contract.js';
 
 const WEBUI_DATA_ID = 'webui-data';
 const HYDRATION_COMPLETE_EVENT = 'webui:hydration-complete';
-const TEMPLATE_FN_COUNT = Symbol.for('microsoft.webui.templateFnCount');
+const TEMPLATE_FN_COUNT = Symbol();
 const normalizedTemplates = new WeakSet<TemplateMeta>();
-const assetNormalizedTemplates = new WeakSet<TemplateMeta>();
+const NO_CONDITION_FNS: CompiledConditionFn[] = [];
 let webuiDataLoaded = false;
 
 type RuntimeTemplateFns = Record<string, CompiledConditionFn[]>
@@ -85,11 +87,31 @@ function runtimeTemplateFnCount(registry: RuntimeTemplateFns): number {
 
 interface PendingTemplateDefinition {
   readonly ctor: Function;
-  readonly define: () => void;
+  readonly define: (meta: TemplateMeta) => void;
 }
 
-/** Authored definitions waiting for their streamed template metadata. */
+/** Authored definitions waiting for runtime startup or compiled metadata. */
 const pendingTemplateDefinitions = new Map<string, PendingTemplateDefinition>();
+export let templateRuntimeReady = false;
+
+/** Enable authored definitions, returning whether rendering was newly started. */
+export function activateTemplateDefinitions(): boolean {
+  if (templateRuntimeReady) return false;
+  templateRuntimeReady = true;
+  for (const tag of pendingTemplateDefinitions.keys()) {
+    completeTemplateDefinition(tag);
+  }
+  return true;
+}
+
+function completeTemplateDefinition(tag: string): void {
+  const pending = pendingTemplateDefinitions.get(tag);
+  if (!pending) return;
+  const meta = getTemplate(tag);
+  if (!meta) return;
+  pendingTemplateDefinitions.delete(tag);
+  pending.define(meta);
+}
 let prepareResources: (
   (templates: Record<string, TemplateMeta>) => Promise<void> | undefined
 ) | undefined;
@@ -119,49 +141,68 @@ function acceptTemplateData(
   componentStyles?: ComponentStyles,
 ): string[] {
   validateComponentStylesRegistration(componentStyles);
-  prepareTemplateData(templates, templateFns);
+  const names = prepareTemplateData(templates, templateFns);
+  templateCacheHooks?.accept(templates);
   if (componentStyles) {
     registerPreparedComponentStyles(componentStyles);
   }
-  const w = window as Window;
-  if (!w.__webui) w.__webui = {};
-  if (!w.__webui.templates) w.__webui.templates = {};
-  const names = Object.keys(templates);
+  const registry = (window.__webui ??= {}).templates ??= {};
   for (let i = 0; i < names.length; i++) {
     const tag = names[i];
-    w.__webui.templates[tag] = templates[tag];
+    registry[tag] = templates[tag];
   }
-  for (let i = 0; i < names.length; i++) {
-    const pending = pendingTemplateDefinitions.get(names[i]);
-    if (!pending) continue;
-    pendingTemplateDefinitions.delete(names[i]);
-    pending.define();
+  if (templateRuntimeReady) {
+    for (let i = 0; i < names.length; i++) {
+      completeTemplateDefinition(names[i]);
+    }
   }
   return names;
 }
 
-if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+let registryInstalled = false;
+
+/** Install this realm's renderer resource bridge once. Pure API imports do not install it. */
+export function installTemplateRegistry(): void {
+  if (typeof window === 'undefined' || typeof window.addEventListener !== 'function' ||
+      registryInstalled) return;
+  registryInstalled = true;
   if (window.__webui?.componentStyles) {
     registerComponentStyles(window.__webui.componentStyles);
   }
   window.addEventListener(TEMPLATES_REGISTERED_EVENT, (event: Event) => {
     const detail = templateRegistrationDetail(event);
     if (!detail?.templates) return;
-    const styles = detail.componentStyles === undefined
-      ? undefined
-      : prepareComponentStyles(detail.componentStyles);
-    const templates = detail.templates;
-    const names = acceptTemplateData(templates, undefined, styles);
-    const definitions = detail.waitUntil
-      ? prepareDefinitions?.(templates, names)
-      : undefined;
-    if (definitions) {
-      detail.waitUntil?.(definitions.then(() => prepareResources?.(templates)));
-    } else {
-      const ready = prepareResources?.(templates);
-      if (ready) detail.waitUntil?.(ready);
+    try {
+      const styles = detail.componentStyles === undefined
+        ? undefined
+        : prepareComponentStyles(detail.componentStyles);
+      const templates = detail.templates;
+      const names = acceptTemplateData(templates, undefined, styles);
+      const definitions = detail.waitUntil
+        ? prepareDefinitions?.(templates, names)
+        : undefined;
+      if (definitions) {
+        detail.waitUntil?.(definitions.then(() => prepareResources?.(templates)));
+      } else {
+        const ready = prepareResources?.(templates);
+        if (ready) detail.waitUntil?.(ready);
+      }
+    } catch (error) {
+      if (!detail.waitUntil) throw error;
+      detail.waitUntil(Promise.reject(error));
     }
   });
+  window.__webuiPrepareTemplates = (values: Record<string, unknown>): void => {
+    for (const tag of Object.keys(values)) {
+      const value = values[tag];
+      if (!value || typeof value !== 'object' || !('h' in value) || typeof value.h !== 'string') {
+        throw new Error(`[WebUI] Invalid compiled template <${tag}>. Rebuild matching artifacts.`);
+      }
+    }
+    const templates = values as Record<string, TemplateMeta>;
+    prepareTemplateData(templates);
+    templateCacheHooks?.accept(templates);
+  };
   window.addEventListener(
     HYDRATION_COMPLETE_EVENT,
     releaseNonRoutedSSRBootstrapState,
@@ -171,6 +212,18 @@ if (typeof window !== 'undefined' && typeof window.addEventListener === 'functio
 
 declare global {
   interface WebUIRuntimeGlobal {
+    /**
+     * Base URL or path, ending in `/`, of compiler-emitted assets when they are
+     * not served relative to the document. It may be relative to the document.
+     */
+    assetBase?: string;
+    buildId?: string;
+    /** Hex bitset of compiled templates this document holds. */
+    inventory?: string;
+    styleInventory?: string;
+    inventoryEpoch?: number;
+    /** CSP nonce for scripts and styles the runtime inserts. */
+    nonce?: string;
     state?: Record<string, unknown>;
     templates?: Record<string, TemplateMeta>;
     templateFns?: Record<string, CompiledConditionFn[]>;
@@ -184,6 +237,27 @@ declare global {
     /** Consolidated SSR metadata loaded from `#webui-data` or partial responses. */
     __webui?: WebUIRuntimeGlobal;
     __webuiRegisterComponentStyles?: (value: unknown) => Promise<void> | undefined;
+    __webuiPrepareTemplates?: (templates: Record<string, unknown>) => void;
+    /**
+     * Installed by `styles.js`: prepare the stylesheets of component style
+     * roots. `priority: 'low'` prepares them speculatively, once the window
+     * has loaded; until then the result has nothing to wait for.
+     */
+    __webuiPrepareResources?: (
+      ids: readonly string[],
+      priority?: RequestPriority,
+    ) => Promise<void> | undefined;
+    /**
+     * Installed by `styles.js`: preload base-relative stylesheet paths, shared
+     * with later style registration. `priority: 'low'` preloads speculatively,
+     * once the window has loaded; until then the result has nothing to wait for.
+     */
+    __webuiPreloadStyles?: (
+      hrefs: readonly string[],
+      priority?: RequestPriority,
+    ) => Promise<void> | undefined;
+    __webuiCollectTemplates?: (keep?: readonly string[]) => number;
+    __webuiRetainTemplate?: (tag: string) => unknown;
   }
 }
 
@@ -199,7 +273,12 @@ export function getTemplate(name: string): TemplateMeta | undefined {
     loadWebUIDataBlock();
     meta = window.__webui?.templates?.[name];
   }
-  if (meta) normalizeTemplate(name, meta);
+  if (!meta) meta = templateCacheHooks?.lookup(name);
+  if (meta) {
+    normalizeTemplate(name, meta);
+    noteTemplateRead();
+    return templateCacheHooks?.retain(name, meta) ?? meta;
+  }
   return meta;
 }
 
@@ -232,12 +311,14 @@ export function registerTemplateData(
 function prepareTemplateData(
   templates: Record<string, TemplateMeta>,
   templateFns?: Record<string, CompiledConditionFn[]>,
-): void {
+  missingFns?: CompiledConditionFn[],
+): string[] {
   const names = Object.keys(templates);
   for (let i = 0; i < names.length; i++) {
     const name = names[i];
-    normalizeTemplate(name, templates[name], templateFns?.[name]);
+    normalizeTemplate(name, templates[name], templateFns?.[name] ?? missingFns);
   }
+  return names;
 }
 
 /**
@@ -250,19 +331,11 @@ export function prepareAssetTemplateData(
   templates: Record<string, TemplateMeta>,
   templateFns?: Record<string, CompiledConditionFn[]>,
 ): void {
-  const names = Object.keys(templates);
-  for (let i = 0; i < names.length; i++) {
-    const name = names[i];
-    const meta = templates[name];
-    if (assetNormalizedTemplates.has(meta)) continue;
-    normalizeTemplateConditions(name, meta, templateFns?.[name] ?? []);
-    normalizedTemplates.add(meta);
-    assetNormalizedTemplates.add(meta);
-  }
+  prepareTemplateData(templates, templateFns, NO_CONDITION_FNS);
 }
 
 /**
- * Hold an authored custom-element definition until compiled metadata arrives.
+ * Hold an authored definition until rendering starts and compiled metadata arrives.
  *
  * Internal to the framework package; the public registration surface remains
  * `TemplateElement.define()`.
@@ -270,16 +343,23 @@ export function prepareAssetTemplateData(
 export function deferTemplateDefinition(
   tagName: string,
   ctor: Function,
-  define: () => void,
+  define: (meta: TemplateMeta) => void,
 ): void {
   const pending = pendingTemplateDefinitions.get(tagName);
   if (pending) {
-    if (pending.ctor === ctor) {
-      throw new Error(`[WebUI] <${tagName}> is already pending definition.`);
-    }
-    throw new Error(`[WebUI] <${tagName}> already has a pending authored definition.`);
+    throw new Error(`[WebUI] <${tagName}> ${pending.ctor === ctor
+      ? 'is already pending definition.'
+      : 'already has a pending authored definition.'}`);
   }
   pendingTemplateDefinitions.set(tagName, { ctor, define });
+}
+
+/**
+ * Whether an authored definition for this tag is waiting for rendering or its
+ * compiled metadata, so it is declared but not yet a custom element.
+ */
+export function hasPendingTemplateDefinition(tagName: string): boolean {
+  return pendingTemplateDefinitions.has(tagName);
 }
 
 function loadWebUIDataBlock(): void {
@@ -291,10 +371,14 @@ function loadWebUIDataBlock(): void {
   }
 
   const text = el.textContent;
+  let componentStyles: ComponentStyles | undefined;
   if (text) {
     const templateFns = window.__webui?.templateFns;
     const componentAssetStyles = window.__webui?.componentAssetStyles;
     const parsed = JSON.parse(text) as NonNullable<Window['__webui']>;
+    if (window.__webui?.buildId && parsed.buildId && window.__webui.buildId !== parsed.buildId) {
+      throw new Error('[WebUI] Resources use different builds. Reload the document.');
+    }
     if (templateFns) parsed.templateFns = templateFns;
     if (componentAssetStyles) parsed.componentAssetStyles = componentAssetStyles;
     // Publish before registering styles. A malformed present `componentStyles` throws,
@@ -302,15 +386,11 @@ function loadWebUIDataBlock(): void {
     // parsed fine — then re-parses the whole block on the next lookup, because
     // nothing recorded that the work was already done.
     window.__webui = parsed;
-    el.remove();
-    webuiDataLoaded = true;
-    if (parsed.componentStyles !== undefined) {
-      registerComponentStyles(parsed.componentStyles);
-    }
-    return;
+    componentStyles = parsed.componentStyles;
   }
   el.remove();
   webuiDataLoaded = true;
+  if (componentStyles !== undefined) registerComponentStyles(componentStyles);
 }
 
 /**
@@ -343,11 +423,17 @@ function normalizeTemplate(
   meta: TemplateMeta,
   suppliedFns?: CompiledConditionFn[],
 ): void {
+  if (meta.f && (meta.f !== name || typeof meta.o !== 'string' || meta.sd || meta.th)) {
+    throw new Error(`[WebUI] Invalid fragment "${name}". Rebuild matching artifacts.`);
+  }
   if (normalizedTemplates.has(meta)) return;
+  if (meta.v !== 3) {
+    throw new Error(`[WebUI] Unsupported template metadata version for <${name}>. Rebuild matching artifacts.`);
+  }
   const runtimeFns = window.__webui?.templateFns as
     | RuntimeTemplateFns
     | undefined;
-  const fns = suppliedFns ?? runtimeFns?.[name] ?? [];
+  const fns = suppliedFns ?? runtimeFns?.[name] ?? NO_CONDITION_FNS;
   normalizeTemplateConditions(name, meta, fns);
   normalizedTemplates.add(meta);
   if (suppliedFns === undefined && runtimeFns?.[name] === fns) {
@@ -371,10 +457,10 @@ function normalizeTemplateConditions(
   meta: TemplateMeta,
   fns: CompiledConditionFn[],
 ): void {
-  const stack: TemplateBlockMeta[] = [meta];
-  while (stack.length > 0) {
-    const block = stack.pop();
-    if (!block) continue;
+  const blocks = meta.b;
+  let block: TemplateBlockMeta = meta;
+  let next = 0;
+  while (true) {
     registerTrustedTemplateBlock(block);
     if (block.a) {
       for (let i = 0; i < block.a.length; i++) {
@@ -387,10 +473,8 @@ function normalizeTemplateConditions(
         normalizeCondition(name, block.c[i][0], fns);
       }
     }
-    const children = (block as TemplateMeta).b;
-    if (children) {
-      for (let i = 0; i < children.length; i++) stack.push(children[i]);
-    }
+    if (!blocks || next === blocks.length) break;
+    block = blocks[next++];
   }
 }
 

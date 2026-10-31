@@ -12,6 +12,7 @@ Use these references alongside the [getting-started lessons](/start/).
 | [Components](/learn/components/) | HTML and CSS files, composition, and DOM boundaries |
 | [Template syntax](/learn/directives/) | Text bindings, attributes, conditions, and lists |
 | [Interactivity](/learn/interactivity/) | Event handlers, observable properties, and lifecycle |
+| [Lazy UI](/learn/lazy/) | Conditional UI whose compiled template loads when it is needed |
 | [State and data](/learn/state-management/) | Initial server data and browser updates |
 | [CSS and themes](/learn/css-tokens/) | Component styles and shared design tokens |
 | [How rendering works](/learn/how-it-works/) | Build-time, server, and browser responsibilities |

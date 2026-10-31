@@ -115,7 +115,7 @@ Bun.serve({
 
 | API | Description |
 |----------|-------------|
-| `build(options)` | Build templates into a protocol. Returns `{ protocol, cssFiles, componentAssetFiles, metafile?, warnings, stats }` |
+| `build(options)` | Build templates into a protocol. Returns `{ protocol, cssFiles, componentAssetFiles, lazyPackFiles, lazyScriptsModule?, metafile?, warnings, stats }` |
 | `new Protocol(protocol, options?)` | Decode and index protocol bytes once and bind the selected plugin |
 | `protocol.render(state, options?)` | Render into a UTF-8 `Buffer` for direct HTTP writes |
 | `protocol.prepareState(state)` | Parse an immutable, process-local native state snapshot once |
@@ -140,6 +140,88 @@ Bun.serve({
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `plugin` | `string` | - | Handler plugin bound for the lifetime of the protocol |
+
+## Lazy template packs
+
+[Lazy bodies](/learn/lazy) need no request-time API. `build()` returns
+their packs in `lazyPackFiles`; `webui build` writes them for you. Publish each
+pack at its `path`, under `_webui/packs/` beside the page, as an immutable
+static file. When the build has lazy regions, `lazyScriptsModule` is the
+generated `lazy.webui.js`, and its `declaration` is the `lazy.webui.d.ts` that
+gives TypeScript entries its types without `allowJs`. Write both to the
+directory you passed as `modulesOut` and import the module from your entry
+module, so your bundler loads the code of the components each region
+introduces:
+
+```typescript
+const result = build({ appDir: './src', plugin: 'webui', modulesOut: './.webui' });
+for (const pack of result.lazyPackFiles) {
+  writeFileSync(join('dist', pack.path), pack.content);
+}
+const lazy = result.lazyScriptsModule;
+if (lazy) {
+  writeFileSync(join('.webui', lazy.fileName), lazy.content);
+  writeFileSync(join('.webui', lazy.declaration.fileName), lazy.declaration.content);
+}
+```
+
+Relative module specifiers in `lazy.webui.js` start at `modulesOut`, or at
+`appDir` when you omit it. A region lists only the components that neither its
+owner nor the page at startup already loads. `componentModules` maps a tag to a
+module specifier for a component without a usable `.ts` or `.js` sibling; see
+[Lazy region scripts](/reference/cli/#webui-build).
+
+Each `lazyPackFiles` item reports its pack:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `fileName` | `string` | Content-addressed file name |
+| `content` | `string` | JSON pack content |
+| `path` | `string` | `_webui/packs/<fileName>`, relative to the asset base |
+| `region` | `string` | Region identity, such as `app-shell::lazy:@0` |
+| `owner` | `string` | Component whose template declares the region |
+| `trigger` | `"intent" \| "idle" \| "eager" \| "demand"` | The region's `lazy` value |
+| `hash` | `string` | Content hash from the file name |
+| `bytes` | `number` | Size of `content` in bytes |
+| `brotliBytes` | `number` | Brotli size at quality 11; present only when `metafile: true` |
+| `scripts` | `string[]` | Module specifiers `lazy.webui.js` loads with the region |
+| `stylesheets` | `string[]` | Stylesheet paths, relative to the asset base, that the region loads with its pack in a `css: "link"` build: entries of `cssFiles`, including bundled chunks. Always present; empty for `"style"` and `"module"` builds, whose packs carry the CSS |
+
+To precache a region in a service worker, cache its `path`, its `stylesheets`,
+and the bundler outputs for its `scripts`.
+
+Templates reference packs by the path `_webui/packs/<file>`, relative to the
+asset base. To publish the output elsewhere, such as a CDN, pass `assetBase`
+(ending in `/`) to `build()`, or set it per request in the render state:
+
+```typescript
+protocol.render({ ...state, $webui: { assetBase: 'https://cdn.example.com/b123/' } });
+```
+
+The request value overrides `assetBase`. Rendering prefixes stylesheet links
+with the base and passes it to the browser, which resolves pack and stylesheet
+paths against it. Module preload hints keep their paths, because they name your
+own scripts. An invalid request value throws before any output is produced.
+
+### Bundler public path
+
+The rendered document head carries the response's base as
+`<meta name="webui-asset-base" content="...">`, so your entry can hand it to
+your bundler before the WebUI runtime starts. The region scripts that
+`lazy.webui.js` imports then load from the same base. With rspack or webpack,
+run this first in your entry module:
+
+```ts
+__webpack_public_path__ =
+  document.querySelector<HTMLMetaElement>('meta[name="webui-asset-base"]')?.content
+  ?? __webpack_public_path__;
+```
+
+Static imports run before the statements of the module that imports them, so
+if your entry has static imports, put the line in its own module and import
+that module first. This steers chunks that the bundler's runtime loads. With
+native ES module output, chunks load relative to the entry script's URL
+instead, so serve the entry script from the same base.
 
 ## Reusing Protocol
 
@@ -210,11 +292,13 @@ allocation pressure. Ordinary per-request state should continue to use
 | `plugin` | `string` | - | Parser plugin name (see [Plugins](/reference/plugins/) for the available identifiers) |
 | `components` | `string[]` | - | External component sources |
 | `componentAssetRoots` | `string[]` | - | Root component tags emitted as static `.webui.js` ESM assets |
-| `metafile` | `boolean` | `false` | Generate and return an esbuild-compatible component asset graph |
+| `metafile` | `boolean` | `false` | Return the build metafile: the component asset graph and the `lazyPacks` report. Also measures `brotliBytes` for each lazy pack |
+| `componentModules` | `Record<string, string>` | - | Module specifiers keyed by custom element tag, for components without a usable `.ts` or `.js` sibling. Written verbatim in `lazy.webui.js` |
+| `modulesOut` | `string` | `appDir` | Directory you write generated modules to; relative specifiers in `lazy.webui.js` start here |
 | `projectionManifests` | `string[]` | - | Projection manifest paths, merged with strict scripted-component coverage |
 | `projectionManifestObjects` | `{ path: string; manifest: unknown }[]` | - | Already-transported manifests with logical paths anchoring `root` and stale checks |
 | `cssFileNameTemplate` | `string` | `"[name].[ext]"` | Emitted filename template for Link-mode CSS. Tokens: `[name]`, `[hash]`, `[ext]` |
-| `cssPublicBase` | `string` | - | Public URL/path prefix for Link-mode CSS hrefs |
+| `assetBase` | `string` | - | Public URL or path ending in `/` that maps to the build output. Stored in the protocol; requests override it with `$webui.assetBase`. See [Asset base](/reference/cli/) |
 | `legalComments` | `"inline" \| "none"` | `"inline"` | Preserve legal CSS comments inline, or strip all comments |
 | `theme` | `string` | - | Design token theme JSON path or npm package name. Missing required CSS tokens fail the build (literal `var()` fallbacks are exempt) |
 
@@ -239,9 +323,12 @@ application bundler, which owns final splitting, hashes, public paths, caching,
 and delivery. Component assets cannot be combined with `<route>`.
 
 Set `metafile: true` to receive
-`result.metafile`. The JSON uses esbuild's `inputs`/`outputs`
-schema, root `entryPoint` records, and static `import-statement` edges, so it can
-be opened directly in an esbuild bundle analyzer.
+`result.metafile` when the build emits component assets or lazy packs. The JSON
+uses esbuild's `inputs`/`outputs` schema, root `entryPoint` records, and static
+`import-statement` edges, so it can be opened directly in an esbuild bundle
+analyzer. Its `lazyPacks` array lists every lazy pack, sorted by path, with the
+fields above except `fileName` and `content`; see
+[Build metafile](/reference/cli/#webui-build).
 
 Manifest inputs are build-time only. The returned protocol is self-contained,
 and `render()` does not load projection tooling. If no manifest is supplied,

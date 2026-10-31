@@ -180,6 +180,7 @@ describe('build', () => {
     const parsedMetafile: Metafile = JSON.parse(result.metafile);
     const analysis = await analyzeMetafile(parsedMetafile);
     assert.match(analysis, /lazy-panel\.webui\.js/);
+    assert.deepEqual((parsedMetafile as Metafile & { lazyPacks: unknown[] }).lazyPacks, []);
   });
 
   test('throws on missing appDir', () => {
@@ -628,6 +629,200 @@ describe('streamResponse over node:http', () => {
       response.once('close', onClose);
     });
   }
+});
+
+describe('lazy template packs', () => {
+  test('emits content-addressed packs that closed regions reference from SSR metadata', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'webui-lazy-'));
+    try {
+      writeFileSync(join(directory, 'index.html'), '<html><head></head><body><test-owner></test-owner></body></html>');
+      writeFileSync(join(directory, 'test-owner.html'), `
+        <h1>Owner</h1>
+        <if condition="show" lazy="idle">
+          <h2>Inline lazy body</h2><p>{{message}}</p>
+          <for each="item in items"><span>{{item}}</span></for>
+        </if>
+      `);
+      const result = build({ appDir: directory, plugin: 'webui', assetBase: '/static/' });
+      assert.equal(result.lazyPackFiles.length, 1);
+      const [{ fileName, content, path, region, owner, trigger, hash, bytes, brotliBytes, scripts, stylesheets }] =
+        result.lazyPackFiles;
+      assert.match(fileName, /^test-owner\.[0-9a-f]{16}\.json$/);
+      assert.equal(path, `_webui/packs/${fileName}`);
+      assert.equal(region, 'test-owner::lazy:@0');
+      assert.equal(owner, 'test-owner');
+      assert.equal(trigger, 'idle');
+      assert.ok(fileName.includes(`.${hash}.`));
+      assert.equal(bytes, Buffer.byteLength(content));
+      assert.equal(brotliBytes, undefined, 'brotli sizes are measured only for a metafile');
+      assert.deepEqual(scripts, []);
+      assert.deepEqual(stylesheets, [], 'an unstyled region loads no stylesheets');
+      assert.match(result.lazyScriptsModule?.content ?? '', /defineLazyScripts\(\{\}\);/);
+      const pack = JSON.parse(content) as Record<string, unknown>;
+      assert.equal(pack.type, 'webui-pack');
+      assert.equal(pack.version, 1);
+      assert.equal(pack.fragment, 'test-owner::lazy:@0');
+      assert.equal(pack.state, undefined);
+      assert.ok(String(JSON.stringify(pack.templates)).includes('Inline lazy body'));
+
+      const protocol = new Protocol(result.protocol, { plugin: 'webui' });
+      const closed = protocol.render({ show: false, message: 'Hidden', items: [] }).toString('utf8');
+      assert.ok(!closed.includes('Inline lazy body'));
+      // Pack paths stay relative; the browser resolves them against assetBase.
+      assert.ok(closed.includes(`"_webui/packs/${fileName}"`));
+      assert.ok(!closed.includes(`/static/_webui/packs/${fileName}`));
+      assert.ok(closed.includes('"assetBase":"/static/"'));
+      // Bundlers can read the base before the runtime starts.
+      assert.ok(closed.includes('<meta name="webui-asset-base" content="&#x2F;static&#x2F;">'));
+      const open = protocol.render({ show: true, message: 'Fresh', items: [1, 2] }).toString('utf8');
+      assert.ok(open.includes('Inline lazy body'));
+      assert.ok(open.includes('Fresh'));
+
+      const cdn = protocol
+        .render({
+          show: false,
+          message: 'Hidden',
+          items: [],
+          $webui: { assetBase: 'https://cdn.example.com/b42/' },
+        })
+        .toString('utf8');
+      assert.ok(cdn.includes('"assetBase":"https://cdn.example.com/b42/"'));
+      assert.ok(!cdn.includes('"assetBase":"/static/"'));
+      assert.ok(
+        cdn.includes(
+          '<meta name="webui-asset-base" content="https:&#x2F;&#x2F;cdn.example.com&#x2F;b42&#x2F;">',
+        ),
+      );
+      assert.ok(!cdn.includes('$webui'));
+      assert.throws(
+        () => protocol.render({ $webui: { assetBase: 'https://cdn.example.com/b42' } }),
+        /\$webui\.assetBase/,
+      );
+      assert.throws(
+        () => build({ appDir: directory, plugin: 'webui', assetBase: 'packs' }),
+        /invalid asset base "packs"/,
+      );
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('generates lazy.webui.js and reports packs in the metafile', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'webui-lazy-scripts-'));
+    try {
+      writeFileSync(join(directory, 'index.html'), '<html><head></head><body><app-shell></app-shell></body></html>');
+      writeFileSync(
+        join(directory, 'app-shell.html'),
+        '<if condition="open" lazy><settings-panel></settings-panel>' +
+          '<if condition="advanced" lazy="demand"><theme-picker></theme-picker></if></if>',
+      );
+      writeFileSync(join(directory, 'settings-panel.html'), '<p>Settings</p>');
+      writeFileSync(join(directory, 'settings-panel.ts'), 'export {};');
+      writeFileSync(join(directory, 'settings-panel.css'), 'p { margin: 0; }');
+      writeFileSync(join(directory, 'theme-picker.html'), '<select></select>');
+      writeFileSync(join(directory, 'theme-picker.js'), 'export {};');
+
+      const modulesOut = join(directory, '.webui');
+      const result = build({ appDir: directory, plugin: 'webui', modulesOut, metafile: true });
+      assert.equal(result.lazyScriptsModule?.fileName, 'lazy.webui.js');
+      assert.deepEqual(result.lazyScriptsModule?.declaration, {
+        fileName: 'lazy.webui.d.ts',
+        content: "// Generated by WebUI. Do not edit.\nimport '@microsoft/webui-framework/lazy.js';\n",
+      });
+      assert.equal(
+        result.lazyScriptsModule?.content,
+        [
+          '// Generated by WebUI. Do not edit.',
+          "import { defineLazyScripts } from '@microsoft/webui-framework/lazy.js';",
+          '',
+          'defineLazyScripts({',
+          '  "app-shell::lazy:@0": {',
+          '    "settings-panel": () => import("../settings-panel.ts"),',
+          '  },',
+          '  "app-shell::lazy:@1": {',
+          '    "theme-picker": () => import("../theme-picker.js"),',
+          '  },',
+          '});',
+          '',
+        ].join('\n'),
+      );
+
+      const packs = new Map(result.lazyPackFiles.map(pack => [pack.region, pack]));
+      assert.deepEqual(packs.get('app-shell::lazy:@0')?.scripts, ['../settings-panel.ts']);
+      assert.equal(packs.get('app-shell::lazy:@1')?.trigger, 'demand');
+      // The report lists the stylesheets each region loads, for precaching.
+      assert.deepEqual(packs.get('app-shell::lazy:@0')?.stylesheets, ['settings-panel.css']);
+      assert.deepEqual(packs.get('app-shell::lazy:@1')?.stylesheets, []);
+      // Link builds list a region's stylesheets beside its pack path, so the
+      // browser fetches them in parallel with the pack: the same paths.
+      const html = new Protocol(result.protocol, { plugin: 'webui' })
+        .render({ open: false })
+        .toString('utf8');
+      assert.ok(
+        html.includes('"lc":{"app-shell::lazy:@0":["settings-panel.css"]}'),
+        html,
+      );
+      assert.ok(!html.includes('href="settings-panel.css"'), html);
+      assert.ok(result.metafile);
+      const metafile = JSON.parse(result.metafile) as Metafile & {
+        lazyPacks: Array<Record<string, unknown>>;
+      };
+      assert.deepEqual(metafile.inputs, {});
+      assert.deepEqual(metafile.outputs, {});
+      assert.equal(metafile.lazyPacks.length, 2);
+      for (const entry of metafile.lazyPacks) {
+        const pack = packs.get(String(entry.region));
+        assert.ok(pack);
+        assert.deepEqual(entry, {
+          path: pack.path,
+          region: pack.region,
+          owner: 'app-shell',
+          trigger: pack.trigger,
+          bytes: pack.bytes,
+          brotliBytes: pack.brotliBytes,
+          hash: pack.hash,
+          scripts: pack.scripts,
+          stylesheets: pack.stylesheets,
+        });
+        assert.ok((pack.brotliBytes ?? 0) > 0 && (pack.brotliBytes ?? 0) < pack.bytes);
+      }
+      // The pack report stays compatible with esbuild metafile tooling.
+      assert.equal(typeof (await analyzeMetafile(metafile)), 'string');
+
+      // Style packs carry CSS text, so they report no stylesheets.
+      const inline = build({ appDir: directory, plugin: 'webui', css: 'style', metafile: true });
+      assert.ok(inline.lazyPackFiles.every(pack => pack.stylesheets.length === 0));
+      assert.ok(inline.metafile);
+      const inlineReport = JSON.parse(inline.metafile) as {
+        lazyPacks: Array<Record<string, unknown>>;
+      };
+      assert.equal(inlineReport.lazyPacks.length, 2);
+      for (const entry of inlineReport.lazyPacks) {
+        assert.deepEqual(entry.stylesheets, []);
+      }
+
+      const mapped = build({
+        appDir: directory,
+        plugin: 'webui',
+        componentModules: { 'settings-panel': '@contoso/settings/panel.js', 'unknown-card': './unknown.js' },
+      });
+      assert.match(
+        mapped.lazyScriptsModule?.content ?? '',
+        /"settings-panel": \(\) => import\("@contoso\/settings\/panel\.js"\),/,
+      );
+      assert.match(
+        mapped.lazyScriptsModule?.content ?? '',
+        /"theme-picker": \(\) => import\("\.\/theme-picker\.js"\),/,
+      );
+      assert.ok(mapped.warnings.some(warning => warning.includes('unknown-component-module')));
+      assert.throws(
+        () => build({ appDir: directory, plugin: 'webui', componentModules: { 'settings-panel': '' } }),
+        /invalid-component-module/,
+      );
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('renderComponentTemplates', () => {

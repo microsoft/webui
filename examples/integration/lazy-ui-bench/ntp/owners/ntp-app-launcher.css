@@ -1,0 +1,24 @@
+:host { display: block; position: relative; }
+.trigger { display: grid; place-items: center; width: 36px; height: 36px; border: 0; border-radius: 8px; background: transparent; color: #fff; cursor: pointer; }
+.trigger:hover { background: rgb(255 255 255 / 0.16); }
+.trigger svg { width: 20px; height: 20px; fill: currentColor; }
+.menu { position: absolute; left: 0; top: 44px; z-index: 5; width: 336px; padding: 8px; border-radius: 12px; background: #fff; color: #242424; box-shadow: 0 8px 32px rgb(0 0 0 / 0.26); }
+.menu-head { display: flex; align-items: baseline; justify-content: space-between; padding: 6px 8px 10px; }
+.menu-title { margin: 0; font-size: 16px; font-weight: 600; }
+.menu-link { color: #0f6cbd; font-size: 12px; font-weight: 600; text-decoration: none; }
+.apps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 2px; }
+.app { display: grid; justify-items: center; gap: 6px; padding: 10px 2px; border-radius: 8px; color: inherit; font-size: 12px; text-decoration: none; }
+.app:hover { background: #f5f5f5; }
+.app-icon { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 10px; background: var(--app); }
+.app-icon svg { width: 22px; height: 22px; fill: none; stroke: #fff; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.app-name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recent-docs { display: grid; gap: 2px; margin-top: 8px; padding-top: 8px; border-top: 1px solid #ebebeb; }
+.recent-docs h3 { margin: 0; padding: 4px 8px; font-size: 12px; font-weight: 600; color: #616161; }
+.doc { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 6px; color: inherit; text-decoration: none; }
+.doc:hover { background: #f5f5f5; }
+.doc span:last-child { display: grid; }
+.doc small { color: #616161; font-size: 12px; }
+.doc-kind { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 6px; background: var(--app); color: #fff; font-weight: 700; }
+.menu-foot { padding: 8px 8px 2px; font-size: 12px; }
+.menu-foot a { color: #0f6cbd; font-weight: 600; text-decoration: none; }
+[data-ready] { --ntp-ready: 1; }

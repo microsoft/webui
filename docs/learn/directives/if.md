@@ -8,6 +8,9 @@ description: "Render a region with if conditions, comparisons, and logical opera
 Use `<if condition="...">` to include a region when its condition is truthy.
 The directive does not create an extra DOM element.
 
+Its attributes are `condition` and optional `lazy`, whose value is an optional
+prefetch trigger. Unsupported attributes, including `id`, are build errors.
+
 ## Basic Usage
 
 ```html
@@ -17,6 +20,30 @@ The directive does not create an extra DOM element.
 ```
 
 The welcome message renders when `isLoggedIn` is truthy in the current state.
+
+## Lazy bodies
+
+Add `lazy` to retain an ordinary template body in the protocol without
+delivering it with the page while its condition is false. The build emits the
+body as a static template pack that the framework loads when the condition
+becomes true:
+
+```html
+<if condition="settingsReady" lazy>
+  <h2>Settings</h2>
+  <p>{{displayName}}</p>
+</if>
+```
+
+`lazy` prefetches the pack when the user interacts with the owning component.
+Use `lazy="idle"`, `lazy="eager"`, or `lazy="demand"` to prefetch when the
+browser is idle, right after startup, or only when code calls `$prefetch()`. An
+initially true condition still renders on the server. The body keeps its owning
+template's state, events, refs, and loop scope; it does not become a component,
+and DOM-mode rules are unchanged. Await `this.$rendered()` after turning the
+condition on before you use refs inside the body. See
+[lazy template bodies](../lazy) for setup, triggers, prefetching from code,
+failures, styles, and hosting packs.
 
 ## Condition Expressions
 

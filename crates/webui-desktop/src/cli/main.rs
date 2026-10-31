@@ -288,9 +288,9 @@ struct AppArgs {
     #[arg(long, default_value = DEFAULT_CSS_FILE_NAME_TEMPLATE)]
     css_file_name_template: String,
 
-    /// Optional base URL/path prefix for Link-mode CSS hrefs
-    #[arg(long)]
-    css_public_base: Option<String>,
+    /// Public URL or path ending in '/' that maps to the build output
+    #[arg(long, value_name = "BASE")]
+    asset_base: Option<String>,
 
     /// Legal comment handling
     #[arg(long, value_enum, default_value_t = webui::LegalComments::Inline)]
@@ -310,7 +310,9 @@ impl AppArgs {
             component_asset_roots: Vec::new(),
             metafile: false,
             css_file_name_template: self.css_file_name_template.clone(),
-            css_public_base: self.css_public_base.clone(),
+            asset_base: self.asset_base.clone(),
+            component_modules: std::collections::BTreeMap::new(),
+            modules_out: None,
             legal_comments: self.legal_comments,
             theme: None,
             projection_manifests: self
@@ -1298,7 +1300,9 @@ fn generated_css_names(
         component_asset_roots: Vec::new(),
         metafile: false,
         css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
-        css_public_base: None,
+        asset_base: None,
+        component_modules: std::collections::BTreeMap::new(),
+        modules_out: None,
         legal_comments: webui::LegalComments::Inline,
         theme: None,
         projection_manifests: Vec::new(),
@@ -1405,7 +1409,9 @@ fn resolve_theme_for_source(
         component_asset_roots: Vec::new(),
         metafile: false,
         css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
-        css_public_base: None,
+        asset_base: None,
+        component_modules: std::collections::BTreeMap::new(),
+        modules_out: None,
         legal_comments: webui::LegalComments::Inline,
         theme: None,
         projection_manifests: Vec::new(),
@@ -1713,6 +1719,25 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn build_accepts_asset_base() {
+        let cli = Cli::try_parse_from([
+            "webui-desktop",
+            "build",
+            "app",
+            "--out",
+            "dist",
+            "--asset-base",
+            "/static/",
+        ])
+        .unwrap();
+        let Some(Commands::Build(args)) = cli.command else {
+            panic!("expected build command");
+        };
+        let options = args.app.build_options(PathBuf::from("app"));
+        assert_eq!(options.asset_base.as_deref(), Some("/static/"));
     }
 
     fn package_args(extra: &[&str]) -> PackageArgs {

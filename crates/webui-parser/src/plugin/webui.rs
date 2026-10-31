@@ -78,8 +78,10 @@ use std::fmt::Write;
 use std::ops::Range;
 use webui_protocol::{condition_expr, ConditionExpr, WebUIElementData};
 
+mod lazy_templates;
 mod named_repeats;
 mod ssr_layout;
+mod template_dependencies;
 use named_repeats::CompileBlocks;
 use ssr_layout::{SsrChildren, SsrLayout};
 
@@ -201,18 +203,18 @@ impl WebUIParserPlugin {
                 StateSurface::None
             };
             let navigation = navigation_surface(&payload.hydration_roots, &hydration);
-            out.push(
-                ComponentTemplateArtifact::webui(
-                    c.tag_name.clone(),
-                    payload.template_json,
-                    payload.template_functions,
-                    c.uses_shadow_dom,
-                )
-                .with_hydration(hydration)
-                .with_navigation(navigation)
-                .with_template_roots(payload.hydration_roots.clone())
-                .scripted(is_authored),
-            );
+            let mut artifact = ComponentTemplateArtifact::webui(
+                c.tag_name.clone(),
+                payload.template_json,
+                payload.template_functions,
+                c.uses_shadow_dom,
+            )
+            .with_hydration(hydration)
+            .with_navigation(navigation)
+            .with_template_roots(payload.hydration_roots.clone())
+            .scripted(is_authored);
+            artifact.lazy_templates = payload.lazy_templates;
+            out.push(artifact);
         }
         Ok(out)
     }
@@ -392,6 +394,10 @@ impl Default for WebUIParserPlugin {
 }
 
 impl ParserPlugin for WebUIParserPlugin {
+    fn supports_lazy_fragments(&self) -> bool {
+        true
+    }
+
     fn begin_fragment(&mut self, _context: FragmentContext<'_>) {
         self.element_events.set(0);
         self.next_event_idx.set(0);
@@ -455,6 +461,15 @@ impl ParserPlugin for WebUIParserPlugin {
             self.take_component_templates()?,
         ))
     }
+
+    fn finish_with_fragments(
+        self: Box<Self>,
+        fragments: &webui_protocol::WebUIFragmentRecords,
+    ) -> Result<ParserPluginArtifacts> {
+        let mut templates = self.take_component_templates()?;
+        template_dependencies::attach(&mut templates, fragments)?;
+        Ok(ParserPluginArtifacts::ComponentTemplates(templates))
+    }
 }
 
 fn append_render_policy(template_json: &mut String, policy: &ComponentRenderPolicy) {
@@ -508,6 +523,8 @@ struct TemplateSectionMeta {
     conditionals: Vec<(ConditionExpr, usize)>,
     /// Client conditional anchor slots aligned to `conditionals`.
     condition_slots: Vec<SlotLocator>,
+    /// Lazy conditional positions paired with their client prefetch trigger codes.
+    lazy_conditions: Vec<(usize, u8)>,
     /// For-loop blocks and their optional first-child key paths.
     repeats: Vec<CompiledRepeat>,
     /// Client repeat anchor slots aligned to `repeats`.
@@ -516,7 +533,21 @@ struct TemplateSectionMeta {
     events: Vec<EventBinding>,
     /// Client event target element indices aligned to `events`.
     event_targets: Vec<usize>,
+    refs: Vec<(String, usize)>,
     ssr_layout: SsrLayout,
+}
+
+impl TemplateSectionMeta {
+    /// Client prefetch trigger for a lazy conditional at `position`.
+    fn lazy_trigger(&self, position: usize) -> Option<u8> {
+        self.lazy_conditions
+            .iter()
+            .find_map(|&(index, trigger)| (index == position).then_some(trigger))
+    }
+
+    fn is_lazy_condition(&self, position: usize) -> bool {
+        self.lazy_trigger(position).is_some()
+    }
 }
 
 #[derive(Clone)]
@@ -624,6 +655,12 @@ struct TemplateMeta {
     /// Root-level events from the `<template>` wrapper tag.
     /// Attached to the host element (shadow root host) by the client.
     root_events: Vec<EventBinding>,
+    lazy: Vec<LazyDefinition>,
+}
+
+struct LazyDefinition {
+    block_index: usize,
+    id: String,
 }
 
 type EventBinding = (String, String, Vec<EventArg>);
@@ -672,6 +709,7 @@ struct CompiledTemplatePayload {
     /// Template reactive roots used when client navigation creates or updates
     /// a component whose initial DOM was not server rendered.
     hydration_roots: Vec<String>,
+    lazy_templates: Vec<super::LazyTemplateArtifact>,
 }
 
 fn navigation_surface(roots: &[String], hydration: &StateSurface) -> StateSurface {
@@ -702,9 +740,10 @@ struct TemplateBuildMetadata {
     scope_count: usize,
 }
 
-struct TemplatePayloadOptions {
+struct TemplatePayloadOptions<'a> {
     shadow_dom: bool,
     emit_static_host: bool,
+    owner: &'a str,
 }
 
 struct RootScope<'a> {
@@ -839,6 +878,7 @@ fn generate_compiled_template_with_root_source(
         TemplatePayloadOptions {
             shadow_dom,
             emit_static_host: scriptless,
+            owner: tag_name,
         },
     ))
 }
@@ -849,11 +889,12 @@ fn emit_compiled_template_payload(
     build_meta: &TemplateBuildMetadata,
     options: TemplatePayloadOptions,
 ) -> CompiledTemplatePayload {
+    let lazy_plan = lazy_templates::Plan::new(options.owner, meta);
     let mut conditions = ConditionFunctionEmitter::new(128);
     let mut out = String::with_capacity(512 + html_content.len());
     out.push('{');
 
-    emit_json_template_section(&meta.root, &mut out, &mut conditions);
+    emit_json_template_section(&meta.root, &mut out, &mut conditions, lazy_plan.as_ref());
 
     // sd: shadow DOM flag — tells the client runtime to use shadow root
     if options.shadow_dom {
@@ -904,22 +945,28 @@ fn emit_compiled_template_payload(
     // b: nested block table
     if !meta.blocks.is_empty() {
         out.push_str(",\"b\":[");
+        let mut wrote = false;
         for (i, block) in meta.blocks.iter().enumerate() {
-            if i > 0 {
+            if lazy_plan.as_ref().is_some_and(|plan| !plan.is_eager(i)) {
+                continue;
+            }
+            if wrote {
                 out.push(',');
             }
+            wrote = true;
             out.push('{');
-            emit_json_template_section(block, &mut out, &mut conditions);
+            emit_json_template_section(block, &mut out, &mut conditions, lazy_plan.as_ref());
             out.push('}');
         }
         out.push(']');
     }
 
-    out.push('}');
+    out.push_str(",\"v\":3}");
     CompiledTemplatePayload {
         template_json: out,
         template_functions: conditions.finish(),
         hydration_roots: build_meta.roots.clone(),
+        lazy_templates: lazy_plan.map_or_else(Vec::new, |plan| plan.emit(options.owner, meta)),
     }
 }
 
@@ -1106,21 +1153,33 @@ fn emit_json_attr_binding(
 #[inline]
 fn collect_template_build_metadata(meta: &TemplateMeta) -> TemplateBuildMetadata {
     if meta.has_named_repeats {
-        collect_template_roots::<true>(meta)
+        collect_template_roots::<true, false>(
+            &meta.root,
+            &meta.blocks,
+            !meta.root_events.is_empty(),
+        )
     } else {
-        collect_template_roots::<false>(meta)
+        collect_template_roots::<false, false>(
+            &meta.root,
+            &meta.blocks,
+            !meta.root_events.is_empty(),
+        )
     }
 }
 
 #[inline(never)]
-fn collect_template_roots<const SHARED: bool>(meta: &TemplateMeta) -> TemplateBuildMetadata {
+fn collect_template_roots<const SHARED: bool, const STOP_LAZY: bool>(
+    root: &TemplateSectionMeta,
+    blocks: &[TemplateSectionMeta],
+    root_events: bool,
+) -> TemplateBuildMetadata {
     let mut roots = Vec::new();
     let mut scopes = Vec::<RootScope<'_>>::new();
-    let mut stack = Vec::with_capacity(1 + meta.blocks.len());
-    let mut has_events = !meta.root_events.is_empty();
+    let mut stack = Vec::with_capacity(1 + blocks.len());
+    let mut has_events = root_events;
     let mut visits = SHARED.then(crate::scoped_visits::ScopedVisits::default);
     stack.push(RootVisit {
-        block: &meta.root,
+        block: root,
         scope: None,
     });
 
@@ -1155,9 +1214,12 @@ fn collect_template_roots<const SHARED: bool>(meta: &TemplateMeta) -> TemplateBu
             }
         }
 
-        for (condition, block_index) in &block.conditionals {
+        for (position, (condition, block_index)) in block.conditionals.iter().enumerate() {
             add_condition_roots(&mut roots, condition, &scopes, visit.scope);
-            if let Some(child) = meta.blocks.get(*block_index) {
+            if STOP_LAZY && block.is_lazy_condition(position) {
+                continue;
+            }
+            if let Some(child) = blocks.get(*block_index) {
                 stack.push(RootVisit {
                     block: child,
                     scope: visit.scope,
@@ -1171,7 +1233,7 @@ fn collect_template_roots<const SHARED: bool>(meta: &TemplateMeta) -> TemplateBu
             {
                 continue;
             }
-            if let Some(child) = meta.blocks.get(repeat.block_index) {
+            if let Some(child) = blocks.get(repeat.block_index) {
                 let scope = scopes.len();
                 scopes.push(RootScope {
                     name: &repeat.item_var,
@@ -1483,13 +1545,67 @@ fn emit_js_text_parts(parts: &[CompiledAttrPart], out: &mut String) {
     out.push(']');
 }
 
+fn emit_block_reference(index: usize, references: Option<&lazy_templates::Plan>, out: &mut String) {
+    match references.map(|plan| &plan.references[index]) {
+        Some(lazy_templates::Reference::External(id)) => emit_js_string(id, out),
+        Some(lazy_templates::Reference::Inline(index)) => {
+            let _ = write!(out, "{index}");
+        }
+        Some(lazy_templates::Reference::Local(index)) => {
+            let _ = write!(out, "-{}", index + 1);
+        }
+        None => {
+            let _ = write!(out, "{index}");
+        }
+    }
+}
+
+/// Parse a lazy region's prefetch trigger, reporting unknown values (cold path on error).
+fn lazy_trigger(
+    component: &str,
+    tag: &crate::html_parser::Tag<'_>,
+    source: &TemplateSource<'_>,
+) -> Result<u8> {
+    let value = tag.attr("lazy");
+    crate::lazy::Trigger::parse(value)
+        .map(crate::lazy::Trigger::code)
+        .ok_or_else(|| invalid_lazy_trigger(component, value.unwrap_or_default(), source))
+}
+
+#[cold]
+#[inline(never)]
+fn invalid_lazy_trigger(
+    component: &str,
+    value: &str,
+    source: &TemplateSource<'_>,
+) -> crate::ParserError {
+    source.locate_error(
+        crate::lazy::invalid_trigger(value)
+            .component(component)
+            .into(),
+    )
+}
+
 fn emit_json_template_section(
     meta: &TemplateSectionMeta,
     out: &mut String,
     functions: &mut ConditionFunctionEmitter,
+    references: Option<&lazy_templates::Plan>,
 ) {
     out.push_str("\"h\":");
     emit_js_string(&meta.html, out);
+    if !meta.refs.is_empty() {
+        out.push_str(",\"rf\":[");
+        for (index, (name, target)) in meta.refs.iter().enumerate() {
+            if index != 0 {
+                out.push(',');
+            }
+            out.push('[');
+            emit_js_string(name, out);
+            let _ = write!(out, ",{target}]");
+        }
+        out.push(']');
+    }
     meta.ssr_layout.emit(out);
 
     if !meta.text_runs.is_empty() {
@@ -1558,9 +1674,12 @@ fn emit_json_template_section(
             out.push('[');
             emit_json_condition_ref(cond, out, functions);
             out.push(',');
-            let _ = write!(out, "{}", block_index);
+            emit_block_reference(*block_index, references, out);
             out.push(',');
             emit_js_slot(slot, out);
+            if let Some(trigger) = meta.lazy_trigger(i) {
+                let _ = write!(out, ",{trigger}");
+            }
             out.push(']');
         }
         out.push(']');
@@ -1582,7 +1701,7 @@ fn emit_json_template_section(
             out.push(',');
             emit_js_string(&repeat.item_var, out);
             out.push(',');
-            let _ = write!(out, "{}", repeat.block_index);
+            emit_block_reference(repeat.block_index, references, out);
             out.push(',');
             emit_js_slot(slot, out);
             if let Some(key_path) = &repeat.key_path {
@@ -1635,6 +1754,7 @@ fn compile_to_metadata(
         has_named_repeats: blocks.has_named_repeats(),
         blocks: blocks.blocks,
         root_events,
+        lazy: blocks.lazy,
     })
 }
 
@@ -1653,10 +1773,12 @@ fn compile_section(
         attr_groups: Vec::new(),
         conditionals: Vec::new(),
         condition_slots: Vec::new(),
+        lazy_conditions: Vec::new(),
         repeats: Vec::new(),
         repeat_slots: Vec::new(),
         events: Vec::new(),
         event_targets: Vec::new(),
+        refs: Vec::new(),
         ssr_layout: SsrLayout::default(),
     };
 
@@ -1689,13 +1811,32 @@ fn compile_section(
             }
 
             let tag = parse_tag(remaining);
-            let opening_name = tag.as_ref().filter(|tag| !tag.closing).map(|tag| tag.name);
+            let opening_tag = tag.as_ref().filter(|tag| !tag.closing);
+            let opening_name = opening_tag.map(|tag| tag.name);
             if opening_name == Some("if") {
+                if let Some(error) = opening_tag.and_then(crate::lazy::if_attribute_error) {
+                    return Err(source
+                        .slice(i..len)
+                        .locate_error(error.component(component).into()));
+                }
                 if let Some((cond, body, consumed)) = parse_if_block(source.slice(i..len)) {
+                    let trigger = match opening_tag.filter(|tag| tag.has_attr("lazy")) {
+                        Some(tag) => Some(lazy_trigger(component, tag, &source.slice(i..len))?),
+                        None => None,
+                    };
                     let block_index = blocks.reserve();
+                    if trigger.is_some() {
+                        blocks.lazy.push(LazyDefinition {
+                            block_index,
+                            id: crate::lazy::fragment_id(component, blocks.lazy.len()),
+                        });
+                    }
                     let block = compile_section(component, body, blocks)?;
                     blocks.blocks[block_index] = block;
                     let idx = meta.conditionals.len();
+                    if let Some(trigger) = trigger {
+                        meta.lazy_conditions.push((idx, trigger));
+                    }
                     meta.conditionals.push((cond, block_index));
                     meta.html.push_str(&format!("<!--c:{idx}-->"));
                     i += consumed;
@@ -1943,6 +2084,32 @@ fn finalize_template_section(meta: &mut TemplateSectionMeta) {
     let text_marker_offsets = std::mem::take(&mut meta.text_marker_offsets);
     let mut nodes = parse_fragment_nodes(&raw_html, &text_marker_offsets);
     insert_implied_table_containers(&mut nodes);
+    if raw_html.contains("w-ref") {
+        let mut pending: Vec<&FragmentNode> = nodes.iter().rev().collect();
+        let mut index = 0usize;
+        while let Some(node) = pending.pop() {
+            let FragmentNode::Element(element) = node else {
+                continue;
+            };
+            index += 1;
+            for attr in &element.attrs {
+                if attr.name == "w-ref" {
+                    if let Some(name) = attr
+                        .value
+                        .as_deref()
+                        .and_then(|value| value.strip_prefix('{'))
+                        .and_then(|value| value.strip_suffix('}'))
+                        .filter(|name| !name.is_empty())
+                    {
+                        meta.refs.push((name.to_owned(), index));
+                    }
+                }
+            }
+            if !element.tag_name.eq_ignore_ascii_case("template") {
+                pending.extend(element.children.iter().rev());
+            }
+        }
+    }
     let text_bindings = meta.text_bindings.clone();
     let mut finalized_html = String::with_capacity(raw_html.len());
     let mut text_runs = Vec::new();
@@ -3906,7 +4073,55 @@ mod tests {
             css_definitions: Vec::new(),
             css_fallback_chains: Vec::new(),
             is_client_owned,
+            script_path: None,
         }
+    }
+
+    #[test]
+    fn client_cache_dependencies_follow_compiled_edges_not_source_text() {
+        let mut parser = crate::HtmlParser::with_plugin(Box::new(WebUIParserPlugin::new()));
+        for (tag, html) in [
+            (
+                "x-parent",
+                concat!(
+                    r#"<if condition="show"><x-child></x-child></if>"#,
+                    r#"<for each="item in items"><x-leaf></x-leaf></for>"#,
+                    r#"<x-leaf></x-leaf>"#,
+                    r#"<div data-example="<x-grandchild>"></div>"#,
+                    r#"<route path="/other" component="x-route" exact />"#,
+                ),
+            ),
+            ("x-child", "<x-grandchild></x-grandchild>"),
+            ("x-grandchild", "<p>Grandchild</p>"),
+            ("x-leaf", "<span>Leaf</span>"),
+            ("x-route", "<p>Route</p>"),
+        ] {
+            parser
+                .component_registry_mut()
+                .register_component(crate::ComponentRegistration::new(tag, html, None, false))
+                .expect("component registration");
+        }
+        parser
+            .parse("index.html", "<x-parent></x-parent>")
+            .expect("entry parsing");
+        let ParserPluginArtifacts::ComponentTemplates(templates) =
+            parser.take_plugin_artifacts().expect("client artifacts")
+        else {
+            panic!("expected WebUI templates");
+        };
+        let metadata = |tag: &str| {
+            templates
+                .iter()
+                .find(|template| template.tag_name == tag)
+                .expect("compiled component")
+                .template_json
+                .as_str()
+        };
+        assert!(metadata("x-parent").contains(r#""v":3"#));
+        assert!(metadata("x-parent").contains(r#""d":["x-child","x-leaf"]"#));
+        assert!(metadata("x-child").contains(r#""d":["x-grandchild"]"#));
+        assert!(metadata("x-leaf").contains(r#""v":3"#));
+        assert!(!metadata("x-leaf").contains(r#""d":"#));
     }
 
     #[test]

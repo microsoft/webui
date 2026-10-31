@@ -93,7 +93,7 @@ pub(crate) fn bundle_style_chunks(
         };
         if emit_files {
             let resolved = css_link_options.resolve_chunk(&record.name, &css);
-            record.css_href = resolved.href;
+            record.css_href.clone_from(&resolved.filename);
             files.push((resolved.filename, css));
         } else {
             record.css = css;

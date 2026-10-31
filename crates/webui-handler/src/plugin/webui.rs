@@ -271,12 +271,12 @@ fn webui_collect_payloads<'a, 'b>(
 ) -> Option<Vec<super::WebUiTemplatePayload<'a>>> {
     let mut templates: Vec<super::WebUiTemplatePayload<'a>> = Vec::new();
     for name in tags {
-        if let Some((tag_name, component)) = protocol.components.get_key_value(name) {
-            if !component.template_json.is_empty() {
+        if let Some(payload) = protocol.client_template(name) {
+            if !payload.metadata.is_empty() {
                 templates.push(super::WebUiTemplatePayload {
-                    tag_name: tag_name.as_str(),
-                    template_json: component.template_json.as_str(),
-                    template_functions: component.template_functions.as_str(),
+                    tag_name: payload.id,
+                    template_json: payload.metadata,
+                    template_functions: payload.functions,
                 });
             }
         }

@@ -102,13 +102,16 @@ pub struct ServeArgs {
     #[arg(long, value_delimiter = ',', value_name = "TAGS")]
     pub emit_component_assets: Vec<String>,
 
-    /// Directory for generated component ESM inputs consumed by the application bundler.
-    /// In watch mode, it cannot equal or contain a watched source path.
-    #[arg(long, value_name = "DIR", requires = "emit_component_assets")]
-    pub component_assets_out: Option<PathBuf>,
+    /// Directory refreshed after each successful build with generated modules
+    /// for the application bundler: component asset inputs, lazy.webui.js, and
+    /// lazy.webui.d.ts. In watch mode, it cannot equal or contain a watched
+    /// source path.
+    #[arg(long, value_name = "DIR")]
+    pub modules_out: Option<PathBuf>,
 
-    /// Write an esbuild-compatible component asset metafile after each successful build
-    #[arg(long, value_name = "PATH", requires = "emit_component_assets")]
+    /// Write a build metafile after each successful build: the component asset
+    /// graph in esbuild's format and a cost report for every lazy-region pack
+    #[arg(long, value_name = "PATH")]
     pub metafile: Option<PathBuf>,
 
     /// Base path for sub-path deployment (e.g., `/commerce/`).
@@ -124,7 +127,7 @@ struct ServePaths {
     app_dir: PathBuf,
     state_file: Option<PathBuf>,
     serve_dir: Option<PathBuf>,
-    component_assets_out: Option<PathBuf>,
+    modules_out: Option<PathBuf>,
     metafile: Option<PathBuf>,
 }
 
@@ -218,12 +221,12 @@ impl ServePaths {
                 }
             })
             .transpose()?;
-        let component_assets_out = args
-            .component_assets_out
+        let modules_out = args
+            .modules_out
             .as_deref()
             .map(expand_tilde)
             .transpose()
-            .with_context(|| "Failed to expand component asset output path")?
+            .with_context(|| "Failed to expand generated modules path")?
             .map(std::borrow::Cow::into_owned)
             .map(|path| {
                 if path.is_absolute() {
@@ -238,7 +241,7 @@ impl ServePaths {
             app_dir,
             state_file,
             serve_dir,
-            component_assets_out,
+            modules_out,
             metafile,
         })
     }
@@ -268,9 +271,11 @@ struct SharedState {
     /// Current generated root entries. Immutable dependencies are served from
     /// the publication directory rather than retained in this map.
     component_assets: HashMap<String, String>,
+    /// Lazy-region packs keyed by their `_webui/packs/<file>` request path.
+    lazy_packs: HashMap<String, String>,
     protocol: Option<Arc<Protocol>>,
-    state_data: Option<Value>,
-    token_css: Option<HashMap<String, String>>,
+    state_data: Option<Arc<Value>>,
+    token_css: Option<Arc<HashMap<String, String>>>,
     rebuild_error: Option<String>,
     /// Entry fragment ID used for rendering (e.g., "index.html").
     entry: String,
@@ -298,6 +303,48 @@ fn watch_disabled_by_env() -> bool {
         Ok(v) => !v.is_empty() && v != "0",
         Err(_) => false,
     }
+}
+
+/// How the dev server can host the `--asset-base` a build declares.
+#[derive(Debug, PartialEq, Eq)]
+enum DevAssetBase {
+    /// The server root, where build outputs are already served.
+    Root,
+    /// A path on this server: build outputs are also served under this
+    /// request-path prefix, such as `static/`.
+    Prefix(String),
+    /// A URL for another host, or a path that leaves the server root.
+    Unhosted,
+}
+
+/// Classify a validated asset base. Relative paths resolve from the server
+/// root, where the dev server serves its documents.
+fn dev_asset_base(base: &str) -> DevAssetBase {
+    if base
+        .find(':')
+        .is_some_and(|colon| !base[..colon].contains('/'))
+    {
+        return DevAssetBase::Unhosted;
+    }
+    let mut path = base.trim_start_matches('/');
+    while let Some(rest) = path.strip_prefix("./") {
+        path = rest;
+    }
+    if path.is_empty() {
+        return DevAssetBase::Root;
+    }
+    if path.split('/').any(|segment| segment == "..") {
+        return DevAssetBase::Unhosted;
+    }
+    DevAssetBase::Prefix(path.to_string())
+}
+
+#[cold]
+#[inline(never)]
+fn unhosted_asset_base_hint(base: &str) -> String {
+    format!(
+        "The dev server cannot host --asset-base {base}, so rendered stylesheet links and the browser load assets from there. Build outputs are still served at their usual paths; pass a path such as --asset-base /static/ to serve them locally under that prefix."
+    )
 }
 
 pub fn execute(args: &ServeArgs) -> Result<i32> {
@@ -332,10 +379,7 @@ fn run(args: &ServeArgs, control: Option<Control>) -> Result<()> {
             &args.app_args.components,
             &paths.app_dir,
         ));
-        validate_component_asset_output_watch_root(
-            paths.component_assets_out.as_deref(),
-            &watch_paths,
-        )?;
+        validate_modules_out_watch_root(paths.modules_out.as_deref(), &watch_paths)?;
         Some(watch_paths)
     } else {
         None
@@ -358,7 +402,8 @@ fn run(args: &ServeArgs, control: Option<Control>) -> Result<()> {
         state_file: paths.state_file.clone(),
         token_file,
         component_asset_roots: args.emit_component_assets.clone(),
-        component_assets_out: paths.component_assets_out.clone(),
+        modules_out: paths.modules_out.clone(),
+        publishes_lazy_scripts: paths.modules_out.is_some(),
         metafile: paths.metafile.clone(),
         base_path: args.base_path.clone(),
     };
@@ -384,15 +429,18 @@ fn run(args: &ServeArgs, control: Option<Control>) -> Result<()> {
     output::field("DOM", &args.app_args.dom);
     if !args.emit_component_assets.is_empty() {
         output::field("Component assets", &args.emit_component_assets.join(", "));
-        if let Some(ref component_assets_out) = paths.component_assets_out {
-            output::field("Component asset inputs", &component_assets_out.display());
-        }
+    }
+    if let Some(ref modules_out) = paths.modules_out {
+        output::field("Generated modules", &modules_out.display());
     }
     if let Some(ref metafile) = paths.metafile {
         output::field("Metafile", &metafile.display());
     }
     if let Some(api_port) = args.api_port {
         output::field("API Port", &api_port);
+    }
+    if let Some(ref asset_base) = args.app_args.asset_base {
+        output::field("Asset base", asset_base);
     }
     if watch_enabled {
         output::field("HMR", &format!("enabled (SSE {HMR_ENDPOINT})"));
@@ -401,25 +449,39 @@ fn run(args: &ServeArgs, control: Option<Control>) -> Result<()> {
     } else {
         output::field("HMR", &"disabled (pass --watch to enable)");
     }
+    let asset_prefix = match args.app_args.asset_base.as_deref().map(dev_asset_base) {
+        Some(DevAssetBase::Prefix(prefix)) => Some(prefix),
+        Some(DevAssetBase::Unhosted) => {
+            output::hint(&unhosted_asset_base_hint(
+                args.app_args.asset_base.as_deref().unwrap_or_default(),
+            ));
+            None
+        }
+        Some(DevAssetBase::Root) | None => None,
+    };
     eprintln!();
 
     ensure_local_port_available(args.port)?;
 
     // Initial build + render
-    let temporary_component_assets = if !render_config.component_asset_roots.is_empty()
-        && render_config.component_assets_out.is_none()
-    {
-        Some(component_assets::TemporaryComponentAssets::create()?)
-    } else {
-        None
-    };
+    let temporary_component_assets =
+        if !render_config.component_asset_roots.is_empty() && render_config.modules_out.is_none() {
+            Some(component_assets::TemporaryComponentAssets::create()?)
+        } else {
+            None
+        };
     let mut render_config = render_config;
     if let Some(directory) = &temporary_component_assets {
-        render_config.component_assets_out = Some(directory.0.clone());
+        render_config.modules_out = Some(directory.0.clone());
     }
-    let component_assets_dir = render_config.component_assets_out.clone();
+    let component_assets_dir = render_config.modules_out.clone();
     let initial_result = build_and_render(&render_config, livereload.as_ref())?;
     output::success("Initial build and render complete");
+    if initial_result.has_lazy_scripts && !render_config.publishes_lazy_scripts {
+        output::hint(
+            "This app has lazy regions. Pass --modules-out <DIR> to write lazy.webui.js for your bundler, and import it from your entry module.",
+        );
+    }
     for advisory in &initial_result.warnings {
         output::warning_diagnostic(advisory);
     }
@@ -428,9 +490,10 @@ fn run(args: &ServeArgs, control: Option<Control>) -> Result<()> {
         rendered_html: initial_result.html,
         css_files: initial_result.css_files,
         component_assets: initial_result.component_assets,
+        lazy_packs: initial_result.lazy_packs,
         protocol: Some(initial_result.protocol),
-        state_data: Some(initial_result.state_data),
-        token_css: initial_result.token_css,
+        state_data: Some(Arc::new(initial_result.state_data)),
+        token_css: initial_result.token_css.map(Arc::new),
         rebuild_error: None,
         entry: args.app_args.entry.clone(),
     }));
@@ -471,6 +534,7 @@ fn run(args: &ServeArgs, control: Option<Control>) -> Result<()> {
         api,
         plugin: args.app_args.plugin,
         base_path: args.base_path.clone(),
+        asset_prefix,
         // Pool sized for typical concurrent renders × channel capacity.
         // 256 buffers × 5 KiB ≈ 1.25 MiB peak pool memory — bounded.
         chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
@@ -580,8 +644,12 @@ struct RenderConfig {
     /// Parsed and validated on every build so their authoring errors surface in
     /// the dev server, even though they are not part of the initial SSR tree.
     component_asset_roots: Vec<String>,
-    /// Generated ESM input directory refreshed after each successful build.
-    component_assets_out: Option<PathBuf>,
+    /// Generated module directory refreshed after each successful build:
+    /// `--modules-out`, or a server-owned directory for component assets.
+    modules_out: Option<PathBuf>,
+    /// Whether `modules_out` is the developer's `--modules-out`, which also
+    /// receives `lazy.webui.js` for the application bundler.
+    publishes_lazy_scripts: bool,
     /// Atomic metafile destination updated only after a successful build and render.
     metafile: Option<PathBuf>,
     /// Base path for sub-path deployment (e.g., `/commerce/`).
@@ -594,6 +662,10 @@ struct BuildRenderResult {
     css_files: HashMap<String, String>,
     /// Static component assets (`<tag>.webui.js`) keyed by filename.
     component_assets: HashMap<String, String>,
+    /// Lazy-region packs keyed by their `_webui/packs/<file>` request path.
+    lazy_packs: HashMap<String, String>,
+    /// Whether the build generated `lazy.webui.js`, because it has lazy regions.
+    has_lazy_scripts: bool,
     protocol: Arc<Protocol>,
     state_data: Value,
     token_css: Option<HashMap<String, String>>,
@@ -607,13 +679,18 @@ fn build_and_render(
     config: &RenderConfig,
     livereload: Option<&LiveReload>,
 ) -> Result<BuildRenderResult> {
-    let mut build_options = config.app_args.to_build_options(&config.app_dir);
+    let mut build_options = config.app_args.to_build_options(&config.app_dir)?;
     build_options.theme = config.token_file.clone();
     // Parse and validate the static-asset roots too, so theme-token / HTML
     // errors in lazily loaded components (which are not in the SSR tree) fail
     // the dev build instead of being silently skipped.
     build_options.component_asset_roots = config.component_asset_roots.clone();
     build_options.metafile = config.metafile.is_some();
+    // Specifiers in lazy.webui.js are relative to the directory it is written
+    // to; a server-owned component asset directory never receives it.
+    if config.publishes_lazy_scripts {
+        build_options.modules_out = config.modules_out.clone();
+    }
     let build_result = webui::build(build_options).with_context(|| "Build failed")?;
     let token_css = match config.token_file.as_ref() {
         Some(token_file) => Some(
@@ -667,43 +744,59 @@ fn build_and_render(
     };
 
     validate_component_asset_metafile_paths(
-        config.component_assets_out.as_deref(),
+        config.modules_out.as_deref(),
         config.metafile.as_deref(),
         &build_result.component_asset_files,
     )?;
     let write_metafile = || -> Result<()> {
-        let Some(path) = &config.metafile else {
-            return Ok(());
-        };
-        let metafile = build_result.metafile.as_deref().ok_or_else(|| {
-            anyhow::anyhow!("component asset metafile was requested but not generated")
-        })?;
-        write_atomic(path, metafile)
+        match (&config.metafile, &build_result.metafile) {
+            (Some(path), Some(metafile)) => write_atomic(path, metafile),
+            _ => Ok(()),
+        }
     };
-    if let Some(output_dir) = &config.component_assets_out {
+    let lazy_scripts = if config.publishes_lazy_scripts {
+        build_result.lazy_scripts_module.as_slice()
+    } else {
+        &[]
+    };
+    if let Some(output_dir) = &config.modules_out {
         component_asset_output::publish_with(
             output_dir,
             &build_result.component_asset_files,
+            lazy_scripts,
             write_metafile,
         )?;
     } else {
         write_metafile()?;
     }
+    let has_lazy_scripts = build_result.lazy_scripts_module.is_some();
 
     let css_map: HashMap<String, String> = build_result.css_files.into_iter().collect();
     let component_assets: HashMap<String, String> = build_result
         .component_asset_files
         .into_iter()
-        .filter(|file| {
-            !file.name.starts_with("components/") || config.component_assets_out.is_none()
-        })
+        .filter(|file| !file.name.starts_with("components/") || config.modules_out.is_none())
         .map(|file| (file.name, file.content))
+        .collect();
+    let lazy_packs: HashMap<String, String> = build_result
+        .lazy_pack_files
+        .into_iter()
+        .map(|pack| {
+            let mut path =
+                String::with_capacity(webui::PACK_OUTPUT_DIR.len() + pack.file_name.len() + 1);
+            path.push_str(webui::PACK_OUTPUT_DIR);
+            path.push('/');
+            path.push_str(&pack.file_name);
+            (path, pack.content)
+        })
         .collect();
 
     Ok(BuildRenderResult {
         html,
         css_files: css_map,
         component_assets,
+        lazy_packs,
+        has_lazy_scripts,
         protocol,
         state_data: state,
         token_css,
@@ -713,7 +806,7 @@ fn build_and_render(
 
 fn watcher_ignore_paths(
     metafile: Option<&std::path::Path>,
-    component_assets_out: Option<&std::path::Path>,
+    modules_out: Option<&std::path::Path>,
 ) -> Vec<PathBuf> {
     let mut ignore = webui_dev_server::default_ignore_paths();
     if let Ok(out_dir) = std::env::current_dir() {
@@ -722,26 +815,24 @@ fn watcher_ignore_paths(
     if let Some(metafile) = metafile {
         ignore.extend(metafile::watch_ignore_paths(metafile));
     }
-    if let Some(component_assets_out) = component_assets_out {
-        ignore.extend(component_asset_output::watch_ignore_paths(
-            component_assets_out,
-        ));
+    if let Some(modules_out) = modules_out {
+        ignore.extend(component_asset_output::watch_ignore_paths(modules_out));
     }
     ignore
 }
 
-fn validate_component_asset_output_watch_root(
-    component_assets_out: Option<&std::path::Path>,
+fn validate_modules_out_watch_root(
+    modules_out: Option<&std::path::Path>,
     watch_paths: &[PathBuf],
 ) -> Result<()> {
-    let Some(component_assets_out) = component_assets_out else {
+    let Some(modules_out) = modules_out else {
         return Ok(());
     };
     for watch_path in watch_paths {
-        if output_paths::path_contains(component_assets_out, watch_path)? {
+        if output_paths::path_contains(modules_out, watch_path)? {
             bail!(
-                "Component asset output directory {} cannot equal or contain watched source path {}.\nhelp: Choose a dedicated generated subdirectory inside the app, such as .webui.",
-                component_assets_out.display(),
+                "Generated modules directory {} cannot equal or contain watched source path {}.\nhelp: Choose a dedicated generated subdirectory inside the app, such as --modules-out .webui.",
+                modules_out.display(),
                 watch_path.display()
             );
         }
@@ -750,14 +841,14 @@ fn validate_component_asset_output_watch_root(
 }
 
 fn validate_component_asset_metafile_paths(
-    component_assets_out: Option<&std::path::Path>,
+    modules_out: Option<&std::path::Path>,
     metafile: Option<&std::path::Path>,
     files: &[webui::ComponentAssetFile],
 ) -> Result<()> {
-    let (Some(component_assets_out), Some(metafile)) = (component_assets_out, metafile) else {
+    let (Some(modules_out), Some(metafile)) = (modules_out, metafile) else {
         return Ok(());
     };
-    component_asset_output::validate_metafile_path(component_assets_out, metafile, files)
+    component_asset_output::validate_metafile_path(modules_out, metafile, files)
 }
 
 fn create_handler(plugin: Option<Plugin>) -> WebUIHandler {
@@ -824,6 +915,9 @@ struct ServerContext {
     plugin: Option<Plugin>,
     /// Base path for sub-path deployment.
     base_path: Option<String>,
+    /// Request-path prefix, such as `static/`, under which build outputs are
+    /// also served because `--asset-base` names a path on this server.
+    asset_prefix: Option<String>,
     /// Shared chunk-buffer pool. One pool per server; recycled across
     /// every streaming render so steady-state RPS does not allocate
     /// fresh chunk buffers per flush.
@@ -1031,7 +1125,8 @@ async fn resolve_state(context: &ServerContext, request_path: &str) -> Value {
                 match context.state.lock() {
                     Ok(s) => (
                         s.state_data
-                            .clone()
+                            .as_deref()
+                            .cloned()
                             .unwrap_or_else(|| Value::Object(serde_json::Map::new())),
                         s.token_css.clone(),
                     ),
@@ -1043,7 +1138,8 @@ async fn resolve_state(context: &ServerContext, request_path: &str) -> Value {
         match context.state.lock() {
             Ok(s) => (
                 s.state_data
-                    .clone()
+                    .as_deref()
+                    .cloned()
                     .unwrap_or_else(|| Value::Object(serde_json::Map::new())),
                 s.token_css.clone(),
             ),
@@ -1215,7 +1311,7 @@ fn fallback_state(context: &ServerContext) -> Value {
         .state
         .lock()
         .ok()
-        .and_then(|state| state.state_data.clone())
+        .and_then(|state| state.state_data.as_deref().cloned())
         .unwrap_or_else(|| Value::Object(serde_json::Map::new()))
 }
 
@@ -1227,7 +1323,7 @@ fn streaming_state_defaults(
         .state
         .lock()
         .ok()
-        .and_then(|state| state.token_css.clone());
+        .and_then(|state| state.token_css.as_deref().cloned());
     streaming_api::StateDefaults::new(
         token_css,
         context.base_path.as_deref().unwrap_or("/").to_owned(),
@@ -1493,35 +1589,19 @@ async fn handle_asset(
     context: web::Data<ServerContext>,
 ) -> HttpResponse {
     let relative = path.into_inner();
+    // A path `--asset-base` such as `/static/` maps build outputs under its
+    // prefix as well; outputs stay reachable at their usual paths.
+    let aliased = context
+        .asset_prefix
+        .as_deref()
+        .and_then(|prefix| relative.strip_prefix(prefix))
+        .filter(|rest| !rest.is_empty());
 
     // Check in-memory generated files first (CSS and static component assets,
     // produced by the build). These take precedence over `--servedir` so the
     // dev server always serves the freshly built output.
-    if let Ok(s) = context.state.lock() {
-        if let Some(css) = s.css_files.get(&relative) {
-            return HttpResponse::Ok()
-                .content_type("text/css; charset=utf-8")
-                .body(css.clone());
-        }
-        if let Some(css) = relative
-            .strip_prefix("components/")
-            .and_then(|name| s.css_files.get(name))
-        {
-            return HttpResponse::Ok()
-                .content_type("text/css; charset=utf-8")
-                .body(css.clone());
-        }
-        if let Some(asset) = s.component_assets.get(&relative) {
-            // Served as a JS module: the framework loads it via dynamic
-            // `import()`, which the browser rejects under a non-JS MIME type.
-            return HttpResponse::Ok()
-                .content_type("text/javascript; charset=utf-8")
-                .body(asset.clone());
-        }
-    }
-
-    if relative.starts_with("components/") && relative.ends_with(".webui.js") {
-        if let Some(response) = component_asset_response(&relative, &context).await {
+    for candidate in std::iter::once(relative.as_str()).chain(aliased) {
+        if let Some(response) = generated_asset_response(candidate, &context).await {
             return response;
         }
     }
@@ -1532,31 +1612,84 @@ async fn handle_asset(
         return spa_fallback(&req, &context).await;
     };
 
-    let asset_path = assets_dir.join(&relative);
-
-    let canonical = match asset_path.canonicalize() {
-        Ok(path) => path,
-        Err(_) => {
-            // File not found: let the Accept header decide whether this was a
-            // route navigation/partial request or a missing asset fetch.
-            return spa_fallback(&req, &context).await;
+    for candidate in std::iter::once(relative.as_str()).chain(aliased) {
+        if let Some(response) = serve_dir_response(assets_dir, candidate) {
+            return response;
         }
-    };
-
-    if !canonical.starts_with(assets_dir) {
-        return HttpResponse::Forbidden().body("Forbidden");
     }
+    // File not found: let the Accept header decide whether this was a route
+    // navigation/partial request or a missing asset fetch.
+    spa_fallback(&req, &context).await
+}
 
-    let body = match fs::read(&canonical) {
-        Ok(bytes) => bytes,
-        Err(_) => return spa_fallback(&req, &context).await,
-    };
+/// Serve a file the current build generated, if `relative` names one.
+async fn generated_asset_response(
+    relative: &str,
+    context: &web::Data<ServerContext>,
+) -> Option<HttpResponse> {
+    if let Some(response) = in_memory_asset_response(relative, context) {
+        return Some(response);
+    }
+    if relative.starts_with("components/") && relative.ends_with(".webui.js") {
+        return component_asset_response(relative, context).await;
+    }
+    None
+}
 
+fn in_memory_asset_response(relative: &str, context: &ServerContext) -> Option<HttpResponse> {
+    let s = context.state.lock().ok()?;
+    if let Some(css) = s.css_files.get(relative) {
+        return Some(
+            HttpResponse::Ok()
+                .content_type("text/css; charset=utf-8")
+                .body(css.clone()),
+        );
+    }
+    if let Some(css) = relative
+        .strip_prefix("components/")
+        .and_then(|name| s.css_files.get(name))
+    {
+        return Some(
+            HttpResponse::Ok()
+                .content_type("text/css; charset=utf-8")
+                .body(css.clone()),
+        );
+    }
+    if let Some(asset) = s.component_assets.get(relative) {
+        // Served as a JS module: the framework loads it via dynamic
+        // `import()`, which the browser rejects under a non-JS MIME type.
+        return Some(
+            HttpResponse::Ok()
+                .content_type("text/javascript; charset=utf-8")
+                .body(asset.clone()),
+        );
+    }
+    if let Some(pack) = s.lazy_packs.get(relative) {
+        // Content-addressed in production; the dev server always serves
+        // the current build, so revalidate instead of caching forever.
+        return Some(
+            HttpResponse::Ok()
+                .content_type("application/json")
+                .insert_header(("Cache-Control", "no-cache"))
+                .body(pack.clone()),
+        );
+    }
+    None
+}
+
+/// Serve a `--servedir` file, or `None` when it does not exist.
+fn serve_dir_response(assets_dir: &Path, relative: &str) -> Option<HttpResponse> {
+    let canonical = assets_dir.join(relative).canonicalize().ok()?;
+    if !canonical.starts_with(assets_dir) {
+        return Some(HttpResponse::Forbidden().body("Forbidden"));
+    }
+    let body = fs::read(&canonical).ok()?;
     let content_type = from_path(&canonical).first_or_octet_stream();
-
-    HttpResponse::Ok()
-        .content_type(content_type.as_ref())
-        .body(body)
+    Some(
+        HttpResponse::Ok()
+            .content_type(content_type.as_ref())
+            .body(body),
+    )
 }
 
 fn accept_media_q(params: &str) -> f32 {
@@ -1892,7 +2025,7 @@ fn start_file_watcher(
     let state_for_rebuild = Arc::clone(&state);
     let retry_state = Arc::clone(&state);
     let metafile_ignore = render_config.metafile.clone();
-    let component_assets_ignore = render_config.component_assets_out.clone();
+    let modules_ignore = render_config.modules_out.clone();
     let worker = webui_dev_server::spawn_rebuild_worker(livereload, move || {
         let warnings =
             rebuild_and_update_state(&render_config, &lr_for_inject, &state_for_rebuild)?;
@@ -1904,10 +2037,7 @@ fn start_file_watcher(
             .is_ok_and(|state| state.rebuild_error.is_some())
     });
 
-    let ignore = watcher_ignore_paths(
-        metafile_ignore.as_deref(),
-        component_assets_ignore.as_deref(),
-    );
+    let ignore = watcher_ignore_paths(metafile_ignore.as_deref(), modules_ignore.as_deref());
 
     let tick_tx = worker.sender();
     let watcher = spawn_watcher(
@@ -1962,9 +2092,10 @@ fn rebuild_and_update_state(
                 s.rendered_html = result.html;
                 s.css_files = result.css_files;
                 s.component_assets = result.component_assets;
+                s.lazy_packs = result.lazy_packs;
                 s.protocol = Some(result.protocol);
-                s.state_data = Some(result.state_data);
-                s.token_css = result.token_css;
+                s.state_data = Some(Arc::new(result.state_data));
+                s.token_css = result.token_css.map(Arc::new);
                 s.rebuild_error = None;
                 // The rebuild worker prints these under the "rebuilt" line.
                 Ok(result.warnings)
@@ -2043,6 +2174,7 @@ mod tests {
                 rendered_html: "<html><body>ok</body></html>".to_string(),
                 css_files: HashMap::new(),
                 component_assets: HashMap::new(),
+                lazy_packs: HashMap::new(),
                 protocol: None,
                 state_data: None,
                 token_css: None,
@@ -2055,6 +2187,7 @@ mod tests {
             api: Some(test_api_context(api_port)),
             plugin: None,
             base_path: None,
+            asset_prefix: None,
             chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
                 4,
                 StreamingWriter::CHUNK_TARGET + 1024,
@@ -2062,14 +2195,15 @@ mod tests {
         })
     }
 
-    fn test_route_context(protocol: Arc<Protocol>) -> web::Data<ServerContext> {
+    pub(super) fn test_route_context(protocol: Arc<Protocol>) -> web::Data<ServerContext> {
         web::Data::new(ServerContext {
             state: Arc::new(Mutex::new(SharedState {
                 rendered_html: "<html><body>ok</body></html>".to_string(),
                 css_files: HashMap::new(),
                 component_assets: HashMap::new(),
+                lazy_packs: HashMap::new(),
                 protocol: Some(protocol),
-                state_data: Some(Value::Object(serde_json::Map::new())),
+                state_data: Some(Arc::new(Value::Object(serde_json::Map::new()))),
                 token_css: None,
                 rebuild_error: None,
                 entry: "index.html".to_string(),
@@ -2080,6 +2214,7 @@ mod tests {
             api: None,
             plugin: None,
             base_path: None,
+            asset_prefix: None,
             chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
                 4,
                 StreamingWriter::CHUNK_TARGET + 1024,
@@ -2387,14 +2522,16 @@ mod tests {
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
-                css_public_base: None,
+                asset_base: None,
+                component_modules: Vec::new(),
                 legal_comments: LegalComments::Inline,
             },
             app_dir: app.path().to_path_buf(),
             state_file: Some(app.path().join("state.json")),
             token_file: None,
             component_asset_roots: Vec::new(),
-            component_assets_out: None,
+            modules_out: None,
+            publishes_lazy_scripts: false,
             metafile: None,
             base_path: None,
         };
@@ -2420,14 +2557,16 @@ mod tests {
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
-                css_public_base: None,
+                asset_base: None,
+                component_modules: Vec::new(),
                 legal_comments: LegalComments::Inline,
             },
             app_dir: app.path().to_path_buf(),
             state_file: Some(app.path().join("state.json")),
             token_file: None,
             component_asset_roots: Vec::new(),
-            component_assets_out: None,
+            modules_out: None,
+            publishes_lazy_scripts: false,
             metafile: None,
             base_path: None,
         };
@@ -2459,14 +2598,16 @@ mod tests {
                     components: Vec::new(),
                     projection_manifests: Vec::new(),
                     asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
-                    css_public_base: None,
+                    asset_base: None,
+                    component_modules: Vec::new(),
                     legal_comments: LegalComments::Inline,
                 },
                 app_dir: app.path().to_path_buf(),
                 state_file: Some(app.path().join("state.json")),
                 token_file: None,
                 component_asset_roots: Vec::new(),
-                component_assets_out: None,
+                modules_out: None,
+                publishes_lazy_scripts: false,
                 metafile: None,
                 base_path: None,
             };
@@ -2512,14 +2653,16 @@ mod tests {
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
-                css_public_base: None,
+                asset_base: None,
+                component_modules: Vec::new(),
                 legal_comments: LegalComments::Inline,
             },
             app_dir: app.path().to_path_buf(),
             state_file: Some(app.path().join("state.json")),
             token_file: None,
             component_asset_roots: Vec::new(),
-            component_assets_out: None,
+            modules_out: None,
+            publishes_lazy_scripts: false,
             metafile: None,
             base_path: None,
         };
@@ -2555,14 +2698,16 @@ mod tests {
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
-                css_public_base: None,
+                asset_base: None,
+                component_modules: Vec::new(),
                 legal_comments: LegalComments::Inline,
             },
             app_dir: app.path().to_path_buf(),
             state_file: Some(app.path().join("state.json")),
             token_file: None,
             component_asset_roots: Vec::new(),
-            component_assets_out: None,
+            modules_out: None,
+            publishes_lazy_scripts: false,
             metafile: None,
             base_path: None,
         };
@@ -2585,14 +2730,16 @@ mod tests {
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
-                css_public_base: None,
+                asset_base: None,
+                component_modules: Vec::new(),
                 legal_comments: LegalComments::Inline,
             },
             app_dir: app.path().to_path_buf(),
             state_file: None,
             token_file: None,
             component_asset_roots: Vec::new(),
-            component_assets_out: None,
+            modules_out: None,
+            publishes_lazy_scripts: false,
             metafile: None,
             base_path: None,
         };
@@ -2614,14 +2761,16 @@ mod tests {
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
-                css_public_base: None,
+                asset_base: None,
+                component_modules: Vec::new(),
                 legal_comments: LegalComments::Inline,
             },
             app_dir: app.path().to_path_buf(),
             state_file: Some(app.path().join("state.json")),
             token_file: None,
             component_asset_roots: Vec::new(),
-            component_assets_out: None,
+            modules_out: None,
+            publishes_lazy_scripts: false,
             metafile: None,
             base_path: None,
         };
@@ -2849,8 +2998,9 @@ mod tests {
                 rendered_html: String::new(),
                 css_files: HashMap::new(),
                 component_assets: HashMap::new(),
+                lazy_packs: HashMap::new(),
                 protocol: Some(protocol),
-                state_data: Some(Value::Object(serde_json::Map::new())),
+                state_data: Some(Arc::new(Value::Object(serde_json::Map::new()))),
                 token_css: None,
                 rebuild_error: None,
                 entry: "index.html".to_string(),
@@ -2861,6 +3011,7 @@ mod tests {
             api: Some(test_api_context(api_port)),
             plugin: None,
             base_path: None,
+            asset_prefix: None,
             chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
                 4,
                 StreamingWriter::CHUNK_TARGET + 1024,
@@ -3155,14 +3306,16 @@ mod tests {
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
-                css_public_base: None,
+                asset_base: None,
+                component_modules: Vec::new(),
                 legal_comments: LegalComments::Inline,
             },
             app_dir: app.path().to_path_buf(),
             state_file: Some(app.path().join("state.json")),
             token_file: None,
             component_asset_roots: Vec::new(),
-            component_assets_out: None,
+            modules_out: None,
+            publishes_lazy_scripts: false,
             metafile: None,
             base_path: None,
         };
@@ -3184,7 +3337,7 @@ mod tests {
             app_dir: dir.path().to_path_buf(),
             state_file: Some(dir.path().join("state.json")),
             serve_dir: Some(dir.path().join("public")),
-            component_assets_out: None,
+            modules_out: None,
             metafile: None,
         };
         let watched = paths.watch_paths();
@@ -3209,14 +3362,16 @@ mod tests {
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
-                css_public_base: None,
+                asset_base: None,
+                component_modules: Vec::new(),
                 legal_comments: LegalComments::Inline,
             },
             app_dir,
             state_file: Some(manifest_dir.join("../../examples/app/hello-world/data/state.json")),
             token_file: None,
             component_asset_roots: Vec::new(),
-            component_assets_out: None,
+            modules_out: None,
+            publishes_lazy_scripts: false,
             metafile: None,
             base_path: None,
         };
@@ -3238,6 +3393,7 @@ mod tests {
                 rendered_html: "<html><body>ok</body></html>".to_string(),
                 css_files: HashMap::new(),
                 component_assets: HashMap::new(),
+                lazy_packs: HashMap::new(),
                 protocol: None,
                 state_data: None,
                 token_css: None,
@@ -3250,6 +3406,7 @@ mod tests {
             api: None,
             plugin: None,
             base_path: None,
+            asset_prefix: None,
             chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
                 4,
                 StreamingWriter::CHUNK_TARGET + 1024,
@@ -3311,6 +3468,7 @@ mod tests {
                 rendered_html: "<html><body>stale ok</body></html>".to_string(),
                 css_files: HashMap::new(),
                 component_assets: HashMap::new(),
+                lazy_packs: HashMap::new(),
                 protocol: None,
                 state_data: None,
                 token_css: None,
@@ -3325,6 +3483,7 @@ mod tests {
             api: None,
             plugin: None,
             base_path: None,
+            asset_prefix: None,
             chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
                 4,
                 StreamingWriter::CHUNK_TARGET + 1024,
@@ -3373,7 +3532,7 @@ mod tests {
             .render_partial(state.clone(), "index.html", "/", "")
             .unwrap();
         let context = test_route_context(protocol);
-        context.state.lock().unwrap().state_data = Some(state);
+        context.state.lock().unwrap().state_data = Some(Arc::new(state));
         let app = actix_test::init_service(
             App::new()
                 .app_data(context)
@@ -3552,6 +3711,7 @@ mod tests {
                 rendered_html: "<html><body>stale ok</body></html>".to_string(),
                 css_files: HashMap::new(),
                 component_assets: HashMap::new(),
+                lazy_packs: HashMap::new(),
                 protocol: None,
                 state_data: None,
                 token_css: None,
@@ -3566,6 +3726,7 @@ mod tests {
             api: Some(test_api_context(port)),
             plugin: None,
             base_path: None,
+            asset_prefix: None,
             chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
                 4,
                 StreamingWriter::CHUNK_TARGET + 1024,
@@ -3626,6 +3787,7 @@ mod tests {
                 rendered_html: "<html><body>stale ok</body></html>".to_string(),
                 css_files: HashMap::new(),
                 component_assets: HashMap::new(),
+                lazy_packs: HashMap::new(),
                 protocol: None,
                 state_data: None,
                 token_css: None,
@@ -3640,6 +3802,7 @@ mod tests {
             api: Some(test_api_context(port)),
             plugin: None,
             base_path: None,
+            asset_prefix: None,
             chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
                 4,
                 StreamingWriter::CHUNK_TARGET + 1024,
@@ -3685,7 +3848,8 @@ mod tests {
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
-                css_public_base: None,
+                asset_base: None,
+                component_modules: Vec::new(),
                 legal_comments: LegalComments::Inline,
             },
             app_dir: app.path().to_path_buf(),
@@ -3697,7 +3861,8 @@ mod tests {
                 )]),
             }),
             component_asset_roots: Vec::new(),
-            component_assets_out: None,
+            modules_out: None,
+            publishes_lazy_scripts: false,
             metafile: None,
             base_path: None,
         };
@@ -3705,6 +3870,7 @@ mod tests {
             rendered_html: "<html><body>stale ok</body></html>".to_string(),
             css_files: HashMap::new(),
             component_assets: HashMap::new(),
+            lazy_packs: HashMap::new(),
             protocol: None,
             state_data: None,
             token_css: None,
@@ -3756,7 +3922,8 @@ mod tests {
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
-                css_public_base: None,
+                asset_base: None,
+                component_modules: Vec::new(),
                 legal_comments: LegalComments::Inline,
             },
             app_dir: app.path().to_path_buf(),
@@ -3768,7 +3935,8 @@ mod tests {
                 )]),
             }),
             component_asset_roots: Vec::new(),
-            component_assets_out: None,
+            modules_out: None,
+            publishes_lazy_scripts: false,
             metafile: None,
             base_path: None,
         };
@@ -3776,6 +3944,7 @@ mod tests {
             rendered_html: String::new(),
             css_files: HashMap::new(),
             component_assets: HashMap::new(),
+            lazy_packs: HashMap::new(),
             protocol: None,
             state_data: None,
             token_css: None,
@@ -3823,7 +3992,8 @@ mod tests {
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
-                css_public_base: None,
+                asset_base: None,
+                component_modules: Vec::new(),
                 legal_comments: LegalComments::Inline,
             },
             app_dir: app.path().to_path_buf(),
@@ -3835,7 +4005,8 @@ mod tests {
                 )]),
             }),
             component_asset_roots: Vec::new(),
-            component_assets_out: None,
+            modules_out: None,
+            publishes_lazy_scripts: false,
             metafile: None,
             base_path: None,
         };
@@ -3871,14 +4042,16 @@ mod tests {
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
-                css_public_base: None,
+                asset_base: None,
+                component_modules: Vec::new(),
                 legal_comments: LegalComments::Inline,
             },
             app_dir: app.path().to_path_buf(),
             state_file: None,
             token_file: None,
             component_asset_roots: vec!["lazy-panel".to_string()],
-            component_assets_out: Some(generated.clone()),
+            modules_out: Some(generated.clone()),
+            publishes_lazy_scripts: true,
             metafile: None,
             base_path: None,
         };
@@ -3955,6 +4128,93 @@ mod tests {
     }
 
     #[test]
+    fn test_rebuilds_publish_lazy_scripts_module_only_to_modules_out() {
+        let app = create_app_dir(&[
+            ("index.html", "<app-shell></app-shell>"),
+            (
+                "app-shell.html",
+                r#"<if condition="open" lazy><settings-panel></settings-panel></if>"#,
+            ),
+            ("settings-panel.html", "<p>Settings</p>"),
+            ("settings-panel.ts", "export {};"),
+        ]);
+        let generated = app.path().join(".webui");
+        let mut config = RenderConfig {
+            app_args: AppArgs {
+                app: app.path().to_path_buf(),
+                entry: "index.html".to_string(),
+                css: CssStrategy::Link,
+                dom: DomStrategy::Shadow,
+                css_bundle: false,
+                plugin: Some(Plugin::WebUI),
+                components: Vec::new(),
+                projection_manifests: Vec::new(),
+                asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
+                asset_base: None,
+                component_modules: Vec::new(),
+                legal_comments: LegalComments::Inline,
+            },
+            app_dir: app.path().to_path_buf(),
+            state_file: None,
+            token_file: None,
+            component_asset_roots: Vec::new(),
+            modules_out: Some(generated.clone()),
+            publishes_lazy_scripts: true,
+            metafile: Some(app.path().join("build.meta.json")),
+            base_path: None,
+        };
+        let result = build_and_render(&config, None).unwrap();
+        assert!(result.has_lazy_scripts);
+        let module_path = generated.join(webui::LAZY_SCRIPTS_MODULE);
+        let module = fs::read_to_string(&module_path).unwrap();
+        assert!(
+            module.contains(r#""settings-panel": () => import("../settings-panel.ts"),"#),
+            "{module}"
+        );
+        let report: serde_json::Value =
+            serde_json::from_slice(&fs::read(app.path().join("build.meta.json")).unwrap()).unwrap();
+        assert_eq!(
+            report["lazyPacks"][0]["scripts"],
+            serde_json::json!(["../settings-panel.ts"])
+        );
+
+        let before = fs::metadata(&module_path).unwrap().modified().unwrap();
+        let declaration_path = generated.join(webui::LAZY_SCRIPTS_DECLARATION);
+        assert!(fs::read_to_string(&declaration_path)
+            .unwrap()
+            .contains("import '@microsoft/webui-framework/lazy.js';"));
+        let declared = fs::metadata(&declaration_path).unwrap().modified().unwrap();
+        build_and_render(&config, None).unwrap();
+        assert_eq!(
+            fs::metadata(&module_path).unwrap().modified().unwrap(),
+            before
+        );
+        assert_eq!(
+            fs::metadata(&declaration_path).unwrap().modified().unwrap(),
+            declared
+        );
+
+        // A watch rebuild that maps the tag rewrites the module in place.
+        config.app_args.component_modules = vec![(
+            "settings-panel".to_string(),
+            "@contoso/settings.js".to_string(),
+        )];
+        build_and_render(&config, None).unwrap();
+        assert!(fs::read_to_string(&module_path)
+            .unwrap()
+            .contains(r#"import("@contoso/settings.js")"#));
+
+        // A server-owned component asset directory never receives the module.
+        let owned = TempDir::new().unwrap();
+        config.modules_out = Some(owned.path().to_path_buf());
+        config.publishes_lazy_scripts = false;
+        let result = build_and_render(&config, None).unwrap();
+        assert!(result.has_lazy_scripts);
+        assert!(!owned.path().join(webui::LAZY_SCRIPTS_MODULE).exists());
+        assert!(!owned.path().join(webui::LAZY_SCRIPTS_DECLARATION).exists());
+    }
+
+    #[test]
     fn test_successful_rebuild_replaces_metafile_and_failure_preserves_it() {
         let app = create_app_dir(&[
             ("index.html", "<app-shell></app-shell>"),
@@ -3973,14 +4233,16 @@ mod tests {
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
-                css_public_base: None,
+                asset_base: None,
+                component_modules: Vec::new(),
                 legal_comments: LegalComments::Inline,
             },
             app_dir: app.path().to_path_buf(),
             state_file: None,
             token_file: None,
             component_asset_roots: vec!["lazy-panel".to_string()],
-            component_assets_out: None,
+            modules_out: None,
+            publishes_lazy_scripts: false,
             metafile: Some(metafile.clone()),
             base_path: None,
         };
@@ -4003,10 +4265,10 @@ mod tests {
         .unwrap();
         assert!(build_and_render(&config, None).is_err());
         assert_eq!(fs::read_to_string(&metafile).unwrap(), second);
-        let component_assets_out = app.path().join(".webui");
-        let ignored = watcher_ignore_paths(Some(&metafile), Some(&component_assets_out));
+        let modules_out = app.path().join(".webui");
+        let ignored = watcher_ignore_paths(Some(&metafile), Some(&modules_out));
         assert!(ignored.contains(&metafile::watch_ignore_paths(&metafile)[1]));
-        assert!(ignored.contains(&component_assets_out));
+        assert!(ignored.contains(&modules_out));
         assert!(!metafile_temp_directory(&metafile).exists());
         assert!(
             fs::read_dir(app.path()).unwrap().all(|entry| !entry
@@ -4025,26 +4287,20 @@ mod tests {
         fs::create_dir(&app).unwrap();
 
         let equal_error =
-            validate_component_asset_output_watch_root(Some(&app), std::slice::from_ref(&app))
-                .unwrap_err();
+            validate_modules_out_watch_root(Some(&app), std::slice::from_ref(&app)).unwrap_err();
         assert!(equal_error
             .to_string()
             .contains("cannot equal or contain watched source path"));
 
-        let parent_error = validate_component_asset_output_watch_root(
-            Some(root.path()),
-            std::slice::from_ref(&app),
-        )
-        .unwrap_err();
+        let parent_error =
+            validate_modules_out_watch_root(Some(root.path()), std::slice::from_ref(&app))
+                .unwrap_err();
         assert!(parent_error
             .to_string()
             .contains("cannot equal or contain watched source path"));
 
-        validate_component_asset_output_watch_root(
-            Some(&app.join(".webui")),
-            std::slice::from_ref(&app),
-        )
-        .unwrap();
+        validate_modules_out_watch_root(Some(&app.join(".webui")), std::slice::from_ref(&app))
+            .unwrap();
     }
 
     #[test]
@@ -4117,7 +4373,8 @@ mod tests {
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
-                css_public_base: None,
+                asset_base: None,
+                component_modules: Vec::new(),
                 legal_comments: LegalComments::Inline,
             },
             app_dir: app.path().to_path_buf(),
@@ -4129,7 +4386,8 @@ mod tests {
                 )]),
             }),
             component_asset_roots: roots,
-            component_assets_out: None,
+            modules_out: None,
+            publishes_lazy_scripts: false,
             metafile: None,
             base_path: None,
         };
@@ -4322,6 +4580,7 @@ mod tests {
                     "components/lazy-panel.webui.js".to_string(),
                     "export default {\"type\":\"webui-component-asset\"};".to_string(),
                 )]),
+                lazy_packs: HashMap::new(),
                 protocol: None,
                 state_data: None,
                 token_css: None,
@@ -4334,6 +4593,7 @@ mod tests {
             api: None,
             plugin: None,
             base_path: None,
+            asset_prefix: None,
             chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
                 4,
                 StreamingWriter::CHUNK_TARGET + 1024,
@@ -4383,5 +4643,255 @@ mod tests {
             actix_test::read_body(response).await,
             ":host { color: red; }"
         );
+    }
+
+    #[actix_web::test]
+    async fn test_dev_server_builds_and_serves_lazy_packs() {
+        let app_dir = create_app_dir(&[
+            (
+                "index.html",
+                "<html><head></head><body><app-shell></app-shell></body></html>",
+            ),
+            (
+                "app-shell.html",
+                r#"<button>Open</button><if condition="open" lazy="idle"><p>Lazy body</p></if>"#,
+            ),
+            ("app-shell.ts", "export {};"),
+        ]);
+        let config = RenderConfig {
+            app_args: AppArgs {
+                app: app_dir.path().to_path_buf(),
+                entry: "index.html".to_string(),
+                css: CssStrategy::Link,
+                dom: DomStrategy::Shadow,
+                css_bundle: false,
+                plugin: Some(Plugin::WebUI),
+                components: Vec::new(),
+                projection_manifests: Vec::new(),
+                asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
+                asset_base: None,
+                component_modules: Vec::new(),
+                legal_comments: LegalComments::Inline,
+            },
+            app_dir: app_dir.path().to_path_buf(),
+            state_file: None,
+            token_file: None,
+            component_asset_roots: Vec::new(),
+            modules_out: None,
+            publishes_lazy_scripts: false,
+            metafile: None,
+            base_path: None,
+        };
+        let result = build_and_render(&config, None).unwrap();
+        assert_eq!(result.lazy_packs.len(), 1);
+        let (path, pack) = result.lazy_packs.iter().next().unwrap();
+        assert!(path.starts_with("_webui/packs/app-shell."), "{path}");
+        assert!(pack.starts_with(r#"{"type":"webui-pack""#), "{pack}");
+        assert!(
+            result
+                .html
+                .contains(&format!(r#""lp":{{"app-shell::lazy:@0":"{path}"}}"#)),
+            "owner metadata references the pack: {}",
+            result.html
+        );
+        assert!(!result.html.contains("Lazy body"));
+
+        let context = web::Data::new(ServerContext {
+            state: Arc::new(Mutex::new(SharedState {
+                rendered_html: result.html,
+                css_files: HashMap::new(),
+                component_assets: HashMap::new(),
+                lazy_packs: result.lazy_packs.clone(),
+                protocol: Some(result.protocol),
+                state_data: None,
+                token_css: None,
+                rebuild_error: None,
+                entry: "index.html".to_string(),
+            })),
+            livereload: None,
+            assets_dir: None,
+            component_assets_dir: None,
+            api: None,
+            plugin: Some(Plugin::WebUI),
+            base_path: None,
+            asset_prefix: None,
+            chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
+                4,
+                StreamingWriter::CHUNK_TARGET + 1024,
+            )),
+        });
+        let app = actix_test::init_service(
+            App::new()
+                .app_data(context)
+                .route("/{tail:.*}", web::get().to(handle_asset)),
+        )
+        .await;
+        let response = actix_test::call_service(
+            &app,
+            actix_test::TestRequest::get()
+                .uri(&format!("/{path}"))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get("content-type").unwrap(),
+            "application/json"
+        );
+        assert_eq!(response.headers().get("cache-control").unwrap(), "no-cache");
+        assert_eq!(
+            actix_test::read_body(response).await.as_ref(),
+            pack.as_bytes()
+        );
+    }
+
+    #[test]
+    fn dev_asset_base_maps_paths_and_rejects_other_hosts() {
+        for (base, expected) in [
+            ("/static/", DevAssetBase::Prefix("static/".to_string())),
+            ("static/", DevAssetBase::Prefix("static/".to_string())),
+            (
+                "./static/b1/",
+                DevAssetBase::Prefix("static/b1/".to_string()),
+            ),
+            ("/", DevAssetBase::Root),
+            ("./", DevAssetBase::Root),
+            ("https://cdn.example.com/app/", DevAssetBase::Unhosted),
+            ("http://localhost:4000/", DevAssetBase::Unhosted),
+            ("../assets/", DevAssetBase::Unhosted),
+        ] {
+            assert_eq!(dev_asset_base(base), expected, "{base}");
+        }
+        let hint = unhosted_asset_base_hint("https://cdn.example.com/app/");
+        assert!(hint.contains("--asset-base /static/"), "{hint}");
+    }
+
+    fn asset_prefix_context(
+        asset_prefix: Option<&str>,
+        servedir: &Path,
+    ) -> web::Data<ServerContext> {
+        web::Data::new(ServerContext {
+            state: Arc::new(Mutex::new(SharedState {
+                rendered_html: String::new(),
+                css_files: HashMap::from([(
+                    "my-card.css".to_string(),
+                    ".card { color: red; }".to_string(),
+                )]),
+                component_assets: HashMap::from([(
+                    "my-panel.webui.js".to_string(),
+                    "export {};".to_string(),
+                )]),
+                lazy_packs: HashMap::from([(
+                    "_webui/packs/app.0123456789abcdef.json".to_string(),
+                    r#"{"type":"webui-pack"}"#.to_string(),
+                )]),
+                protocol: None,
+                state_data: None,
+                token_css: None,
+                rebuild_error: None,
+                entry: "index.html".to_string(),
+            })),
+            livereload: None,
+            assets_dir: Some(servedir.canonicalize().unwrap()),
+            component_assets_dir: None,
+            api: None,
+            plugin: None,
+            base_path: None,
+            asset_prefix: asset_prefix.map(str::to_string),
+            chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
+                4,
+                StreamingWriter::CHUNK_TARGET + 1024,
+            )),
+        })
+    }
+
+    async fn asset_status(context: web::Data<ServerContext>, uri: &str) -> (StatusCode, String) {
+        let app = actix_test::init_service(
+            App::new()
+                .app_data(context)
+                .route("/{tail:.*}", web::get().to(handle_asset)),
+        )
+        .await;
+        let response =
+            actix_test::call_service(&app, actix_test::TestRequest::get().uri(uri).to_request())
+                .await;
+        let status = response.status();
+        let body = actix_test::read_body(response).await;
+        (status, String::from_utf8_lossy(&body).into_owned())
+    }
+
+    #[actix_web::test]
+    async fn test_path_asset_base_serves_build_outputs_under_its_prefix() {
+        let servedir = create_app_dir(&[("chunk.js", "export const chunk = 1;")]);
+        for uri in [
+            "/my-card.css",
+            "/static/my-card.css",
+            "/static/my-panel.webui.js",
+            "/static/_webui/packs/app.0123456789abcdef.json",
+            "/static/chunk.js",
+            "/_webui/packs/app.0123456789abcdef.json",
+            "/chunk.js",
+        ] {
+            let context = asset_prefix_context(Some("static/"), servedir.path());
+            let (status, body) = asset_status(context, uri).await;
+            assert_eq!(status, StatusCode::OK, "{uri}");
+            assert!(!body.is_empty(), "{uri}");
+        }
+
+        // Without a path base, the prefix is an ordinary missing asset.
+        let context = asset_prefix_context(None, servedir.path());
+        let (status, _) = asset_status(context, "/static/my-card.css").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn test_dev_server_renders_with_the_asset_base() {
+        let app_dir = create_app_dir(&[
+            (
+                "index.html",
+                "<html><head></head><body><my-card></my-card></body></html>",
+            ),
+            ("my-card.html", "<template><p>Card</p></template>"),
+            ("my-card.css", "p { color: red; }"),
+        ]);
+        let config = RenderConfig {
+            app_args: AppArgs {
+                app: app_dir.path().to_path_buf(),
+                entry: "index.html".to_string(),
+                css: CssStrategy::Link,
+                dom: DomStrategy::Shadow,
+                css_bundle: false,
+                plugin: Some(Plugin::WebUI),
+                components: Vec::new(),
+                projection_manifests: Vec::new(),
+                asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
+                asset_base: Some("/static/".to_string()),
+                component_modules: Vec::new(),
+                legal_comments: LegalComments::Inline,
+            },
+            app_dir: app_dir.path().to_path_buf(),
+            state_file: None,
+            token_file: None,
+            component_asset_roots: Vec::new(),
+            modules_out: None,
+            publishes_lazy_scripts: false,
+            metafile: None,
+            base_path: None,
+        };
+        let result = build_and_render(&config, None).unwrap();
+        assert!(
+            result
+                .html
+                .contains(r#"<link rel="stylesheet" href="&#x2F;static&#x2F;my-card.css""#),
+            "{}",
+            result.html
+        );
+        assert!(
+            result.html.contains(r#""assetBase":"/static/""#),
+            "{}",
+            result.html
+        );
+        // The served file keeps its name; the prefix maps to the build output.
+        assert!(result.css_files.contains_key("my-card.css"));
     }
 }

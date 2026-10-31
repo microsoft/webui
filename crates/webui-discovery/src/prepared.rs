@@ -29,6 +29,10 @@ pub struct ComponentFileSource {
     pub css: Option<ComponentFile>,
     /// Whether authored browser code owns the custom element.
     pub is_client_owned: bool,
+    /// The authored module that defines the custom element, when known.
+    ///
+    /// Recorded as discovered; loading never reads it.
+    pub script_path: Option<PathBuf>,
 }
 
 /// A selected file and its owning package boundary.
@@ -107,6 +111,7 @@ fn hash_source(input: &ComponentFileSource, hasher: &mut DefaultHasher) {
     input.html.hash(hasher);
     input.css.hash(hasher);
     input.is_client_owned.hash(hasher);
+    input.script_path.hash(hasher);
 }
 
 pub(crate) fn fingerprint(package_json: &str, inputs: &[ComponentFileSource]) -> Result<u64> {
@@ -145,6 +150,7 @@ pub(crate) fn load(
             html_content,
             css_content,
             is_client_owned: input.is_client_owned,
+            script_path: input.script_path,
             source: source.to_string(),
         });
     }
@@ -314,6 +320,7 @@ mod tests {
                 },
                 css: None,
                 is_client_owned: false,
+                script_path: None,
             }];
             assert!(fingerprint("{}", &inputs).is_err());
             let mut file = fs::File::create(&path)?;

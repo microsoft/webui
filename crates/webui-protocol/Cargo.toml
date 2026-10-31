@@ -19,6 +19,8 @@ name = "webui_protocol"
 [features]
 # Enable the build-time state-projection manifest contract and validation.
 projection-manifest = ["dep:sha2"]
+# Build-time artifact identity; runtime-only consumers use the stored identity.
+content-identity = ["dep:sha2"]
 # Enable to regenerate src/gen_webui.rs from proto/webui.proto via prost-build.
 # Off by default so crates.io consumers don't pull in prost-build.
 regenerate-proto = ["dep:prost-build"]

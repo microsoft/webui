@@ -64,7 +64,20 @@ export type CompiledConditionFn = (
 export type CompiledCondition = [fn: CompiledConditionFn, paths: string[]];
 export type SerializedCompiledCondition = [fnIndex: number, paths: string[]];
 export type TemplateCondition = CompiledCondition | SerializedCompiledCondition;
-export type CompiledConditionalMeta = [condition: TemplateCondition, blockIndex: number, slot: TemplateSlot];
+/** Local block index or an independently delivered template-fragment identity. */
+export type TemplateBlockReference = number | string;
+/**
+ * Lazy region prefetch trigger: 1 intent, 2 idle, 3 eager (the task after
+ * hydration), 4 demand (activation or explicit `$prefetch()` only).
+ */
+export type LazyTrigger = 1 | 2 | 3 | 4;
+export type CompiledConditionalMeta = [
+  condition: TemplateCondition,
+  blockIndex: TemplateBlockReference,
+  slot: TemplateSlot,
+  /** Present only on lazy regions, whose `blockIndex` is the region identity. */
+  trigger?: LazyTrigger,
+];
 
 export type CompiledAttrMeta =
   | [name: string, kind: 0, value: string]
@@ -75,7 +88,7 @@ export type CompiledAttrMeta =
 export type CompiledRepeatMeta = [
   collection: string,
   itemVar: string,
-  blockIndex: number,
+  blockIndex: TemplateBlockReference,
   slot: TemplateSlot,
   keyPath?: string,
 ];
@@ -106,6 +119,13 @@ export type CompiledSSRLayout = [
 ];
 
 export interface TemplateBlockMeta {
+  /** Compiled owner refs for v3 templates, using the same element ordinal space. */
+  rf?: [name: string, target: TemplateNodeIndex][];
+  /** Hostless external section identity and its owning template. */
+  f?: string;
+  o?: string;
+  /** Marks a publicly addressable deferred body rather than an internal block. */
+  e?: 1;
   h: string;
   /** Required for SSR adoption; client-only mounting does not use this layout. */
   l?: CompiledSSRLayout;
@@ -118,6 +138,18 @@ export interface TemplateBlockMeta {
 }
 
 export interface TemplateMeta extends TemplateBlockMeta {
+  /** Current compiled-template format; compiler and runtime must match. */
+  v: 3;
+  /** Direct compiled component dependencies; absent is empty. */
+  d?: readonly string[];
+  /** Pack URLs of the lazy regions whose conditions this template contains. */
+  lp?: Readonly<Record<string, string>>;
+  /**
+   * Link builds only: for each region in `lp`, the base-relative stylesheet
+   * paths its pack registers, so they can download beside the pack.
+   */
+  lc?: Readonly<Record<string, readonly string[]>>;
+  /** Flat table of local conditional and repeat bodies, indexed from this owner. */
   b?: TemplateBlockMeta[];
   re?: [string, string, CompiledEventArgs][];
   /** Component-level state roots referenced by template bindings. */

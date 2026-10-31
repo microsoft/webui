@@ -146,6 +146,7 @@ fn enqueue_dependency(
     let dependency = match fragment {
         Some(Fragment::Component(component)) => Some(component.fragment_id.as_str()),
         Some(Fragment::ForLoop(for_loop)) => Some(for_loop.fragment_id.as_str()),
+        Some(Fragment::IfCond(if_cond)) if if_cond.lazy => return Err(deferred_unsupported(owner)),
         Some(Fragment::IfCond(if_cond)) => Some(if_cond.fragment_id.as_str()),
         Some(Fragment::Attribute(attribute)) if !attribute.template.is_empty() => {
             Some(attribute.template.as_str())
@@ -171,7 +172,21 @@ fn routes_unsupported(owner: &str) -> WebUIError {
     .component(owner)
     .element("route")
     .help(
-        "remove --emit-component-assets and use @microsoft/webui-router, or remove <route> and import generated component roots from application code",
+        "remove --emit-component-assets and use @microsoft/webui-delivery, or remove <route> and import generated component roots from application code",
     );
     WebUIError::ComponentAssets(Box::new(diagnostic))
+}
+
+#[cold]
+#[inline(never)]
+fn deferred_unsupported(owner: &str) -> WebUIError {
+    WebUIError::ComponentAssets(Box::new(
+        webui_parser::Diagnostic::error("lazy regions cannot be used inside static component assets")
+            .code(webui_parser::codes::COMPONENT_ASSETS_WITH_LAZY)
+            .component(owner)
+            .element("if")
+            .help(
+                "remove lazy from this <if>, or render this UI from a template with <if lazy> instead of a component asset; component assets are for UI that application code creates outside templates",
+            ),
+    ))
 }

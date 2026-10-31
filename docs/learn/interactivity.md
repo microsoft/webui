@@ -14,6 +14,83 @@ WebUI uses [Trusted Types](/build/hydration#trusted-types) automatically for com
 templates. Applications control enforcement through CSP; raw state HTML is not
 promoted through the compiler policy.
 
+## Runtime entrypoints
+
+The default `@microsoft/webui-framework` entry exports component classes,
+decorators, and data helpers without installing a runtime. Component modules
+import their APIs normally:
+
+```typescript
+import { WebUIElement, observable } from '@microsoft/webui-framework';
+```
+
+Start rendering once in the application entry, after its imports.
+Include `styles.js` when using managed component CSS or template stylesheet links:
+
+```typescript
+import { startRuntime } from '@microsoft/webui-framework/runtime.js';
+import '@microsoft/webui-framework/styles.js';
+import './my-component.js';
+
+startRuntime();
+```
+
+This composition supports Link, Style, and Module strategies. An unstyled app
+omits `styles.js`. A renderer-only application that encounters managed component styles
+gets an actionable error rather than silently mounting unstyled content.
+The core still includes conditions, repeats, events, refs, and reactive state;
+it is not a different template language.
+Component modules declare their classes with `.define()`. `startRuntime()`
+registers available declarations synchronously; declarations without metadata
+wait for it to arrive. Repeated startup calls do not repeat installation.
+
+| Entry | Use |
+| --- | --- |
+| Package root | Pure component, decorator, and data API exports |
+| `runtime.js` | `startRuntime()` starts compiled hydration/client mounting and scriptless hosts, without stylesheet installation |
+| `styles.js` | Component stylesheet installation and readiness |
+| `templates.js` | `getTemplate()` and `registerTemplateData()` without installing a renderer |
+| `template-cache.js` | Optional lifetime-aware template collection |
+| `lazy.js` | Loads `<if lazy>` template packs, runs their prefetch triggers, and releases inactive regions; import it through the generated `lazy.webui.js` |
+| `streaming.js` | Progressive HTML streaming hydration |
+| `lazy-hydration.js` | Visibility-based hydration coordination |
+| `interaction-hydration.js` | Interaction-based activation |
+
+### Releasing unused templates
+
+Import the cache entry before `startRuntime()` or any template lookups. Rebuild the protocol
+with the matching compiler when enabling this capability.
+Independently bundled application entries must share one framework instance.
+
+```typescript
+import { startRuntime } from '@microsoft/webui-framework/runtime.js';
+import '@microsoft/webui-framework/styles.js';
+import { collectTemplates } from '@microsoft/webui-framework/template-cache.js';
+import './app-shell.js';
+
+startRuntime();
+
+// Later, release cached templates that no live component needs.
+const released = collectTemplates();
+```
+
+`collectTemplates(keep?)` returns the number of cache entries released, not the
+number of objects already garbage-collected. Pass component tags in `keep` to
+retain their ordinary dependencies for a later operation. Live components and
+existing SSR hosts keep the templates they can still use; unused bodies become
+eligible for collection. The client inventory is reset conservatively so missing
+resources can be requested again.
+
+This does not unload imported JavaScript, custom-element definitions, or styles
+still needed by the document. Do not call collection on every state update.
+Older protocols without dependency metadata and late cache installation fail
+explicitly.
+
+[Lazy template bodies](./lazy) let an ordinary `<if>` keep complex UI out
+of initial delivery until it is needed. The build emits each body as a static
+template pack and a loader module for the components the body introduces;
+`lazy.js` loads both in the existing owner.
+
 ## Component Files
 
 Keep structure, styles, and behavior separate:
@@ -109,11 +186,14 @@ policy on its root template:
 </template>
 ```
 
-Import the optional coordinator once before component registration modules:
+Select the optional coordinator in the application entry before startup:
 
 ```typescript
+import { startRuntime } from '@microsoft/webui-framework/runtime.js';
 import '@microsoft/webui-framework/lazy-hydration.js';
 import './todo-row.js';
+
+startRuntime();
 ```
 
 This combines visibility-deferred hydration with `content-visibility: auto`.
@@ -357,6 +437,10 @@ focusInput(): void {
 (or the unquoted `w-ref={inputEl}`), never `w-ref="inputEl"`. The build fails
 with an actionable error otherwise.
 
+Refs inside `<if>` or `<for>` bodies are cleared to `undefined` when their owning
+view is removed. Declare those refs as optional, such as
+`inputEl?: HTMLInputElement`, and use them only while the body is mounted.
+
 `w-ref` is scalar. Reusing a name inside `<for>` writes the same property, so
 the last wired occurrence wins; repeat keys and positions do not create an
 indexed ref collection. For lookup by item identity, author a stable `id` and
@@ -516,13 +600,13 @@ The child emits data without depending on the parent's implementation.
 
 ## Loading Static Component Assets
 
-When you are not using `@microsoft/webui-router`, deferred UI can still be
+When you are not using `@microsoft/webui-delivery`, deferred UI can still be
 loaded from static files. Build the root components as assets:
 
 ```bash
 webui build ./src --out ./dist --plugin=webui \
   --emit-component-assets settings-dialog,mail-thread \
-  --component-assets-out ./.webui
+  --modules-out ./.webui
 ```
 
 WebUI writes stable intermediate ESM inputs into `.webui`: one module for each
@@ -534,7 +618,7 @@ protocol. Asset-only fragments and component records do not remain in
 `protocol.bin`.
 
 Static component assets and `<route>` cannot be used in the same build. Use
-`@microsoft/webui-router` for routed components, or use component assets for
+`@microsoft/webui-delivery` for routed components, or use component assets for
 non-routed deferred UI.
 
 During development, pass the same flag to `webui serve` so these roots are
@@ -543,7 +627,7 @@ validated and served without a separate build step:
 ```bash
 webui serve ./src --state ./data/state.json --plugin=webui \
   --emit-component-assets settings-dialog,mail-thread \
-  --component-assets-out ./.webui \
+  --modules-out ./.webui \
   --metafile ./component-assets-meta.json --watch
 ```
 

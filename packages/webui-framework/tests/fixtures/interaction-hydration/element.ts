@@ -1,11 +1,15 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+import { startRuntime } from '../../../src/runtime.js';
+import '../../../src/styles-entry.js';
 import {
   installInteractionHydration,
   isInteractionReplay,
 } from '../../../src/interaction-hydration.js';
 import { WebUIElement } from '../../../src/index.js';
+
+startRuntime();
 
 class TestInteraction extends WebUIElement {}
 

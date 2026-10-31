@@ -1,12 +1,15 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-//! Transactional publication of generated component ESM inputs.
+//! Transactional publication of generated ESM inputs: component assets and
+//! generated modules such as `lazy.webui.js`, with their declarations.
 
 #[path = "component_asset_output/transaction.rs"]
 mod transaction;
 
-use crate::{ComponentAssetFile, WebUIError};
+use crate::{
+    ComponentAssetFile, GeneratedModule, WebUIError, LAZY_SCRIPTS_DECLARATION, LAZY_SCRIPTS_MODULE,
+};
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
@@ -14,6 +17,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use transaction::Publication;
 
 type Result<T> = std::result::Result<T, WebUIError>;
+
+/// A generated file to publish, borrowed from its build result.
+struct OutputFile<'a> {
+    name: &'a str,
+    content: &'a str,
+}
 
 trait Context<T> {
     fn context(self, context: impl Into<String>) -> Result<T>;
@@ -58,7 +67,7 @@ static PUBLISH_ID: AtomicU64 = AtomicU64::new(0);
 /// Immutable payloads already published remain available to concurrent readers.
 #[must_use = "component asset publication failures must be handled"]
 pub fn publish(output_dir: &Path, files: &[ComponentAssetFile]) -> Result<()> {
-    publish_with(output_dir, files, || Ok(()))
+    publish_modules_with(output_dir, files, &[], || Ok(()))
 }
 
 /// Publish assets and finalize a related output within the rollback boundary.
@@ -76,12 +85,37 @@ pub fn publish_with<F>(output_dir: &Path, files: &[ComponentAssetFile], finish: 
 where
     F: FnOnce() -> Result<()>,
 {
-    validate_files(files)?;
+    publish_modules_with(output_dir, files, &[], finish)
+}
+
+/// Publish component assets and generated modules, such as
+/// [`LAZY_SCRIPTS_MODULE`] and its declarations, then finalize a related output.
+///
+/// Generated modules and their declarations are stable roots: they are
+/// replaced atomically after component dependencies, declarations before their
+/// modules, keep their identity and modification time when unchanged, and are
+/// restored if publication or `finish` fails.
+///
+/// # Errors
+///
+/// Returns the errors of [`publish_with`], and rejects a module or declaration
+/// whose file name is not a generated module or declaration name.
+#[must_use = "generated module publication failures must be handled"]
+pub fn publish_modules_with<F>(
+    output_dir: &Path,
+    files: &[ComponentAssetFile],
+    modules: &[GeneratedModule],
+    finish: F,
+) -> Result<()>
+where
+    F: FnOnce() -> Result<()>,
+{
+    let outputs = output_files(files, modules)?;
     validate_payload_directory(output_dir)?;
     fs::create_dir_all(output_dir)
         .with_context(|| format!("Failed to create {}", output_dir.display()))?;
-    let mut changed = Vec::with_capacity(files.len());
-    for file in files {
+    let mut changed = Vec::with_capacity(outputs.len());
+    for file in &outputs {
         if !unchanged_file(output_dir, file)? {
             changed.push(file);
         }
@@ -139,7 +173,7 @@ where
     result
 }
 
-fn is_root_file(file: &ComponentAssetFile) -> bool {
+fn is_root_file(file: &OutputFile<'_>) -> bool {
     !file.name.starts_with("components/")
 }
 
@@ -155,8 +189,13 @@ fn is_owned_file_name(name: &str) -> bool {
     }
 }
 
-fn validate_files(files: &[ComponentAssetFile]) -> Result<()> {
-    let mut seen = HashSet::with_capacity(files.len());
+/// Validate every name and borrow the files in publication order.
+fn output_files<'a>(
+    files: &'a [ComponentAssetFile],
+    modules: &'a [GeneratedModule],
+) -> Result<Vec<OutputFile<'a>>> {
+    let mut seen = HashSet::with_capacity(files.len() + modules.len());
+    let mut outputs = Vec::with_capacity(files.len() + modules.len());
     for file in files {
         if !is_owned_file_name(&file.name) || !seen.insert(file.name.as_str()) {
             return Err(WebUIError::InvalidBuildOptions(format!(
@@ -164,16 +203,40 @@ fn validate_files(files: &[ComponentAssetFile]) -> Result<()> {
                 file.name
             )));
         }
+        outputs.push(OutputFile {
+            name: &file.name,
+            content: &file.content,
+        });
     }
-    Ok(())
+    for module in modules {
+        let declaration = &module.declaration;
+        // Declarations publish first, so a type checker that sees the new
+        // module also finds its types.
+        for (name, content, expected) in [
+            (
+                &declaration.file_name,
+                &declaration.content,
+                LAZY_SCRIPTS_DECLARATION,
+            ),
+            (&module.file_name, &module.content, LAZY_SCRIPTS_MODULE),
+        ] {
+            if name != expected || !seen.insert(name.as_str()) {
+                return Err(WebUIError::InvalidBuildOptions(format!(
+                    "invalid or duplicate generated module path '{name}'"
+                )));
+            }
+            outputs.push(OutputFile { name, content });
+        }
+    }
+    Ok(outputs)
 }
 
-fn unchanged_file(output_dir: &Path, file: &ComponentAssetFile) -> Result<bool> {
-    let path = output_dir.join(&file.name);
+fn unchanged_file(output_dir: &Path, file: &OutputFile<'_>) -> Result<bool> {
+    let path = output_dir.join(file.name);
     match fs::symlink_metadata(&path) {
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
             return Err(WebUIError::InvalidBuildOptions(format!(
-                "Component asset output {} must be a regular file, not a directory or symlink",
+                "Generated module output {} must be a regular file, not a directory or symlink",
                 path.display()
             )));
         }
@@ -181,7 +244,7 @@ fn unchanged_file(output_dir: &Path, file: &ComponentAssetFile) -> Result<bool> 
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(error) => {
             return Err(error)
-                .with_context(|| format!("Failed to inspect component asset {}", path.display()));
+                .with_context(|| format!("Failed to inspect generated module {}", path.display()));
         }
     }
     match fs::read(&path) {
@@ -190,9 +253,8 @@ fn unchanged_file(output_dir: &Path, file: &ComponentAssetFile) -> Result<bool> 
             format!("Component asset content hash collision for {}", file.name),
         )),
         Ok(_) => Ok(false),
-        Err(error) => {
-            Err(error).with_context(|| format!("Failed to read component asset {}", path.display()))
-        }
+        Err(error) => Err(error)
+            .with_context(|| format!("Failed to read generated module {}", path.display())),
     }
 }
 
@@ -242,14 +304,14 @@ fn is_component_tag(tag: &str) -> bool {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
 }
 
-fn write_staged_file(temporary_dir: &Path, file: &ComponentAssetFile) -> Result<()> {
-    let path = temporary_dir.join(&file.name);
+fn write_staged_file(temporary_dir: &Path, file: &OutputFile<'_>) -> Result<()> {
+    let path = temporary_dir.join(file.name);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("Failed to create {}", parent.display()))?;
     }
-    fs::write(path, &file.content)
-        .with_context(|| format!("Failed to stage component asset {}", file.name))
+    fs::write(path, file.content)
+        .with_context(|| format!("Failed to stage generated module {}", file.name))
 }
 
 #[cfg(test)]
@@ -348,6 +410,81 @@ mod tests {
             fs::read_to_string(output.path().join(PAYLOAD)).unwrap(),
             "a"
         );
+    }
+
+    #[test]
+    fn generated_modules_are_stable_roots_that_keep_unchanged_times() {
+        let output = TempDir::new().unwrap();
+        let module = |content: &str| GeneratedModule::lazy_scripts(content.to_string());
+        let path = output.path().join(LAZY_SCRIPTS_MODULE);
+        let declaration = output.path().join(LAZY_SCRIPTS_DECLARATION);
+        publish_modules_with(output.path(), &[], &[module("first")], || Ok(())).unwrap();
+        assert_eq!(
+            fs::read_to_string(&declaration).unwrap(),
+            module("first").declaration.content
+        );
+        let before =
+            [&path, &declaration].map(|path| fs::metadata(path).unwrap().modified().unwrap());
+        publish_modules_with(output.path(), &[], &[module("first")], || Ok(())).unwrap();
+        assert_eq!(
+            [&path, &declaration].map(|path| fs::metadata(path).unwrap().modified().unwrap()),
+            before
+        );
+
+        let error = publish_modules_with(output.path(), &[], &[module("second")], || {
+            assert_eq!(fs::read_to_string(&path).unwrap(), "second");
+            Err(WebUIError::InvalidBuildOptions(
+                "metafile commit failed".to_string(),
+            ))
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("metafile commit failed"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "first");
+
+        publish_modules_with(
+            output.path(),
+            &[file("lazy-card.webui.js", "root")],
+            &[module("second")],
+            || Ok(()),
+        )
+        .unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "second");
+        assert_eq!(
+            fs::metadata(&declaration).unwrap().modified().unwrap(),
+            before[1],
+            "an unchanged declaration keeps its time when its module changes"
+        );
+        assert!(output.path().join("lazy-card.webui.js").is_file());
+
+        for name in ["other.js", "components/lazy.webui.js", "../lazy.webui.js"] {
+            let mut invalid = module("");
+            invalid.file_name = name.to_string();
+            assert!(publish_modules_with(output.path(), &[], &[invalid], || Ok(())).is_err());
+        }
+        for name in ["lazy.webui.js", "other.d.ts", "../lazy.webui.d.ts"] {
+            let mut invalid = module("");
+            invalid.declaration.file_name = name.to_string();
+            assert!(publish_modules_with(output.path(), &[], &[invalid], || Ok(())).is_err());
+        }
+        assert!(
+            publish_modules_with(output.path(), &[], &[module("a"), module("b")], || Ok(()))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn failed_first_publication_removes_the_new_module_and_declaration() {
+        let output = TempDir::new().unwrap();
+        let module = GeneratedModule::lazy_scripts("first".to_string());
+        let error = publish_modules_with(output.path(), &[], &[module], || {
+            Err(WebUIError::InvalidBuildOptions(
+                "metafile commit failed".to_string(),
+            ))
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("metafile commit failed"));
+        assert!(!output.path().join(LAZY_SCRIPTS_MODULE).exists());
+        assert!(!output.path().join(LAZY_SCRIPTS_DECLARATION).exists());
     }
 
     #[test]

@@ -30,6 +30,11 @@ export interface RenderedFixture {
   name: string;
   /** Full rendered HTML including template metadata, condition closures, and hydration markers. */
   html: string;
+  /** Opt-in for request/stream fixtures that reuse one compiled protocol. */
+  protocol?: Protocol;
+  render?: (state: string) => string;
+  /** Lazy-region packs by file name; serve them under `_webui/packs/` beside the page. */
+  packs?: ReadonlyMap<string, string>;
 }
 
 export interface RenderFixturesOptions {
@@ -60,7 +65,7 @@ function renderOne(
     : '{}';
 
   const configFile = resolve(fixturePath, 'webui.config.json');
-  const fixtureConfig: Record<string, string> = existsSync(configFile)
+  const fixtureConfig: Record<string, unknown> = existsSync(configFile)
     ? JSON.parse(readFileSync(configFile, 'utf-8'))
     : {};
 
@@ -108,6 +113,7 @@ function renderOne(
   const renderEntry = hasAuthoredEntry ? 'src/index.html' : 'index.html';
   const protocol = new Protocol(result.protocol, { plugin: 'webui' });
   let html = protocol.render(state, { entry: renderEntry }).toString('utf8');
+  let rerender: ((state: string) => string) | undefined;
 
   {
     const scriptPath = hasAuthoredEntry
@@ -121,15 +127,24 @@ function renderOne(
       ? ' type="module"'
       : '';
     const scriptTag = `<script${scriptType} src="${scriptPath}"></script>`;
-    const bodyEnd = html.lastIndexOf('</body>');
-    if (bodyEnd !== -1) {
-      html = html.slice(0, bodyEnd) + scriptTag + html.slice(bodyEnd);
-    } else {
-      html += scriptTag;
+    const inject = (source: string): string => {
+      const bodyEnd = source.lastIndexOf('</body>');
+      return bodyEnd === -1
+        ? source + scriptTag
+        : source.slice(0, bodyEnd) + scriptTag + source.slice(bodyEnd);
+    };
+    html = inject(html);
+    if (fixtureConfig.retainProtocol === true) {
+      rerender = state => inject(protocol.render(state, { entry: renderEntry }).toString('utf8'));
     }
   }
 
-  return { name, html };
+  let packs: Map<string, string> | undefined;
+  for (const pack of result.lazyPackFiles) {
+    (packs ??= new Map()).set(pack.fileName, pack.content);
+  }
+  if (rerender) return { name, html, protocol, render: rerender, packs };
+  return packs ? { name, html, packs } : { name, html };
 }
 
 interface AuthoredSourceMirror {

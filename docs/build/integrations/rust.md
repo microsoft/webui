@@ -36,6 +36,34 @@ serde_json = "1"
 
 The crate is published as `microsoft-webui` on crates.io; the bare `webui` name is owned by an unrelated project. Cargo's default rename rules mean items remain importable as `use webui::...` because the crate sets `[lib] name = "webui"` internally.
 
+## Lazy template packs
+
+[Lazy bodies](/learn/lazy) need no request-time API. `webui::build()`
+returns their packs in `BuildResult::lazy_pack_files`, and
+`webui::build_to_disk()` writes them; call `webui::write_lazy_packs(out_dir,
+&packs)` when you build in memory. Serve `<out>/_webui/packs/` as immutable
+static files. Templates reference packs by paths relative to the asset base
+(`BuildOptions::asset_base`, or `$webui.assetBase` per request).
+
+When the build has lazy regions, `BuildResult::lazy_scripts_module` is the
+generated `lazy.webui.js` (`webui::LAZY_SCRIPTS_MODULE`). It maps each region to
+dynamic imports of the scripted components it introduces that the page does
+not already load at startup; import it from your entry module so your bundler
+loads that code. Its `declaration` is `lazy.webui.d.ts`
+(`webui::LAZY_SCRIPTS_DECLARATION`), which gives TypeScript entries the lazy
+runtime's types without `allowJs`; write it next to the module. Relative
+specifiers start at `BuildOptions::modules_out`, or at `app_dir` without one.
+`build_to_disk()` writes both files to `modules_out`, defaulting to the output
+directory. Each `LazyPackFile` also reports its `region`, `owner`, `trigger`,
+`components`, `scripts`, `stylesheets`, and, when `metafile` is set,
+`brotli_bytes`; `path()`, `bytes()`, and `hash()` return its asset-base path,
+raw size, and content hash. `stylesheets` holds the paths, relative to the
+asset base, of the stylesheets the region loads with its pack in a
+`CssStrategy::Link` build (entries of `BuildResult::css_files`, including
+bundled chunks); it is empty for `Style` and `Module` builds, whose packs carry
+the CSS. A service worker that precaches a region needs its `path()`, its
+`stylesheets`, and the bundler outputs for its `scripts`.
+
 ## Examples
 
 These examples render an existing `dist/protocol.bin`. They buffer into a
@@ -195,7 +223,7 @@ Use `Protocol::matches_route(entry, path)` when only route existence is needed.
 ## Router-aware request helper
 
 Use `webui::server::serve_request` when one endpoint serves both initial HTML
-documents and `webui-router` JSON partials. Build the `ServeRequest` with the
+documents and `webui-delivery` JSON partials. Build the `ServeRequest` with the
 complete `RenderOptions` value for that HTTP response:
 
 ```rust
@@ -426,18 +454,27 @@ through the state JSON they already send:
   "$webui": {
     "headEnd": "<link rel=\"preload\" as=\"image\" href=\"/hero.avif\">",
     "bodyStart": "<!-- after <body> -->",
-    "bodyEnd": "<script src=\"/livereload.js\"></script>"
+    "bodyEnd": "<script src=\"/livereload.js\"></script>",
+    "assetBase": "https://cdn.example.com/b123/"
   }
 }
 ```
 
-Every member is optional and must be a string; anything else is ignored rather
-than an error. The key is stripped from the hydration payload, so it never
-reaches the client. `headEnd` is emitted after `with_head_inject`, and `bodyEnd`
-is emitted after `with_body_inject`. `bodyStart` has no corresponding
-`RenderOptions` injection.
+Every member is optional. The HTML members must be strings; anything else is
+ignored rather than an error. The key is stripped from the hydration payload,
+so it never reaches the client state. `headEnd` is emitted after
+`with_head_inject`, and `bodyEnd` is emitted after `with_body_inject`.
+`bodyStart` has no corresponding `RenderOptions` injection.
 
-> **Safety:** values are written verbatim with no escaping, exactly like `with_head_inject`. Never let request-derived data reach `$webui`.
+`assetBase` overrides the build's `BuildOptions::asset_base` for this response:
+stylesheet links are prefixed with it, the document head carries it as
+`<meta name="webui-asset-base">`, and the browser receives it to resolve
+stylesheet and lazy pack paths. Module preload hints keep their paths, because
+they name the application's own scripts. `null` keeps the build default. Any
+other value must pass `webui::validate_asset_base`; otherwise rendering fails
+with `HandlerError::InvalidState` before any output is written.
+
+> **Safety:** HTML values are written verbatim with no escaping, exactly like `with_head_inject`. Never let request-derived data reach `$webui`.
 
 ### Typed streaming errors
 
@@ -453,7 +490,7 @@ delivery from a cancelled or stalled stream.
 | Function | Description |
 |----------|-------------|
 | `build(options)` | Build templates into a protocol. Returns `BuildResult` |
-| `build_to_disk(options, out_dir)` | Build and write `protocol.bin`, CSS files, and generated component ESM inputs to disk |
+| `build_to_disk(options, out_dir)` | Build and write `protocol.bin`, CSS files, and lazy packs to `out_dir`, and component ESM inputs, `lazy.webui.js`, and `lazy.webui.d.ts` to `modules_out` (default `out_dir`) |
 | `inspect(path)` | Read a protocol file and return JSON |
 | `inspect_bytes(bytes)` | Convert protocol bytes to JSON |
 
@@ -468,10 +505,12 @@ delivery from a cancelled or stalled stream.
 | `plugin` | `Option<Plugin>` | `None` | Parser plugin (see [Plugins](/reference/plugins/) for the available identifiers) |
 | `components` | `Vec<String>` | `[]` | External component sources |
 | `component_asset_roots` | `Vec<String>` | `[]` | Root component tags emitted as static `.webui.js` ESM assets |
-| `metafile` | `bool` | `false` | Generate an esbuild-compatible component asset graph in the build result |
+| `metafile` | `bool` | `false` | Produce `BuildResult::metafile`: the component asset graph and the `lazyPacks` report, when the build emits either. Also measures each pack's `brotli_bytes` |
+| `component_modules` | `BTreeMap<String, String>` | `{}` | Module specifiers keyed by custom element tag, for components without a usable `.ts` or `.js` sibling. Written verbatim in `lazy.webui.js`; checked by `webui::validate_component_module` |
+| `modules_out` | `Option<PathBuf>` | `None` | Directory for generated modules; relative specifiers in `lazy.webui.js` start here, at `app_dir` when `None` |
 | `projection_manifests` | `Vec<ProjectionManifestSource>` | `[]` | Disk, inline, or prepared projection fragments; empty preserves full state |
 | `css_file_name_template` | `String` | `"[name].[ext]"` | Emitted filename template for Link-mode CSS. Tokens: `[name]`, `[hash]`, `[ext]` |
-| `css_public_base` | `Option<String>` | `None` | Public URL/path prefix for Link-mode CSS hrefs |
+| `asset_base` | `Option<String>` | `None` | Public URL or path ending in `/` that maps to the build output. Stored in the protocol; requests override it with `$webui.assetBase`. Checked by `webui::validate_asset_base` |
 | `theme` | `Option<TokenFile>` | `None` | Loaded design-token theme used to validate unresolved CSS tokens during build |
 
 Unwrapped components default to generated open Shadow roots. Set
@@ -488,8 +527,10 @@ rendered. Pass the generated inputs to the application bundler, which owns final
 splitting, hashes, public paths, caching, and delivery. Component assets cannot
 be combined with `<route>`.
 
-Set `metafile: true` to populate
-`BuildResult::metafile` with esbuild-compatible JSON:
+Set `metafile: true` to populate `BuildResult::metafile` when the build emits
+component assets or lazy packs. Its `inputs` and `outputs` use esbuild's
+metafile format, and its `lazyPacks` array lists every pack, as described in
+[Build metafile](/reference/cli/#webui-build):
 
 ```rust
 let result = webui::build(BuildOptions {
@@ -507,14 +548,17 @@ if let Some(metafile) = result.metafile {
 
 Root outputs in the metafile have `entryPoint` records and static
 `import-statement` edges to component inputs. `build_to_disk()` validates
-`protocol.bin`, CSS files, and component assets as one output set before
-writing, so filename collisions fail without leaving partial output.
+`protocol.bin`, CSS files, component assets, `lazy.webui.js`, and
+`lazy.webui.d.ts` as one output set before writing, so filename collisions fail
+without leaving partial output.
 
 Component input publication is shared with the CLI through
 `webui::component_asset_output`. `publish()` writes immutable dependencies before
 stable roots and preserves unchanged input modification times. `publish_with()`
-also runs a caller's atomic output finalizer inside the asset rollback boundary.
-Serialize publishers targeting one directory.
+also runs a caller's atomic output finalizer inside the asset rollback boundary,
+and `publish_modules_with()` also publishes generated modules such as
+`lazy.webui.js`, each with its declaration, as stable roots. Serialize
+publishers targeting one directory.
 
 Publication, including `build_to_disk()`, overwrites current stable roots but
 does not delete older generated payloads or unrelated files. If your pipeline

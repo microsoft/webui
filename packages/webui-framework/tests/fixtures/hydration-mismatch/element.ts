@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+import { startRuntime } from '../../../src/runtime.js';
+import '../../../src/styles-entry.js';
 /**
  * Fixtures for issue #379: hydration must surface (not silently swallow) an
  * observable whose value, set at or before `super.connectedCallback()`,
@@ -13,6 +15,8 @@
  */
 
 import { WebUIElement, attr, observable } from '../../../src/index.js';
+
+startRuntime();
 
 /**
  * `@observable` field default differs from SSR state. The initializer runs

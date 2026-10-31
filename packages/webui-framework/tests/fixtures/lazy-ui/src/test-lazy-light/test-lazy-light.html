@@ -1,0 +1,23 @@
+<template>
+  <button class="open" @click="{open()}">Open</button>
+  <button class="close" @click="{close()}">Close</button>
+  <if condition="loading"><p class="loading">Loading...</p></if>
+  <if condition="error"><p class="error">{{error}}</p></if>
+  <if condition="opened" lazy>
+    <section class="lazy-body">
+      <h2>{{label}}</h2>
+      <p class="message">{{message}}</p>
+      <span class="count">{{count}}</span>
+      <button class="increment" @click="{increment()}">Increment</button>
+      <input w-ref="{inputEl}" value="{{label}}" />
+      <if condition="expanded"><strong class="expanded">Expanded inline body</strong></if>
+      <ul><for each="item in items"><li><button class="pick" @click="{pick(item.id)}">{{item.label}}</button></li></for></ul>
+      <span class="chosen">{{chosen}}</span>
+      <if condition="advanced" lazy="demand"><p class="advanced">Nested lazy body</p></if>
+    </section>
+    <aside class="second-root">Second inline root</aside>
+  </if>
+  <if condition="single" lazy="idle">
+    <input class="single-ref" w-ref="{singleEl}" value="{{message}}" />
+  </if>
+</template>

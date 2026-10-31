@@ -32,12 +32,16 @@ pub struct BuildArgs {
     #[arg(long, value_delimiter = ',', value_name = "TAGS")]
     pub emit_component_assets: Vec<String>,
 
-    /// Directory for generated component ESM inputs consumed by the application bundler
-    #[arg(long, value_name = "DIR", requires = "emit_component_assets")]
-    pub component_assets_out: Option<PathBuf>,
+    /// Directory for generated modules consumed by the application bundler:
+    /// component asset inputs, lazy.webui.js, and lazy.webui.d.ts. Defaults to
+    /// the --out directory.
+    #[arg(long, value_name = "DIR")]
+    pub modules_out: Option<PathBuf>,
 
-    /// Write an esbuild-compatible component asset metafile
-    #[arg(long, value_name = "PATH", requires = "emit_component_assets")]
+    /// Write a build metafile: the component asset graph in esbuild's format
+    /// and a cost report for every lazy-region pack. Written when the build
+    /// emits component assets or lazy packs.
+    #[arg(long, value_name = "PATH")]
     pub metafile: Option<PathBuf>,
 
     /// Design token theme to validate against: a JSON file path or npm package name.
@@ -72,13 +76,13 @@ fn resolve_out(out: &Path) -> (PathBuf, OsString) {
 
 fn validate_output_file_names(
     out_dir: &Path,
-    component_assets_out: &Path,
+    modules_out: &Path,
     protocol_name: &std::ffi::OsStr,
     result: &webui::BuildResult,
     metafile: Option<&Path>,
 ) -> Result<()> {
     let mut paths = OutputPathSet::with_capacity(
-        1 + result.css_files.len()
+        2 + result.css_files.len()
             + result.component_asset_files.len()
             + usize::from(metafile.is_some()),
     );
@@ -92,16 +96,36 @@ fn validate_output_file_names(
         }
     }
     for file in &result.component_asset_files {
-        if !paths.insert(&component_assets_out.join(&file.name))? {
+        if !paths.insert(&modules_out.join(&file.name))? {
             anyhow::bail!(
                 "output filename collision for '{}'. Adjust --asset-file-name-template to include [ext] or another unique asset-type segment.",
                 file.name
             );
         }
     }
+    if let Some(module) = &result.lazy_scripts_module {
+        for name in [&module.file_name, &module.declaration.file_name] {
+            if !paths.insert(&modules_out.join(name))? {
+                anyhow::bail!(
+                    "generated module '{}' collides with another build output. Choose another --modules-out directory.",
+                    name
+                );
+            }
+        }
+    }
+    let pack_dir = out_dir.join(webui::PACK_OUTPUT_DIR);
+    for pack in &result.lazy_pack_files {
+        if !paths.insert(&pack_dir.join(&pack.file_name))? {
+            anyhow::bail!(
+                "lazy pack '{}' collides with another build output. Move that output out of {}.",
+                pack.file_name,
+                pack_dir.display()
+            );
+        }
+    }
     if let Some(metafile) = metafile {
         component_asset_output::validate_metafile_path(
-            component_assets_out,
+            modules_out,
             metafile,
             &result.component_asset_files,
         )?;
@@ -139,12 +163,12 @@ fn run(args: &BuildArgs) -> Result<()> {
         .transpose()
         .with_context(|| "Failed to expand metafile path")?
         .map(std::borrow::Cow::into_owned);
-    let component_assets_out = args
-        .component_assets_out
+    let modules_out = args
+        .modules_out
         .as_deref()
         .map(expand_tilde)
         .transpose()
-        .with_context(|| "Failed to expand component asset output path")?
+        .with_context(|| "Failed to expand generated modules path")?
         .map(std::borrow::Cow::into_owned);
 
     let app = app_input
@@ -162,7 +186,7 @@ fn run(args: &BuildArgs) -> Result<()> {
     }
 
     let (out_dir, protocol_name) = resolve_out(&out);
-    let component_assets_out = component_assets_out.as_deref().unwrap_or(&out_dir);
+    let modules_out = modules_out.as_deref().unwrap_or(&out_dir);
     let protocol_path = out_dir.join(&protocol_name);
 
     output::header("WebUI Build");
@@ -179,7 +203,9 @@ fn run(args: &BuildArgs) -> Result<()> {
     }
     if !args.emit_component_assets.is_empty() {
         output::field("Component assets", &args.emit_component_assets.join(", "));
-        output::field("Component asset inputs", &component_assets_out.display());
+    }
+    if args.modules_out.is_some() || !args.emit_component_assets.is_empty() {
+        output::field("Generated modules", &modules_out.display());
     }
     if let Some(ref metafile) = metafile {
         output::field("Metafile", &metafile.display());
@@ -187,11 +213,15 @@ fn run(args: &BuildArgs) -> Result<()> {
     if let Some(ref theme) = args.theme {
         output::field("Theme", theme);
     }
+    if let Some(ref asset_base) = args.app_args.asset_base {
+        output::field("Asset base", asset_base);
+    }
     eprintln!();
 
-    let mut build_options = args.app_args.to_build_options(&app);
+    let mut build_options = args.app_args.to_build_options(&app)?;
     build_options.component_asset_roots = args.emit_component_assets.clone();
     build_options.metafile = metafile.is_some();
+    build_options.modules_out = Some(modules_out.to_path_buf());
     build_options.theme = args
         .theme
         .as_deref()
@@ -200,7 +230,7 @@ fn run(args: &BuildArgs) -> Result<()> {
     let result = webui::build(build_options).with_context(|| "Build failed")?;
     validate_output_file_names(
         &out_dir,
-        component_assets_out,
+        modules_out,
         &protocol_name,
         &result,
         metafile.as_deref(),
@@ -214,21 +244,22 @@ fn run(args: &BuildArgs) -> Result<()> {
         fs::write(out_dir.join(name), content)
             .with_context(|| format!("Failed to write {name} to {}", out_dir.display()))?;
     }
+    webui::write_lazy_packs(&out_dir, &result.lazy_pack_files)
+        .with_context(|| "Failed to write lazy-region packs")?;
+    let metafile_written = metafile.is_some() && result.metafile.is_some();
     let write_metafile = || -> Result<()> {
-        let Some(path) = &metafile else {
-            return Ok(());
-        };
-        let content = result.metafile.as_deref().ok_or_else(|| {
-            anyhow::anyhow!("component asset metafile was requested but not generated")
-        })?;
-        super::metafile::write_atomic(path, content)
+        match (&metafile, &result.metafile) {
+            (Some(path), Some(content)) => super::metafile::write_atomic(path, content),
+            _ => Ok(()),
+        }
     };
-    if result.component_asset_files.is_empty() {
+    if result.component_asset_files.is_empty() && result.lazy_scripts_module.is_none() {
         write_metafile()?;
     } else {
         component_asset_output::publish_with(
-            component_assets_out,
+            modules_out,
             &result.component_asset_files,
+            result.lazy_scripts_module.as_slice(),
             write_metafile,
         )?;
     }
@@ -267,10 +298,38 @@ fn run(args: &BuildArgs) -> Result<()> {
         ));
     }
 
+    if !result.lazy_pack_files.is_empty() {
+        output::success(&format!(
+            "Emitted {} lazy pack{} to {}",
+            console::style(result.lazy_pack_files.len()).bold(),
+            if result.lazy_pack_files.len() == 1 {
+                ""
+            } else {
+                "s"
+            },
+            console::style(webui::PACK_OUTPUT_DIR).bold()
+        ));
+    }
+
+    if let Some(module) = &result.lazy_scripts_module {
+        output::success(&format!(
+            "Wrote {} and {} to {}",
+            console::style(&module.file_name).bold(),
+            console::style(&module.declaration.file_name).bold(),
+            console::style(modules_out.display()).bold()
+        ));
+    }
+
+    if metafile.is_some() && !metafile_written {
+        output::hint("No component assets or lazy packs to report; the metafile was not written");
+    }
+
     let files_written = 1
         + stats.css_file_count
         + result.component_asset_files.len()
-        + usize::from(metafile.is_some());
+        + result.lazy_pack_files.len()
+        + 2 * usize::from(result.lazy_scripts_module.is_some())
+        + usize::from(metafile_written);
     output::success(&format!(
         "Wrote {}",
         console::style(Path::new(&protocol_name).display()).bold()
@@ -304,12 +363,13 @@ pub fn build(app: &std::path::Path, out: &std::path::Path, entry: &str) -> Resul
             components: Vec::new(),
             projection_manifests: Vec::new(),
             asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
-            css_public_base: None,
+            asset_base: None,
+            component_modules: Vec::new(),
             legal_comments: LegalComments::Inline,
         },
         out: out.to_path_buf(),
         emit_component_assets: Vec::new(),
-        component_assets_out: None,
+        modules_out: None,
         metafile: None,
         theme: None,
     })
@@ -432,12 +492,13 @@ mod tests {
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
-                css_public_base: None,
+                asset_base: None,
+                component_modules: Vec::new(),
                 legal_comments: LegalComments::Inline,
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: Vec::new(),
-            component_assets_out: None,
+            modules_out: None,
             metafile: None,
             theme: None,
         })
@@ -446,6 +507,70 @@ mod tests {
         assert!(out_dir.path().join("protocol.bin").exists());
         // Inline mode should NOT write external CSS files
         assert!(!out_dir.path().join("my-card.css").exists());
+    }
+
+    fn asset_base_build_args(app: &Path, out: &Path, asset_base: &str) -> BuildArgs {
+        BuildArgs {
+            app_args: AppArgs {
+                app: app.to_path_buf(),
+                entry: "index.html".to_string(),
+                css: CssStrategy::Link,
+                dom: DomStrategy::Shadow,
+                css_bundle: false,
+                plugin: Some(Plugin::WebUI),
+                components: Vec::new(),
+                projection_manifests: Vec::new(),
+                asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
+                asset_base: Some(asset_base.to_string()),
+                component_modules: Vec::new(),
+                legal_comments: LegalComments::Inline,
+            },
+            out: out.to_path_buf(),
+            emit_component_assets: Vec::new(),
+            modules_out: None,
+            metafile: None,
+            theme: None,
+        }
+    }
+
+    #[test]
+    fn test_build_stores_the_asset_base_and_keeps_output_paths_relative() {
+        let app_dir = create_app_dir(&[
+            ("index.html", "<my-card>Hello</my-card>"),
+            (
+                "my-card.html",
+                r#"<p>Card</p><if condition="open" lazy><p>Details</p></if>"#,
+            ),
+            ("my-card.css", ".card { color: red; }"),
+        ]);
+        let out_dir = TempDir::new().unwrap();
+
+        run(&asset_base_build_args(
+            app_dir.path(),
+            out_dir.path(),
+            "https://cdn.example.com/b123/",
+        ))
+        .unwrap();
+
+        let bytes = fs::read(out_dir.path().join("protocol.bin")).unwrap();
+        let protocol = WebUIProtocol::from_protobuf(&bytes).unwrap();
+        assert_eq!(protocol.asset_base, "https://cdn.example.com/b123/");
+        assert_eq!(protocol.components["my-card"].css_href, "my-card.css");
+        assert!(out_dir.path().join("my-card.css").exists());
+        let template = &protocol.components["my-card"].template_json;
+        assert!(template.contains(r#""lp":{"my-card::lazy:@0":"_webui/packs/my-card."#));
+        assert!(!template.contains("cdn.example.com"));
+
+        let error = run(&asset_base_build_args(
+            app_dir.path(),
+            out_dir.path(),
+            "https://cdn.example.com/b123",
+        ))
+        .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("invalid asset base"),
+            "{error:#}"
+        );
     }
 
     #[test]
@@ -475,12 +600,13 @@ mod tests {
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
-                css_public_base: None,
+                asset_base: None,
+                component_modules: Vec::new(),
                 legal_comments: LegalComments::Inline,
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: vec!["mail-thread".to_string()],
-            component_assets_out: Some(asset_dir.path().to_path_buf()),
+            modules_out: Some(asset_dir.path().to_path_buf()),
             metafile: Some(out_dir.path().join("component-assets.meta.json")),
             theme: None,
         })
@@ -547,12 +673,13 @@ mod tests {
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
-                css_public_base: None,
+                asset_base: None,
+                component_modules: Vec::new(),
                 legal_comments: LegalComments::Inline,
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: vec!["component-mail-card".to_string()],
-            component_assets_out: Some(asset_dir.path().to_path_buf()),
+            modules_out: Some(asset_dir.path().to_path_buf()),
             metafile: Some(metafile.clone()),
             theme: None,
         })
@@ -597,12 +724,13 @@ mod tests {
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
-                css_public_base: None,
+                asset_base: None,
+                component_modules: Vec::new(),
                 legal_comments: LegalComments::Inline,
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: vec!["mail-thread".to_string(), "mail-thread".to_string()],
-            component_assets_out: None,
+            modules_out: None,
             metafile: None,
             theme: None,
         });
@@ -632,12 +760,13 @@ mod tests {
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
-                css_public_base: None,
+                asset_base: None,
+                component_modules: Vec::new(),
                 legal_comments: LegalComments::Inline,
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: vec!["lazy-panel".to_string()],
-            component_assets_out: None,
+            modules_out: None,
             metafile: Some(collision.clone()),
             theme: None,
         });
@@ -674,12 +803,13 @@ mod tests {
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
-                css_public_base: None,
+                asset_base: None,
+                component_modules: Vec::new(),
                 legal_comments: LegalComments::Inline,
             },
             out: linked_out,
             emit_component_assets: vec!["lazy-panel".to_string()],
-            component_assets_out: None,
+            modules_out: None,
             metafile: Some(real_out.join("protocol.bin")),
             theme: None,
         });
@@ -716,12 +846,13 @@ mod tests {
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
-                css_public_base: None,
+                asset_base: None,
+                component_modules: Vec::new(),
                 legal_comments: LegalComments::Inline,
             },
             out: linked.join(".."),
             emit_component_assets: vec!["lazy-panel".to_string()],
-            component_assets_out: None,
+            modules_out: None,
             metafile: Some(target.join("protocol.bin")),
             theme: None,
         });
@@ -757,12 +888,13 @@ mod tests {
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
-                css_public_base: None,
+                asset_base: None,
+                component_modules: Vec::new(),
                 legal_comments: LegalComments::Inline,
             },
             out,
             emit_component_assets: vec!["lazy-panel".to_string()],
-            component_assets_out: None,
+            modules_out: None,
             metafile: Some(metafile_alias),
             theme: None,
         });
@@ -796,12 +928,13 @@ mod tests {
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
-                css_public_base: None,
+                asset_base: None,
+                component_modules: Vec::new(),
                 legal_comments: LegalComments::Inline,
             },
             out,
             emit_component_assets: vec!["lazy-panel".to_string()],
-            component_assets_out: None,
+            modules_out: None,
             metafile: Some(metafile),
             theme: None,
         });
@@ -811,11 +944,11 @@ mod tests {
     }
 
     #[test]
-    fn test_build_rejects_metafile_without_component_assets() {
+    fn test_build_skips_metafile_without_component_assets_or_lazy_packs() {
         let app_dir = create_app_dir(&[("index.html", "<p>Entry</p>")]);
         let out_dir = TempDir::new().unwrap();
 
-        let result = run(&BuildArgs {
+        run(&BuildArgs {
             app_args: AppArgs {
                 app: app_dir.path().to_path_buf(),
                 entry: "index.html".to_string(),
@@ -826,20 +959,195 @@ mod tests {
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
-                css_public_base: None,
+                asset_base: None,
+                component_modules: Vec::new(),
                 legal_comments: LegalComments::Inline,
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: Vec::new(),
-            component_assets_out: None,
+            modules_out: None,
             metafile: Some(out_dir.path().join("meta.json")),
             theme: None,
-        });
+        })
+        .unwrap();
 
-        let error = result.unwrap_err();
-        assert!(format!("{error:#}").contains("requires at least one component_asset_root"));
-        assert!(!out_dir.path().join("protocol.bin").exists());
+        assert!(out_dir.path().join("protocol.bin").exists());
         assert!(!out_dir.path().join("meta.json").exists());
+        assert!(!out_dir.path().join(webui::LAZY_SCRIPTS_MODULE).exists());
+        assert!(!out_dir
+            .path()
+            .join(webui::LAZY_SCRIPTS_DECLARATION)
+            .exists());
+    }
+
+    fn lazy_build_args(app: &Path, out: &Path) -> BuildArgs {
+        BuildArgs {
+            app_args: AppArgs {
+                app: app.to_path_buf(),
+                entry: "index.html".to_string(),
+                css: CssStrategy::Link,
+                dom: DomStrategy::Shadow,
+                css_bundle: false,
+                plugin: Some(Plugin::WebUI),
+                components: Vec::new(),
+                projection_manifests: Vec::new(),
+                asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
+                asset_base: None,
+                component_modules: Vec::new(),
+                legal_comments: LegalComments::Inline,
+            },
+            out: out.to_path_buf(),
+            emit_component_assets: Vec::new(),
+            modules_out: None,
+            metafile: None,
+            theme: None,
+        }
+    }
+
+    fn lazy_app() -> TempDir {
+        create_app_dir(&[
+            (
+                "index.html",
+                "<html><head></head><body><app-shell></app-shell></body></html>",
+            ),
+            (
+                "app-shell.html",
+                r#"<if condition="open" lazy="idle"><settings-panel></settings-panel></if>"#,
+            ),
+            ("settings-panel/settings-panel.html", "<p>Settings</p>"),
+            ("settings-panel/settings-panel.ts", "export {};"),
+            ("settings-panel/settings-panel.css", "p { margin: 0; }"),
+        ])
+    }
+
+    #[test]
+    fn test_build_writes_lazy_scripts_module_beside_the_output_by_default() {
+        let app_dir = lazy_app();
+        let out_dir = TempDir::new().unwrap();
+        run(&lazy_build_args(app_dir.path(), out_dir.path())).unwrap();
+
+        let module_path = out_dir.path().join(webui::LAZY_SCRIPTS_MODULE);
+        let module = fs::read_to_string(&module_path).unwrap();
+        assert!(module
+            .contains("import { defineLazyScripts } from '@microsoft/webui-framework/lazy.js';"));
+        let (_, import) = module
+            .split_once("\"settings-panel\": () => import(\"")
+            .unwrap();
+        let (specifier, _) = import.split_once('"').unwrap();
+        // Relative to the output directory, with `/` separators on every platform.
+        assert!(specifier.starts_with("../"), "{specifier}");
+        assert!(
+            specifier.ends_with("/settings-panel/settings-panel.ts"),
+            "{specifier}"
+        );
+        assert!(!specifier.contains('\\'), "{specifier}");
+
+        let modified = fs::metadata(&module_path).unwrap().modified().unwrap();
+        let declaration_path = out_dir.path().join(webui::LAZY_SCRIPTS_DECLARATION);
+        assert_eq!(
+            fs::read_to_string(&declaration_path).unwrap(),
+            "// Generated by WebUI. Do not edit.\nimport '@microsoft/webui-framework/lazy.js';\n"
+        );
+        let declared = fs::metadata(&declaration_path).unwrap().modified().unwrap();
+        run(&lazy_build_args(app_dir.path(), out_dir.path())).unwrap();
+        assert_eq!(
+            fs::metadata(&module_path).unwrap().modified().unwrap(),
+            modified
+        );
+        assert_eq!(
+            fs::metadata(&declaration_path).unwrap().modified().unwrap(),
+            declared
+        );
+    }
+
+    #[test]
+    fn test_build_writes_lazy_scripts_module_and_pack_report_to_requested_paths() {
+        let app_dir = lazy_app();
+        let out_dir = TempDir::new().unwrap();
+        let modules_dir = app_dir.path().join(".webui");
+        let metafile = out_dir.path().join("build.meta.json");
+        let mut args = lazy_build_args(app_dir.path(), out_dir.path());
+        args.modules_out = Some(modules_dir.clone());
+        args.metafile = Some(metafile.clone());
+        args.app_args.component_modules = vec![(
+            "settings-panel".to_string(),
+            "@contoso/settings/panel.js".to_string(),
+        )];
+        run(&args).unwrap();
+
+        assert!(!out_dir.path().join(webui::LAZY_SCRIPTS_MODULE).exists());
+        assert!(!out_dir
+            .path()
+            .join(webui::LAZY_SCRIPTS_DECLARATION)
+            .exists());
+        assert!(modules_dir.join(webui::LAZY_SCRIPTS_DECLARATION).is_file());
+        let module = fs::read_to_string(modules_dir.join(webui::LAZY_SCRIPTS_MODULE)).unwrap();
+        assert!(
+            module.contains(r#""settings-panel": () => import("@contoso/settings/panel.js"),"#),
+            "{module}"
+        );
+
+        let report: serde_json::Value =
+            serde_json::from_slice(&fs::read(&metafile).unwrap()).unwrap();
+        assert_eq!(report["inputs"], serde_json::json!({}));
+        let packs = report["lazyPacks"].as_array().unwrap();
+        assert_eq!(packs.len(), 1);
+        let pack = &packs[0];
+        assert_eq!(pack["region"], "app-shell::lazy:@0");
+        assert_eq!(pack["owner"], "app-shell");
+        assert_eq!(pack["trigger"], "idle");
+        assert_eq!(
+            pack["scripts"],
+            serde_json::json!(["@contoso/settings/panel.js"])
+        );
+        let path = pack["path"].as_str().unwrap();
+        let written = fs::read(out_dir.path().join(path)).unwrap();
+        assert_eq!(pack["bytes"], written.len());
+        assert!(pack["brotliBytes"].as_u64().unwrap() > 0);
+        assert!(path.contains(pack["hash"].as_str().unwrap()));
+        // Everything a region loads besides its scripts is in the build output.
+        assert_eq!(
+            pack["stylesheets"],
+            serde_json::json!(["settings-panel.css"])
+        );
+        assert!(out_dir.path().join("settings-panel.css").is_file());
+    }
+
+    #[test]
+    fn modules_out_replaces_component_assets_out_and_metafile_stands_alone() {
+        use clap::Parser;
+
+        #[derive(Parser)]
+        struct Cli {
+            #[command(flatten)]
+            build: BuildArgs,
+        }
+
+        let parsed = Cli::try_parse_from([
+            "webui",
+            "./src",
+            "--out",
+            "./dist",
+            "--modules-out",
+            "./.webui",
+            "--metafile",
+            "./dist/meta.json",
+        ])
+        .unwrap();
+        assert_eq!(parsed.build.modules_out, Some(PathBuf::from("./.webui")));
+        assert_eq!(
+            parsed.build.metafile,
+            Some(PathBuf::from("./dist/meta.json"))
+        );
+        assert!(Cli::try_parse_from([
+            "webui",
+            "./src",
+            "--out",
+            "./dist",
+            "--component-assets-out",
+            "./.webui",
+        ])
+        .is_err());
     }
 
     #[test]
@@ -862,12 +1170,13 @@ mod tests {
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
-                css_public_base: None,
+                asset_base: None,
+                component_modules: Vec::new(),
                 legal_comments: LegalComments::Inline,
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: vec!["fast-card".to_string()],
-            component_assets_out: None,
+            modules_out: None,
             metafile: None,
             theme: None,
         });
@@ -898,12 +1207,13 @@ mod tests {
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
                 asset_file_name_template: "[name]-[hash].[ext]".to_string(),
-                css_public_base: None,
+                asset_base: None,
+                component_modules: Vec::new(),
                 legal_comments: LegalComments::Inline,
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: vec!["mail-thread".to_string()],
-            component_assets_out: None,
+            modules_out: None,
             metafile: None,
             theme: None,
         })
@@ -1036,12 +1346,13 @@ mod tests {
                 components: vec![ext_path],
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
-                css_public_base: None,
+                asset_base: None,
+                component_modules: Vec::new(),
                 legal_comments: LegalComments::Inline,
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: Vec::new(),
-            component_assets_out: None,
+            modules_out: None,
             metafile: None,
             theme: None,
         })
@@ -1108,12 +1419,13 @@ mod tests {
                 components: vec!["test-widget".to_string()],
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
-                css_public_base: None,
+                asset_base: None,
+                component_modules: Vec::new(),
                 legal_comments: LegalComments::Inline,
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: Vec::new(),
-            component_assets_out: None,
+            modules_out: None,
             metafile: None,
             theme: None,
         })
@@ -1185,12 +1497,13 @@ mod tests {
                 components: vec!["@myui".to_string()],
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
-                css_public_base: None,
+                asset_base: None,
+                component_modules: Vec::new(),
                 legal_comments: LegalComments::Inline,
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: Vec::new(),
-            component_assets_out: None,
+            modules_out: None,
             metafile: None,
             theme: None,
         })
@@ -1248,12 +1561,13 @@ mod tests {
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
-                css_public_base: None,
+                asset_base: None,
+                component_modules: Vec::new(),
                 legal_comments: LegalComments::Inline,
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: Vec::new(),
-            component_assets_out: None,
+            modules_out: None,
             metafile: None,
             theme: Some(
                 app_dir
@@ -1295,12 +1609,13 @@ mod tests {
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
-                css_public_base: None,
+                asset_base: None,
+                component_modules: Vec::new(),
                 legal_comments: LegalComments::Inline,
             },
             out: custom_path.clone(),
             emit_component_assets: Vec::new(),
-            component_assets_out: None,
+            modules_out: None,
             metafile: None,
             theme: None,
         })
@@ -1336,12 +1651,13 @@ mod tests {
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
-                css_public_base: None,
+                asset_base: None,
+                component_modules: Vec::new(),
                 legal_comments: LegalComments::Inline,
             },
             out: nested.clone(),
             emit_component_assets: Vec::new(),
-            component_assets_out: None,
+            modules_out: None,
             metafile: None,
             theme: None,
         })

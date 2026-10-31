@@ -1,0 +1,19 @@
+:host { display: block; position: relative; width: min(640px, 90vw); }
+.search { display: flex; align-items: center; gap: 8px; height: 48px; padding: 0 8px 0 16px; border-radius: 24px; background: #fff; color: #242424; box-shadow: 0 4px 16px rgb(0 0 0 / 0.24); }
+.glyph, .icon svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; }
+.glyph { color: #616161; }
+.query { flex: 1; height: 100%; border: 0; outline: 0; background: transparent; font: inherit; font-size: 16px; }
+.icon { display: grid; place-items: center; width: 36px; height: 36px; border: 0; border-radius: 50%; background: transparent; color: #0f6cbd; cursor: pointer; }
+.icon:hover { background: #f0f0f0; }
+.suggest { position: absolute; left: 0; right: 0; top: 54px; z-index: 6; padding: 8px 0; border-radius: 16px; background: #fff; color: #242424; box-shadow: 0 8px 28px rgb(0 0 0 / 0.26); }
+.suggest-head { margin: 4px 16px; color: #616161; font-size: 12px; font-weight: 600; }
+.suggest-list, .trending { margin: 0; padding: 0; list-style: none; }
+.suggest li { display: flex; align-items: center; gap: 12px; padding: 8px 16px; cursor: pointer; }
+.suggest li:hover { background: #f5f5f5; }
+.suggest svg { width: 16px; height: 16px; fill: none; stroke: #616161; stroke-width: 1.7; stroke-linecap: round; flex: none; }
+.suggestion strong { font-weight: 600; }
+.trending svg { stroke: #0f6cbd; }
+.suggest-foot { display: flex; justify-content: space-between; margin-top: 6px; padding: 8px 16px 2px; border-top: 1px solid #ebebeb; font-size: 12px; }
+.suggest-foot a, .text-button { color: #0f6cbd; font: inherit; font-weight: 600; text-decoration: none; }
+.text-button { border: 0; background: none; cursor: pointer; }
+[data-ready] { --ntp-ready: 1; }

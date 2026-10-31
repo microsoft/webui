@@ -18,12 +18,14 @@ Current entries:
 | `app/contact-book-manager` | Full CRUD contact manager with WebUI Framework + router + Node API |
 | `app/native-services` | Native directory picker, dialogs, visible webview capture, and PNG clipboard demo |
 | `app/component-assets` | No-router WebUI Framework app that lazy-loads a static component asset on demand |
+| `app/lazy-ui` | Native popover and dialog with inline lazy bodies, build-time template packs, bundler-split region scripts, scoped `$prefetch`, failure handling, and cancellation |
 | `app/commerce` | WebUI Framework hydration app with a Rust backend for commerce demo app, dozens of controls |
 | `app/routes` | Nested declarative routing demo showing 4-level deep routes, full server side and client handoff |
 | `app/service-worker` | Static/CDN service worker app using `webui_wasm_handler` to stream WASM-rendered chunks from public API state |
 | `app/streaming` | Progressive hydration demo with runtime-discovered component boundaries, descriptor-driven backend pacing, and a bounded browser stream |
 | `integration/node` | Node.js integration via native addon |
 | `integration/node-addon-bench` | Node/V8/N-API runtime benchmark for the native addon |
+| `integration/lazy-ui-bench` | Reproducible eager/lazy startup, prefetch-trigger, interaction, payload, retained-heap, and new-tab-page-shaped comparison with component assets |
 | `integration/rust` | Rust integration via `webui-handler` |
 | `integration/tauri` | Rust-only Tauri snapshot viewer for pre-built WebUI apps |
 
@@ -43,6 +45,7 @@ cargo xtask dev hello-world
 cargo xtask dev calculator
 cargo xtask dev contact-book-manager
 cargo xtask dev component-assets
+cargo xtask dev lazy-ui
 cargo xtask dev todo-webui
 
 # Native-only system service demo (macOS or Windows)

@@ -8,7 +8,7 @@ A full-featured commerce demo built with WebUI — server-side rendered with cli
 ## What It Demonstrates
 
 - **Nested routing** with `<route>` and `<outlet />`
-- **Client-side navigation** via `@microsoft/webui-router`
+- **Client-side navigation** via `@microsoft/webui-delivery`
 - **SSR + hydration** with WebUI Framework
 - **Declarative-only components** that auto-upgrade without authored TypeScript stubs
 - **View transitions** for smooth page changes

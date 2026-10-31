@@ -49,6 +49,25 @@ public class ProtocolTests
     }
 
     [Fact]
+    public void Protocol_LazyRegions_RenderPackReferencesOrInlineBodies()
+    {
+        using var protocol = new Protocol(File.ReadAllBytes(Path.Combine(
+            AppContext.BaseDirectory, "fixtures", "lazy-app", "protocol.bin")));
+        using var handler = new WebUIHandler("webui");
+        string closed = handler.Render(
+            protocol, """{"show":false,"message":"Fresh","items":["one"]}""", "index.html", "/");
+        Assert.DoesNotContain("Lazy inline UI", closed);
+        Assert.Matches(
+            "\"lp\":\\{\"test-panel::lazy:@0\":\"_webui/packs/test-panel\\.[0-9a-f]{16}\\.json\"\\}",
+            closed);
+        string open = handler.Render(
+            protocol, """{"show":true,"message":"Fresh","items":["one"]}""", "index.html", "/");
+        Assert.Contains("Lazy inline UI", open);
+        Assert.Contains("Fresh", open);
+        Assert.Contains("\"test-panel::lazy:@0\":{", open);
+    }
+
+    [Fact]
     public void Protocol_OperationAfterDispose_ThrowsObjectDisposedException()
     {
         var protocol = LoadProtocol();

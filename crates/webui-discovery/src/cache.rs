@@ -20,6 +20,10 @@ use crate::prepared::LoadedPackage;
 
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+/// Version of the serialized entry layout. Entries written with another
+/// version are cache misses, so a new field never reads as a stale default.
+const CACHE_FORMAT: u32 = 2;
+
 pub(crate) struct CacheKey<'a> {
     pub(crate) namespace: &'a str,
     pub(crate) source: &'a str,
@@ -29,6 +33,9 @@ pub(crate) struct CacheKey<'a> {
 /// Serialized cache entry stored as JSON on disk.
 #[derive(Serialize, Deserialize)]
 struct CacheEntry {
+    /// Entry layout version; absent in entries older than version 2.
+    #[serde(default)]
+    format: u32,
     /// The original source identifier (e.g., `@scope/button`)
     source: String,
     // Fingerprint of prepared decisions and the bytes in this result.
@@ -44,6 +51,7 @@ struct CachedComponent {
     html_content: String,
     css_content: Option<String>,
     is_client_owned: bool,
+    script_path: Option<PathBuf>,
 }
 
 /// File-based component discovery cache.
@@ -101,8 +109,8 @@ impl DiscoveryCache {
             Err(_) => return Ok(None),
         };
 
-        // Validate version hash
-        if entry.version_hash != fingerprint {
+        // Validate the layout and version hash
+        if entry.format != CACHE_FORMAT || entry.version_hash != fingerprint {
             return Ok(None);
         }
 
@@ -114,6 +122,7 @@ impl DiscoveryCache {
                 html_content: c.html_content,
                 css_content: c.css_content,
                 is_client_owned: c.is_client_owned,
+                script_path: c.script_path,
                 source: entry.source.clone(),
             })
             .collect();
@@ -122,11 +131,23 @@ impl DiscoveryCache {
     }
 
     /// Store discovered components in the cache using atomic write.
+    ///
+    /// Results with a module path that is not valid UTF-8 are not cached,
+    /// because the JSON entry cannot represent it exactly.
     pub(crate) fn put(&self, lookup: &CacheKey<'_>, loaded: &LoadedPackage) -> Result<()> {
+        if loaded.components().iter().any(|component| {
+            component
+                .script_path
+                .as_deref()
+                .is_some_and(|path| path.to_str().is_none())
+        }) {
+            return Ok(());
+        }
         let key = Self::cache_key(lookup.namespace, lookup.source, lookup.package_json);
         let cache_file = self.cache_dir.join(format!("{key}.json"));
 
         let entry = CacheEntry {
+            format: CACHE_FORMAT,
             source: lookup.source.to_string(),
             version_hash: loaded.fingerprint(),
             components: loaded
@@ -137,6 +158,7 @@ impl DiscoveryCache {
                     html_content: c.html_content.clone(),
                     css_content: c.css_content.clone(),
                     is_client_owned: c.is_client_owned,
+                    script_path: c.script_path.clone(),
                 })
                 .collect(),
         };
@@ -194,6 +216,7 @@ mod tests {
             html: input(&root, "test-comp.html"),
             css: None,
             is_client_owned: false,
+            script_path: None,
         }];
         Ok((temp, package_json, inputs))
     }
@@ -205,6 +228,9 @@ mod tests {
         let root = inputs[0].html.package_root.clone();
         fs::write(root.join("test-comp.css"), ".test { color: red; }")?;
         inputs[0].css = Some(input(&root, "test-comp.css"));
+        let script = root.join("test-comp.ts");
+        inputs[0].is_client_owned = true;
+        inputs[0].script_path = Some(script.clone());
         let loaded = prepared::load("test-pkg", &fs::read_to_string(&package_json)?, inputs)?;
         let key = lookup("test-pkg", &package_json);
         cache.put(&key, &loaded)?;
@@ -212,11 +238,32 @@ mod tests {
         assert_eq!(cached.len(), 1);
         assert_eq!(cached[0].tag_name, "test-comp");
         assert_eq!(cached[0].html_content, "<div>test</div>");
-        assert!(!cached[0].is_client_owned);
+        assert!(cached[0].is_client_owned);
+        assert_eq!(cached[0].script_path.as_deref(), Some(script.as_path()));
         assert_eq!(
             cached[0].css_content.as_deref(),
             Some(".test { color: red; }")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_entries_from_another_cache_format_are_misses() -> Result<()> {
+        let cache = DiscoveryCache::open()?;
+        let (_temp, package_json, inputs) = fixture()?;
+        let loaded = prepared::load("test-pkg", "{}", inputs)?;
+        let key = lookup("format-pkg", &package_json);
+        cache.put(&key, &loaded)?;
+        let cache_file = cache.cache_dir.join(format!(
+            "{}.json",
+            DiscoveryCache::cache_key("test", "format-pkg", &package_json)
+        ));
+        let mut entry: serde_json::Value = serde_json::from_str(&fs::read_to_string(&cache_file)?)?;
+        assert_eq!(entry["format"], CACHE_FORMAT);
+        // Entries written before module paths were recorded have no format.
+        entry.as_object_mut().unwrap().remove("format");
+        fs::write(&cache_file, entry.to_string())?;
+        assert!(cache.get(&key, loaded.fingerprint())?.is_none());
         Ok(())
     }
 
@@ -274,7 +321,13 @@ mod tests {
         let styled = prepared::fingerprint("{}", &inputs)?;
         assert_ne!(styled, before);
         inputs[0].is_client_owned = true;
-        assert_ne!(prepared::fingerprint("{}", &inputs)?, styled);
+        let owned = prepared::fingerprint("{}", &inputs)?;
+        assert_ne!(owned, styled);
+        inputs[0].script_path = Some(root.join("test-comp.js"));
+        let javascript = prepared::fingerprint("{}", &inputs)?;
+        assert_ne!(javascript, owned);
+        inputs[0].script_path = Some(root.join("test-comp.ts"));
+        assert_ne!(prepared::fingerprint("{}", &inputs)?, javascript);
         Ok(())
     }
 

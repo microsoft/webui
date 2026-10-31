@@ -1,0 +1,31 @@
+:host { display: block; width: min(640px, 90vw); }
+.sites { padding: 12px 16px 16px; border-radius: 16px; background: rgb(0 0 0 / 0.24); backdrop-filter: blur(8px); }
+.sites-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.sites-head h2 { margin: 0; font-size: 14px; font-weight: 600; text-shadow: 0 1px 2px rgb(0 0 0 / 0.4); }
+.edit { border: 0; background: none; color: #fff; font: inherit; font-weight: 600; cursor: pointer; opacity: 0.9; }
+.grid { margin: 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px; }
+.tile { position: relative; }
+.tile-link { display: grid; justify-items: center; gap: 8px; padding: 14px 6px 10px; border-radius: 10px; color: #fff; text-decoration: none; }
+.tile-link:hover { background: rgb(255 255 255 / 0.14); }
+.favicon { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 12px; background: var(--tile); font-size: 20px; font-weight: 600; box-shadow: 0 2px 6px rgb(0 0 0 / 0.25); }
+.tile-title { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; text-shadow: 0 1px 2px rgb(0 0 0 / 0.5); }
+.more { position: absolute; top: 4px; right: 4px; display: grid; place-items: center; width: 24px; height: 24px; border: 0; border-radius: 6px; background: rgb(0 0 0 / 0.18); color: #fff; cursor: pointer; }
+.more:hover { background: rgb(0 0 0 / 0.38); }
+.more svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 3; stroke-linecap: round; }
+.add { display: grid; place-items: center; }
+.add-button { display: grid; place-items: center; width: 44px; height: 44px; border: 1px dashed rgb(255 255 255 / 0.7); border-radius: 12px; background: none; color: #fff; cursor: pointer; }
+.add-button svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.menu { position: fixed; z-index: 8; display: grid; width: 248px; padding: 6px; border-radius: 10px; background: #fff; color: #242424; box-shadow: 0 8px 28px rgb(0 0 0 / 0.26); }
+.menu-title { margin: 0; padding: 6px 10px 4px; color: #616161; font-size: 12px; font-weight: 600; }
+.menu > button { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 0; border-radius: 6px; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.menu > button:hover { background: #f5f5f5; }
+.menu > .danger { color: #c50f1f; }
+.menu svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.menu hr { width: 100%; margin: 4px 0; border: 0; border-top: 1px solid #ebebeb; }
+.toast { position: fixed; left: 50%; bottom: 72px; z-index: 9; display: flex; align-items: center; gap: 12px; padding: 10px 12px 10px 16px; border-radius: 10px; background: #242424; color: #fff; box-shadow: 0 8px 24px rgb(0 0 0 / 0.3); transform: translateX(-50%); }
+.toast svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; }
+.toast-action { border: 0; background: none; color: #77b7f7; font: inherit; font-weight: 600; cursor: pointer; }
+.toast-close { display: grid; place-items: center; width: 28px; height: 28px; border: 0; border-radius: 6px; background: none; color: #fff; cursor: pointer; }
+.modal { padding: 0; border: 0; border-radius: 12px; box-shadow: 0 12px 40px rgb(0 0 0 / 0.3); }
+.modal::backdrop { background: rgb(0 0 0 / 0.4); }
+[data-ready] { --ntp-ready: 1; }

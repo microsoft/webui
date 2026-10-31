@@ -5,6 +5,13 @@
     "moduleResolution": "bundler",
     "paths": {
       "@microsoft/webui-framework": ["./src/index.ts"],
+      "@microsoft/webui-framework/runtime.js": ["./src/runtime.ts"],
+      "@microsoft/webui-framework/styles.js": ["./src/styles-entry.ts"],
+      "@microsoft/webui-framework/templates.js": ["./src/templates-entry.ts"],
+      "@microsoft/webui-framework/lazy.js": ["./src/lazy-entry.ts"],
+      "@microsoft/webui-framework/template-cache.js": ["./src/template-cache-entry.ts"],
+      "@microsoft/webui-framework/lazy-hydration.js": ["./src/lazy-hydration-entry.ts"],
+      "@microsoft/webui-framework/interaction-hydration.js": ["./src/interaction-hydration.ts"],
       "@microsoft/webui-framework/streaming.js": ["./src/streaming-entry.ts"]
     },
     "lib": ["ESNext", "DOM"],
@@ -15,6 +22,7 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "noEmit": true,
+    "allowImportingTsExtensions": true,
     "rootDir": "..",
     "types": ["node", "@playwright/test"]
   },

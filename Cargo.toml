@@ -71,6 +71,8 @@ socket2 = "0.6.5"
 crossbeam-queue = "0.3.14"
 crc32fast = "1.5.0"
 memchr = "2.8.3"
+# Build-time pack size reports only; must stay out of the wasm32 crates.
+brotli = { version = "9.1.1", default-features = false, features = ["std"] }
 notify = "8.2.0"
 notify-debouncer-mini = "0.7.0"
 percent-encoding = "2.3.2"

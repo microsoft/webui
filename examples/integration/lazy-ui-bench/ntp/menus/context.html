@@ -1,0 +1,12 @@
+<div class="menu context" data-ui="context" role="menu" aria-label="Quick link options" style="left: {{menuX}}px; top: {{menuY}}px">
+  <p class="menu-title" data-ready>{{menuTitle}}</p>
+  <button type="button" role="menuitem" @click="{openInNewTab()}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6 M20 4l-9 9 M18 14v5H5V6h5" /></svg>Open in new tab</button>
+  <button type="button" role="menuitem" @click="{openInWindow()}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18v14H3z M3 9h18" /></svg>Open in new window</button>
+  <button type="button" role="menuitem" @click="{openInPrivate()}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12s3-6 9-6 9 6 9 6-3 6-9 6-9-6-9-6z M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z" /></svg>Open in InPrivate window</button>
+  <hr>
+  <button type="button" role="menuitem" @click="{renameSite()}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20l4-1 11-11-3-3L5 16z M14 7l3 3" /></svg>Rename</button>
+  <button type="button" role="menuitem" @click="{pinSite()}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6l-1 6 4 4H6l4-4z M12 13v8" /></svg>Pin to the front</button>
+  <button type="button" role="menuitem" class="danger" data-prefetch="toast" @click="{removeSite()}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14 M10 7V4h4v3 M7 7l1 13h8l1-13" /></svg>Remove</button>
+  <hr>
+  <button type="button" role="menuitem" @click="{openEdit()}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16 M4 12h16 M4 18h10" /></svg>Edit quick links</button>
+</div>

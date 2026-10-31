@@ -1,0 +1,18 @@
+<template shadowrootmode="open">
+  <figure class="preview">
+    <div class="viewport" w-ref="{viewport}" aria-hidden="true">
+      <ul class="rows" w-ref="{rows}">
+        <li class="row pinned"><span class="icon"></span><span class="lines"><span></span><span></span></span></li>
+        <li class="row"><span class="icon"></span><span class="lines"><span></span><span></span></span></li>
+        <li class="row"><span class="icon"></span><span class="lines"><span></span><span></span></span></li>
+        <li class="row"><span class="icon"></span><span class="lines"><span></span><span></span></span></li>
+        <li class="row"><span class="icon"></span><span class="lines"><span></span><span></span></span></li>
+        <li class="row"><span class="icon"></span><span class="lines"><span></span><span></span></span></li>
+        <li class="row"><span class="icon"></span><span class="lines"><span></span><span></span></span></li>
+      </ul>
+    </div>
+    <if condition="visibleRows > 0">
+      <figcaption>Preview: {{visibleRows}} items fit in this space.</figcaption>
+    </if>
+  </figure>
+</template>

@@ -8,6 +8,10 @@
 
 pub mod css_module;
 pub(crate) mod html_encode;
+mod lazy;
+mod lazy_pack;
+#[cfg(feature = "packs")]
+pub mod lazy_packs;
 pub mod plugin;
 mod render_capacity;
 mod response_writer;
@@ -329,8 +333,8 @@ pub struct RenderOptions<'a> {
     pub entry_id: &'a str,
     /// The URL path to match routes against (e.g., `"/contacts/42"`).
     pub request_path: &'a str,
-    /// Optional CSP nonce for inline `<script>` tags.
-    /// When set, all inline scripts include `nonce="VALUE"` and a
+    /// Optional CSP nonce for generated scripts and module-preload hints.
+    /// When set, generated scripts and hints include `nonce="VALUE"` and a
     /// `<meta name="webui-nonce">` tag is emitted for the client router.
     pub nonce: Option<&'a str>,
     /// Optional HTML to emit immediately before the document's
@@ -348,24 +352,31 @@ pub struct RenderOptions<'a> {
     pub body_inject: Option<&'a str>,
 }
 
-/// Reserved top-level state key carrying host-supplied boundary HTML.
+/// Reserved top-level state key carrying host-supplied render metadata.
 ///
 /// The leading `$` marks this key as reserved host metadata rather than
 /// ordinary application state.
 ///
 /// Recognized members, each an optional string:
 ///
-/// | Member | Emitted at |
+/// | Member | Effect |
 /// | --- | --- |
-/// | `headEnd` | immediately before `</head>` |
-/// | `bodyStart` | immediately after `<body>` |
-/// | `bodyEnd` | immediately before `</body>` |
+/// | `headEnd` | HTML emitted immediately before `</head>` |
+/// | `bodyStart` | HTML emitted immediately after `<body>` |
+/// | `bodyEnd` | HTML emitted immediately before `</body>` |
+/// | `assetBase` | Asset base for this response, overriding the protocol's build default. Document renders also write it to `<meta name="webui-asset-base">` in the head |
 ///
 /// The key is always honored — it is part of the render state the host
 /// already supplies — and is stripped from the client hydration payload.
+/// Malformed HTML members are ignored, but a present `assetBase` must pass
+/// [`webui_protocol::validate_asset_base`] or the render fails with
+/// [`HandlerError::InvalidState`].
 pub const STATE_INJECT_KEY: &str = "$webui";
 
-/// Host-supplied boundary HTML resolved once per render from
+/// Reserved member of [`STATE_INJECT_KEY`] that overrides the asset base.
+const ASSET_BASE_MEMBER: &str = "assetBase";
+
+/// Host-supplied render metadata resolved once per render from
 /// [`STATE_INJECT_KEY`].
 ///
 /// Resolution happens when the render context is built, so each structural
@@ -376,30 +387,109 @@ pub(crate) struct StateInject<'state> {
     pub(crate) head_end: Option<&'state str>,
     pub(crate) body_start: Option<&'state str>,
     pub(crate) body_end: Option<&'state str>,
+    /// Validated request override for the protocol's build-default asset base.
+    pub(crate) asset_base: Option<&'state str>,
 }
 
 impl<'state> StateInject<'state> {
     /// Resolve the reserved namespace from a render state value.
     ///
-    /// Returns the empty set when the key is absent, or when any member is
-    /// missing, null, empty, or not a string. Malformed input is inert rather than an error: the reserved
-    /// key is an optional side channel, and a render must not fail because a
-    /// host wrote the wrong shape into it.
-    pub(crate) fn resolve(state: &'state Value) -> Self {
+    /// Returns the empty set when the key is absent. HTML members that are
+    /// missing, null, empty, or not strings are inert rather than errors: they
+    /// are an optional side channel, and a render must not fail because a host
+    /// wrote the wrong shape into one. `assetBase` is different, because a
+    /// wrong base silently breaks every stylesheet and lazy region in the
+    /// response: when present and not `null` it must be a valid base.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HandlerError::InvalidState`] when `assetBase` is present but
+    /// is not a string or fails [`webui_protocol::validate_asset_base`].
+    pub(crate) fn resolve(state: &'state Value) -> Result<Self> {
         let Some(Value::Object(map)) = state.get(STATE_INJECT_KEY) else {
-            return Self::default();
+            return Ok(Self::default());
         };
         let field = |name: &str| {
             map.get(name)
                 .and_then(Value::as_str)
                 .filter(|html| !html.is_empty())
         };
-        Self {
+        let asset_base = match map.get(ASSET_BASE_MEMBER) {
+            None | Some(Value::Null) => None,
+            Some(Value::String(base)) => {
+                webui_protocol::validate_asset_base(base).map_err(invalid_asset_base_state)?;
+                Some(base.as_str())
+            }
+            Some(other) => return Err(asset_base_not_a_string(other)),
+        };
+        Ok(Self {
             head_end: field("headEnd"),
             body_start: field("bodyStart"),
             body_end: field("bodyEnd"),
-        }
+            asset_base,
+        })
     }
+
+    /// The asset base for this render: the request override, else the
+    /// protocol's build default, else none.
+    #[inline]
+    pub(crate) fn effective_asset_base<'r>(self, protocol: &'r WebUIProtocol) -> Option<&'r str>
+    where
+        'state: 'r,
+    {
+        self.asset_base
+            .or_else(|| Some(protocol.asset_base.as_str()).filter(|base| !base.is_empty()))
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn invalid_asset_base_state(error: webui_protocol::AssetBaseError) -> HandlerError {
+    HandlerError::InvalidState(format!(
+        "`{STATE_INJECT_KEY}.{ASSET_BASE_MEMBER}`: {error}. Omit the member to use the build's asset base"
+    ))
+}
+
+#[cold]
+#[inline(never)]
+fn asset_base_not_a_string(value: &Value) -> HandlerError {
+    let kind = match value {
+        Value::Bool(_) => "a boolean",
+        Value::Number(_) => "a number",
+        Value::Array(_) => "an array",
+        _ => "an object",
+    };
+    HandlerError::InvalidState(format!(
+        "`{STATE_INJECT_KEY}.{ASSET_BASE_MEMBER}` must be a string, but it is {kind}. Use a URL or path ending in '/', e.g. 'https://cdn.example.com/app/' or '/static/', or omit the member to use the build's asset base"
+    ))
+}
+
+/// Write a compiler-emitted asset href as `base + path`, HTML-escaped.
+///
+/// The base and path are written separately so prefixing never allocates.
+/// Only base-relative paths take the base.
+#[inline]
+pub(crate) fn write_asset_href(
+    writer: &mut dyn ResponseWriter,
+    base: Option<&str>,
+    path: &str,
+) -> Result<()> {
+    if let Some(base) = base.filter(|_| is_base_relative(path)) {
+        writer.write_escaped(base)?;
+    }
+    writer.write_escaped(path)
+}
+
+/// Whether `href` is a path relative to the asset base.
+///
+/// Root-relative paths, URLs with a scheme, and protocol-relative references
+/// already name their location, so the asset base never prefixes them.
+#[inline]
+pub(crate) fn is_base_relative(href: &str) -> bool {
+    !href.starts_with('/')
+        && href
+            .find([':', '/'])
+            .is_none_or(|end| href.as_bytes()[end] == b'/')
 }
 
 impl<'a> RenderOptions<'a> {
@@ -415,8 +505,8 @@ impl<'a> RenderOptions<'a> {
         }
     }
 
-    /// Set the CSP nonce for inline scripts. Pass an empty string to
-    /// disable (`None` semantics) — empty `<meta name="webui-nonce"
+    /// Set the CSP nonce for generated scripts and module-preload hints.
+    /// Pass an empty string to disable (`None` semantics) — empty `<meta name="webui-nonce"
     /// content="">` would be browser-ignored noise.
     #[must_use]
     pub fn with_nonce(mut self, nonce: &'a str) -> Self {
@@ -937,11 +1027,15 @@ pub(crate) struct WebUIProcessContext<'protocol, 'state, 'output> {
     /// Fragment lists resolve through numeric slots instead of per-fragment
     /// string hashing.
     pub(crate) render_fragments: ResolvedRenderFragmentIndex<'protocol>,
+    pub(crate) lazy_index: Option<&'protocol lazy::LazyIndex>,
     /// Build-constant component asset style metadata serialized once when the
     /// runtime [`Protocol`] is created.
     pub(crate) component_asset_style_manifest: &'protocol str,
     /// Deduplicated document-scoped component asset styles for Light DOM.
     pub(crate) component_asset_style_links: &'protocol str,
+    /// Hrefs behind `component_asset_style_links`, written individually when
+    /// an asset base prefixes them.
+    pub(crate) component_asset_style_hrefs: &'protocol [String],
     pub(crate) state: &'state Value,
     pub(crate) writer: &'output mut dyn ResponseWriter,
     pub(crate) local_vars: ScopeMap,
@@ -1234,19 +1328,29 @@ fn serialize_component_asset_style_manifest(
     }
 }
 
-fn serialize_component_asset_style_links(preloads: &[ComponentAssetStylePreload]) -> String {
+/// Deduplicated Light component asset stylesheet hrefs, in first-use order.
+fn collect_component_asset_style_hrefs(preloads: &[ComponentAssetStylePreload]) -> Vec<String> {
     let href_count = preloads.iter().map(|entry| entry.style_hrefs.len()).sum();
     let mut seen = HashSet::with_capacity(href_count);
-    let mut links = String::with_capacity(href_count.saturating_mul(48));
+    let mut hrefs = Vec::with_capacity(href_count);
     for entry in preloads {
         for href in &entry.style_hrefs {
-            if !seen.insert(href.as_str()) {
-                continue;
+            if seen.insert(href.as_str()) {
+                hrefs.push(href.clone());
             }
-            links.push_str("<link rel=\"stylesheet\" href=\"");
-            push_escaped_html_attribute(&mut links, href);
-            links.push_str("\">");
         }
+    }
+    hrefs
+}
+
+/// Pre-serialize the document stylesheet links written when no asset base
+/// applies, so the common render writes them in one call.
+fn serialize_component_asset_style_links(hrefs: &[String]) -> String {
+    let mut links = String::with_capacity(hrefs.len().saturating_mul(48));
+    for href in hrefs {
+        links.push_str("<link rel=\"stylesheet\" href=\"");
+        push_escaped_html_attribute(&mut links, href);
+        links.push_str("\">");
     }
     links
 }
@@ -1330,6 +1434,10 @@ pub(crate) enum WebUiBootstrapState<'a> {
 }
 
 pub(crate) struct WebUiBootstrap<'a, ComponentStyles: Serialize + ?Sized = Value> {
+    pub(crate) build_id: &'a str,
+    pub(crate) style_inventory: &'a str,
+    /// Asset base the browser resolves pack and stylesheet paths against.
+    pub(crate) asset_base: Option<&'a str>,
     pub(crate) declaration_id: Option<u32>,
     pub(crate) enclosing_span_instance_id: Option<u32>,
     pub(crate) state: WebUiBootstrapState<'a>,
@@ -1904,23 +2012,40 @@ fn collect_component_state_into<'a, 'b>(
 ) -> bool {
     keys.clear();
     for name in components {
-        let Some(component) = protocol.components.get(name) else {
-            return true;
-        };
-        let (mode, component_keys) = match surface {
-            ComponentStateSurface::Hydration => {
-                (component.hydration_mode, &component.hydration_keys)
+        let (mode, component_keys) = if let Some(fragment) = protocol.client_fragments.get(name) {
+            match surface {
+                ComponentStateSurface::Hydration => {
+                    let Some(owner) = protocol.components.get(&fragment.owner) else {
+                        return true;
+                    };
+                    (owner.hydration_mode, &owner.hydration_keys)
+                }
+                ComponentStateSurface::Navigation => (
+                    fragment
+                        .state_mode
+                        .unwrap_or(StateProjectionMode::All as i32),
+                    &fragment.state_keys,
+                ),
             }
-            ComponentStateSurface::Navigation => (
-                match component.navigation_mode {
-                    Some(mode) => mode,
-                    None if !component.navigation_keys.is_empty() => {
-                        StateProjectionMode::Keys as i32
-                    }
-                    None => return true,
-                },
-                &component.navigation_keys,
-            ),
+        } else {
+            let Some(component) = protocol.components.get(name) else {
+                return true;
+            };
+            match surface {
+                ComponentStateSurface::Hydration => {
+                    (component.hydration_mode, &component.hydration_keys)
+                }
+                ComponentStateSurface::Navigation => (
+                    match component.navigation_mode {
+                        Some(mode) => mode,
+                        None if !component.navigation_keys.is_empty() => {
+                            StateProjectionMode::Keys as i32
+                        }
+                        None => return true,
+                    },
+                    &component.navigation_keys,
+                ),
+            }
         };
         if mode == StateProjectionMode::All as i32 {
             return true;
@@ -1946,6 +2071,25 @@ pub(crate) fn write_webui_bootstrap<ComponentStyles: Serialize + ?Sized>(
     let mut wrote_field = false;
 
     writer.write("{")?;
+    if !bootstrap.build_id.is_empty() {
+        write_json_field(
+            writer,
+            scratch,
+            &mut wrote_field,
+            "buildId",
+            bootstrap.build_id,
+        )?;
+        write_json_field(
+            writer,
+            scratch,
+            &mut wrote_field,
+            "styleInventory",
+            bootstrap.style_inventory,
+        )?;
+    }
+    if let Some(asset_base) = bootstrap.asset_base {
+        write_json_field(writer, scratch, &mut wrote_field, "assetBase", asset_base)?;
+    }
     if let Some(declaration_id) = bootstrap.declaration_id {
         write_json_field(
             writer,
@@ -2081,7 +2225,17 @@ fn write_component_asset_styles(context: &mut WebUIProcessContext<'_, '_, '_>) -
         return Ok(());
     }
     context.component_asset_styles_emitted = true;
-    context.writer.write(context.component_asset_style_links)?;
+    let hrefs = context.component_asset_style_hrefs;
+    match context.state_inject.effective_asset_base(context.protocol) {
+        Some(base) if !hrefs.is_empty() => {
+            for href in hrefs {
+                context.writer.write("<link rel=\"stylesheet\" href=\"")?;
+                write_asset_href(context.writer, Some(base), href)?;
+                context.writer.write("\">")?;
+            }
+        }
+        _ => context.writer.write(context.component_asset_style_links)?,
+    }
     write_component_asset_style_manifest(
         context.writer,
         context.component_asset_style_manifest,
@@ -2677,6 +2831,7 @@ impl WebUIHandler {
         })?;
         let is_document_tree = context.shadow_style_roots.is_empty();
         let strategy = context.css_strategy;
+        let asset_base = context.state_inject.effective_asset_base(context.protocol);
 
         // A bundled build delivers merged chunks; otherwise every component
         // delivers its own stylesheet. Both walk the closure in the same order,
@@ -2743,9 +2898,7 @@ impl WebUIHandler {
             match strategy {
                 webui_protocol::CssStrategy::Link => {
                     context.writer.write("<link rel=\"stylesheet\" href=\"")?;
-                    context
-                        .writer
-                        .write(&crate::html_encode::encode_safe(resource))?;
+                    write_asset_href(context.writer, asset_base, resource)?;
                     context.writer.write("\" data-webui-resource=\"")?;
                     context
                         .writer
@@ -2851,6 +3004,7 @@ impl WebUIHandler {
         };
         // A chunk shared by several tree-local roots needs one preload.
         let unit_count = WebUIProtocol::style_closure_unit_count(closure);
+        let asset_base = context.state_inject.effective_asset_base(context.protocol);
         for position in 0..unit_count {
             let Some(unit) =
                 context
@@ -2875,9 +3029,7 @@ impl WebUIHandler {
             context
                 .writer
                 .write("<link rel=\"preload\" as=\"style\" href=\"")?;
-            context
-                .writer
-                .write(&crate::html_encode::encode_safe(href))?;
+            write_asset_href(context.writer, asset_base, href)?;
             context.writer.write("\">")?;
             preloaded.push(resource_index);
         }
@@ -2892,14 +3044,10 @@ impl WebUIHandler {
         if context.css_strategy != webui_protocol::CssStrategy::Link {
             return Ok(());
         }
-        let reachable = context.reachable_components.take().unwrap_or_else(|| {
-            crate::route_handler::collect_reachable_component_order_for_request(
-                context.protocol,
-                context.entry_id,
-                context.request_path,
-                context.route_index,
-            )
-        });
+        let reachable = match context.reachable_components.take() {
+            Some(components) => components,
+            None => Self::request_reachable_components(context)?,
+        };
         let result = (|| {
             for component in &reachable {
                 if context.protocol.component_uses_shadow_dom(component) {
@@ -2910,6 +3058,35 @@ impl WebUIHandler {
         })();
         context.reachable_components = Some(reachable);
         result
+    }
+
+    fn request_reachable_components(context: &WebUIProcessContext) -> Result<Vec<String>> {
+        let Some(index) = context.lazy_index else {
+            return Ok(
+                route_handler::collect_reachable_component_order_for_request(
+                    context.protocol,
+                    context.entry_id,
+                    context.request_path,
+                    context.route_index,
+                ),
+            );
+        };
+        let active = lazy::select(lazy::SelectionInput {
+            protocol: context.protocol,
+            render: &context.render_fragments,
+            index,
+            state: context.state,
+            entry: context.entry_id,
+            request_path: context.request_path,
+            routes: context.route_index,
+        })?;
+        Ok(route_handler::collect_reachable_with_lazy(
+            context.protocol,
+            context.entry_id,
+            context.request_path,
+            context.route_index,
+            Some(&active),
+        ))
     }
 
     fn process_shadow_style_signal(
@@ -3427,9 +3604,9 @@ impl WebUIHandler {
             return Ok(());
         }
 
-        // Hook: emit nonce meta and Document-owned CSS before </head>.
-        // Guarded by `head_end_emitted` so a malformed protocol cannot
-        // emit nonce/preloads/inject more than once per render.
+        // Hook: emit nonce and asset-base meta and Document-owned CSS before
+        // </head>. Guarded by `head_end_emitted` so a malformed protocol cannot
+        // emit meta/preloads/inject more than once per render.
         if structural_value == "head_end" && !context.head_end_emitted {
             context.head_end_emitted = true;
             if let Some(nonce) = context.nonce {
@@ -3439,6 +3616,16 @@ impl WebUIHandler {
                 context
                     .writer
                     .write(&crate::html_encode::encode_safe(nonce))?;
+                context.writer.write("\">")?;
+            }
+            // Bundlers configure their runtime public path in the entry's
+            // first statements, before the runtime parses `#webui-data`, so
+            // the response's base is also readable from the document head.
+            if let Some(base) = context.state_inject.effective_asset_base(context.protocol) {
+                context
+                    .writer
+                    .write("<meta name=\"webui-asset-base\" content=\"")?;
+                context.writer.write_escaped(base)?;
                 context.writer.write("\">")?;
             }
 
@@ -3479,13 +3666,26 @@ impl WebUIHandler {
             // stylesheet requests go out first. The list arrives pre-ordered
             // (largest chunk first) and pre-resolved from the build, so this
             // is a straight write with no per-request work.
+            //
+            // The asset base never applies here. These hints name the static
+            // imports of the application's own entry scripts, which stay where
+            // the application put them; a prefixed hint would make the browser
+            // download every shared chunk a second time from another URL.
             if !context.protocol.module_preloads.is_empty() {
                 for href in &context.protocol.module_preloads {
                     context
                         .writer
                         .write("<link rel=\"modulepreload\" href=\"")?;
                     context.writer.write(href)?;
-                    context.writer.write("\">")?;
+                    context.writer.write("\"")?;
+                    if let Some(nonce) = context.nonce {
+                        context.writer.write(" nonce=\"")?;
+                        context
+                            .writer
+                            .write(&crate::html_encode::encode_safe(nonce))?;
+                        context.writer.write("\"")?;
+                    }
+                    context.writer.write(">")?;
                 }
             }
 
@@ -3537,14 +3737,10 @@ impl WebUIHandler {
                 // `<head>` CSS `<link>`/style-module emission order must stay
                 // deterministic across renders, not vary with the process's
                 // randomized hash seed.
-                let reachable = context.reachable_components.take().unwrap_or_else(|| {
-                    crate::route_handler::collect_reachable_component_order_for_request(
-                        context.protocol,
-                        context.entry_id,
-                        context.request_path,
-                        context.route_index,
-                    )
-                });
+                let reachable = match context.reachable_components.take() {
+                    Some(components) => components,
+                    None => Self::request_reachable_components(context)?,
+                };
                 let state_selection =
                     collect_hydration_state(context.protocol, reachable.iter().map(String::as_str));
 
@@ -3588,10 +3784,21 @@ impl WebUIHandler {
                 }
 
                 // Compute the inventory hex from actually rendered components.
-                let inventory_hex = crate::route_handler::encode_component_inventory(
+                let mut inventory_hex = crate::route_handler::encode_component_inventory(
                     &context.rendered_components,
                     context.component_index,
                 );
+                if !context.protocol.client_fragments.is_empty() {
+                    let mut inventory = route_handler::parse_inventory(&inventory_hex)?;
+                    for name in &reachable {
+                        if context.protocol.client_fragments.contains_key(name) {
+                            if let Some(&index) = context.component_index.get(name) {
+                                route_handler::set_component(&mut inventory, index);
+                            }
+                        }
+                    }
+                    inventory_hex = route_handler::encode_inventory(&inventory);
+                }
 
                 // Chain
                 Self::ensure_request_route_chain(context);
@@ -3651,13 +3858,26 @@ impl WebUIHandler {
                         style_roots.push(entry.error_component.as_str());
                     }
                 }
-                style_roots.extend(reachable.iter().map(String::as_str));
+                style_roots.extend(
+                    reachable
+                        .iter()
+                        .map(String::as_str)
+                        .filter(|id| !context.protocol.client_fragments.contains_key(*id)),
+                );
                 let component_styles =
                     crate::route_handler::collect_component_styles(context.protocol, style_roots)?;
+                let style_inventory = if context.protocol.build_id.is_empty() {
+                    String::new()
+                } else {
+                    route_handler::style_inventory(&component_styles, context.style_resource_index)?
+                };
                 write_webui_data_block(
                     context.writer,
                     &mut context.json_scratch,
                     WebUiBootstrap {
+                        build_id: &context.protocol.build_id,
+                        style_inventory: &style_inventory,
+                        asset_base: context.state_inject.effective_asset_base(context.protocol),
                         declaration_id: None,
                         enclosing_span_instance_id: None,
                         state: WebUiBootstrapState::Complete {
@@ -3807,6 +4027,9 @@ impl WebUIHandler {
         }
 
         if condition_met {
+            if if_cond.lazy && context.streaming.is_some() {
+                record_checkpoint_tag(context, &if_cond.fragment_id);
+            }
             if let Some(p) = &mut context.plugin {
                 p.push_scope();
             }
@@ -4106,11 +4329,15 @@ impl WebUIHandler {
         })
         .flatten();
         let component_asset_style_manifest = protocol.component_asset_style_manifest()?;
+        // Reject an invalid `$webui.assetBase` before writing any byte.
+        let state_inject = StateInject::resolve(state)?;
         let mut context = WebUIProcessContext {
             protocol: document,
             render_fragments,
+            lazy_index: protocol.lazy_index(),
             component_asset_style_manifest,
             component_asset_style_links: protocol.component_asset_style_links(),
+            component_asset_style_hrefs: protocol.component_asset_style_hrefs(),
             state,
             writer,
             local_vars: ScopeMap::default(),
@@ -4131,7 +4358,7 @@ impl WebUIHandler {
             nonce: options.nonce.filter(|s| !s.is_empty()),
             head_inject: options.head_inject.filter(|s| !s.is_empty()),
             body_inject: options.body_inject.filter(|s| !s.is_empty()),
-            state_inject: StateInject::resolve(state),
+            state_inject,
             head_end_emitted: false,
             body_start_emitted: false,
             component_asset_styles_emitted: false,
@@ -11267,6 +11494,91 @@ mod tests {
     }
 
     #[test]
+    fn routed_styles_take_the_asset_base_in_both_render_modes() {
+        let route = WebUiFragmentRoute {
+            path: "/".to_string(),
+            fragment_id: "app-shell".to_string(),
+            children: vec![WebUiFragmentRoute {
+                path: String::new(),
+                fragment_id: "dashboard-page".to_string(),
+                exact: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let fragments = HashMap::from([
+            (
+                "index.html".to_string(),
+                FragmentList {
+                    fragments: vec![
+                        WebUIFragment::raw("<html><head>"),
+                        structural_fragment("head_start"),
+                        structural_fragment("head_end"),
+                        WebUIFragment::raw("</head><body>"),
+                        structural_fragment("body_start"),
+                        WebUIFragment::boundary(0, "index.html", "boundary-0", None),
+                        WebUIFragment::route_from(route),
+                        WebUIFragment::boundary_end(0),
+                        structural_fragment("body_end"),
+                        WebUIFragment::raw("</body></html>"),
+                    ],
+                    contains_boundary: true,
+                },
+            ),
+            (
+                "app-shell".to_string(),
+                FragmentList {
+                    fragments: vec![
+                        WebUIFragment::raw("<header>App</header>"),
+                        WebUIFragment::outlet(),
+                    ],
+                    contains_boundary: false,
+                },
+            ),
+            (
+                "dashboard-page".to_string(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::raw("<main>Dashboard</main>")],
+                    contains_boundary: false,
+                },
+            ),
+        ]);
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Link);
+        for tag in ["app-shell", "dashboard-page"] {
+            let component = protocol.components.entry(tag.to_string()).or_default();
+            component.css_href = format!("{tag}.css");
+            component.template_json = r#"{"h":""}"#.to_string();
+        }
+        protocol.asset_base = "/static/b7/".to_string();
+        protocol.populate_style_closures(&["index.html"]);
+        let protocol = Protocol::new(protocol);
+        let options = RenderOptions::new("index.html", "/");
+
+        let mut ordinary = TestWriter::new();
+        WebUIHandler::new()
+            .render(&protocol, &test_json!({}), &options, &mut ordinary)
+            .unwrap();
+        let mut streamed = FlushTestWriter::default();
+        WebUIHandler::new()
+            .render_streaming(&protocol, &test_json!({}), &options, &mut streamed)
+            .unwrap();
+
+        let escaped_base = encode_safe("/static/b7/");
+        for html in [ordinary.get_content(), streamed.output] {
+            let head = &html[..html.find("</head>").expect("head close")];
+            for resource in ["app-shell", "dashboard-page"] {
+                assert!(
+                    head.contains(&format!(
+                        r#"<link rel="stylesheet" href="{escaped_base}{resource}.css" data-webui-resource="{resource}" data-webui-strategy="link">"#
+                    )),
+                    "route CSS must take the asset base: {html}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn bundled_routed_document_stylesheet_is_hoisted_once() {
         let route = WebUiFragmentRoute {
             path: "/".to_string(),
@@ -12055,6 +12367,38 @@ mod tests {
             ),
             "hints must appear in <head> in the compiler's order: {html}"
         );
+    }
+
+    #[test]
+    fn module_preloads_carry_the_escaped_request_nonce() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<html><head>".to_string()),
+                    structural_fragment("head_end"),
+                    WebUIFragment::raw("</head><body></body></html>".to_string()),
+                ],
+                contains_boundary: false,
+            },
+        );
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol.module_preloads = vec!["/shared.js".to_string(), "/another.js".to_string()];
+        let mut writer = TestWriter::new();
+        handle(
+            &protocol,
+            &test_json!({}),
+            &RenderOptions::new("index.html", "/").with_nonce("request\"nonce"),
+            &mut writer,
+        )
+        .unwrap();
+        let escaped = crate::html_encode::encode_safe("request\"nonce");
+        for href in &protocol.module_preloads {
+            assert!(writer.get_content().contains(&format!(
+                "<link rel=\"modulepreload\" href=\"{href}\" nonce=\"{escaped}\">"
+            )));
+        }
     }
 
     #[test]
@@ -14093,6 +14437,359 @@ mod tests {
         assert_eq!(sink.get_content(), r#"{"a":1,"z":2}"#);
     }
 
+    // ── Asset base ───────────────────────────────────────────────────
+
+    /// Link-mode document with a Light stylesheet in the head, a Shadow
+    /// component whose stylesheet is preloaded in the head and applied in its
+    /// declarative root, and relative, root-relative, and absolute module
+    /// preload hints.
+    fn asset_base_protocol(asset_base: &str) -> WebUIProtocol {
+        let fragments = HashMap::from([
+            (
+                "index.html".to_string(),
+                FragmentList {
+                    fragments: vec![
+                        WebUIFragment::raw("<html><head>"),
+                        structural_fragment("head_end"),
+                        WebUIFragment::raw("</head><body><light-nav>"),
+                        WebUIFragment::component("light-nav"),
+                        WebUIFragment::raw("</light-nav><shadow-card>"),
+                        WebUIFragment::component("shadow-card"),
+                        WebUIFragment::raw("</shadow-card>"),
+                        structural_fragment("body_end"),
+                        WebUIFragment::raw("</body></html>"),
+                    ],
+                    contains_boundary: false,
+                },
+            ),
+            (
+                "light-nav".to_string(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::raw("<nav>nav</nav>")],
+                    contains_boundary: false,
+                },
+            ),
+            (
+                "shadow-card".to_string(),
+                FragmentList {
+                    fragments: vec![
+                        WebUIFragment::raw("<template shadowrootmode=\"open\">"),
+                        structural_fragment("shadow_styles:shadow-card"),
+                        WebUIFragment::raw("<p>card</p></template>"),
+                    ],
+                    contains_boundary: false,
+                },
+            ),
+        ]);
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Link);
+        for (tag, href, uses_shadow_dom) in [
+            ("light-nav", "light-nav.css", false),
+            ("shadow-card", "shadow-card-1a2b3c4d.css", true),
+        ] {
+            let component = protocol.components.entry(tag.to_string()).or_default();
+            component.css_href = href.to_string();
+            component.uses_shadow_dom = uses_shadow_dom;
+        }
+        protocol.module_preloads = vec![
+            "./chunk-big.js".to_string(),
+            "/root-chunk.js".to_string(),
+            "https://other.example/x.js".to_string(),
+        ];
+        protocol.asset_base = asset_base.to_string();
+        protocol.populate_style_closures(&["index.html"]);
+        protocol
+    }
+
+    fn render_with_webui_plugin(protocol: &WebUIProtocol, state: &Value) -> Result<String> {
+        let handler = WebUIHandler::with_plugin(|| {
+            Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
+        });
+        let mut writer = TestWriter::new();
+        handler.render(
+            &Protocol::new(protocol.clone()),
+            state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )?;
+        Ok(writer.get_content())
+    }
+
+    /// The raw text of the inert `#webui-data` bootstrap object.
+    fn webui_data_text(html: &str) -> &str {
+        let open = r#"<script type="application/json" id="webui-data">"#;
+        let start = html.find(open).expect("bootstrap block") + open.len();
+        let end = start + html[start..].find("</script>").expect("bootstrap end");
+        &html[start..end]
+    }
+
+    #[test]
+    fn asset_base_prefixes_compiler_links_and_reaches_the_bootstrap() {
+        let base = "https://cdn.example.com/b123/";
+        let html = render_with_webui_plugin(&asset_base_protocol(base), &test_json!({})).unwrap();
+        let escaped = encode_safe(base);
+        let head = &html[..html.find("</head>").expect("head")];
+
+        for link in [
+            format!(
+                r#"<link rel="stylesheet" href="{escaped}light-nav.css" data-webui-resource="light-nav" data-webui-strategy="link">"#
+            ),
+            format!(r#"<link rel="preload" as="style" href="{escaped}shadow-card-1a2b3c4d.css">"#),
+        ] {
+            assert!(head.contains(&link), "missing {link}: {html}");
+        }
+        assert!(
+            html.contains(&format!(
+                r#"<template shadowrootmode="open"><link rel="stylesheet" href="{escaped}shadow-card-1a2b3c4d.css" data-webui-resource="shadow-card" data-webui-strategy="link">"#
+            )),
+            "declarative Shadow root link must take the base: {html}"
+        );
+
+        let data = webui_data_text(&html);
+        let bootstrap: Value = serde_json::from_str(data).unwrap();
+        assert_eq!(bootstrap["assetBase"], base);
+        // Payload paths stay base-relative: the base appears exactly once.
+        assert_eq!(data.matches("cdn.example.com").count(), 1, "{data}");
+        assert!(data.contains(r#""light-nav.css""#), "{data}");
+    }
+
+    /// Module preload hints name the static imports of the application's own
+    /// entry scripts, which WebUI never relocates. Prefixing them would fetch
+    /// every shared chunk twice: once from the hint and once from the entry.
+    #[test]
+    fn module_preload_hints_never_take_the_asset_base() {
+        let expected = concat!(
+            r#"<link rel="modulepreload" href="./chunk-big.js">"#,
+            r#"<link rel="modulepreload" href="/root-chunk.js">"#,
+            r#"<link rel="modulepreload" href="https://other.example/x.js">"#,
+        );
+        let protocol = asset_base_protocol("https://cdn.example.com/default/");
+        for state in [
+            test_json!({}),
+            test_json!({ "$webui": { "assetBase": "/static/b42/" } }),
+        ] {
+            let html = render_with_webui_plugin(&protocol, &state).unwrap();
+            assert!(html.contains(expected), "{html}");
+            assert_eq!(html.matches("modulepreload").count(), 3, "{html}");
+        }
+        let unbased = render_with_webui_plugin(&asset_base_protocol(""), &test_json!({})).unwrap();
+        assert!(unbased.contains(expected), "{unbased}");
+    }
+
+    /// Bundlers set their runtime public path in the entry's first statements,
+    /// before the runtime reads `#webui-data`, so the head carries the base too.
+    #[test]
+    fn asset_base_meta_is_written_in_the_head_when_a_base_applies() {
+        let meta = |base: &str| {
+            format!(
+                r#"<meta name="webui-asset-base" content="{}">"#,
+                encode_safe(base)
+            )
+        };
+        let protocol = asset_base_protocol("https://cdn.example.com/b123/");
+        let plain = render_with(
+            &protocol,
+            &test_json!({}),
+            &RenderOptions::new("index.html", "/"),
+        );
+        let hydrated = render_with_webui_plugin(&protocol, &test_json!({})).unwrap();
+        for html in [&plain, &hydrated] {
+            let head = &html[..html.find("</head>").expect("head")];
+            assert!(
+                head.contains(&meta("https://cdn.example.com/b123/")),
+                "{html}"
+            );
+            assert_eq!(html.matches("webui-asset-base").count(), 1, "{html}");
+        }
+
+        // Written next to the nonce meta, at the same structural point.
+        let with_nonce = render_with(
+            &protocol,
+            &test_json!({}),
+            &RenderOptions::new("index.html", "/").with_nonce("n0nce"),
+        );
+        assert!(
+            with_nonce.contains(&format!(
+                r#"<meta name="webui-nonce" content="n0nce">{}"#,
+                meta("https://cdn.example.com/b123/")
+            )),
+            "{with_nonce}"
+        );
+
+        let overridden = render_with_webui_plugin(
+            &protocol,
+            &test_json!({ "$webui": { "assetBase": "/static/b42/" } }),
+        )
+        .unwrap();
+        assert!(overridden.contains(&meta("/static/b42/")), "{overridden}");
+        assert!(!overridden.contains("cdn.example.com"), "{overridden}");
+
+        let ampersand = render_with_webui_plugin(
+            &protocol,
+            &test_json!({ "$webui": { "assetBase": "https://cdn.example.com/a&b/" } }),
+        )
+        .unwrap();
+        assert!(
+            ampersand.contains(
+                r#"<meta name="webui-asset-base" content="https:&#x2F;&#x2F;cdn.example.com&#x2F;a&amp;b&#x2F;">"#
+            ),
+            "{ampersand}"
+        );
+
+        for html in [
+            render_with_webui_plugin(&asset_base_protocol(""), &test_json!({})).unwrap(),
+            render_with(
+                &asset_base_protocol(""),
+                &test_json!({}),
+                &RenderOptions::new("index.html", "/").with_nonce("n0nce"),
+            ),
+        ] {
+            assert!(!html.contains("webui-asset-base"), "{html}");
+        }
+    }
+
+    #[test]
+    fn without_an_asset_base_links_and_bootstrap_are_unchanged() {
+        let html = render_with_webui_plugin(&asset_base_protocol(""), &test_json!({})).unwrap();
+        for link in [
+            r#"<link rel="stylesheet" href="light-nav.css" data-webui-resource="light-nav" data-webui-strategy="link">"#,
+            r#"<link rel="preload" as="style" href="shadow-card-1a2b3c4d.css">"#,
+            r#"<template shadowrootmode="open"><link rel="stylesheet" href="shadow-card-1a2b3c4d.css" "#,
+            r#"<link rel="modulepreload" href="./chunk-big.js">"#,
+        ] {
+            assert!(html.contains(link), "missing {link}: {html}");
+        }
+        assert!(!html.contains("assetBase"), "{html}");
+    }
+
+    #[test]
+    fn request_asset_base_overrides_the_build_default_and_stays_out_of_state() {
+        let protocol = asset_base_protocol("https://cdn.example.com/default/");
+        let state = test_json!({ "title": "Home", "$webui": { "assetBase": "/static/b42/" } });
+        let html = render_with_webui_plugin(&protocol, &state).unwrap();
+        let escaped = encode_safe("/static/b42/");
+        assert!(
+            html.contains(&format!(
+                r#"<link rel="stylesheet" href="{escaped}light-nav.css""#
+            )),
+            "{html}"
+        );
+        assert!(!html.contains("default"), "{html}");
+
+        let bootstrap: Value = serde_json::from_str(webui_data_text(&html)).unwrap();
+        assert_eq!(bootstrap["assetBase"], "/static/b42/");
+        assert_eq!(bootstrap["state"], test_json!({ "title": "Home" }));
+        assert!(!html.contains(STATE_INJECT_KEY), "{html}");
+
+        // `null` selects the build default.
+        let html =
+            render_with_webui_plugin(&protocol, &test_json!({ "$webui": { "assetBase": null } }))
+                .unwrap();
+        let bootstrap: Value = serde_json::from_str(webui_data_text(&html)).unwrap();
+        assert_eq!(bootstrap["assetBase"], "https://cdn.example.com/default/");
+    }
+
+    #[test]
+    fn invalid_request_asset_base_fails_before_writing() {
+        let protocol = Protocol::new(asset_base_protocol(""));
+        for (asset_base, rule) in [
+            (
+                test_json!("https://cdn.example.com/app"),
+                "must end with '/'",
+            ),
+            (test_json!("/static/\"><script>/"), "must not contain"),
+            (
+                test_json!("javascript:alert(1)/"),
+                "only http:// and https://",
+            ),
+            (test_json!(""), "it is empty"),
+            (test_json!(42), "must be a string"),
+        ] {
+            let state = test_json!({ "$webui": { "assetBase": asset_base } });
+            let mut writer = TestWriter::new();
+            let error = WebUIHandler::new()
+                .render(
+                    &protocol,
+                    &state,
+                    &RenderOptions::new("index.html", "/"),
+                    &mut writer,
+                )
+                .expect_err("an invalid asset base must fail the render");
+            assert!(matches!(error, HandlerError::InvalidState(_)), "{error}");
+            let message = error.to_string();
+            assert!(message.contains("$webui.assetBase"), "{message}");
+            assert!(message.contains(rule), "{message}");
+            assert!(
+                writer.get_content().is_empty(),
+                "nothing may be written before validation"
+            );
+        }
+    }
+
+    #[test]
+    fn asset_base_prefixes_light_component_asset_styles() {
+        let fragments = HashMap::from([(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<html><head>"),
+                    structural_fragment("head_end"),
+                    WebUIFragment::raw("</head><body></body></html>"),
+                ],
+                contains_boundary: false,
+            },
+        )]);
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Link);
+        protocol.components.insert(
+            "lazy-panel".to_string(),
+            webui_protocol::ComponentData::default(),
+        );
+        protocol.component_asset_style_preloads = vec![ComponentAssetStylePreload {
+            root: "lazy-panel".to_string(),
+            style_hrefs: vec!["lazy-panel.css".to_string(), "shared.css".to_string()],
+        }];
+        let state = test_json!({ "$webui": { "assetBase": "/static/" } });
+
+        let html = render_with(&protocol, &state, &RenderOptions::new("index.html", "/"));
+
+        let escaped = encode_safe("/static/");
+        for href in ["lazy-panel.css", "shared.css"] {
+            assert!(
+                html.contains(&format!(
+                    r#"<link rel="stylesheet" href="{escaped}{href}">"#
+                )),
+                "{html}"
+            );
+        }
+        let unprefixed = render_with(&protocol, &test_json!({}), &state_inject_options());
+        assert!(
+            unprefixed.contains(r#"<link rel="stylesheet" href="lazy-panel.css">"#),
+            "{unprefixed}"
+        );
+    }
+
+    #[test]
+    fn asset_base_applies_only_to_base_relative_hrefs() {
+        for href in [
+            "my-card.css",
+            "./chunk.js",
+            "../x/y.js",
+            "_webui/packs/a.json",
+            "a/b:c",
+        ] {
+            assert!(is_base_relative(href), "{href}");
+        }
+        for href in [
+            "/chunk.js",
+            "//cdn.example.com/x.js",
+            "https://cdn/x.js",
+            "data:,",
+        ] {
+            assert!(!is_base_relative(href), "{href}");
+        }
+    }
+
     #[test]
     fn body_start_hook_dedupes_on_malformed_protocol() {
         let mut fragments = HashMap::new();
@@ -14601,6 +15298,13 @@ mod tests {
         with_boundaries: bool,
         state_strategy: InitialStateStrategy,
     ) -> Protocol {
+        Protocol::new(streaming_document(with_boundaries, state_strategy))
+    }
+
+    fn streaming_document(
+        with_boundaries: bool,
+        state_strategy: InitialStateStrategy,
+    ) -> WebUIProtocol {
         let mut fragments = HashMap::new();
         let mut entry = vec![
             WebUIFragment::raw("<!DOCTYPE html><html><HEAD data-shell=\"main\">"),
@@ -14655,7 +15359,68 @@ mod tests {
                 ..Default::default()
             },
         );
-        Protocol::new(document)
+        document
+    }
+
+    #[test]
+    fn streaming_prefixes_compiler_links_and_sends_the_base_in_the_first_record() {
+        let mut document = streaming_document(true, InitialStateStrategy::Components);
+        document.set_css_strategy(webui_protocol::CssStrategy::Link);
+        document
+            .components
+            .get_mut("my-counter")
+            .expect("counter component")
+            .css_href = "my-counter.css".to_string();
+        document.module_preloads = vec!["chunk.js".to_string()];
+        document.asset_base = "https://cdn.example.com/default/".to_string();
+        document.populate_style_closures(&["index.html"]);
+        let protocol = Protocol::new(document);
+        let handler = WebUIHandler::with_plugin(|| {
+            Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
+        });
+        let state = test_json!({ "count": 1, "$webui": { "assetBase": "/static/" } });
+        let mut writer = FlushTestWriter::default();
+
+        handler
+            .render_streaming(
+                &protocol,
+                &state,
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap();
+
+        let escaped = encode_safe("/static/");
+        let html = &writer.output;
+        let head_end = html.find("</HEAD>").expect("document head");
+        let meta = format!(r#"<meta name="webui-asset-base" content="{escaped}">"#);
+        assert_eq!(html.matches(&meta).count(), 1, "{html}");
+        assert!(
+            html.find(&meta).is_some_and(|position| position < head_end),
+            "the streamed head carries the request's base: {html}"
+        );
+        assert!(
+            html.contains(&format!(
+                r#"<link rel="stylesheet" href="{escaped}my-counter.css""#
+            )),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<link rel="modulepreload" href="chunk.js">"#),
+            "module preload hints keep the application's own paths: {html}"
+        );
+        assert_eq!(
+            html.matches(r#""assetBase":"/static/""#).count(),
+            1,
+            "only the first record carries the response-wide base: {html}"
+        );
+        assert!(
+            html.contains(r#"[0,0,0,{"assetBase":"/static/","declarationId":0,"#),
+            "{html}"
+        );
+        assert!(!html.contains("default"), "{html}");
+        assert!(!html.contains(STATE_INJECT_KEY), "{html}");
+        assert!(html.contains(r#""my-counter.css""#), "{html}");
     }
 
     #[test]

@@ -10,7 +10,7 @@ from types import MappingProxyType
 from typing import Any
 
 import pytest
-from conftest import PROTOCOL_PATH, STATE
+from conftest import STATE
 from microsoft_webui import (
     Plugin,
     ProtocolError,
@@ -20,13 +20,15 @@ from microsoft_webui import (
 )
 
 
-def test_constructs_from_supported_protocol_inputs(protocol_bytes: bytes) -> None:
+def test_constructs_from_supported_protocol_inputs(
+    protocol_bytes: bytes, protocol_path: Path,
+) -> None:
     renderers = [
         Renderer(protocol_bytes),
         Renderer(bytearray(protocol_bytes)),
         Renderer(memoryview(protocol_bytes)),
-        Renderer.from_file(PROTOCOL_PATH),
-        Renderer.from_file(Path(PROTOCOL_PATH)),
+        Renderer.from_file(str(protocol_path)),
+        Renderer.from_file(protocol_path),
     ]
 
     outputs = [renderer.render(STATE) for renderer in renderers]
@@ -154,6 +156,25 @@ def test_partial_and_component_template_payloads_are_json_bytes(renderer: Render
     assert "greeting-card" in json.dumps(templates)
     assert "inventory" in templates
     assert single_template_bytes == templates_bytes
+
+
+def test_current_fixture_preserves_exact_v3_template_metadata(renderer: Renderer) -> None:
+    expected = {
+        "v": 3,
+        "h": '<p class="message"></p>',
+        "l": [3, 1],
+        "tx": [[[1, 0], ["Hello, ", ["name"], "!"]]],
+        "sd": 1,
+        "th": 1,
+        "tr": ["name"],
+        "ta": ["name"],
+    }
+    resources = json.loads(renderer.render_component_templates("greeting-card"))
+    assert resources["templates"] == {"greeting-card": expected}
+    html = renderer.render_text(STATE)
+    bootstrap = json.loads(html.split('id="webui-data">', 1)[1].split("</script>", 1)[0])
+    assert bootstrap["templates"] == {"greeting-card": expected}
+    assert bootstrap["buildId"] == resources["buildId"]
 
 
 def test_tokens_are_immutable_and_in_build_order(renderer: Renderer) -> None:

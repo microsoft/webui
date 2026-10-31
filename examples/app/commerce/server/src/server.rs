@@ -90,7 +90,10 @@ async fn handle_frontend_request(
     }
 
     let nonce = security::generate_nonce();
-    let preload_tags = build_head_preload_tags(&image_preloads);
+    if let Value::Object(ref mut map) = page_state {
+        map.insert("cspNonce".into(), Value::String(nonce.clone()));
+    }
+    let preload_tags = build_head_preload_tags(&image_preloads, &nonce);
     let frontend = data.frontend().clone();
     Ok(streaming_html_response(
         &context,
@@ -280,11 +283,15 @@ fn streaming_html_response(
 /// no custom logic needed here.
 /// The router removes these managed tags on SPA navigations so preloads never
 /// leak across routes.
-fn build_head_preload_tags(image_urls: &[String]) -> String {
-    let capacity = 80 + image_urls.len() * 120;
+fn build_head_preload_tags(image_urls: &[String], nonce: &str) -> String {
+    let capacity = 96 + nonce.len() + image_urls.len() * 120;
     let mut buf = String::with_capacity(capacity);
 
-    buf.push_str(r#"<link rel="modulepreload" href="index.js" data-webui-ssr-preload="script">"#);
+    buf.push_str(
+        r#"<link rel="modulepreload" href="index.js" data-webui-ssr-preload="script" nonce=""#,
+    );
+    buf.push_str(nonce);
+    buf.push_str("\">");
 
     for (i, url) in image_urls.iter().enumerate() {
         buf.push_str(r#"<link rel="preload" as="image" href=""#);
@@ -577,6 +584,18 @@ mod tests {
                 .expect("opening <script> tag must terminate");
         let cart_panel_tag = &html[tag_start..=tag_end];
         let expected_nonce_attr = format!(r#"nonce="{nonce}""#);
+        assert!(
+            html.contains(&format!(
+                r#"<script src="./index.js" type="module" {expected_nonce_attr}></script>"#
+            )),
+            "the application entry must carry the response nonce"
+        );
+        assert!(
+            html.contains(&format!(
+                r#"<link rel="modulepreload" href="index.js" data-webui-ssr-preload="script" {expected_nonce_attr}>"#
+            )),
+            "the entry preload must retain the same module-graph authorization"
+        );
         assert!(
             cart_panel_tag.contains(&expected_nonce_attr),
             "mp-cart-panel <script type=\"importmap\"> tag should carry the response CSP nonce \

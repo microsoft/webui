@@ -146,6 +146,26 @@ pub struct WebUiProtocol {
     pub component_asset_style_preloads: ::prost::alloc::vec::Vec<
         ComponentAssetStylePreload,
     >,
+    /// Opaque content identity supplied by the compiler. Inventory positions may
+    /// only be reused against this same compiled artifact.
+    #[prost(string, tag = "13")]
+    pub build_id: ::prost::alloc::string::String,
+    /// Client-only template sections extracted from lazy if bodies. Keys are
+    /// resource identities, not custom-element names.
+    #[prost(map = "string, message", tag = "14")]
+    pub client_fragments: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        ClientFragmentData,
+    >,
+    /// Build-default public URL or path for the build output directory, ending
+    /// in "/". Empty when the build set none. Every asset path in this protocol
+    /// (stylesheet hrefs, lazy pack paths) is relative to it. Handlers prefix
+    /// compiler-emitted stylesheet links and style preload hints with it and pass
+    /// it to the browser, unless the request state supplies its own
+    /// `$webui.assetBase`. Module preload hints are never prefixed: they name the
+    /// application's own scripts, which stay where the application put them.
+    #[prost(string, tag = "15")]
+    pub asset_base: ::prost::alloc::string::String,
 }
 /// Compile-time component style resources for one CSS tree.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -362,12 +382,38 @@ pub struct WebUiFragmentSignal {
 }
 /// Conditional rendering fragment.
 #[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WebUiFragmentIf {
     #[prost(message, optional, tag = "1")]
     pub condition: ::core::option::Option<ConditionExpr>,
     #[prost(string, tag = "2")]
     pub fragment_id: ::prost::alloc::string::String,
+    /// Keep this ordinary template body out of eager client delivery when inactive.
+    /// Scope, events, refs, DOM ownership, and SSR condition semantics are unchanged.
+    #[prost(bool, tag = "3")]
+    pub lazy: bool,
+}
+/// Compiled client metadata for a template section, without a component host.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ClientFragmentData {
+    #[prost(string, tag = "1")]
+    pub owner: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub template_json: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
+    pub template_functions: ::prost::alloc::string::String,
+    /// Ordinary template resources required by this section; nested lazy edges
+    /// are separate roots and are not implicit preload dependencies.
+    #[prost(string, repeated, tag = "5")]
+    pub dependencies: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(string, repeated, tag = "6")]
+    pub state_keys: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(enumeration = "StateProjectionMode", optional, tag = "7")]
+    pub state_mode: ::core::option::Option<i32>,
+    #[prost(bool, tag = "8")]
+    pub entry: bool,
 }
 /// Dynamic attribute binding.
 #[derive(serde::Serialize, serde::Deserialize)]
