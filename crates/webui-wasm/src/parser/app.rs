@@ -12,8 +12,10 @@ use std::path::Path;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use webui_handler::lazy_packs::{
-    emit, module_specifier, render_scripts_module, startup_components, LazyPackFile, LazyScript,
-    LAZY_SCRIPTS_DECLARATION, LAZY_SCRIPTS_DECLARATION_SOURCE, LAZY_SCRIPTS_MODULE,
+    emit, module_specifier, render_regions_module, render_scripts_module, startup_components,
+    LazyPackFile, LazyScript, LAZY_REGIONS_DECLARATION, LAZY_REGIONS_DECLARATION_SOURCE,
+    LAZY_REGIONS_MODULE, LAZY_SCRIPTS_DECLARATION, LAZY_SCRIPTS_DECLARATION_SOURCE,
+    LAZY_SCRIPTS_MODULE,
 };
 use webui_parser::component_modules;
 use webui_protocol::projection_manifest::ProjectionManifest;
@@ -61,7 +63,7 @@ pub(crate) struct App {
 /// `scripts`, and `stylesheets`; publish its content at `path` in the output
 /// directory. WASM builds inline component CSS, so `stylesheets` is always
 /// empty, and they do not measure brotli sizes. `lazyScriptsModule` is
-/// `{ fileName, content, declaration: { fileName, content } }`, the generated
+/// `{ fileName, content, declaration: { fileName, content }, dependencies }`, the generated
 /// `lazy.webui.js` and its `lazy.webui.d.ts`, when the build has lazy regions.
 #[wasm_bindgen(js_name = buildApp)]
 pub fn build_app(
@@ -250,6 +252,14 @@ struct JsModule<'a> {
     file_name: &'static str,
     content: &'a str,
     declaration: JsDeclaration,
+    dependencies: Vec<JsFile<'a>>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct JsFile<'a> {
+    file_name: &'static str,
+    content: &'a str,
 }
 
 /// `lazy.webui.d.ts` as a JavaScript object.
@@ -289,6 +299,8 @@ fn to_js(app: &App) -> Result<JsValue, JsValue> {
     )?;
     js_sys::Reflect::set(&result, &"lazyPackFiles".into(), &serialize(&packs)?)?;
     if let Some(content) = &app.lazy_scripts_module {
+        let regions = render_regions_module(&app.packs)
+            .ok_or_else(|| JsValue::from_str("Missing lazy region dependencies"))?;
         let module = JsModule {
             file_name: LAZY_SCRIPTS_MODULE,
             content,
@@ -296,6 +308,16 @@ fn to_js(app: &App) -> Result<JsValue, JsValue> {
                 file_name: LAZY_SCRIPTS_DECLARATION,
                 content: LAZY_SCRIPTS_DECLARATION_SOURCE,
             },
+            dependencies: vec![
+                JsFile {
+                    file_name: LAZY_REGIONS_DECLARATION,
+                    content: LAZY_REGIONS_DECLARATION_SOURCE,
+                },
+                JsFile {
+                    file_name: LAZY_REGIONS_MODULE,
+                    content: &regions,
+                },
+            ],
         };
         js_sys::Reflect::set(&result, &"lazyScriptsModule".into(), &serialize(&module)?)?;
     }

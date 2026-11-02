@@ -34,7 +34,7 @@ mod style_bundle;
 
 pub use component_assets::{render_component_assets, ComponentAssetFile, ComponentAssetGraph};
 pub use error::WebUIError;
-pub use lazy_scripts::{GeneratedDeclaration, GeneratedModule};
+pub use lazy_scripts::{GeneratedDeclaration, GeneratedFile, GeneratedModule};
 pub use webui_handler::lazy_packs::{
     LazyPackFile, LazyScript, LazyTrigger, LAZY_SCRIPTS_DECLARATION, LAZY_SCRIPTS_MODULE,
     PACK_OUTPUT_DIR,
@@ -1165,12 +1165,12 @@ fn validate_output_file_names(
         .component_asset_files
         .iter()
         .map(|file| file.name.as_str())
-        .chain(result.lazy_scripts_module.iter().flat_map(|module| {
-            [
-                module.file_name.as_str(),
-                module.declaration.file_name.as_str(),
-            ]
-        }));
+        .chain(
+            result
+                .lazy_scripts_module
+                .iter()
+                .flat_map(|module| module.files().map(|(name, _)| name)),
+        );
     for name in modules {
         let file_name = OsString::from(name);
         if !names.insert(file_name.clone()) {

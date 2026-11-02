@@ -23,6 +23,55 @@ On macOS/Linux point `WEBUI_ADDON_PATH` at the release `libwebui_node.dylib` /
 overrides it). With their defaults, `ntp.mjs` takes about 75 minutes and
 `triggers.mjs` about 26. Run one benchmark at a time on an otherwise idle machine.
 
+## Controlled browser-delivery comparison: 2026-11-02
+
+The bounded `s30` workload has 30 dialogs with 24 fields and five rows each.
+These runs used Windows, Edge 156.0.4314.58, Node 26.13.0, esbuild 0.28.2,
+the release addon, no throttling, cold contexts, one discarded warmup, three
+timing samples, and two additional memory contexts. Heap readings follow forced
+GC. All cases passed their interaction checks without page errors.
+
+Comparison A uses the **same plain app**, current compiler/projection and state,
+with the framework at main `fd2d75282e29638442f161e202bf109d38e3ceb3`
+versus the corrected redesign. Main uses its automatic startup entry; the
+redesign explicitly starts its rendering and stylesheet runtime. Neither loads
+the optional component-template cache, which this workload does not use and main
+did not provide. Comparison B changes only plain versus demand-lazy on the
+corrected redesign.
+
+| Browser entry | Startup JS raw / gzip / Brotli (bytes) | Initial bootstrap JSON (bytes) | Startup heap (bytes) | Hydration (ms) | First open (ms) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Main, plain | 106,201 / 29,173 / 25,304 | 195,506 | 2,119,056 | 40.2 | 15.0 |
+| Redesign, plain | 106,974 / 29,954 / 25,723 | 195,506 | 2,136,320 | 39.7 | 14.8 |
+| Redesign, demand | 114,530 / 32,704 / 28,184 | 61,179 | 1,884,960 | 39.8 | 32.9 |
+
+The redesign is **not a startup-memory win by itself** here: plain adds 419
+Brotli bytes and 17,264 heap bytes over main. Lazy reduces initial JSON by
+134,327 bytes and startup heap by 251,360 bytes versus redesigned plain, but
+adds 2,461 Brotli bytes of JavaScript and about 18 ms to first open. Initial
+HTML is 254,114 bytes plain versus 112,227 lazy; measured compressed startup
+HTML + JS transfers are 34,892 / 35,311 / 32,544 bytes respectively. The opened
+lazy dialog requests a 1,444-byte transferred pack. After three all-dialog
+open/close cycles, the separate memory runs retain 2,450,064 / 2,464,960 /
+2,330,708 heap bytes; no lazy body remains registered after release.
+
+These are small, unthrottled laboratory samples, not statistically established
+timing improvements or a complete NTP/mobile comparison. JavaScript byte counts
+alone do not establish heap behavior. In particular, do not infer a hydration
+speedup from the sub-millisecond differences. Historical NTP results below remain
+historical, including their startup-memory cost versus component assets.
+
+```powershell
+node examples\integration\lazy-ui-bench\triggers.mjs --samples 3 --memory-samples 2 --profile none --scenarios s30 --variants plain,demand --caches cold --out target\redesign-lazy-no-cache.json
+```
+
+For comparison A, extract and compile the main framework's public entry locally,
+then run the same command with `--variants plain` and
+`--legacy-framework target\main-framework\packages\webui-framework\dist\index.js`.
+That switch selects main's automatic startup contract and is limited to plain
+apps. Reports include raw/compressed JavaScript, initial HTML/bootstrap sizes,
+browser conditions, individual samples, and the post-GC memory cycles.
+
 ## NTP-shaped comparison
 
 `ntp.mjs` builds a page shaped like a new tab page in three ways, to compare

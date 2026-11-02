@@ -13,6 +13,7 @@
 //   node examples/integration/lazy-ui-bench/triggers.mjs [--samples 20] [--profile mobile|none]
 //        [--scenarios s1,s30] [--variants plain,demand,intent,idle,eager] [--caches cold,warm]
 //        [--memory-samples 5] [--out target/lazy-triggers.json]
+//        [--legacy-framework path/to/compiled/main/index.js] (plain only)
 
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
@@ -57,13 +58,15 @@ const SCENARIOS = {
 const scenarios = list(args.scenarios, 's1,s30');
 const variants = list(args.variants, 'plain,demand,intent,idle,eager');
 const caches = list(args.caches, 'cold,warm');
+// Compare the pre-redesign automatic startup entry without changing the app.
+const legacyFramework = args['legacy-framework'];
+assert.ok(!legacyFramework || variants.every(variant => variant === 'plain'), 'Legacy startup supports only the plain comparison.');
 const OUTPUT = resolve(args.out ?? join(root, 'target', 'lazy-triggers.json'));
 // Package specifiers let the projection plugin recognize the framework's decorators.
 const FRAMEWORK = {
   'index.ts': '@microsoft/webui-framework',
   'runtime.ts': '@microsoft/webui-framework/runtime.js',
   'styles-entry.ts': '@microsoft/webui-framework/styles.js',
-  'template-cache-entry.ts': '@microsoft/webui-framework/template-cache.js',
 };
 const framework = file => JSON.stringify(FRAMEWORK[file]);
 
@@ -240,14 +243,13 @@ export class BenchDialog${n} extends WebUIElement {
 }
 BenchDialog${n}.define('${tag}');\n`);
   }
-  write('main.ts', `import { startRuntime } from ${framework('runtime.ts')};
-import ${framework('styles-entry.ts')};
-import ${framework('template-cache-entry.ts')};
+  write('main.ts', `${legacyFramework ? '' : `import { startRuntime } from ${framework('runtime.ts')};
+import ${framework('styles-entry.ts')};`}
 ${variant === 'plain' ? '' : `import './.webui/lazy.webui.js';\n`}import { bench } from './bench_client.js';
 import './bench-badge.js';
 import './bench-app.js';
 ${imports}bench.configure(${JSON.stringify(owners)}, '${ownerTag(scenario.target)}');
-startRuntime();
+${legacyFramework ? '' : 'startRuntime();'}
 `);
   return owners;
 }
@@ -275,6 +277,7 @@ async function generate() {
         const generated = variant === 'plain' ? undefined : build(options).lazyScriptsModule;
         if (generated) {
           mkdirSync(options.modulesOut, { recursive: true });
+          for (const file of generated.dependencies) writeFileSync(join(options.modulesOut, file.fileName), file.content);
           writeFileSync(join(options.modulesOut, generated.fileName), generated.content);
           writeFileSync(join(options.modulesOut, generated.declaration.fileName), generated.declaration.content);
         }
@@ -284,6 +287,7 @@ async function generate() {
           entryPoints: [join(dir, 'main.ts')], outfile, bundle: true, format: 'esm', minify: true,
           platform: 'browser', target: 'es2022', legalComments: 'none', absWorkingDir: dir,
           nodePaths: [join(root, 'examples', 'app', 'lazy-ui', 'node_modules')],
+          ...(legacyFramework ? { alias: { '@microsoft/webui-framework': resolve(legacyFramework) } } : {}),
           tsconfigRaw: { compilerOptions: { experimentalDecorators: true, useDefineForClassFields: false } },
           supported: { 'import-attributes': true }, define: { __WEBUI_DEV__: 'false' },
           plugins: [esbuildProjection({ manifest })], logLevel: 'silent',
@@ -497,14 +501,25 @@ const report = {
     os: `${platform()} ${release()}`, cpu: cpus()[0]?.model, profile: PROFILE_NAME, profileSettings: PROFILE ?? null,
     hoverDwellMs: DWELL_MS, samples: SAMPLES, warmups: WARMUPS, memorySamples: MEMORY_SAMPLES,
     addon: process.env.WEBUI_ADDON_PATH,
+    legacyFramework,
   },
   sizes: {}, results: [], memory: [],
 };
 try {
   for (const fixture of fixtures.values()) {
     const packs = [...fixture.packs.values()];
+    const html = fixture.protocol.render({ title: 'Workspace', status: 'Ready' }).toString();
+    const marker = html.indexOf('id="webui-data"');
+    assert.ok(marker >= 0, 'Initial bootstrap data must be present.');
+    const dataStart = html.indexOf('>', marker) + 1;
+    const dataEnd = html.indexOf('</script>', dataStart);
+    assert.ok(dataStart > marker && dataEnd >= dataStart, 'Initial bootstrap data must be complete.');
     report.sizes[`${fixture.id}/${fixture.variant}`] = {
+      scriptBytes: fixture.script.raw.length,
+      scriptGzip: fixture.script.gzip.length,
       scriptBrotli: fixture.script.br.length,
+      initialHtmlBytes: Buffer.byteLength(html),
+      initialDataBytes: Buffer.byteLength(html.slice(dataStart, dataEnd)),
       packBrotliMedian: packs.length ? stats(packs.map(pack => pack.br.length)).median : 0,
       packsBrotliTotal: packs.reduce((sum, pack) => sum + pack.br.length, 0),
     };

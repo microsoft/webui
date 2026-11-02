@@ -269,9 +269,9 @@ test('every prefetch trigger starts the region scripts with its pack', async () 
   const tags = ['eager', 'idle', 'intent', 'demand'];
   for (let i = 0; i < tags.length; i++) {
     defineLazyScripts({
-      [region('scripted-owner', i)]: {
+      [region('scripted-owner', i)]: [`scripted-${tags[i]}`],
+    }, {
         [`scripted-${tags[i]}`]: () => { loaded.push(tags[i]); return Promise.reject(new Error('offline')); },
-      },
     });
   }
   runtime.blockOwner(owner('scripted-owner', [[0, 3], [1, 2], [2, 1], [3, 4]]));
@@ -304,8 +304,11 @@ function openBinding(id: string): CondBinding {
 test('speculative loads before the window loads import region scripts only once it has', async () => {
   const imported: string[] = [];
   defineLazyScripts({
-    [region('deferred-owner', 0)]: { 'deferred-eager': async () => { imported.push('eager'); } },
-    [region('deferred-owner', 1)]: { 'deferred-intent': async () => { imported.push('intent'); } },
+    [region('deferred-owner', 0)]: ['deferred-eager'],
+    [region('deferred-owner', 1)]: ['deferred-intent'],
+  }, {
+    'deferred-eager': async () => { imported.push('eager'); },
+    'deferred-intent': async () => { imported.push('intent'); },
   });
   page.readyState = 'interactive';
   runtime.blockOwner(owner('deferred-owner', [[0, 3], [1, 1]]));

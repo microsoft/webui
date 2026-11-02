@@ -38,7 +38,8 @@ use std::fmt::Write as _;
 use webui_protocol::WebUIProtocol;
 
 pub use scripts::{
-    module_specifier, render_scripts_module, LAZY_SCRIPTS_DECLARATION,
+    module_specifier, render_regions_module, render_scripts_module, LAZY_REGIONS_DECLARATION,
+    LAZY_REGIONS_DECLARATION_SOURCE, LAZY_REGIONS_MODULE, LAZY_SCRIPTS_DECLARATION,
     LAZY_SCRIPTS_DECLARATION_SOURCE, LAZY_SCRIPTS_MODULE,
 };
 pub use startup::startup_components;

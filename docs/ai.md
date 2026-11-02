@@ -241,18 +241,24 @@ this.settingsDialog.showModal();
 - The build emits each body as a static, content-addressed template pack under
   `_webui/packs/`. Initially false omits the body and references its pack;
   initially true renders normally, inlines its templates, and hydrates.
-- Import the generated `lazy.webui.js` (written by `webui build` to
-  `--modules-out`, default `--out`) once before `startRuntime()`, instead of
-  `@microsoft/webui-framework/lazy.js`. It registers a dynamic `import()` of
-  every scripted component each region introduces that the page does not
-  already load at startup (outside lazy regions and routes), so your bundler
-  splits and serves that code; never import those components statically. A
-  region loads its pack and scripts in parallel and renders after both. Map
-  components without a sibling `.ts`/`.js` module with
-  `--component-module tag=specifier`. The import also adds `$rendered()` and
-  `$prefetch()`; the generated `lazy.webui.d.ts` beside it types them for
-  TypeScript without `allowJs`. Without lazy regions, skip it and the app ships
-  no lazy code.
+- Before `startRuntime()`, import the generated `lazy.webui.js` for the
+  default integration. Generation writes to `--modules-out` (default `--out`),
+  including the adjacent `lazy-regions.webui.js` and both `.d.ts` files.
+  The import installs `lazy.js`, adds `$rendered()` and `$prefetch()`, and
+  registers loaders without starting any component loads.
+- The default module supplies dynamic imports for components not already
+  needed at startup outside lazy regions/routes. Your bundler owns splitting
+  and public paths. Map modules without a sibling with
+  `--component-module tag=specifier`; relative mappings start at `--modules-out`.
+  For custom chunk groups or loading policy, replace the default import with
+  `{ lazyRegions }` from `lazy-regions.webui.js`, import `defineLazyScripts`
+  from `@microsoft/webui-framework/lazy.js`, and call
+  `defineLazyScripts(lazyRegions, yourTagLoaders)` before `startRuntime()`. Each loader must
+  await declaration of its component. Never copy private region IDs or edit
+  generated files. The pure dependency module imports no runtime or default
+  loaders, so no unwanted default chunks are emitted.
+  A region loads its pack and scripts in parallel and renders after both.
+  Without lazy regions, skip the integration and ship no lazy code.
 - Choose when the pack loads with the attribute value: `lazy`
   (= `lazy="intent"`) on pointer/focus/touch in the owner; `lazy="idle"` after
   load when idle; `lazy="eager"` right after hydration; `lazy="demand"` only when
@@ -271,6 +277,8 @@ this.settingsDialog.showModal();
   owner with `detail.error`; uncanceled errors go to `reportError()`.
 - Shown regions release their body templates at idle once closed; reopening
   reuses or refetches them. Do not cache pack contents yourself.
+  This does not unload JavaScript or clear the browser's module cache.
+  Invoking a failed loader again does not guarantee a fresh native import.
 - `<if>` accepts only `condition` and `lazy`. `id` and other attributes fail
   the build. Rebuild protocol, packs, and client together.
 - Small or immediately used UI is cheaper as an ordinary `<if>`.

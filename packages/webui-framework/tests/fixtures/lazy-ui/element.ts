@@ -10,13 +10,14 @@ import { collectTemplates } from '../../../src/template-cache.js';
 
 /** The document readiness each time the search region's script loader ran. */
 const imports: DocumentReadyState[] = [];
-// Stands in for the generated `lazy.webui.js`: the loader only records when it runs.
+// Records the loader's timing and declares the fixture's lazy component.
 defineLazyScripts({
-  'test-lazy-search::lazy:@0': {
-    'test-lazy-search-chip': () => {
-      imports.push(document.readyState);
-      return Promise.resolve();
-    },
+  'test-lazy-search::lazy:@0': ['test-lazy-search-chip'],
+}, {
+  'test-lazy-search-chip': () => {
+    imports.push(document.readyState);
+    customElements.define('test-lazy-search-chip', class extends HTMLElement {});
+    return Promise.resolve();
   },
 });
 

@@ -40,7 +40,7 @@ const entries = {
   fullRouter: `import { WebUIRouter, navigationCache, routeActions, routePreload, routeBoundaries, viewTransitions, routeDiagnostics } from '@microsoft/webui-delivery/router.js'; import { ndjson } from '@microsoft/webui-delivery/resources.js'; new WebUIRouter().start({ transport: ndjson(), cache: navigationCache(), actions: routeActions(), preload: routePreload(), boundaries: routeBoundaries, transitions: viewTransitions, diagnostics: routeDiagnostics });`,
   resources: `export { fetchComponentTemplates, readJsonPartial } from '@microsoft/webui-delivery/resources.js';`,
   records: `export { ndjson } from '@microsoft/webui-delivery/resources.js';`,
-  lazyRegions: `import { defineLazyScripts } from '@microsoft/webui-framework/lazy.js'; defineLazyScripts({}); ${renderer}`,
+  lazyRegions: `import { defineLazyScripts } from '@microsoft/webui-framework/lazy.js'; defineLazyScripts({}, {}); ${renderer}`,
   combined: `import { WebUIRouter } from '@microsoft/webui-delivery/router.js'; import '@microsoft/webui-framework/lazy.js'; ${renderer} new WebUIRouter().start();`,
   queryHelper: `export { parseQuery } from '@microsoft/webui-delivery/router.js';`,
   decoratorOnly: `export { observable } from '@microsoft/webui-framework';`,

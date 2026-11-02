@@ -51,7 +51,7 @@ wait for it to arrive. Repeated startup calls do not repeat installation.
 | `styles.js` | Component stylesheet installation and readiness |
 | `templates.js` | `getTemplate()` and `registerTemplateData()` without installing a renderer |
 | `template-cache.js` | Optional lifetime-aware template collection |
-| `lazy.js` | Loads `<if lazy>` template packs, runs their prefetch triggers, and releases inactive regions; import it through the generated `lazy.webui.js` |
+| `lazy.js` | Loads `<if lazy>` packs and releases inactive regions; import through generated `lazy.webui.js`, or register `lazyRegions` from `lazy-regions.webui.js` with application loaders |
 | `streaming.js` | Progressive HTML streaming hydration |
 | `lazy-hydration.js` | Visibility-based hydration coordination |
 | `interaction-hydration.js` | Interaction-based activation |

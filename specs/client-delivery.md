@@ -21,8 +21,9 @@ guides; `DESIGN.md` owns the high-level browser boundaries.
 - Lazy regions are not a delivery consumer. The framework's optional `lazy.js`
   runtime fetches static template packs and registers them through the renderer
   bridge; it imports no router, transport, or NDJSON reader. Region component
-  scripts are application code: a compiler-generated module registers them as
-  dynamic imports that the application's bundler splits and serves. The
+  scripts are application code: a compiler-generated default module registers
+  dynamic imports, or the application supplies tag-keyed loaders with the same
+  pure generated dependency module. The application's bundler splits and serves them. The
   rendering core contains no lazy code beyond resolving string block references
   through an installable resolver; `lazy.js` extends the element itself, so
   pages without lazy regions ship nothing for them.
@@ -187,7 +188,8 @@ into the generated-modules directory:
 
 ```javascript
 import { defineLazyScripts } from '@microsoft/webui-framework/lazy.js';
-defineLazyScripts({ "<region>": { "<tag>": () => import("<specifier>") } });
+import { lazyRegions } from './lazy-regions.webui.js';
+defineLazyScripts(lazyRegions, { "<tag>": () => import("<specifier>") });
 ```
 
 A region's tags are the scripted components among the templates its pack
@@ -197,8 +199,23 @@ components the entry fragment reaches without crossing a lazy region or a
 routes stay listed, because they load with route partials. A component's
 specifier is its sibling `.ts` or `.js` module, relative to the generated
 module, or an explicit component-module mapping. Regions left without tags are
-omitted; the call still runs, so applications import this module instead of
-`lazy.js`.
+omitted. Each tag has one default loader even when several regions need it.
+The call still runs with empty dependencies, so applications can always
+import this default installer instead of `lazy.js`.
+
+The adjacent `lazy-regions.webui.js` exports only
+`lazyRegions: Record<region, readonly tag[]>`. It imports no runtime, performs
+no registration, and references no behavior module. Applications choosing
+custom grouping or loading policy import it instead of the default installer
+and call the same `defineLazyScripts` with tag-keyed callbacks. Physical
+separation is required: bundlers may emit orphan chunks for dynamic imports
+in unused exports. No callback adapter, runtime discovery, or second dependency
+compiler is involved. Registration starts no loads and does not walk component
+dependencies. A missing loader rejects when its region needs that tag, through
+the same declaration-readiness check as a callback that resolves too early.
+Each registration retains the original generated dependency object and callback
+table once, with region lookups pointing to that shared registration, not a
+copied per-region callback map or per-region tuple.
 
 Next to it the build writes `lazy.webui.d.ts`, which is always:
 
@@ -212,6 +229,10 @@ brings in the runtime's module augmentation (`$rendered()`, `$prefetch()`)
 without `allowJs`. Declaration files are exempt from `rootDir`, so the
 generated directory may sit outside it. Both files are published together and
 rewritten only when their content changes.
+The pure module has its own `lazy-regions.webui.d.ts` with a type-only
+`LazyRegions` import. Programmatic builds return both supporting files in the
+loader module's `dependencies` list. CLI, `build_to_disk`, and watched rebuilds
+publish all four inputs transactionally, including collision checks and rollback.
 
 The build reports every pack with its path, region, owner, trigger, raw size,
 content hash, script specifiers, and stylesheet paths, in the build results
@@ -232,12 +253,19 @@ registered, it loads the pack its container's `lp` names and re-enters the owner
 once the pack is registered, which re-evaluates the condition. A region that
 closed meanwhile stays unmounted, and a binding whose owner instance was
 disposed cannot mount. Without the runtime, activation throws an error that
-names the generated `lazy.webui.js`, which loads `lazy.js`.
+names the default generated `lazy.webui.js` or application registration.
 
 Activation and prefetch share one load per URL, with a 10 second deadline so a
 stalled request fails and the next activation retries. Every load also starts
 the region's scripts: one in-flight import per tag, skipped for tags already
-defined, forgotten after a failure so the next load retries. In link builds it
+declared. Settled successes are removed instead of retained in a fulfilled-load
+cache. A failed loader retains only a retry marker so a declaration made before
+its resource preparation failed cannot bypass that failure on the next load.
+Synchronous callback exceptions reject through the same activation error path.
+A callback must declare its tag before resolving; a pending WebUI declaration
+waiting for template registration counts, but a resolved no-op does not.
+Invoking a callback again does not clear native module-cache failures, and
+template release never unloads JavaScript. In link builds it
 also preloads the stylesheets the container's `lc` lists for the region,
 resolved against the asset base, at the load's fetch priority, so they download
 in parallel with the pack instead of after it arrives. A region mounts

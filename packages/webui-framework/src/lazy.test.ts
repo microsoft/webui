@@ -129,7 +129,7 @@ test('the core needs lazy.js and the runtime owns hostless fragments and their b
   assert.equal(contract.lazyBlockOwner({ h: '' }), undefined);
   assert.throws(
     () => contract.requireLazyFragment('x::lazy:@0', 'x'),
-    /Import the generated lazy\.webui\.js \(it loads @microsoft\/webui-framework\/lazy\.js\)/,
+    /Import the generated lazy\.webui\.js or register application loaders/,
   );
   await import('./lazy-entry.js');
   runtime = await import('./lazy-runtime.js');

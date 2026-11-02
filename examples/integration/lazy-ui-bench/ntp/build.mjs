@@ -134,6 +134,7 @@ export async function buildFixture({ key, scratch, root, build, Protocol, bundle
     first = build(options);
     if (variant === 'lazy') {
       const { fileName, content, declaration } = first.lazyScriptsModule;
+      writeModules(modulesOut, first.lazyScriptsModule.dependencies.flatMap(file => [file.fileName, file.content]));
       writeModules(modulesOut, [fileName, content, declaration.fileName, declaration.content]);
     } else writeModules(modulesOut, first.componentAssetFiles);
   }

@@ -103,8 +103,8 @@ pub struct ServeArgs {
     pub emit_component_assets: Vec<String>,
 
     /// Directory refreshed after each successful build with generated modules
-    /// for the application bundler: component asset inputs, lazy.webui.js, and
-    /// lazy.webui.d.ts. In watch mode, it cannot equal or contain a watched
+    /// for the application bundler: component asset inputs, lazy.webui.js,
+    /// lazy-regions.webui.js, and their types. In watch mode, it cannot equal or contain a watched
     /// source path.
     #[arg(long, value_name = "DIR")]
     pub modules_out: Option<PathBuf>,
@@ -4184,6 +4184,17 @@ mod tests {
             .unwrap()
             .contains("import '@microsoft/webui-framework/lazy.js';"));
         let declared = fs::metadata(&declaration_path).unwrap().modified().unwrap();
+        let companions = [
+            webui_handler::lazy_packs::LAZY_REGIONS_DECLARATION,
+            webui_handler::lazy_packs::LAZY_REGIONS_MODULE,
+        ]
+        .map(|name| generated.join(name));
+        let companion_times = companions
+            .each_ref()
+            .map(|path| fs::metadata(path).unwrap().modified().unwrap());
+        assert!(fs::read_to_string(&companions[1])
+            .unwrap()
+            .contains("\"settings-panel\""));
         build_and_render(&config, None).unwrap();
         assert_eq!(
             fs::metadata(&module_path).unwrap().modified().unwrap(),
@@ -4192,6 +4203,12 @@ mod tests {
         assert_eq!(
             fs::metadata(&declaration_path).unwrap().modified().unwrap(),
             declared
+        );
+        assert_eq!(
+            companions
+                .each_ref()
+                .map(|path| fs::metadata(path).unwrap().modified().unwrap()),
+            companion_times
         );
 
         // A watch rebuild that maps the tag rewrites the module in place.
@@ -4203,6 +4220,13 @@ mod tests {
         assert!(fs::read_to_string(&module_path)
             .unwrap()
             .contains(r#"import("@contoso/settings.js")"#));
+        assert_eq!(
+            companions
+                .each_ref()
+                .map(|path| fs::metadata(path).unwrap().modified().unwrap()),
+            companion_times,
+            "a module override does not rewrite unchanged dependency data"
+        );
 
         // A server-owned component asset directory never receives the module.
         let owned = TempDir::new().unwrap();
@@ -4212,6 +4236,9 @@ mod tests {
         assert!(result.has_lazy_scripts);
         assert!(!owned.path().join(webui::LAZY_SCRIPTS_MODULE).exists());
         assert!(!owned.path().join(webui::LAZY_SCRIPTS_DECLARATION).exists());
+        for path in companions {
+            assert!(!owned.path().join(path.file_name().unwrap()).exists());
+        }
     }
 
     #[test]

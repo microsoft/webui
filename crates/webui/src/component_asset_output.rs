@@ -15,6 +15,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use transaction::Publication;
+use webui_handler::lazy_packs::{LAZY_REGIONS_DECLARATION, LAZY_REGIONS_MODULE};
 
 type Result<T> = std::result::Result<T, WebUIError>;
 
@@ -209,18 +210,22 @@ fn output_files<'a>(
         });
     }
     for module in modules {
-        let declaration = &module.declaration;
-        // Declarations publish first, so a type checker that sees the new
-        // module also finds its types.
-        for (name, content, expected) in [
-            (
-                &declaration.file_name,
-                &declaration.content,
-                LAZY_SCRIPTS_DECLARATION,
-            ),
-            (&module.file_name, &module.content, LAZY_SCRIPTS_MODULE),
-        ] {
-            if name != expected || !seen.insert(name.as_str()) {
+        if module.file_name != LAZY_SCRIPTS_MODULE
+            || module.declaration.file_name != LAZY_SCRIPTS_DECLARATION
+        {
+            return Err(WebUIError::InvalidBuildOptions(
+                "invalid generated lazy module or declaration name".to_owned(),
+            ));
+        }
+        for (name, content) in module.files() {
+            if !matches!(
+                name,
+                LAZY_SCRIPTS_MODULE
+                    | LAZY_SCRIPTS_DECLARATION
+                    | LAZY_REGIONS_MODULE
+                    | LAZY_REGIONS_DECLARATION
+            ) || !seen.insert(name)
+            {
                 return Err(WebUIError::InvalidBuildOptions(format!(
                     "invalid or duplicate generated module path '{name}'"
                 )));
@@ -475,7 +480,11 @@ mod tests {
     #[test]
     fn failed_first_publication_removes_the_new_module_and_declaration() {
         let output = TempDir::new().unwrap();
-        let module = GeneratedModule::lazy_scripts("first".to_string());
+        let mut module = GeneratedModule::lazy_scripts("first".to_string());
+        module.dependencies = vec![crate::GeneratedFile {
+            file_name: LAZY_REGIONS_MODULE.to_string(),
+            content: "export const lazyRegions = {};".to_string(),
+        }];
         let error = publish_modules_with(output.path(), &[], &[module], || {
             Err(WebUIError::InvalidBuildOptions(
                 "metafile commit failed".to_string(),
@@ -485,6 +494,35 @@ mod tests {
         assert!(error.to_string().contains("metafile commit failed"));
         assert!(!output.path().join(LAZY_SCRIPTS_MODULE).exists());
         assert!(!output.path().join(LAZY_SCRIPTS_DECLARATION).exists());
+        assert!(!output.path().join(LAZY_REGIONS_MODULE).exists());
+    }
+
+    #[test]
+    fn supporting_files_roll_back_and_reject_duplicate_paths() {
+        let output = TempDir::new().unwrap();
+        let module = |content: &str| {
+            let mut module = GeneratedModule::lazy_scripts(content.to_string());
+            module.dependencies = vec![crate::GeneratedFile {
+                file_name: LAZY_REGIONS_MODULE.to_string(),
+                content: content.to_string(),
+            }];
+            module
+        };
+        publish_modules_with(output.path(), &[], &[module("first")], || Ok(())).unwrap();
+        let path = output.path().join(LAZY_REGIONS_MODULE);
+        assert!(
+            publish_modules_with(output.path(), &[], &[module("second")], || {
+                assert_eq!(fs::read_to_string(&path).unwrap(), "second");
+                Err(WebUIError::InvalidBuildOptions("rollback".to_string()))
+            })
+            .is_err()
+        );
+        assert_eq!(fs::read_to_string(path).unwrap(), "first");
+        let mut duplicate = module("second");
+        duplicate
+            .dependencies
+            .push(duplicate.dependencies[0].clone());
+        assert!(publish_modules_with(output.path(), &[], &[duplicate], || Ok(())).is_err());
     }
 
     #[test]

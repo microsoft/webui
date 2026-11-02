@@ -105,10 +105,13 @@ combined with `<route>`.
 
 `<if lazy>` regions compile to template packs in `BuildResult::lazy_pack_files`
 and to `BuildResult::lazy_scripts_module`, the generated `lazy.webui.js` that
-maps each region to dynamic imports of the scripted components it introduces
-and the page does not already load at startup. Import it from the application
-entry so the bundler loads that code. Its `declaration` is `lazy.webui.d.ts`,
-written next to it so TypeScript entries get the lazy runtime's types without
+registers default dynamic imports of components not already loaded at startup.
+Import it before `startRuntime()`. Its `dependencies` list contains the pure
+`lazy-regions.webui.js` and its declaration; publish those beside it as well.
+For application-owned chunks, replace the default import with `lazyRegions`
+from the pure companion and call `defineLazyScripts(lazyRegions, yourTagLoaders)`
+from `@microsoft/webui-framework/lazy.js`.
+Its `declaration` is `lazy.webui.d.ts`, written next to it to type the import without
 `allowJs`. Set `modules_out` to the directory they will be written to (relative
 specifiers start there; `build_to_disk` defaults it to `out_dir`), and
 `component_modules` for components without a `.ts` or `.js` sibling module.

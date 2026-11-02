@@ -29,7 +29,7 @@ export function findLazyFragment(id: string, owner: string): TemplateMeta | unde
 export function requireLazyFragment(id: string, owner: string): TemplateMeta {
   if (!resolveFragment) {
     throw new Error(
-      '[WebUI] Import the generated lazy.webui.js (it loads @microsoft/webui-framework/lazy.js) before activating lazy UI.',
+      '[WebUI] Import lazy.webui.js or call defineLazyScripts() before activating lazy UI.',
     );
   }
   const template = resolveFragment(id, owner);

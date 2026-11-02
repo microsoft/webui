@@ -46,12 +46,15 @@ static files. Templates reference packs by paths relative to the asset base
 (`BuildOptions::asset_base`, or `$webui.assetBase` per request).
 
 When the build has lazy regions, `BuildResult::lazy_scripts_module` is the
-generated `lazy.webui.js` (`webui::LAZY_SCRIPTS_MODULE`). It maps each region to
-dynamic imports of the scripted components it introduces that the page does
-not already load at startup; import it from your entry module so your bundler
-loads that code. Its `declaration` is `lazy.webui.d.ts`
-(`webui::LAZY_SCRIPTS_DECLARATION`), which gives TypeScript entries the lazy
-runtime's types without `allowJs`; write it next to the module. Relative
+generated `lazy.webui.js` (`webui::LAZY_SCRIPTS_MODULE`). It exports
+default dynamic imports of scripted components not already loaded at startup.
+Import it before starting the renderer. Its `dependencies` list contains the
+pure `lazy-regions.webui.js` and its declaration; publish those beside it too.
+To own chunk groups and loading policy, import `lazyRegions` from that
+companion instead and call `defineLazyScripts(lazyRegions, yourTagLoaders)`
+from `@microsoft/webui-framework/lazy.js`.
+Its `declaration` is `lazy.webui.d.ts` (`webui::LAZY_SCRIPTS_DECLARATION`),
+which supplies the runtime types without `allowJs`; write it next to the module. Relative
 specifiers start at `BuildOptions::modules_out`, or at `app_dir` without one.
 `build_to_disk()` writes both files to `modules_out`, defaulting to the output
 directory. Each `LazyPackFile` also reports its `region`, `owner`, `trigger`,

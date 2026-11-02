@@ -149,9 +149,13 @@ pack at its `path`, under `_webui/packs/` beside the page, as an immutable
 static file. When the build has lazy regions, `lazyScriptsModule` is the
 generated `lazy.webui.js`, and its `declaration` is the `lazy.webui.d.ts` that
 gives TypeScript entries its types without `allowJs`. Write both to the
-directory you passed as `modulesOut` and import the module from your entry
-module, so your bundler loads the code of the components each region
-introduces:
+directory you passed as `modulesOut`, including every file in `dependencies`.
+In the browser entry, import `lazy.webui.js` before `startRuntime()` for the
+default loaders. For custom loading or chunk groups, import `lazyRegions` from
+the pure companion `lazy-regions.webui.js` instead, and call
+`defineLazyScripts(lazyRegions, yourTagLoaders)` from
+`@microsoft/webui-framework/lazy.js`. See [lazy integration](/learn/lazy).
+Publish the generated files like this:
 
 ```typescript
 const result = build({ appDir: './src', plugin: 'webui', modulesOut: './.webui' });
@@ -160,6 +164,9 @@ for (const pack of result.lazyPackFiles) {
 }
 const lazy = result.lazyScriptsModule;
 if (lazy) {
+  for (const file of lazy.dependencies) {
+    writeFileSync(join('.webui', file.fileName), file.content);
+  }
   writeFileSync(join('.webui', lazy.fileName), lazy.content);
   writeFileSync(join('.webui', lazy.declaration.fileName), lazy.declaration.content);
 }

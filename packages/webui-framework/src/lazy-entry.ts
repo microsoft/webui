@@ -27,14 +27,14 @@ import {
   watch,
   type LazyHost,
 } from './lazy-runtime.js';
-import { addScripts, warnStartupDefinitions, type LazyScripts } from './lazy-scripts.js';
+import { addScripts, warnStartupDefinitions, type LazyRegions, type LazyScriptLoaders } from './lazy-scripts.js';
 import { isConditionTruthy } from './template-conditions.js';
 import { TemplateElement } from './template-element.js';
 import { hasPendingTemplateDefinition } from './template-registry.js';
 import type { CondBinding, TemplateInstance } from './element/types.js';
 import type { TemplateMeta } from './template-types.js';
 
-export type { LazyScriptLoader, LazyScripts } from './lazy-scripts.js';
+export type { LazyRegions, LazyScriptLoader, LazyScriptLoaders } from './lazy-scripts.js';
 
 // `__WEBUI_DEV__` is a compile-time constant (see `template-element.ts`). The
 // check below uses the define expression itself: bundlers do not inline a
@@ -167,12 +167,14 @@ installLazyResolver(resolve, meta => {
 /**
  * Register the loaders of the custom elements that lazy regions introduce.
  *
- * `webui build` generates `lazy.webui.js`, which calls this with one dynamic
- * import per scripted component; import that module instead of `lazy.js`. A
- * region's scripts load with its pack, and its body mounts once both are ready.
+ * The default generated `lazy.webui.js` calls this. Applications can instead
+ * import `lazyRegions` from `lazy-regions.webui.js` and supply loaders keyed by
+ * component tag. Each loader must resolve after declaring its component and may share an
+ * application-selected chunk with other loaders. Registration starts no loads.
+ * A region's scripts load with its pack, and its body mounts once both are ready.
  */
-export function defineLazyScripts(scripts: LazyScripts): void {
-  addScripts(scripts);
+export function defineLazyScripts(regions: LazyRegions, scripts: LazyScriptLoaders): void {
+  addScripts(regions, scripts);
   if (typeof __WEBUI_DEV__ === 'undefined' || __WEBUI_DEV__) {
     // WebUI components wait for their templates to define themselves, so the
     // guard also counts declarations that are still pending.

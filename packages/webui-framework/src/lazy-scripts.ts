@@ -11,49 +11,66 @@
  */
 
 import type { TemplateMeta } from './template-types.js';
+import { hasPendingTemplateDefinition } from './template-registry.js';
 
-// Module-local, as in `template-element.ts`. This module has no runtime
-// imports, so bundlers inline `DEV` and drop the development-only tracking below.
+// Development tracking is removed from production bundles.
 declare const __WEBUI_DEV__: boolean;
-const DEV: boolean = typeof __WEBUI_DEV__ === 'undefined' || __WEBUI_DEV__;
 
 /** Loads the module that defines one custom element. */
 export type LazyScriptLoader = () => Promise<unknown>;
 
-/** Loaders of the scripted custom elements each lazy region introduces, by region identity and tag. */
-export type LazyScripts = Readonly<Record<string, Readonly<Record<string, LazyScriptLoader>>>>;
+/** Compiler-owned region dependencies, independent of application loading policy. */
+export type LazyRegions = Readonly<Record<string, readonly string[]>>;
+/** Application-owned loaders keyed by public custom element tag, not region identity. */
+export type LazyScriptLoaders = Readonly<Record<string, LazyScriptLoader>>;
 
-const loaders = new Map<string, Record<string, LazyScriptLoader>>();
-/** Loads by tag while in flight, then `true`; a failed load is forgotten so the next request retries. */
-const loads = new Map<string, Promise<unknown> | true>();
+type RegionScripts = readonly [regions: LazyRegions, scripts: LazyScriptLoaders];
+
+const loaders = new Map<string, RegionScripts>();
+/** Settled successes are removed; `false` keeps a failed loader retryable even if it declared its tag. */
+const loads = new Map<string, Promise<void> | false>();
 /** Development only: tags a region asked for, and tags already reported. */
 let requested: Set<string> | undefined;
 let warned: Set<string> | undefined;
 let warnedUnscripted = false;
 
-/** Merge generated region loaders into the runtime map. */
-export function addScripts(scripts: LazyScripts): void {
-  for (const [region, tags] of Object.entries(scripts)) loaders.set(region, { ...loaders.get(region), ...tags });
+/** Register generated dependencies with application-owned tag loaders. */
+export function addScripts(regions: LazyRegions, scripts: LazyScriptLoaders): void {
+  const entry: RegionScripts = [regions, scripts];
+  for (const region of Object.keys(regions)) {
+    loaders.set(region, entry);
+  }
 }
 
 /** Load a region's custom elements; `undefined` when every one is already available. */
 export function loadScripts(region: string): Promise<unknown> | undefined {
-  const tags = loaders.get(region);
-  if (!tags) return undefined;
+  const entry = loaders.get(region);
+  if (!entry) return undefined;
   let waits: Promise<unknown>[] | undefined;
-  for (const [tag, loader] of Object.entries(tags)) {
-    if (DEV) (requested ??= new Set()).add(tag);
+  for (const tag of entry[0][region]) {
+    if (typeof __WEBUI_DEV__ === 'undefined' || __WEBUI_DEV__) (requested ??= new Set()).add(tag);
     let loading = loads.get(tag);
-    if (loading === true || customElements.get(tag)) continue;
+    if (loading === undefined && declared(tag)) continue;
     if (!loading) {
-      loads.set(tag, loading = loader().then(() => { loads.set(tag, true); }, (error: unknown) => {
-        loads.delete(tag);
-        throw error;
-      }));
+      loads.set(tag, loading = startScript(tag, entry[1][tag]).then(
+        () => { loads.delete(tag); },
+        (error: unknown) => { loads.set(tag, false); throw error; },
+      ));
     }
     (waits ??= []).push(loading);
   }
   return waits && Promise.all(waits);
+}
+
+async function startScript(tag: string, loader: LazyScriptLoader | undefined): Promise<void> {
+  await loader?.();
+  if (!declared(tag)) {
+    throw new Error(`[WebUI] Await <${tag}>'s module in defineLazyScripts.`);
+  }
+}
+
+function declared(tag: string): boolean {
+  return !!customElements.get(tag) || hasPendingTemplateDefinition(tag);
 }
 
 /**
@@ -62,8 +79,8 @@ export function loadScripts(region: string): Promise<unknown> | undefined {
  * declared but not yet defined, which `declared` reports.
  */
 export function warnStartupDefinitions(declared: (tag: string) => boolean): void {
-  for (const tags of loaders.values()) {
-    for (const tag of Object.keys(tags)) {
+  for (const [region, entry] of loaders) {
+    for (const tag of entry[0][region]) {
       if (requested?.has(tag) || warned?.has(tag) || !(customElements.get(tag) || declared(tag))) continue;
       (warned ??= new Set()).add(tag);
       console.warn(
@@ -76,7 +93,7 @@ export function warnStartupDefinitions(declared: (tag: string) => boolean): void
 /**
  * Development: report once that a pack registered scripted components no
  * loader covers and nothing declared, which renders them as empty elements.
- * It happens when an application imports `lazy.js` instead of `lazy.webui.js`.
+ * It happens when an application omitted its default or application loaders.
  */
 export function warnUnscriptedComponents(
   region: string,
@@ -90,12 +107,12 @@ export function warnUnscriptedComponents(
     // get compiler-owned hosts.
     if (templates[tag].f || templates[tag].th || customElements.get(tag) || declared(tag)) continue;
     let covered = false;
-    for (const tags of loaders.values()) covered ||= !!tags[tag];
+    for (const [region, entry] of loaders) covered ||= entry[0][region].includes(tag);
     if (!covered) missing += `${missing ? ', ' : ''}<${tag}>`;
   }
   if (!missing) return;
   warnedUnscripted = true;
   console.warn(
-    `[WebUI] Lazy region "${region}" registered ${missing}, but no script defines them, so they render empty. Import the generated lazy.webui.js instead of @microsoft/webui-framework/lazy.js.`,
+    `[WebUI] Lazy region "${region}" registered ${missing}, but no script defines them, so they render empty. Import lazy.webui.js or register application loaders with defineLazyScripts before starting the runtime.`,
   );
 }

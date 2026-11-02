@@ -115,8 +115,14 @@ core.$mount = function (...steps: (TemplateMeta | (() => void))[]): void {
     else contract.lazyBlockOwner(step);
   }
 };
-const { defineLazyScripts } = await import('./lazy-entry.js');
+const { defineLazyScripts: registerLazyScripts } = await import('./lazy-entry.js');
 const scripts = await import('./lazy-scripts.js');
+
+function defineLazyScripts(regions: Readonly<Record<string, import('./lazy-scripts.js').LazyScriptLoaders>>): void {
+  for (const [region, loaders] of Object.entries(regions)) {
+    registerLazyScripts({ [region]: Object.keys(loaders) }, loaders);
+  }
+}
 
 interface Shell extends EventTarget {
   $meta?: TemplateMeta;
@@ -158,15 +164,43 @@ function binding(id: string, open = true): CondBinding {
   return c;
 }
 
-test('generated loaders merge by region and load each undefined custom element once', async () => {
+test('a declaration does not bypass an application loader that is still preparing resources', async () => {
+  const ready = Promise.withResolvers<void>();
+  const id = region(104);
+  let calls = 0;
+  registerLazyScripts({ [id]: ['preparing-card'] }, {
+    'preparing-card': async () => {
+      calls++;
+      defined.set('preparing-card', class {});
+      await ready.promise;
+    },
+  });
+  let settled = false;
+  const first = scripts.loadScripts(id);
+  const second = scripts.loadScripts(id);
+  assert.ok(first);
+  assert.ok(second);
+  void second.then(() => { settled = true; });
+  await tick();
+  assert.equal(settled, false);
+  assert.equal(calls, 1);
+  ready.resolve();
+  await Promise.all([first, second]);
+  assert.equal(scripts.loadScripts(id), undefined, 'settled promises need not remain cached');
+});
+
+test('generated dependencies load each undefined custom element once across regions', async () => {
   const a = deferredLoader('merge-a');
   const b = deferredLoader('merge-b');
   const c = deferredLoader('merge-c');
   let duplicate = 0;
   defined.set('merge-defined', class {});
-  defineLazyScripts({ [region(90)]: { 'merge-a': a.load, 'merge-b': b.load } });
   defineLazyScripts({
-    [region(90)]: { 'merge-defined': () => Promise.reject(new Error('already defined')) },
+    [region(90)]: {
+      'merge-a': a.load,
+      'merge-b': b.load,
+      'merge-defined': () => Promise.reject(new Error('already defined')),
+    },
     [region(91)]: { 'merge-b': () => { duplicate++; return Promise.resolve(); }, 'merge-c': c.load },
   });
   const first = scripts.loadScripts(region(90));
@@ -669,7 +703,10 @@ test('development warns once when a pack registers scripted components nothing l
       })));
       await host.$rendered();
     };
-    defineLazyScripts({ [region(40)]: { 'pack-loaded': () => Promise.resolve() } });
+    defineLazyScripts({ [region(40)]: { 'pack-loaded': () => {
+      defined.set('pack-loaded', class {});
+      return Promise.resolve();
+    } } });
     await install(region(40), '_webui/packs/test-shell.0040.json', {
       'pack-loaded': component(),
       'pack-declared': component(),
@@ -680,11 +717,104 @@ test('development warns once when a pack registers scripted components nothing l
     });
     const expected = '[WebUI] Lazy region "test-shell::lazy:@40" registered <pack-missing>, <pack-forgotten>, '
       + 'but no script defines them, so they render empty. '
-      + 'Import the generated lazy.webui.js instead of @microsoft/webui-framework/lazy.js.';
+      + 'Import lazy.webui.js or register application loaders with defineLazyScripts before starting the runtime.';
     assert.deepEqual(warnings, [expected]);
     await install(region(41), '_webui/packs/test-shell.0041.json', { 'pack-unloaded': component() });
     assert.deepEqual(warnings, [expected], 'it warns once');
   } finally {
     console.warn = previousWarn;
   }
+});
+
+test('tag-keyed application loaders use generated dependencies without starting imports at registration', async () => {
+  const first = region(100);
+  const second = region(101);
+  const shared = deferredLoader('custom-shared');
+  const table = { 'custom-shared': shared.load };
+  registerLazyScripts({ [first]: ['custom-shared'], [second]: ['custom-shared'] }, table);
+  assert.equal(shared.calls, 0);
+  const a = scripts.loadScripts(first);
+  const b = scripts.loadScripts(second);
+  assert.equal(shared.calls, 1, 'overlapping regions share the application loader');
+  shared.release();
+  await Promise.all([a, b]);
+  assert.equal(scripts.loadScripts(first), undefined);
+});
+
+test('missing application loaders reject explicitly when their region is needed', async () => {
+  const id = region(102);
+  let calls = 0;
+  registerLazyScripts({
+    [id]: ['mapped-card'],
+    [region(103)]: ['missing-card'],
+  }, {
+    'mapped-card': () => { calls++; return Promise.resolve(); },
+  });
+  assert.equal(calls, 0);
+  const missing = scripts.loadScripts(region(103));
+  assert.ok(missing);
+  await assert.rejects(missing, /Await <missing-card>'s module in defineLazyScripts/);
+  assert.equal(calls, 0, 'unrelated loaders stay cold');
+});
+
+test('synchronous application loader errors reject $rendered and use the normal lazyerror path', async () => {
+  const id = region(104);
+  const url = '_webui/packs/test-shell.0104.json';
+  const failure = new Error('application loader failed synchronously');
+  let fail = true;
+  registerLazyScripts({ [id]: ['sync-card'] }, {
+    'sync-card': () => {
+      if (fail) throw failure;
+      defined.set('sync-card', class {});
+      return Promise.resolve();
+    },
+  });
+  const host = shell({ [id]: url });
+  const errors: unknown[] = [];
+  host.addEventListener('lazyerror', event => {
+    event.preventDefault();
+    errors.push((event as CustomEvent<{ error: unknown }>).detail.error);
+  });
+  assert.doesNotThrow(() => host.$toggleCond(binding(id)));
+  serve(id, url);
+  await assert.rejects(host.$rendered(), error => error === failure);
+  assert.deepEqual(errors, [failure]);
+  fail = false;
+  await host.$rendered();
+  assert.ok(defined.has('sync-card'));
+});
+
+test('a fulfilled loader without a declaration is not cached as ready', async () => {
+  const id = region(105);
+  let calls = 0;
+  registerLazyScripts({ [id]: ['unfulfilled-card'] }, {
+    'unfulfilled-card': () => { calls++; return Promise.resolve(); },
+  });
+  const first = scripts.loadScripts(id);
+  assert.ok(first);
+  await assert.rejects(first, /Await <unfulfilled-card>'s module in defineLazyScripts/);
+  const retry = scripts.loadScripts(id);
+  assert.ok(retry);
+  await assert.rejects(retry, /Await <unfulfilled-card>'s module in defineLazyScripts/);
+  assert.equal(calls, 2, 'failure does not become a permanent successful load');
+});
+
+test('a failed application resource preparation retries even after declaring its tag', async () => {
+  const id = region(106);
+  const failure = new Error('stylesheet failed');
+  let calls = 0;
+  registerLazyScripts({ [id]: ['resource-card'] }, {
+    'resource-card': async () => {
+      defined.set('resource-card', class {});
+      if (++calls === 1) throw failure;
+    },
+  });
+  const first = scripts.loadScripts(id);
+  assert.ok(first);
+  await assert.rejects(first, error => error === failure);
+  const retry = scripts.loadScripts(id);
+  assert.ok(retry, 'the declaration must not mask failed resource preparation');
+  await retry;
+  assert.equal(calls, 2);
+  assert.equal(scripts.loadScripts(id), undefined);
 });
