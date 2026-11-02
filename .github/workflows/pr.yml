@@ -277,8 +277,9 @@ jobs:
       fail-fast: false
       matrix:
         platform:
-          - { target: x86_64-unknown-linux-gnu, os: ubuntu-latest, package: webui-desktop-linux-x64, consumer: true }
-          - { target: aarch64-unknown-linux-gnu, os: ubuntu-latest, package: webui-desktop-linux-arm64, consumer: false }
+          # Ubuntu 24.04 is required to match Chromium and the release build baseline.
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-24.04, package: webui-desktop-linux-x64, consumer: true }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-24.04, package: webui-desktop-linux-arm64, consumer: false }
           - { target: x86_64-apple-darwin, os: macos-latest-large, package: webui-desktop-darwin-x64, consumer: true }
           - { target: aarch64-apple-darwin, os: macos-latest-large, package: webui-desktop-darwin-arm64, consumer: false }
           - { target: x86_64-pc-windows-msvc, os: windows-latest, package: webui-desktop-win32-x64, consumer: true }
@@ -465,7 +466,7 @@ jobs:
           shared-cache-key: ubuntu-build
           dotnet: '8.0.x'
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
 
@@ -555,7 +556,7 @@ jobs:
           rust-targets: ${{ matrix.platform.target }}
           shared-cache-key: python-${{ matrix.platform.target }}
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.11'
 
@@ -628,7 +629,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ matrix.python }}
 
@@ -673,7 +674,7 @@ jobs:
           skip-build: 'true'
           shared-cache-key: ubuntu-build
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.11'
 

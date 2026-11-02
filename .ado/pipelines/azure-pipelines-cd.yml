@@ -10,6 +10,12 @@ parameters:
   values:
   - 'false'
   - 'true'
+- name: publishGitHub
+  displayName: Publish GitHub release (disable for registry-only recovery)
+  type: boolean
+  default: true
+  # For recovery, start a new CD run and select the original releaseBuild run
+  # under Resources. Disabling this leaves npm and Rust publication enabled.
 
 resources:
   pipelines:
@@ -309,6 +315,7 @@ extends:
         jobs:
         - job: PublishGitHub
           displayName: Publish GitHub Release
+          condition: and(succeeded(), ${{ eq(parameters.publishGitHub, true) }})
           templateContext:
             type: releaseJob
             isProduction: true
