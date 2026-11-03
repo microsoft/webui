@@ -5,7 +5,6 @@ import '@microsoft/webui-framework/styles.js';
 import '@microsoft/webui-framework/template-cache.js';
 import { startRuntime } from '@microsoft/webui-framework/runtime.js';
 import { WebUIRouter } from '@microsoft/webui-delivery/router.js';
-import '../../../../webui-framework/tests/fixtures/dist/lazy-pages/generated/lazy.webui.js';
 
 const router = new WebUIRouter();
 Object.assign(window, { lazyRouteRouter: router });

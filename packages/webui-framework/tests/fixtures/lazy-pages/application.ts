@@ -4,7 +4,6 @@
 import '@microsoft/webui-framework/styles.js';
 import { startRuntime } from '@microsoft/webui-framework/runtime.js';
 import { observable, WebUIElement } from '@microsoft/webui-framework';
-import '../dist/lazy-pages/generated/lazy.webui.js';
 
 class PagesShell extends WebUIElement {
   @observable pageA = false;

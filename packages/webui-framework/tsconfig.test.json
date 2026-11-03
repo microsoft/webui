@@ -30,6 +30,7 @@
     "playwright.config.ts",
     "src/**/*.ts",
     "tests/**/*.ts",
+    "../webui-delivery/tests/fixtures/lazy-routes/index.ts",
     "../webui-test-support/**/*.ts"
   ],
   "exclude": ["dist", "node_modules", "tests/fixtures/dist"]

@@ -26,13 +26,24 @@ export async function prepareLazyPages(
   for (const file of [first.lazyScriptsModule, first.lazyScriptsModule.declaration]) {
     writeFileSync(resolve(generatedDir, file.fileName), file.content);
   }
+  const entryPoints: Record<string, string> = {};
+  const applications = {
+    application: resolve(fixture, 'application.ts'),
+    routed: resolve(fixture, '../../../../webui-delivery/tests/fixtures/lazy-routes/index.ts'),
+  };
+  for (const [name, source] of Object.entries(applications)) {
+    const entry = resolve(generatedDir, `${name}.ts`);
+    const specifier = relative(generatedDir, source).split(sep).join('/');
+    writeFileSync(entry,
+      '// Copyright (c) Microsoft Corporation.\n// Licensed under the MIT license.\n\n'
+      + `import ${JSON.stringify(`./${first.lazyScriptsModule.fileName}`)};\n`
+      + `import ${JSON.stringify(specifier)};\n`);
+    entryPoints[name] = entry;
+  }
   const manifest = resolve(outDir, 'webui-projection.json');
   const publicPath = '/dist/lazy-pages/';
   const output = await bundle({
-    entryPoints: {
-      application: resolve(fixture, 'application.ts'),
-      routed: resolve(fixture, '../../../../webui-delivery/tests/fixtures/lazy-routes/index.ts'),
-    },
+    entryPoints,
     outdir: outDir, publicPath, entryNames: '[name]-[hash]', chunkNames: '[name]-[hash]',
     bundle: true, splitting: true, format: 'esm', minify: true,
     platform: 'browser', target: 'es2022', tsconfig,
@@ -62,8 +73,8 @@ export async function prepareLazyPages(
       inputs: Object.entries(details.inputs).filter(([, value]) => value.bytesInOutput > 0).map(([name]) => name.replaceAll('\\', '/')),
       imports: details.imports,
     };
-    if (details.entryPoint?.endsWith('application.ts')) application = url;
-    if (details.entryPoint?.endsWith('lazy-routes/index.ts')) routeApplication = url;
+    if (details.entryPoint && resolve(details.entryPoint) === entryPoints.application) application = url;
+    if (details.entryPoint && resolve(details.entryPoint) === entryPoints.routed) routeApplication = url;
   }
   if (!application || !routeApplication) throw new Error('Lazy pages fixture has no application output.');
   const state = {
