@@ -34,7 +34,7 @@ import {
 } from './template-events.js';
 import type { TemplateMeta } from './template.js';
 import { templateCacheHooks } from './template-cache-contract.js';
-import { runHydrationBatch } from './lifecycle.js';
+import { runHydrationBatch } from './hydration-batch.js';
 
 let runtimeInstalled = false;
 

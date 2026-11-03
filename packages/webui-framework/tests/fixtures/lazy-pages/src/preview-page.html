@@ -1,0 +1,17 @@
+<template shadowrootmode="open" @pointerleave="{close()}">
+<a href="#preview" class="preview" @pointerenter="{preview()}">Preview help</a>
+<button class="sibling" @click="{showSibling()}">Sibling</button>
+<button class="prefetch" @click="{$prefetch('help')}">Warm help paths</button>
+<if condition="help == 'hello'" lazy>
+  <div class="preview-body" w-ref="{previewNode}">
+    <help-panel :message="{{message}}"></help-panel>
+    <shared-panel></shared-panel>
+    <button class="owner-event" @click="{increment()}">{{count}}</button>
+    <button class="nested" @click="{showNested()}">Nested</button>
+    <if condition="nested" lazy=""><nested-panel></nested-panel></if>
+  </div>
+</if>
+<if condition="sibling" lazy><sibling-panel></sibling-panel><shared-panel></shared-panel></if>
+<if condition="warm" lazy="idle"><idle-panel></idle-panel></if>
+<if condition="help == 'other'" lazy><sibling-panel></sibling-panel></if>
+</template>

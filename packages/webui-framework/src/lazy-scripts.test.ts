@@ -115,10 +115,10 @@ core.$mount = function (...steps: (TemplateMeta | (() => void))[]): void {
     else contract.lazyBlockOwner(step);
   }
 };
-const { defineLazyScripts: registerLazyScripts } = await import('./lazy-entry.js');
+const { registerGeneratedLazyScripts: registerLazyScripts } = await import('./lazy-entry.js');
 const scripts = await import('./lazy-scripts.js');
 
-function defineLazyScripts(regions: Readonly<Record<string, import('./lazy-scripts.js').LazyScriptLoaders>>): void {
+function registerGeneratedLazyScripts(regions: Readonly<Record<string, Readonly<Record<string, () => Promise<unknown>>>>>): void {
   for (const [region, loaders] of Object.entries(regions)) {
     registerLazyScripts({ [region]: Object.keys(loaders) }, loaders);
   }
@@ -195,7 +195,7 @@ test('generated dependencies load each undefined custom element once across regi
   const c = deferredLoader('merge-c');
   let duplicate = 0;
   defined.set('merge-defined', class {});
-  defineLazyScripts({
+  registerGeneratedLazyScripts({
     [region(90)]: {
       'merge-a': a.load,
       'merge-b': b.load,
@@ -224,7 +224,7 @@ test('activation loads the pack and scripts in parallel and mounts only after bo
   const id = region(0);
   const url = '_webui/packs/test-shell.0000.json';
   const panel = deferredLoader('shell-panel');
-  defineLazyScripts({ [id]: { 'shell-panel': panel.load } });
+  registerGeneratedLazyScripts({ [id]: { 'shell-panel': panel.load } });
   const host = shell({ [id]: url });
   const c = binding(id);
   requests.length = 0;
@@ -249,7 +249,7 @@ test('a mount waits for its pack even when its scripts arrive first', async () =
   const id = region(1);
   const url = '_webui/packs/test-shell.0001.json';
   const card = deferredLoader('shell-card');
-  defineLazyScripts({ [id]: { 'shell-card': card.load } });
+  registerGeneratedLazyScripts({ [id]: { 'shell-card': card.load } });
   const host = shell({ [id]: url });
   mounts.length = 0;
   host.$toggleCond(binding(id));
@@ -265,7 +265,7 @@ test('a failed script rejects $rendered, raises lazyerror, and a retry loads onl
   const id = region(2);
   const url = '_webui/packs/test-shell.0002.json';
   const chart = deferredLoader('shell-chart');
-  defineLazyScripts({ [id]: { 'shell-chart': chart.load } });
+  registerGeneratedLazyScripts({ [id]: { 'shell-chart': chart.load } });
   const host = shell({ [id]: url });
   const events: CustomEvent<{ error: unknown }>[] = [];
   host.addEventListener('lazyerror', event => { events.push(event as CustomEvent<{ error: unknown }>); });
@@ -335,7 +335,7 @@ test('a body that hydrates open loads its scripts at once, even while prerenderi
   const url = '_webui/packs/test-shell.0004.json';
   browser.__webui.templates![id] = template(id);
   const menu = deferredLoader('shell-menu');
-  defineLazyScripts({ [id]: { 'shell-menu': menu.load } });
+  registerGeneratedLazyScripts({ [id]: { 'shell-menu': menu.load } });
   const host = shell({ [id]: url });
   page.prerendering = true;
   try {
@@ -367,7 +367,7 @@ test('hydrated body script failures raise lazyerror and $rendered() retries them
   const id = region(5);
   browser.__webui.templates![id] = template(id);
   const toast = deferredLoader('shell-toast');
-  defineLazyScripts({ [id]: { 'shell-toast': toast.load } });
+  registerGeneratedLazyScripts({ [id]: { 'shell-toast': toast.load } });
   const host = shell({ [id]: '_webui/packs/test-shell.0005.json' });
   const errors: unknown[] = [];
   host.addEventListener('lazyerror', event => {
@@ -399,7 +399,7 @@ test('hydrated bodies belong to the host that is mounting them, also across nest
   const outer = deferredLoader('shell-outer');
   const inner = deferredLoader('shell-inner');
   const stray = deferredLoader('shell-stray');
-  defineLazyScripts({
+  registerGeneratedLazyScripts({
     [outerId]: { 'shell-outer': outer.load },
     [innerId]: { 'shell-inner': inner.load },
     [strayId]: { 'shell-stray': stray.load },
@@ -479,7 +479,7 @@ test('development warns once about lazy-only tags that a static import defined a
   try {
     defined.set('startup-chart', class {});
     defined.set('startup-menu', class {});
-    defineLazyScripts({
+    registerGeneratedLazyScripts({
       [region(20)]: { 'startup-chart': () => Promise.resolve() },
       [region(21)]: { 'startup-menu': () => Promise.resolve() },
     });
@@ -487,7 +487,7 @@ test('development warns once about lazy-only tags that a static import defined a
     for (const callback of idleCallbacks.splice(0)) callback();
     assert.equal(warnings.filter(message => message.includes('startup-')).length, 1);
     assert.match(warnings.find(message => message.includes('startup-'))!, /<startup-chart> is only used inside lazy regions but was defined at startup; remove its static import/);
-    defineLazyScripts({ [region(22)]: { 'startup-chart': () => Promise.resolve() } });
+    registerGeneratedLazyScripts({ [region(22)]: { 'startup-chart': () => Promise.resolve() } });
     for (const callback of idleCallbacks.splice(0)) callback();
     assert.equal(warnings.filter(message => message.includes('startup-')).length, 1, 'each tag warns once');
   } finally {
@@ -505,7 +505,7 @@ test('development reports a lazy-only component whose static import still waits 
     class PendingPanel extends TemplateElement {}
     PendingPanel.define('pending-panel');
     assert.equal(customElements.get('pending-panel'), undefined);
-    defineLazyScripts({ [region(23)]: { 'pending-panel': () => Promise.resolve() } });
+    registerGeneratedLazyScripts({ [region(23)]: { 'pending-panel': () => Promise.resolve() } });
     for (const callback of idleCallbacks.splice(0)) callback();
     assert.deepEqual(warnings.filter(message => message.includes('pending-panel')), [
       '[WebUI] <pending-panel> is only used inside lazy regions but was defined at startup; remove its static import so it loads with its region.',
@@ -519,7 +519,7 @@ test('a speculative load before the window loads defers scripts that an activati
   const id = region(30);
   const url = '_webui/packs/test-shell.0030.json';
   const panel = deferredLoader('deferred-panel');
-  defineLazyScripts({ [id]: { 'deferred-panel': panel.load } });
+  registerGeneratedLazyScripts({ [id]: { 'deferred-panel': panel.load } });
   const host = shell({ [id]: url });
   host.$meta!.c = [[[0, ['open']], id, [0, 0], 4]];
   page.readyState = 'interactive';
@@ -650,7 +650,7 @@ test('an activation after a speculative install starts its stylesheets with its 
   const id = region(53);
   const url = '_webui/packs/test-shell.0053.json';
   const card = deferredLoader('styled-card');
-  defineLazyScripts({ [id]: { 'styled-card': card.load } });
+  registerGeneratedLazyScripts({ [id]: { 'styled-card': card.load } });
   const styles = captureStyles();
   const host = styledShell(id, url);
   page.readyState = 'interactive';
@@ -703,7 +703,7 @@ test('development warns once when a pack registers scripted components nothing l
       })));
       await host.$rendered();
     };
-    defineLazyScripts({ [region(40)]: { 'pack-loaded': () => {
+    registerGeneratedLazyScripts({ [region(40)]: { 'pack-loaded': () => {
       defined.set('pack-loaded', class {});
       return Promise.resolve();
     } } });
@@ -717,7 +717,7 @@ test('development warns once when a pack registers scripted components nothing l
     });
     const expected = '[WebUI] Lazy region "test-shell::lazy:@40" registered <pack-missing>, <pack-forgotten>, '
       + 'but no script defines them, so they render empty. '
-      + 'Import lazy.webui.js or register application loaders with defineLazyScripts before starting the runtime.';
+      + 'Import lazy.webui.js before starting the runtime.';
     assert.deepEqual(warnings, [expected]);
     await install(region(41), '_webui/packs/test-shell.0041.json', { 'pack-unloaded': component() });
     assert.deepEqual(warnings, [expected], 'it warns once');
@@ -726,7 +726,7 @@ test('development warns once when a pack registers scripted components nothing l
   }
 });
 
-test('tag-keyed application loaders use generated dependencies without starting imports at registration', async () => {
+test('generated region mappings share tag imports without starting them at registration', async () => {
   const first = region(100);
   const second = region(101);
   const shared = deferredLoader('custom-shared');
@@ -735,13 +735,13 @@ test('tag-keyed application loaders use generated dependencies without starting 
   assert.equal(shared.calls, 0);
   const a = scripts.loadScripts(first);
   const b = scripts.loadScripts(second);
-  assert.equal(shared.calls, 1, 'overlapping regions share the application loader');
+  assert.equal(shared.calls, 1, 'overlapping regions share the generated loader');
   shared.release();
   await Promise.all([a, b]);
   assert.equal(scripts.loadScripts(first), undefined);
 });
 
-test('missing application loaders reject explicitly when their region is needed', async () => {
+test('incomplete generated mappings reject explicitly when their region is needed', async () => {
   const id = region(102);
   let calls = 0;
   registerLazyScripts({
@@ -753,11 +753,11 @@ test('missing application loaders reject explicitly when their region is needed'
   assert.equal(calls, 0);
   const missing = scripts.loadScripts(region(103));
   assert.ok(missing);
-  await assert.rejects(missing, /Await <missing-card>'s module in defineLazyScripts/);
+  await assert.rejects(missing, /Lazy module did not declare <missing-card>/);
   assert.equal(calls, 0, 'unrelated loaders stay cold');
 });
 
-test('synchronous application loader errors reject $rendered and use the normal lazyerror path', async () => {
+test('synchronous generated import errors reject $rendered and use the normal lazyerror path', async () => {
   const id = region(104);
   const url = '_webui/packs/test-shell.0104.json';
   const failure = new Error('application loader failed synchronously');
@@ -792,10 +792,10 @@ test('a fulfilled loader without a declaration is not cached as ready', async ()
   });
   const first = scripts.loadScripts(id);
   assert.ok(first);
-  await assert.rejects(first, /Await <unfulfilled-card>'s module in defineLazyScripts/);
+  await assert.rejects(first, /Lazy module did not declare <unfulfilled-card>/);
   const retry = scripts.loadScripts(id);
   assert.ok(retry);
-  await assert.rejects(retry, /Await <unfulfilled-card>'s module in defineLazyScripts/);
+  await assert.rejects(retry, /Lazy module did not declare <unfulfilled-card>/);
   assert.equal(calls, 2, 'failure does not become a permanent successful load');
 });
 

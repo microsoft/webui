@@ -40,7 +40,7 @@ const entries = {
   fullRouter: `import { WebUIRouter, navigationCache, routeActions, routePreload, routeBoundaries, viewTransitions, routeDiagnostics } from '@microsoft/webui-delivery/router.js'; import { ndjson } from '@microsoft/webui-delivery/resources.js'; new WebUIRouter().start({ transport: ndjson(), cache: navigationCache(), actions: routeActions(), preload: routePreload(), boundaries: routeBoundaries, transitions: viewTransitions, diagnostics: routeDiagnostics });`,
   resources: `export { fetchComponentTemplates, readJsonPartial } from '@microsoft/webui-delivery/resources.js';`,
   records: `export { ndjson } from '@microsoft/webui-delivery/resources.js';`,
-  lazyRegions: `import { defineLazyScripts } from '@microsoft/webui-framework/lazy.js'; defineLazyScripts({}, {}); ${renderer}`,
+  lazyRegions: `import { registerGeneratedLazyScripts } from '@microsoft/webui-framework/lazy.js'; registerGeneratedLazyScripts({}, {}); ${renderer}`,
   combined: `import { WebUIRouter } from '@microsoft/webui-delivery/router.js'; import '@microsoft/webui-framework/lazy.js'; ${renderer} new WebUIRouter().start();`,
   queryHelper: `export { parseQuery } from '@microsoft/webui-delivery/router.js';`,
   decoratorOnly: `export { observable } from '@microsoft/webui-framework';`,
@@ -205,7 +205,7 @@ test('lazy regions add one small framework runtime and no delivery code', async 
   assert.equal(lazy.initialText.includes('defined at startup'), false, 'the startup guard is development-only');
   assert.equal(lazy.initialText.includes('no script defines'), false, 'the missing-script warning is development-only');
   // The rendering core holds no lazy logic, so this is the whole cost of the
-  // feature, including script loading through `defineLazyScripts()`.
+  // feature, including script loading through `registerGeneratedLazyScripts()`.
   const added = lazy.initialBrotli - core.initialBrotli;
   assert.ok(added <= 2_609, `lazy runtime adds ${added} brotli bytes`);
 });

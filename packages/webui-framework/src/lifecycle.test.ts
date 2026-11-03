@@ -215,13 +215,15 @@ describe('hydration lifecycle — non-streaming pages', () => {
   });
 
   test('a synchronous batch retains completion until every queued root hydrates', async () => {
-    const lifecycle = await freshLifecycle();
+    const lifecycle = await import('./lifecycle.js');
+    const { runHydrationBatch } = await import('./hydration-batch.js');
+    lifecycle.__resetLifecycleForTests();
     withPerformanceAndWindow(dispatched => {
-      const result = lifecycle.runHydrationBatch(() => {
+      const result = runHydrationBatch(() => {
         lifecycle.hydrationStart();
         lifecycle.hydrationEnd();
         assert.equal(dispatched.length, 0);
-        lifecycle.runHydrationBatch(() => {
+        runHydrationBatch(() => {
           lifecycle.hydrationStart();
           lifecycle.hydrationEnd();
         });
@@ -235,11 +237,13 @@ describe('hydration lifecycle — non-streaming pages', () => {
   });
 
   test('empty and failed batches neither invent hydration nor leave a pending count', async () => {
-    const lifecycle = await freshLifecycle();
+    const lifecycle = await import('./lifecycle.js');
+    const { runHydrationBatch } = await import('./hydration-batch.js');
+    lifecycle.__resetLifecycleForTests();
     withPerformanceAndWindow(dispatched => {
-      lifecycle.runHydrationBatch(() => {});
+      runHydrationBatch(() => {});
       const failure = new Error('definition failed');
-      assert.throws(() => lifecycle.runHydrationBatch(() => { throw failure; }), failure);
+      assert.throws(() => runHydrationBatch(() => { throw failure; }), failure);
       assert.equal(dispatched.length, 0);
       assert.equal(lifecycle.__getLifecycleStateForTests().pendingCount, 0);
       lifecycle.hydrationStart();

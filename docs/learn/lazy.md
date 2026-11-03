@@ -51,10 +51,10 @@ component scripts; it never renders or requests application state.
 
 | Declaration | Fetches the pack | Use for |
 | --- | --- | --- |
-| `lazy` or `lazy="intent"` | When a pointer moves over, focus enters, or a touch starts inside the owning component | Most dialogs, popovers, and panels behind a control |
+| `lazy`, `lazy=""`, or `lazy="demand"` | Only when the full condition becomes true, or when code calls `$prefetch()` | Pay-for-play previews, dialogs, and nested regions |
+| `lazy="intent"` | When a pointer moves over, focus enters, or a touch starts anywhere inside the owning component | Deliberate owner-wide warming |
 | `lazy="idle"` | When the browser is idle after the page loads | UI that is likely to be used soon |
 | `lazy="eager"` | Right after startup hydration | UI that is needed almost immediately |
-| `lazy="demand"` | Only when the condition becomes true, or when code calls `$prefetch()` | Rare UI, UI prefetched from a specific control, and regions nested in other lazy regions |
 
 Prefetching limits competition with the page's startup work:
 
@@ -71,15 +71,15 @@ Prefetching limits competition with the page's startup work:
   waits.
 - Idle and eager prefetch are skipped when the user has enabled data saving.
 
-Focus that is already inside the owner when the page starts, such as an
+For explicit `lazy="intent"`, focus that is already inside the owner when the page starts, such as an
 `autofocus` search box whose owner holds its suggestions, also prefetches the
 owner's regions, but only once the page has loaded and is idle. Initial focus
 is not treated as an immediate gesture. A pointer, focus, or touch event inside
 the owner before then prefetches at once, and opening a region bypasses these
 speculative delays.
 
-Prefer `intent` for UI that opens from a control in the owner. With `demand`, the
-body waits for its pack when the condition becomes true unless the pack is
+Bare `lazy` is activation-only: hovering unrelated controls does not warm it.
+The body waits for its pack when the condition becomes true unless the pack is
 already available. A cold fetch adds a network round trip; loading from the
 HTTP cache can still add asynchronous work. Prefetch ahead of use when that
 first-open delay is unacceptable.
@@ -101,7 +101,7 @@ Scope the prefetch to the control that opens each region instead:
   @pointerenter="{$prefetch('settingsOpen')}"
   @focus="{$prefetch('settingsOpen')}">Settings</button>
 
-<if condition="settingsOpen" lazy="demand">
+<if condition="settingsOpen" lazy>
   <settings-panel></settings-panel>
 </if>
 ```
@@ -122,7 +122,7 @@ a failure.
 
 `webui build` writes `lazy.webui.js` next to its other generated modules (the
 `--modules-out` directory, which defaults to `--out`). Import it once before
-starting the renderer for the default behavior-code loaders:
+starting the renderer:
 
 ```typescript
 import { startRuntime } from '@microsoft/webui-framework/runtime.js';
@@ -134,9 +134,9 @@ startRuntime();
 ```
 
 The generated module imports the optional lazy runtime and registers one
-dynamic `import()` per component tag, shared across regions. It reads the
-compiler's dependencies from the adjacent `lazy-regions.webui.js`. Neither
-registration nor importing the dependency module starts any component loads.
+dynamic `import()` per component tag, shared across regions. Registration does
+not invoke those imports or fetch packs. Explicit preload declarations can
+start loading after registration; bare `lazy` waits for activation.
 
 Your bundler compiles those imports like any other, so it controls chunk groups,
 public paths, fingerprints, and manifests. Enable its code splitting when you
@@ -161,62 +161,55 @@ manifest, run `webui build` once without it to write the generated module,
 bundle the client, then build again with the manifest. The generated module
 never depends on the projection.
 
-### Application-controlled chunks and loading
+### Pages and isolated hover previews
 
-Use the generated defaults unless you need different behavior-code grouping or
-loading policy. To own that choice, **replace** the default `lazy.webui.js`
-import with `lazyRegions` from the pure `lazy-regions.webui.js` and provide loaders
-keyed by **component tag**, never by a generated region ID:
+The condition keeps the ordinary expression language:
 
-```typescript
-import { defineLazyScripts } from '@microsoft/webui-framework/lazy.js';
-import { lazyRegions } from '../dist/lazy-regions.webui.js';
-
-const settings = () => import('./settings-chunk.js');
-defineLazyScripts(lazyRegions, {
-  'settings-panel': settings,
-  'theme-picker': settings,
-});
+```html
+<a href="/help" @pointerenter="{showHelp()}" @pointerleave="{hideHelp()}">Help</a>
+<if condition="help == 'hello'" lazy>
+  <help-panel></help-panel>
+</if>
 ```
 
-Here `settings-chunk.js` imports and declares both components. The same callback
-can serve several tags, and the bundler/browser caches its module. You can wrap
-a loader to await your application's readiness or telemetry, but it must resolve
-only after declaring its component and preparing any application-owned resources
-the body needs. Both synchronous exceptions and promise rejections follow the
-normal `lazyerror` / `$rendered()` failure path. Missing loaders and callbacks
-that resolve without declaring their tag fail when the region needs that tag,
-instead of rendering an empty element. Failed resource preparation is retried
-even if the callback declared the tag before failing.
+Set `help` to `'hello'` in `showHelp()` and clear it in `hideHelp()`. Only that
+active body's missing templates, component modules, and styles load. Closed
+sibling and nested lazy bodies stay closed and unfetched. Put `lazy="idle"` on
+a particular declaration to warm that body independently, without rendering it.
+Alternatively, `@pointerenter="{$prefetch('help')}"` warms without changing state.
+The argument is a dependency **path**, not a full expression: it can warm
+several regions whose conditions read `help`, even when only one comparison
+would currently be true.
 
-The dependency module imports neither the runtime nor default behavior modules,
-so those defaults never enter your bundler's graph. This physical separation
-also avoids orphan chunks a bundler can emit from unused dynamic imports.
-Inspect **all** emitted chunks, not just the entry, when budgeting shipped
-JavaScript. Keep generated modules in the
-bundle pipeline; do not copy them to a CDN as already-built browser entries.
-Supply a loader for every generated tag not already declared by startup code.
-The runtime skips already-declared tags but still joins an in-flight loader's
-readiness work.
+An inline lazy body does not split its owner's JavaScript. Put heavy behavior
+in an independently imported component such as `help-panel`; methods on the
+page owner arrive with that owner. Your route can dynamically import its own
+page module without importing other page modules.
 
-You still control when loading starts with `lazy="demand"` and scoped
-`$prefetch(path)`. Calling a code loader yourself warms behavior code only;
-`$prefetch()` warms the compiler-owned templates and styles as well. Neither
-path renders the body or fetches application state.
+A true multi-page app can use a separate entry/build for each document. In a
+single build with dynamically imported routes, the generated installer registers
+small region/tag maps and import callbacks for the whole compiled graph at
+startup. Those records are not downloaded/evaluated behavior modules, but they
+are not zero startup bytes or memory. Importing the installer does not itself
+activate any route or lazy body. There is no additional loader-manifest fetch.
 
-`--component-module tag=specifier` can also point a default loader at an
+`--component-module tag=specifier` can point the generated import at an
 application facade that declares one or several tags. Explicit relative
 specifiers resolve from `--modules-out`, not from the source template. Bare
 package specifiers and bundler aliases remain your bundler's responsibility.
 This changes behavior-code wiring only: the compiler still owns template-pack
 contents, nested boundaries, and CSS ownership. There is no second dependency
-list for the application to maintain.
+list for the application to maintain. There is no supported custom-loader
+registration API. Keep generated files in your bundler pipeline, not on a CDN
+as already-built entries, and inspect **all** emitted chunks. Bundlers can merge
+shared/eager dependencies, and Light-DOM global styles keep their normal global
+ownership; lazy cannot make an already-eager dependency private to a preview.
 
 Pages without lazy regions do not need any of this and pay nothing for the
 feature: the rendering core contains no lazy code. The import also adds
 `$rendered()` and `$prefetch()` to your components; the build writes
-`lazy.webui.d.ts` and `lazy-regions.webui.d.ts` beside their modules, so
-TypeScript sees the element methods and dependency export without `allowJs`.
+`lazy.webui.d.ts` beside the module, so
+TypeScript sees the element methods without `allowJs`.
 Activating a lazy region without the import throws an error that names it.
 
 ## Data
@@ -369,8 +362,7 @@ write the returned loader module where your bundler imports it:
 `build()`, `lazy_pack_files` and `lazy_scripts_module` from the
 [Rust](../build/integrations/rust) `build()` (or call `webui::write_lazy_packs`),
 and the same fields from `buildApp()` in the [WASM](../build/integrations/wasm)
-build. Publish the loader's `dependencies` files beside it as well; these include
-the pure region module and its declaration. Each pack entry also names its region, owner, trigger, size, the
+build. Write its `declaration` beside it as well. Each pack entry also names its region, owner, trigger, size, the
 component scripts it loads, and, in link builds, its stylesheets. `--metafile`
 writes that report as `lazyPacks`, with brotli-compressed sizes, so your
 deployment can upload and precache everything a region loads, for example in a

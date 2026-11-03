@@ -106,11 +106,8 @@ combined with `<route>`.
 `<if lazy>` regions compile to template packs in `BuildResult::lazy_pack_files`
 and to `BuildResult::lazy_scripts_module`, the generated `lazy.webui.js` that
 registers default dynamic imports of components not already loaded at startup.
-Import it before `startRuntime()`. Its `dependencies` list contains the pure
-`lazy-regions.webui.js` and its declaration; publish those beside it as well.
-For application-owned chunks, replace the default import with `lazyRegions`
-from the pure companion and call `defineLazyScripts(lazyRegions, yourTagLoaders)`
-from `@microsoft/webui-framework/lazy.js`.
+Import it before `startRuntime()`. Bare `lazy` is activation-only; selective
+`lazy="idle"` and `$prefetch(path)` can warm a body without rendering it.
 Its `declaration` is `lazy.webui.d.ts`, written next to it to type the import without
 `allowJs`. Set `modules_out` to the directory they will be written to (relative
 specifiers start there; `build_to_disk` defaults it to `out_dir`), and

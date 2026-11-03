@@ -38,8 +38,7 @@ use std::fmt::Write as _;
 use webui_protocol::WebUIProtocol;
 
 pub use scripts::{
-    module_specifier, render_regions_module, render_scripts_module, LAZY_REGIONS_DECLARATION,
-    LAZY_REGIONS_DECLARATION_SOURCE, LAZY_REGIONS_MODULE, LAZY_SCRIPTS_DECLARATION,
+    module_specifier, render_scripts_module, LAZY_SCRIPTS_DECLARATION,
     LAZY_SCRIPTS_DECLARATION_SOURCE, LAZY_SCRIPTS_MODULE,
 };
 pub use startup::startup_components;
@@ -52,7 +51,7 @@ pub const PACK_OUTPUT_DIR: &str = "_webui/packs";
 /// When a lazy region's pack may be fetched before its condition is true.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LazyTrigger {
-    /// Pointer, focus, or touch intent inside the owner (`lazy`).
+    /// Explicit pointer, focus, or touch intent inside the owner.
     Intent,
     /// The first idle period after the owner mounts (`lazy="idle"`).
     Idle,

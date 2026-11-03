@@ -4,14 +4,14 @@
 import { startRuntime } from '../../../src/runtime.js';
 import '../../../src/styles-entry.js';
 import '../../../src/template-cache-entry.js';
-import { defineLazyScripts } from '../../../src/lazy-entry.js';
+import { registerGeneratedLazyScripts } from '../../../src/lazy-entry.js';
 import { attr, getTemplate, observable, WebUIElement } from '../../../src/index.js';
 import { collectTemplates } from '../../../src/template-cache.js';
 
 /** The document readiness each time the search region's script loader ran. */
 const imports: DocumentReadyState[] = [];
 // Records the loader's timing and declares the fixture's lazy component.
-defineLazyScripts({
+registerGeneratedLazyScripts({
   'test-lazy-search::lazy:@0': ['test-lazy-search-chip'],
 }, {
   'test-lazy-search-chip': () => {

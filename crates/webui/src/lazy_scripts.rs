@@ -13,9 +13,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use webui_handler::lazy_packs::{
-    module_specifier, render_regions_module, render_scripts_module, LazyPackFile, LazyScript,
-    LAZY_REGIONS_DECLARATION, LAZY_REGIONS_DECLARATION_SOURCE, LAZY_REGIONS_MODULE,
-    LAZY_SCRIPTS_DECLARATION, LAZY_SCRIPTS_DECLARATION_SOURCE, LAZY_SCRIPTS_MODULE,
+    module_specifier, render_scripts_module, LazyPackFile, LazyScript, LAZY_SCRIPTS_DECLARATION,
+    LAZY_SCRIPTS_DECLARATION_SOURCE, LAZY_SCRIPTS_MODULE,
 };
 use webui_parser::component_modules;
 use webui_parser::{ComponentRegistry, Diagnostic};
@@ -32,17 +31,6 @@ pub struct GeneratedModule {
     pub content: String,
     /// TypeScript declarations for the module, published beside it.
     pub declaration: GeneratedDeclaration,
-    /// Supporting generated inputs to publish beside this module before bundling.
-    pub dependencies: Vec<GeneratedFile>,
-}
-
-/// One supporting generated input, such as a pure dependency module or its types.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GeneratedFile {
-    /// File name relative to the generated-modules directory.
-    pub file_name: String,
-    /// Source to publish unchanged.
-    pub content: String,
 }
 
 /// TypeScript declarations for a [`GeneratedModule`], such as
@@ -61,18 +49,16 @@ pub struct GeneratedDeclaration {
 }
 
 impl GeneratedModule {
-    /// Supporting inputs, declarations, and entry in publication order.
+    /// Declaration and entry in publication order.
     pub fn files(&self) -> impl Iterator<Item = (&str, &str)> {
-        self.dependencies
-            .iter()
-            .map(|file| (file.file_name.as_str(), file.content.as_str()))
-            .chain([
-                (
-                    self.declaration.file_name.as_str(),
-                    self.declaration.content.as_str(),
-                ),
-                (self.file_name.as_str(), self.content.as_str()),
-            ])
+        [
+            (
+                self.declaration.file_name.as_str(),
+                self.declaration.content.as_str(),
+            ),
+            (self.file_name.as_str(), self.content.as_str()),
+        ]
+        .into_iter()
     }
 
     /// [`LAZY_SCRIPTS_MODULE`] with `content`, and its declarations.
@@ -84,7 +70,6 @@ impl GeneratedModule {
                 file_name: LAZY_SCRIPTS_DECLARATION.to_owned(),
                 content: LAZY_SCRIPTS_DECLARATION_SOURCE.to_owned(),
             },
-            dependencies: Vec::new(),
         }
     }
 }
@@ -171,22 +156,7 @@ pub(crate) fn resolve(
     for (pack, scripts) in packs.iter_mut().zip(resolved) {
         pack.scripts = scripts;
     }
-    Ok(render_scripts_module(packs).map(|content| {
-        let mut module = GeneratedModule::lazy_scripts(content);
-        if let Some(content) = render_regions_module(packs) {
-            module.dependencies = vec![
-                GeneratedFile {
-                    file_name: LAZY_REGIONS_DECLARATION.to_owned(),
-                    content: LAZY_REGIONS_DECLARATION_SOURCE.to_owned(),
-                },
-                GeneratedFile {
-                    file_name: LAZY_REGIONS_MODULE.to_owned(),
-                    content,
-                },
-            ];
-        }
-        module
-    }))
+    Ok(render_scripts_module(packs).map(GeneratedModule::lazy_scripts))
 }
 
 /// Resolve the scripts of every pack, in pack order.

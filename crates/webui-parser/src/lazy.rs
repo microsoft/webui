@@ -8,7 +8,7 @@ pub(crate) use webui_protocol::{lazy_block_id as block_id, lazy_fragment_id as f
 /// The numeric value is the client metadata encoding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Trigger {
-    /// Pointer, focus, or touch intent inside the owning component (default).
+    /// Pointer, focus, or touch intent inside the owning component.
     Intent = 1,
     /// The first idle period after the owner mounts.
     Idle = 2,
@@ -29,11 +29,11 @@ const TRIGGERS: [(&str, Trigger); 4] = [
 const RENAMED_LOAD_TRIGGER: &str = "load";
 
 impl Trigger {
-    /// Parse the `lazy` attribute value; a bare attribute means [`Trigger::Intent`].
+    /// Parse the `lazy` attribute value; a bare attribute means [`Trigger::Demand`].
     pub(crate) fn parse(value: Option<&str>) -> Option<Self> {
         let value = value.unwrap_or_default();
         if value.is_empty() {
-            return Some(Self::Intent);
+            return Some(Self::Demand);
         }
         TRIGGERS
             .iter()
@@ -78,12 +78,10 @@ pub(crate) fn invalid_trigger(value: &str) -> crate::Diagnostic {
     } else {
         match crate::suggest::closest_match(value, TRIGGERS.iter().map(|(name, _)| *name)) {
             Some(name) => format!(
-                "did you mean lazy=\"{name}\"? Use intent (the default), idle, eager, or demand"
+                "did you mean lazy=\"{name}\"? Use demand (the default), intent, idle, or eager"
             ),
-            None => {
-                "use lazy (prefetch on intent), lazy=\"idle\", lazy=\"eager\", or lazy=\"demand\""
-                    .to_owned()
-            }
+            None => "use lazy (activation only), lazy=\"intent\", lazy=\"idle\", or lazy=\"eager\""
+                .to_owned(),
         }
     };
     crate::Diagnostic::error(format!("unsupported lazy trigger '{value}'"))
@@ -108,9 +106,9 @@ mod tests {
     }
 
     #[test]
-    fn triggers_default_to_intent_and_reject_unknown_values() {
-        assert_eq!(Trigger::parse(None), Some(Trigger::Intent));
-        assert_eq!(Trigger::parse(Some("")), Some(Trigger::Intent));
+    fn triggers_default_to_demand_and_reject_unknown_values() {
+        assert_eq!(Trigger::parse(None), Some(Trigger::Demand));
+        assert_eq!(Trigger::parse(Some("")), Some(Trigger::Demand));
         assert_eq!(Trigger::parse(Some("intent")), Some(Trigger::Intent));
         assert_eq!(Trigger::parse(Some("idle")), Some(Trigger::Idle));
         assert_eq!(Trigger::parse(Some("eager")), Some(Trigger::Eager));
@@ -148,6 +146,6 @@ mod tests {
             "{diagnostic}"
         );
         let diagnostic = invalid_trigger("hover").to_string();
-        assert!(diagnostic.contains("lazy=\"demand\""), "{diagnostic}");
+        assert!(diagnostic.contains("activation only"), "{diagnostic}");
     }
 }

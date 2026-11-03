@@ -30,7 +30,7 @@ import { analyzeMetafile, build as bundle, type Metafile } from 'esbuild';
 
 let appDir: string;
 
-test('generated lazy dependencies support default and application-owned loaders through public imports', async () => {
+test('generated lazy installer emits only selected behavior in deferred chunks through public imports', async () => {
   const directory = mkdtempSync(resolve(process.cwd(), '..', 'webui-delivery', 'lazy-composition-'));
   try {
     writeFileSync(join(directory, 'index.html'), '<app-shell></app-shell>');
@@ -38,45 +38,36 @@ test('generated lazy dependencies support default and application-owned loaders 
     writeFileSync(join(directory, 'app-shell.ts'), 'export {};');
     writeFileSync(join(directory, 'lazy-card.html'), '<p>Lazy</p>');
     writeFileSync(join(directory, 'lazy-card.ts'), 'globalThis.defaultLazyModule = true;');
-    writeFileSync(join(directory, 'application-chunk.ts'), 'globalThis.applicationLazyModule = true;');
+    writeFileSync(join(directory, 'unrelated-card.ts'), 'globalThis.unrelatedModule = true;');
     const generated = build({ appDir: directory, plugin: 'webui', modulesOut: directory }).lazyScriptsModule;
     assert.ok(generated);
-    const regions = generated.dependencies.find(file => file.fileName === 'lazy-regions.webui.js');
-    assert.ok(regions);
-    assert.doesNotMatch(regions.content, /import|defineLazyScripts/);
-    for (const file of generated.dependencies) writeFileSync(join(directory, file.fileName), file.content);
+    assert.doesNotMatch(generated.content, /lazy-regions\.webui/);
+    assert.equal('dependencies' in generated, false);
     writeFileSync(join(directory, generated.fileName), generated.content);
     const modulePath = JSON.stringify(join(directory, generated.fileName));
-    const regionsPath = JSON.stringify(join(directory, regions.fileName));
-    const customPath = JSON.stringify(join(directory, 'application-chunk.ts'));
-    for (const mode of ['data', 'default', 'custom'] as const) {
-      const source = mode === 'data'
-        ? `export { lazyRegions } from ${regionsPath};`
-        : mode === 'default' ? `import ${modulePath};`
-          : `import { defineLazyScripts } from '@microsoft/webui-framework/lazy.js';
-import { lazyRegions } from ${regionsPath};
-defineLazyScripts(lazyRegions, { 'lazy-card': () => import(${customPath}) });`;
-      const output = await bundle({
-        stdin: {
-          contents: source,
-          // Resolve the installed public framework entry, with no source aliases.
-          resolveDir: resolve(process.cwd(), '..', 'webui-delivery'),
-        },
-        outdir: join(directory, mode),
-        bundle: true, splitting: true, format: 'esm', write: false,
-        metafile: true, minify: true, platform: 'browser',
-        define: { __WEBUI_DEV__: 'false' },
-      });
-      const inputs = Object.values(output.metafile!.outputs).flatMap(file =>
-        Object.entries(file.inputs).filter(([, contribution]) => contribution.bytesInOutput > 0)
-          .map(([path]) => path.replaceAll('\\', '/')));
-      assert.equal(inputs.some(path => path.endsWith('/lazy-card.ts')), mode === 'default',
-        'unused default loaders must disappear from ALL chunks');
-      assert.equal(inputs.some(path => path.endsWith('/application-chunk.ts')), mode === 'custom');
-      assert.equal(inputs.some(path => path.endsWith('/lazy-entry.js')), mode !== 'data');
-      assert.equal(inputs.some(path => path.includes('/webui-delivery/dist/')), false);
-      if (mode === 'data') assert.equal(output.outputFiles.length, 1, 'pure dependency import emits no orphan chunks');
-    }
+    const output = await bundle({
+      stdin: {
+        contents: `import ${modulePath};`,
+        // Resolve the installed public framework entry, with no source aliases.
+        resolveDir: resolve(process.cwd(), '..', 'webui-delivery'),
+      },
+      outdir: join(directory, 'output'),
+      bundle: true, splitting: true, format: 'esm', write: false,
+      metafile: true, minify: true, platform: 'browser',
+      define: { __WEBUI_DEV__: 'false' },
+    });
+    const inputs = Object.values(output.metafile!.outputs).flatMap(file =>
+      Object.entries(file.inputs).filter(([, contribution]) => contribution.bytesInOutput > 0)
+        .map(([path]) => path.replaceAll('\\', '/')));
+    assert.equal(inputs.some(path => path.endsWith('/lazy-card.ts')), true);
+    assert.equal(inputs.some(path => path.endsWith('/unrelated-card.ts')), false);
+    assert.equal(inputs.some(path => path.endsWith('/lazy-entry.js')), true);
+    assert.equal(inputs.some(path => path.includes('/webui-delivery/dist/')), false);
+    const entry = Object.values(output.metafile!.outputs).find(file => file.entryPoint === '<stdin>');
+    assert.ok(entry);
+    assert.ok(entry.imports.some(edge => edge.kind === 'dynamic-import'));
+    assert.equal(Object.keys(entry.inputs).some(path => path.endsWith('/lazy-card.ts')), false,
+      'registration must not evaluate deferred component behavior');
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -709,7 +700,7 @@ describe('lazy template packs', () => {
       assert.equal(brotliBytes, undefined, 'brotli sizes are measured only for a metafile');
       assert.deepEqual(scripts, []);
       assert.deepEqual(stylesheets, [], 'an unstyled region loads no stylesheets');
-      assert.match(result.lazyScriptsModule?.content ?? '', /defineLazyScripts\(lazyRegions, \{\n\}\);/);
+      assert.match(result.lazyScriptsModule?.content ?? '', /registerGeneratedLazyScripts\(\{\n\}, \{\n\}\);/);
       const pack = JSON.parse(content) as Record<string, unknown>;
       assert.equal(pack.type, 'webui-pack');
       assert.equal(pack.version, 1);
@@ -785,10 +776,12 @@ describe('lazy template packs', () => {
         result.lazyScriptsModule?.content,
         [
           '// Generated by WebUI. Do not edit.',
-          "import { defineLazyScripts } from '@microsoft/webui-framework/lazy.js';",
-          "import { lazyRegions } from './lazy-regions.webui.js';",
+          "import { registerGeneratedLazyScripts } from '@microsoft/webui-framework/lazy.js';",
           '',
-          'defineLazyScripts(lazyRegions, {',
+          'registerGeneratedLazyScripts({',
+          '  "app-shell::lazy:@0": ["settings-panel"],',
+          '  "app-shell::lazy:@1": ["theme-picker"],',
+          '}, {',
           '  "settings-panel": () => import("../settings-panel.ts"),',
           '  "theme-picker": () => import("../theme-picker.js"),',
           '});',

@@ -339,7 +339,7 @@ function uisOf(owner) {
 function region(id, variant, triggers) {
   const ui = UIS[id];
   const trigger = triggers?.[id] ?? ui.trigger;
-  const lazy = variant !== 'lazy' ? '' : trigger === 'intent' ? ' lazy' : ` lazy="${trigger}"`;
+  const lazy = variant !== 'lazy' ? '' : ` lazy="${trigger}"`;
   if (ui.kind === 'menu') return `<if condition="${id}Open"${lazy}>${source('menus', `${id}.html`).trim()}</if>`;
   if (variant === 'assets') return `<div class="${ui.shell === 'flyout' ? 'flyout' : 'slot'}" w-ref="{${id}Slot}"></div>`;
   const attributes = [

@@ -29,7 +29,7 @@ webui build [APP] --out <DIR> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] 
 | `--plugin` | *(none)* | Plugin identifier (see [Plugins](https://microsoft.github.io/webui/reference/plugins/) for available identifiers) |
 | `--asset-file-name-template` | `[name].[ext]` | Emitted asset filename template. Tokens: `[name]`, `[hash]`, `[ext]` |
 | `--asset-base` | *(none)* | Public URL or path ending in `/` that maps to the output directory. Rendered stylesheet links are prefixed with it, and the browser resolves stylesheet and lazy pack paths against it. Module preload hints keep their paths. Override per request with the `$webui.assetBase` state member |
-| `--modules-out` | `--out` | Directory for generated bundler inputs: component assets, `lazy.webui.js`, `lazy-regions.webui.js`, and their types |
+| `--modules-out` | `--out` | Directory for generated bundler inputs: component assets, `lazy.webui.js`, and its declaration |
 | `--component-module` | *(none)* | `TAG=SPECIFIER` module for a custom element without a usable `.ts` or `.js` sibling; repeatable |
 | `--metafile` | *(none)* | Write the build metafile: the component asset graph and a cost report for every lazy pack |
 
@@ -44,14 +44,13 @@ webui build ./src --out ./dist --plugin webui --modules-out ./.webui --metafile 
 
 A build with `<if lazy>` regions writes their template packs under
 `<out>/_webui/packs/`, and `lazy.webui.js` with its `lazy.webui.d.ts` to
-`--modules-out`, including its pure `lazy-regions.webui.js` companion and types.
+`--modules-out`.
 Import `lazy.webui.js` before `startRuntime()` for the default loaders. The installer supplies a
 dynamic import for each scripted component a region introduces and the page
 does not already load at startup, so your bundler loads that code. The
 declaration file types the import for TypeScript without `allowJs`.
-For custom chunks or loading policy, import `lazyRegions` from the pure companion
-instead and call `defineLazyScripts(lazyRegions, yourTagLoaders)` from
-`@microsoft/webui-framework/lazy.js`.
+Bare `lazy` is activation-only; use selective `lazy="idle"` or `$prefetch(path)`
+to warm a region without opening it.
 
 ### `webui serve`
 
@@ -73,7 +72,7 @@ webui serve [APP] [--state <FILE>] [--servedir <DIR>] [--port <PORT>] [--api-por
 | `--shutdown-timeout <SECONDS>` | *(none)* | Opt in to supervised shutdown with a positive integer grace period, with or without `--watch` |
 | `--asset-file-name-template` | `[name].[ext]` | Emitted asset filename template. Tokens: `[name]`, `[hash]`, `[ext]` |
 | `--asset-base` | *(none)* | Public URL or path ending in `/` that maps to the build output. A path such as `/static/` also serves the build output under that prefix; a URL on another host prints a hint and leaves outputs at their usual paths |
-| `--modules-out` | *(none)* | Directory refreshed after each successful build with generated modules, including `lazy.webui.js`, `lazy-regions.webui.js`, and their types, for the application bundler's watcher |
+| `--modules-out` | *(none)* | Directory refreshed after each successful build with generated modules, including `lazy.webui.js` and its declaration, for the application bundler's watcher |
 
 ```bash
 webui serve ./src --state ./data/state.json --port 3000 --watch

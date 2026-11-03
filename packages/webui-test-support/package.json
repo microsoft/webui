@@ -27,6 +27,10 @@
       "types": "./src/fixture-server.ts",
       "default": "./src/fixture-server.ts"
     },
+    "./fixture-lazy-pages": {
+      "types": "./src/fixture-lazy-pages.ts",
+      "default": "./src/fixture-lazy-pages.ts"
+    },
     "./fixture-streaming": {
       "types": "./src/fixture-streaming.ts",
       "default": "./src/fixture-streaming.ts"

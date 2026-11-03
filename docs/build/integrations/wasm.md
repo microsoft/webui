@@ -49,10 +49,9 @@ in the [Node API](/build/integrations/node#lazy-template-packs); publish
 `content` at `path` in the output. WASM builds inline component CSS, so
 `stylesheets` is always empty, and they do not measure brotli sizes, so items
 have no `brotliBytes`. `lazyScriptsModule` is
-`{ fileName, content, declaration, dependencies }` for the generated `lazy.webui.js` when the
-build has lazy regions; publish every `{ fileName, content }` in `dependencies`
-beside it. These include the pure `lazy-regions.webui.js` dependency map and its
-types, for application-owned loaders. `declaration` is `{ fileName, content }` for the
+`{ fileName, content, declaration }` for the generated `lazy.webui.js` when the
+build has lazy regions. Import it before `startRuntime()`; registration starts
+no component loads. `declaration` is `{ fileName, content }` for the
 `lazy.webui.d.ts` to write next to it. A virtual component's module is its
 `<tag>.ts` file, else its `<tag>.js` file. Rendering needs no lazy API; the
 handler renders closed regions as references to their packs.

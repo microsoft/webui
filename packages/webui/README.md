@@ -82,12 +82,9 @@ const result = build({
 When the application has `<if lazy>` regions, write each `lazyPackFiles` item's
 `content` to its `path` under the output directory, and write
 `lazyScriptsModule` and its `declaration` to `modulesOut`. Import
-`lazy.webui.js` before `startRuntime()` for the default loaders. Publish every
-file in its `dependencies` array beside it too. For custom chunks or loading
-policy, replace the default import with `lazyRegions` from the pure companion
-`lazy-regions.webui.js` and call `defineLazyScripts(lazyRegions, yourTagLoaders)`
-from `@microsoft/webui-framework/lazy.js`. Default loaders then never enter
-your bundler graph. The generated declarations type these imports without
+`lazy.webui.js` before `startRuntime()`. Bare `lazy` is activation-only; use
+selective `lazy="idle"` or `$prefetch(path)` to warm without opening a region.
+Your bundler owns splitting and public paths. The generated declaration types the import without
 `allowJs`. A component's
 module is its `.ts` sibling, else its `.js` sibling; `componentModules`
 overrides both.

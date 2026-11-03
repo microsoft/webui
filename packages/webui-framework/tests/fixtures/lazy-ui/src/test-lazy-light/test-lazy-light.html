@@ -3,7 +3,7 @@
   <button class="close" @click="{close()}">Close</button>
   <if condition="loading"><p class="loading">Loading...</p></if>
   <if condition="error"><p class="error">{{error}}</p></if>
-  <if condition="opened" lazy>
+  <if condition="opened" lazy="intent">
     <section class="lazy-body">
       <h2>{{label}}</h2>
       <p class="message">{{message}}</p>

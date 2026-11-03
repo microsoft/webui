@@ -34,7 +34,7 @@ mod style_bundle;
 
 pub use component_assets::{render_component_assets, ComponentAssetFile, ComponentAssetGraph};
 pub use error::WebUIError;
-pub use lazy_scripts::{GeneratedDeclaration, GeneratedFile, GeneratedModule};
+pub use lazy_scripts::{GeneratedDeclaration, GeneratedModule};
 pub use webui_handler::lazy_packs::{
     LazyPackFile, LazyScript, LazyTrigger, LAZY_SCRIPTS_DECLARATION, LAZY_SCRIPTS_MODULE,
     PACK_OUTPUT_DIR,
@@ -1373,7 +1373,7 @@ mod tests {
                     .unwrap();
             let region: serde_json::Value =
                 serde_json::from_str(&built.protocol.client_fragments[root].template_json).unwrap();
-            assert_eq!(owner["c"][0][3], 1, "bare lazy prefetches on intent");
+            assert_eq!(owner["c"][0][3], 4, "bare lazy loads only on activation");
             let nested_entry = region["c"]
                 .as_array()
                 .unwrap()
@@ -1502,7 +1502,7 @@ mod tests {
             (
                 r#"<if condition="show" lazy="yes"><p>Body</p></if>"#,
                 webui_parser::codes::INVALID_LAZY_ATTRIBUTE,
-                "lazy=\"demand\"",
+                "activation only",
             ),
             (
                 r#"<if condition="show" lazy="idel"><p>Body</p></if>"#,

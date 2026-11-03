@@ -8,6 +8,7 @@ import { prepareStreamingFixture } from '@microsoft/webui-test-support/fixture-s
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { lazyFixtureHandler } from './lazy-server.ts';
+import { prepareLazyPages } from '@microsoft/webui-test-support/fixture-lazy-pages';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixturesRoot = resolve(here, 'fixtures');
@@ -45,6 +46,9 @@ const handleStreaming = await prepareStreamingFixture({
   outDir: resolve(outDir, 'streaming-bootstrap'),
   tsconfig,
 });
+const handleLazyPages = await prepareLazyPages(
+  resolve(fixturesRoot, 'lazy-pages'), resolve(outDir, 'lazy-pages'), tsconfig,
+);
 
 startFixtureServer({
   name: 'webui-framework',
@@ -53,6 +57,7 @@ startFixtureServer({
   handleRequest(context) {
     if (handleDeferred(context)) return true;
     if (handleStreaming(context)) return true;
+    if (handleLazyPages(context)) return true;
     const { url, send, serveStatic } = context;
     if (url.pathname === '/') {
       send(200, 'webui-framework fixture server');

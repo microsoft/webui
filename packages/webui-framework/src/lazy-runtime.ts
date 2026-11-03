@@ -18,7 +18,7 @@ import { TEMPLATES_REGISTERED_EVENT } from './template-events.js';
 import { runCompilerScript } from './trusted-types-policy.js';
 import { resolveAsset } from './asset-base.js';
 import { loadScripts, warnUnscriptedComponents } from './lazy-scripts.js';
-import { speculativeTemplates } from './speculation.js';
+import { afterLoad, idle, speculativeTemplates } from './speculation.js';
 import type { CondBinding } from './element/types.js';
 import type { CompiledConditionalMeta, TemplateBlockMeta, TemplateMeta } from './template-types.js';
 
@@ -519,17 +519,6 @@ function releaseInactive(): void {
     released.set(region, { ...record, template: new WeakRef(template) });
     if (record.bit !== undefined) runtime.inventory = writeBit(runtime.inventory ?? '', record.bit, false);
   }
-}
-
-function idle(callback: () => void): void {
-  if (typeof requestIdleCallback === 'function') requestIdleCallback(callback, { timeout: 5000 });
-  else setTimeout(callback, 200);
-}
-
-/** Run once the window has loaded and the browser is idle. */
-export function afterLoad(callback: () => void): void {
-  if (document.readyState === 'complete') idle(callback);
-  else window.addEventListener('load', () => idle(callback), { once: true });
 }
 
 function mergeBits(current: string, next: string): string {

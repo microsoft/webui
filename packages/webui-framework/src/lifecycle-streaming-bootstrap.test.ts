@@ -30,6 +30,10 @@ test('streaming mode reserves completion when the application arrives before its
   try {
     const lifecycle = await import('./lifecycle.js');
     lifecycle.installHydrationLifecycle();
+    assert.equal(lifecycle.__getLifecycleStateForTests().streamingGateActive, true,
+      'startup reserves the head marker before any hydration completion attempt');
+    lifecycle.installHydrationLifecycle();
+    assert.equal(queries, 1, 'repeated installation does not inspect the document again');
     lifecycle.hydrationStart();
     lifecycle.hydrationEnd();
     document.readyState = 'interactive';

@@ -339,7 +339,9 @@ Variants:
   dialog with `asset.create()`. The menus are plain `<if>` in their owners.
 - **lazy**: all ten UIs are `<if lazy>` regions, and the app imports the generated
   `lazy.webui.js`. Owners with one UI behind one control (settings, market,
-  launcher, sign-in, and the search box) use the default intent trigger. The tile
+  launcher, sign-in, and the search box) use explicit `lazy="intent"`. Historical
+  results below used the former bare-lazy intent default; the workload now names
+  intent explicitly to preserve that comparison. Bare lazy is activation-only. The tile
   grid and the background own several UIs each, so their regions use
   `lazy="demand"`, and each button calls `$prefetch('<condition>')` from
   `@pointerenter` and `@focus`.

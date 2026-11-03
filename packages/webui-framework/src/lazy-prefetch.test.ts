@@ -94,7 +94,7 @@ function runIdle(): void {
   for (const callback of idleCallbacks.splice(0)) callback();
 }
 
-const { defineLazyScripts } = await import('./lazy-entry.js');
+const { registerGeneratedLazyScripts } = await import('./lazy-entry.js');
 const runtime = await import('./lazy-runtime.js');
 const { WebUIElement } = await import('./element.js');
 
@@ -333,7 +333,7 @@ test('pack requests resolve against the runtime asset base while the raw path st
 test('every prefetch trigger starts the region scripts with its pack', async () => {
   const tags = ['eager', 'idle', 'intent', 'demand'];
   for (let i = 0; i < tags.length; i++) {
-    defineLazyScripts({
+    registerGeneratedLazyScripts({
       [region('scripted-owner', i)]: [`scripted-${tags[i]}`],
     }, {
         [`scripted-${tags[i]}`]: () => { loaded.push(tags[i]); return Promise.reject(new Error('offline')); },
@@ -368,7 +368,7 @@ function openBinding(id: string): CondBinding {
 
 test('speculative loads before the window loads import region scripts only once it has', async () => {
   const imported: string[] = [];
-  defineLazyScripts({
+  registerGeneratedLazyScripts({
     [region('deferred-owner', 0)]: ['deferred-eager'],
     [region('deferred-owner', 1)]: ['deferred-intent'],
   }, {

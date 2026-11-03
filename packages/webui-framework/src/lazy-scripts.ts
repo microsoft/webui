@@ -12,17 +12,18 @@
 
 import type { TemplateMeta } from './template-types.js';
 import { hasPendingTemplateDefinition } from './template-registry.js';
+import { afterLoad } from './speculation.js';
 
 // Development tracking is removed from production bundles.
 declare const __WEBUI_DEV__: boolean;
 
 /** Loads the module that defines one custom element. */
-export type LazyScriptLoader = () => Promise<unknown>;
+type LazyScriptLoader = () => Promise<unknown>;
 
 /** Compiler-owned region dependencies, independent of application loading policy. */
-export type LazyRegions = Readonly<Record<string, readonly string[]>>;
-/** Application-owned loaders keyed by public custom element tag, not region identity. */
-export type LazyScriptLoaders = Readonly<Record<string, LazyScriptLoader>>;
+type LazyRegions = Readonly<Record<string, readonly string[]>>;
+/** Generated imports keyed by custom element tag. */
+type LazyScriptLoaders = Readonly<Record<string, LazyScriptLoader>>;
 
 type RegionScripts = readonly [regions: LazyRegions, scripts: LazyScriptLoaders];
 
@@ -34,11 +35,14 @@ let requested: Set<string> | undefined;
 let warned: Set<string> | undefined;
 let warnedUnscripted = false;
 
-/** Register generated dependencies with application-owned tag loaders. */
+/** Register generated dependencies and their dynamic imports. */
 export function addScripts(regions: LazyRegions, scripts: LazyScriptLoaders): void {
   const entry: RegionScripts = [regions, scripts];
   for (const region of Object.keys(regions)) {
     loaders.set(region, entry);
+  }
+  if (typeof __WEBUI_DEV__ === 'undefined' || __WEBUI_DEV__) {
+    afterLoad(() => warnStartupDefinitions(hasPendingTemplateDefinition));
   }
 }
 
@@ -65,7 +69,7 @@ export function loadScripts(region: string): Promise<unknown> | undefined {
 async function startScript(tag: string, loader: LazyScriptLoader | undefined): Promise<void> {
   await loader?.();
   if (!declared(tag)) {
-    throw new Error(`[WebUI] Await <${tag}>'s module in defineLazyScripts.`);
+    throw new Error(`[WebUI] Lazy module did not declare <${tag}>. Rebuild matching lazy.webui.js and component modules.`);
   }
 }
 
@@ -93,7 +97,7 @@ export function warnStartupDefinitions(declared: (tag: string) => boolean): void
 /**
  * Development: report once that a pack registered scripted components no
  * loader covers and nothing declared, which renders them as empty elements.
- * It happens when an application omitted its default or application loaders.
+ * It happens when an application omitted its generated installer.
  */
 export function warnUnscriptedComponents(
   region: string,
@@ -113,6 +117,6 @@ export function warnUnscriptedComponents(
   if (!missing) return;
   warnedUnscripted = true;
   console.warn(
-    `[WebUI] Lazy region "${region}" registered ${missing}, but no script defines them, so they render empty. Import lazy.webui.js or register application loaders with defineLazyScripts before starting the runtime.`,
+    `[WebUI] Lazy region "${region}" registered ${missing}, but no script defines them, so they render empty. Import lazy.webui.js before starting the runtime.`,
   );
 }

@@ -3,7 +3,8 @@
 
 import { installTemplateElementRuntime } from './static-host.js';
 import { activateTemplateDefinitions, installTemplateRegistry } from './template-registry.js';
-import { installHydrationLifecycle, runHydrationBatch } from './lifecycle.js';
+import { installHydrationLifecycle } from './lifecycle.js';
+import { runHydrationBatch } from './hydration-batch.js';
 
 /** Start selected rendering after module evaluation, including declarations in shared chunks. */
 export function startRuntime(): void {

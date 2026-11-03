@@ -126,17 +126,6 @@ pub struct JsGeneratedModule {
     pub content: String,
     /// TypeScript declarations to write next to the module.
     pub declaration: JsGeneratedDeclaration,
-    /// Supporting JavaScript and declaration inputs to publish beside the entry.
-    pub dependencies: Vec<JsGeneratedFile>,
-}
-
-/// One supporting generated input for the application bundler.
-#[napi(object)]
-pub struct JsGeneratedFile {
-    /// File name relative to the generated-modules directory.
-    pub file_name: String,
-    /// Source to publish unchanged.
-    pub content: String,
 }
 
 /// TypeScript declarations for a generated module, such as `lazy.webui.d.ts`.
@@ -317,14 +306,6 @@ pub fn build(options: JsBuildOptions) -> napi::Result<JsBuildResult> {
                 file_name: module.declaration.file_name,
                 content: module.declaration.content,
             },
-            dependencies: module
-                .dependencies
-                .into_iter()
-                .map(|file| JsGeneratedFile {
-                    file_name: file.file_name,
-                    content: file.content,
-                })
-                .collect(),
         }),
         metafile: result.metafile,
         warnings,

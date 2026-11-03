@@ -137,16 +137,6 @@ export interface GeneratedModule {
    * `allowJs`.
    */
   declaration: GeneratedDeclaration;
-  /** Supporting generated JavaScript and types to publish beside the entry. */
-  dependencies: GeneratedFile[];
-}
-
-/** A supporting generated input for the application bundler. */
-export interface GeneratedFile {
-  /** File name relative to the generated-modules directory. */
-  fileName: string;
-  /** Source to publish unchanged. */
-  content: string;
 }
 
 /** TypeScript declarations for a generated module. */
@@ -169,7 +159,7 @@ export interface BuildResult {
   lazyPackFiles: LazyPackFile[];
   /**
    * Generated `lazy.webui.js`, present when the build has lazy regions. Write
-   * it, its `declaration`, and every `dependencies` file to `modulesOut`, then
+   * it and its `declaration` to `modulesOut`, then
    * import the module from your entry module.
    */
   lazyScriptsModule?: GeneratedModule;

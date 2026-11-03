@@ -33,7 +33,7 @@ pub struct BuildArgs {
     pub emit_component_assets: Vec<String>,
 
     /// Directory for generated modules consumed by the application bundler:
-    /// component asset inputs, lazy.webui.js, lazy-regions.webui.js, and their types. Defaults to
+    /// component asset inputs, lazy.webui.js, and its declaration. Defaults to
     /// the --out directory.
     #[arg(long, value_name = "DIR")]
     pub modules_out: Option<PathBuf>,
@@ -315,7 +315,7 @@ fn run(args: &BuildArgs) -> Result<()> {
         output::success(&format!(
             "Wrote {} and {} supporting files to {}",
             console::style(&module.file_name).bold(),
-            console::style(1 + module.dependencies.len()).bold(),
+            console::style(1).bold(),
             console::style(modules_out.display()).bold()
         ));
     }
@@ -1032,12 +1032,8 @@ mod tests {
 
         let module_path = out_dir.path().join(webui::LAZY_SCRIPTS_MODULE);
         let module = fs::read_to_string(&module_path).unwrap();
-        assert!(module.contains("defineLazyScripts(lazyRegions, {"));
-        assert!(
-            fs::read_to_string(out_dir.path().join("lazy-regions.webui.js"))
-                .unwrap()
-                .contains("export const lazyRegions")
-        );
+        assert!(module.contains("registerGeneratedLazyScripts({"));
+        assert!(!out_dir.path().join("lazy-regions.webui.js").exists());
         let (_, import) = module
             .split_once("\"settings-panel\": () => import(\"")
             .unwrap();

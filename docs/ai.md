@@ -242,31 +242,37 @@ this.settingsDialog.showModal();
   `_webui/packs/`. Initially false omits the body and references its pack;
   initially true renders normally, inlines its templates, and hydrates.
 - Before `startRuntime()`, import the generated `lazy.webui.js` for the
-  default integration. Generation writes to `--modules-out` (default `--out`),
-  including the adjacent `lazy-regions.webui.js` and both `.d.ts` files.
+  integration. Generation writes it and `lazy.webui.d.ts` to `--modules-out`
+  (default `--out`).
   The import installs `lazy.js`, adds `$rendered()` and `$prefetch()`, and
   registers loaders without starting any component loads.
 - The default module supplies dynamic imports for components not already
   needed at startup outside lazy regions/routes. Your bundler owns splitting
   and public paths. Map modules without a sibling with
   `--component-module tag=specifier`; relative mappings start at `--modules-out`.
-  For custom chunk groups or loading policy, replace the default import with
-  `{ lazyRegions }` from `lazy-regions.webui.js`, import `defineLazyScripts`
-  from `@microsoft/webui-framework/lazy.js`, and call
-  `defineLazyScripts(lazyRegions, yourTagLoaders)` before `startRuntime()`. Each loader must
-  await declaration of its component. Never copy private region IDs or edit
-  generated files. The pure dependency module imports no runtime or default
-  loaders, so no unwanted default chunks are emitted.
+  Never edit generated files or register custom loaders.
   A region loads its pack and scripts in parallel and renders after both.
   Without lazy regions, skip the integration and ship no lazy code.
-- Choose when the pack loads with the attribute value: `lazy`
-  (= `lazy="intent"`) on pointer/focus/touch in the owner; `lazy="idle"` after
-  load when idle; `lazy="eager"` right after hydration; `lazy="demand"` only when
-  the condition becomes true or code calls `this.$prefetch(path?)`. Prefetch never
+- Bare `lazy`, `lazy=""`, and `lazy="demand"` load only when the full condition
+  becomes true or code calls `this.$prefetch(path?)`. Explicit `lazy="idle"`
+  warms only that declaration after load when idle; `lazy="eager"` warms after
+  hydration. Explicit `lazy="intent"` warms on pointer/focus/touch anywhere in
+  the owner. Prefetch never
   renders or fetches state, uses low fetch priority before the window `load`
-  event, and waits while the page is prerendering. Prefer `intent` for UI opened
-  from a control; inside a large owner, use `lazy="demand"` plus
+  event, and waits while the page is prerendering. For selective warming, use
+  bare `lazy` plus
   `@pointerenter="{$prefetch('settingsOpen')}"` on the specific button.
+- Conditions retain the full expression language, e.g.
+  `<if condition="help == 'hello'" lazy><help-panel></help-panel></if>`.
+  Activation tests the expression; `$prefetch('help')` selects dependency paths
+  and can warm multiple conditions reading `help`, not a full-expression selector.
+- Inline bodies do not split their owner's JavaScript. Put expensive behavior
+  in independently loadable child components. A dynamically imported route
+  downloads its page code independently, but a single build's installer still
+  registers the whole graph's small maps/callbacks at startup. A true MPA can
+  build each document separately. Closed sibling/nested lazy bodies stay
+  unfetched unless activated or explicitly warmed. Shared/eager bundler chunks
+  and Light-DOM global styles retain their normal ownership.
 - Focus already inside an intent owner when the runtime starts, such as
   `autofocus`, schedules prefetch after window load when idle. A later intent
   event or an activation can start loading sooner.

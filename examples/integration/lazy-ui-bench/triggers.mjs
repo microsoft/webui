@@ -288,7 +288,6 @@ async function generate() {
         const generated = variant === 'plain' ? undefined : build(options).lazyScriptsModule;
         if (generated) {
           mkdirSync(options.modulesOut, { recursive: true });
-          for (const file of generated.dependencies) writeFileSync(join(options.modulesOut, file.fileName), file.content);
           writeFileSync(join(options.modulesOut, generated.fileName), generated.content);
           writeFileSync(join(options.modulesOut, generated.declaration.fileName), generated.declaration.content);
         }

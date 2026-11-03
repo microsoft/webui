@@ -137,13 +137,13 @@ assigned afterwards over final metadata. Packs are static files with no
 per-request rendering, state, or host API.
 
 Packs carry template data only. The code of the components a region introduces
-belongs to the application's bundler: the build emits a pure module with
-compiler-owned region-to-tag dependencies and a separate default installer with
-dynamic imports of component modules the startup page does not already load.
-Applications use that installer or register the same dependencies with their
-own tag-keyed loaders through the optional lazy runtime. Physical separation
-keeps unwanted behavior code out of custom bundler graphs without replacing
-compiler dependency discovery or copying region identities. Region scripts
+belongs to the application's bundler: the build emits one installer containing
+compiler-owned region-to-tag dependencies and dynamic imports of component
+modules the startup page does not already load. Registration starts no imports;
+bare lazy activates only when its condition holds, with explicit per-declaration
+idle warming and dependency-path prefetch available separately. A single build
+registers its complete graph even if page behavior is dynamically imported;
+independently built documents have independent graphs. Region scripts
 therefore follow the bundler's splitting, public path,
 fingerprinting, and manifests, while template data stays a JSON artifact the
 browser can free when the region closes. WebUI never fetches or evaluates

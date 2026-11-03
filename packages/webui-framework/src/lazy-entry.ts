@@ -6,8 +6,8 @@
  *
  * Loads the build-time template pack and the custom element scripts of a
  * region when it activates or when its prefetch trigger fires, and releases
- * inactive region templates at idle. Import once before `startRuntime()`,
- * directly or through the generated `lazy.webui.js`. The rendering core
+ * inactive region templates at idle. Import the generated `lazy.webui.js`
+ * once before `startRuntime()`. The rendering core
  * carries no lazy code: this module extends the element, so pages without
  * lazy regions pay nothing.
  */
@@ -15,7 +15,6 @@
 import { installLazyResolver } from './lazy-contract.js';
 import {
   activate,
-  afterLoad,
   blockOwner,
   disposed,
   hydrated,
@@ -27,20 +26,10 @@ import {
   watch,
   type LazyHost,
 } from './lazy-runtime.js';
-import { addScripts, warnStartupDefinitions, type LazyRegions, type LazyScriptLoaders } from './lazy-scripts.js';
 import { isConditionTruthy } from './template-conditions.js';
 import { TemplateElement } from './template-element.js';
-import { hasPendingTemplateDefinition } from './template-registry.js';
 import type { CondBinding, TemplateInstance } from './element/types.js';
 import type { TemplateMeta } from './template-types.js';
-
-export type { LazyRegions, LazyScriptLoader, LazyScriptLoaders } from './lazy-scripts.js';
-
-// `__WEBUI_DEV__` is a compile-time constant (see `template-element.ts`). The
-// check below uses the define expression itself: bundlers do not inline a
-// module-local alias in a module with imports, which would keep the
-// development-only guard in production builds.
-declare const __WEBUI_DEV__: boolean;
 
 declare module './template-element.js' {
   interface TemplateElement {
@@ -165,19 +154,7 @@ installLazyResolver(resolve, meta => {
 });
 
 /**
- * Register the loaders of the custom elements that lazy regions introduce.
- *
- * The default generated `lazy.webui.js` calls this. Applications can instead
- * import `lazyRegions` from `lazy-regions.webui.js` and supply loaders keyed by
- * component tag. Each loader must resolve after declaring its component and may share an
- * application-selected chunk with other loaders. Registration starts no loads.
- * A region's scripts load with its pack, and its body mounts once both are ready.
+ * @internal Compiler-to-runtime bridge for generated `lazy.webui.js` only.
+ * Registration starts no loads. This is not an application loader API.
  */
-export function defineLazyScripts(regions: LazyRegions, scripts: LazyScriptLoaders): void {
-  addScripts(regions, scripts);
-  if (typeof __WEBUI_DEV__ === 'undefined' || __WEBUI_DEV__) {
-    // WebUI components wait for their templates to define themselves, so the
-    // guard also counts declarations that are still pending.
-    afterLoad(() => warnStartupDefinitions(hasPendingTemplateDefinition));
-  }
-}
+export { addScripts as registerGeneratedLazyScripts } from './lazy-scripts.js';

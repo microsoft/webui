@@ -1,6 +1,6 @@
 <template shadowrootmode="open">
   <input class="query" autofocus @input="{suggest()}" />
-  <if condition="suggesting" lazy>
+  <if condition="suggesting" lazy="intent">
     <ul class="suggestions"><li>Suggestion</li></ul>
   </if>
 </template>

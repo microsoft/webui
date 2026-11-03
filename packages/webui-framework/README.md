@@ -72,13 +72,9 @@ becomes true or its prefetch trigger fires, it loads the region's build-time
 template pack together with the scripts of the custom elements the region
 introduces, renders the body in the existing owner and scope once both are
 ready, and releases closed regions at idle. Import the generated `lazy.webui.js`
-before `startRuntime()` for the default loaders. For application-controlled
-chunks, replace that import with `{ lazyRegions }` from the pure generated
-`lazy-regions.webui.js` and call `defineLazyScripts(lazyRegions, yourTagLoaders)`
-from `@microsoft/webui-framework/lazy.js` before startup. Loaders must resolve
-after declaring their components; missing loaders, synchronous exceptions,
-and rejected promises fail explicitly. Your bundler owns splitting, and default
-loaders never enter the custom integration's graph. The rendering core contains
+before `startRuntime()`. Bare `lazy` is activation-only; use per-region
+`lazy="idle"` or `$prefetch(path)` for selective warming. Registration starts no
+component loads. Your bundler owns splitting and public paths. The rendering core contains
 no lazy code. See [lazy integration](https://microsoft.github.io/webui/learn/lazy).
 Setting the condition is all a component does; `await this.$rendered()`, added
 by `lazy.js`, is only for code that needs the body's DOM right away, and
