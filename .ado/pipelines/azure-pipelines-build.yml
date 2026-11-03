@@ -168,14 +168,14 @@ stages:
     - task: Cache@2
       displayName: Restore pnpm store
       inputs:
-        key: 'pnpm | "$(Agent.OS)" | pnpm-lock.yaml'
+        key: 'pnpm | "node26" | "$(Agent.OS)" | pnpm-lock.yaml'
         restoreKeys: |
-          pnpm | "$(Agent.OS)"
+          pnpm | "node26" | "$(Agent.OS)"
         path: $(PNPM_STORE_PATH)
-    - task: NodeTool@0
-      displayName: Install Node.js 22
+    - task: UseNode@1
+      displayName: Install Node.js 26
       inputs:
-        versionSpec: 22.x
+        version: 26.x
     - task: Bash@3
       displayName: Run cargo xtask check
       inputs:
@@ -613,9 +613,9 @@ stages:
     - task: Cache@2
       displayName: Restore pnpm store
       inputs:
-        key: 'pnpm | "$(Agent.OS)" | pnpm-lock.yaml'
+        key: 'pnpm | "node26" | "$(Agent.OS)" | pnpm-lock.yaml'
         restoreKeys: |
-          pnpm | "$(Agent.OS)"
+          pnpm | "node26" | "$(Agent.OS)"
         path: $(PNPM_STORE_PATH)
     - task: DownloadPipelineArtifact@2
       displayName: Download WASM release assets
@@ -671,10 +671,10 @@ stages:
         buildType: current
         artifactName: stage-windows-arm64
         targetPath: $(Build.SourcesDirectory)
-    - task: NodeTool@0
-      displayName: Install Node.js 22
+    - task: UseNode@1
+      displayName: Install Node.js 26
       inputs:
-        versionSpec: 22.x
+        version: 26.x
     - task: UseDotNet@2
       displayName: Install .NET 9 SDK
       inputs:
