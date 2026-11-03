@@ -116,6 +116,7 @@ Bun.serve({
 | API | Description |
 |----------|-------------|
 | `build(options)` | Build templates into a protocol. Returns `{ protocol, cssFiles, componentAssetFiles, lazyPackFiles, lazyScriptsModule?, metafile?, warnings, stats }` |
+| `prepareBuild(options)` | Compile once before client bundling; returns a single-use `PreparedBuild` |
 | `new Protocol(protocol, options?)` | Decode and index protocol bytes once and bind the selected plugin |
 | `protocol.render(state, options?)` | Render into a UTF-8 `Buffer` for direct HTTP writes |
 | `protocol.prepareState(state)` | Parse an immutable, process-local native state snapshot once |
@@ -140,6 +141,49 @@ Bun.serve({
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `plugin` | `string` | - | Handler plugin bound for the lifetime of the protocol |
+
+## Single-compilation builds
+
+When your client imports generated lazy or component modules and also produces
+a state-projection manifest, retain one compilation across client bundling:
+
+```typescript
+import { prepareBuild } from '@microsoft/webui';
+import { esbuildProjection } from '@microsoft/webui/projection.js';
+import { build as bundle } from 'esbuild';
+import { writeFileSync } from 'node:fs';
+
+const prepared = prepareBuild({
+  appDir: './src', plugin: 'webui', modulesOut: './.webui',
+});
+prepared.writeModules();
+const manifest = './dist/webui-projection.json';
+await bundle({
+  entryPoints: ['./src/index.ts'], outdir: './dist',
+  bundle: true, splitting: true, format: 'esm',
+  plugins: [esbuildProjection({ manifest })],
+});
+const result = prepared.finish({ projectionManifests: [manifest] });
+writeFileSync('./dist/protocol.bin', result.protocol);
+```
+
+Publish `result.cssFiles` and `result.lazyPackFiles` with the protocol as
+described below. `writeModules()` uses `modulesOut`, or `appDir` when omitted,
+preserving unchanged generated files and publishing dependencies before their
+entry modules. For virtual bundler inputs, read `componentAssetFiles` and
+`lazyScriptsModule` instead. `lazyPackFiles` also exposes the prepared payloads;
+requested compression measurements are available in the final result.
+
+`prepareBuild()` accepts `BuildOptions`. `finish()` accepts
+`projectionManifests` and `projectionManifestObjects`, merged with any supplied
+during preparation; omitting both preserves full-state behavior. Manifest
+hashes and scripted-component coverage are checked before finalization.
+The retained templates/CSS are a snapshot: start a new preparation when editing
+them. A `finish()` attempt consumes the handle, even if manifest validation
+fails; subsequent methods or getters throw. Native retained data is released
+when consumed, or when an abandoned handle is garbage-collected.
+`stats.durationMs` counts WebUI preparation and finalization, not time spent
+in your client bundler.
 
 ## Lazy template packs
 

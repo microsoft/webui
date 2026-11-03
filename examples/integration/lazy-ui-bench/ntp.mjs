@@ -37,7 +37,7 @@ const require = createRequire(join(root, 'packages', 'webui-test-support', 'pack
 const { build: bundle, version: esbuildVersion } = require('esbuild');
 const { chromium } = require('@playwright/test');
 assert.ok(process.env.WEBUI_ADDON_PATH, 'Set WEBUI_ADDON_PATH to the freshly built release addon.');
-const { build, Protocol } = await import(pathToFileURL(join(root, 'packages', 'webui', 'dist', 'index.js')).href);
+const { prepareBuild, Protocol } = await import(pathToFileURL(join(root, 'packages', 'webui', 'dist', 'index.js')).href);
 const { esbuildProjection } = await import(pathToFileURL(join(root, 'packages', 'webui', 'dist', 'projection', 'index.js')).href);
 
 const args = {};
@@ -91,7 +91,7 @@ const fixtures = new Map();
 try {
   for (const key of keys) {
     const fixture = await buildFixture({
-      key, scratch, root, build, Protocol, bundle, esbuildProjection, probeTriggers: PROBE_TRIGGERS,
+      key, scratch, root, prepareBuild, Protocol, bundle, esbuildProjection, probeTriggers: PROBE_TRIGGERS,
     });
     for (const warning of fixture.warnings) console.warn(`[${key}] ${warning}`);
     fixtures.set(key, fixture);

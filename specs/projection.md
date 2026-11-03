@@ -36,6 +36,15 @@ were individually valid. The Rust build rechecks declared input and output
 bytes against disk before using projection data; the handler never loads
 manifests or bundle files per request.
 
+A retained build may compile templates/CSS and publish projection-independent
+generated modules before the client bundle completes. Finalization performs the
+same manifest hash, merge, plugin, and coverage checks as a one-shot build, then
+computes final state surfaces, module preloads, build identity, and protocol bytes.
+Deferred fragments inherit the finalized owner's state contract while retaining
+their compiled body roots. Preparation must not erase those roots through an
+intermediate full-state fallback. Packs and generated module content do not
+depend on projection; preparation and finalization share their original payloads.
+
 ### Exact state-key proof
 
 The compiler resolves symbol identity through the adapter's import/re-export

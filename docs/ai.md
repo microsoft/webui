@@ -1525,6 +1525,11 @@ WebUI overwrites current component roots but does not delete older generated
 payloads or unrelated files from a developer-owned output directory. Remove and
 recreate the disposable directory when a clean build is required.
 
+For generated lazy/component modules plus state projection, the
+[Node build API](/build/integrations/node#single-compilation-builds) supports
+`prepareBuild(options)`, `writeModules()`, client bundling, then
+`finish({ projectionManifests })` without compiling templates twice.
+
 On `webui serve` (with or without `--watch`) and `webui press serve`, optionally
 add `--shutdown-timeout 10` for a ten-second shutdown grace period. Omit it to
 retain the default wait for an active rebuild with no deadline. Forced shutdown

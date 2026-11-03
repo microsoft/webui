@@ -490,6 +490,7 @@ delivery from a cancelled or stalled stream.
 | Function | Description |
 |----------|-------------|
 | `build(options)` | Build templates into a protocol. Returns `BuildResult` |
+| `prepare_build(options)` | Compile once and retain a `PreparedBuild` across client bundling; `finish(manifests)` consumes it and returns `BuildResult` |
 | `build_to_disk(options, out_dir)` | Build and write `protocol.bin`, CSS files, and lazy packs to `out_dir`, and component ESM inputs, `lazy.webui.js`, and `lazy.webui.d.ts` to `modules_out` (default `out_dir`) |
 | `inspect(path)` | Read a protocol file and return JSON |
 | `inspect_bytes(bytes)` | Convert protocol bytes to JSON |
@@ -571,6 +572,18 @@ before the protocol is returned. Tokens used only with a literal `var()`
 fallback (e.g. `var(--brand, #000)`) are exempt; if such a token is also absent
 from every theme it is reported as a non-fatal advisory in
 `BuildResult::warnings` (a likely typo) instead of failing the build.
+
+When generated modules must exist before client bundling, call
+`prepare_build(options)` and `prepared.write_modules()` first. It writes to
+`modules_out`, or `app_dir` when omitted, with the shared transactional publisher.
+The `lazy_scripts_module()`, `component_asset_files()`, and `lazy_pack_files()`
+accessors also support caller-owned publication or virtual bundler inputs.
+After the client bundle completes, call
+`prepared.finish(vec![manifest_path.into()])`. This validates completed manifests
+and serializes the retained template/CSS snapshot without recompilation. Sources
+are merged with any given during preparation; an empty set keeps full state.
+The handle is consumed even on failure. Start a new preparation after editing
+templates or styles. `BuildStats::duration` excludes host work between phases.
 
 Use `ProjectionManifestSource::Path` for normal builds. Orchestrators that build
 many protocols against one client bundle can call

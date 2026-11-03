@@ -48,6 +48,9 @@ use webui_protocol::WebUIProtocol;
 
 const STREAM_CHUNK_SIZE: usize = 16 * 1024;
 
+mod prepared_build;
+pub use prepared_build::{prepare_build, JsFinishBuildOptions, JsPreparedBuild};
+
 /// Build statistics returned from the build function.
 #[napi(object)]
 pub struct JsBuildStats {
@@ -196,8 +199,13 @@ pub struct JsBuildOptions {
 ///
 /// Returns the compiled protocol bytes, CSS files, and build statistics.
 #[napi]
-#[allow(clippy::cast_possible_truncation)] // stats are bounded by component/file counts
 pub fn build(options: JsBuildOptions) -> napi::Result<JsBuildResult> {
+    let result = webui::build(build_options(options)?)
+        .map_err(|e| NapiError::from_reason(format!("Build error: {}", e.chain_message())))?;
+    Ok(js_build_result(result))
+}
+
+fn build_options(options: JsBuildOptions) -> napi::Result<webui::BuildOptions> {
     let css = options
         .css
         .map(|s| s.parse::<webui::CssStrategy>())
@@ -230,22 +238,9 @@ pub fn build(options: JsBuildOptions) -> napi::Result<JsBuildResult> {
         .as_deref()
         .map(|theme| load_theme(theme, &app_dir))
         .transpose()?;
-    let mut projection_manifests: Vec<webui::ProjectionManifestSource> = options
-        .projection_manifests
-        .unwrap_or_default()
-        .into_iter()
-        .map(std::path::PathBuf::from)
-        .map(Into::into)
-        .collect();
-    projection_manifests.extend(
-        options
-            .projection_manifest_objects
-            .unwrap_or_default()
-            .into_iter()
-            .map(|manifest| webui::ProjectionManifestSource::Inline {
-                manifest_path: std::path::PathBuf::from(manifest.path),
-                json: manifest.json,
-            }),
+    let projection_manifests = projection_sources(
+        options.projection_manifests,
+        options.projection_manifest_objects,
     );
 
     let build_options = webui::BuildOptions {
@@ -273,9 +268,30 @@ pub fn build(options: JsBuildOptions) -> napi::Result<JsBuildResult> {
         projection_manifests,
     };
 
-    let result = webui::build(build_options)
-        .map_err(|e| NapiError::from_reason(format!("Build error: {}", e.chain_message())))?;
+    Ok(build_options)
+}
 
+fn projection_sources(
+    paths: Option<Vec<String>>,
+    objects: Option<Vec<JsProjectionManifest>>,
+) -> Vec<webui::ProjectionManifestSource> {
+    let mut sources: Vec<webui::ProjectionManifestSource> = paths
+        .unwrap_or_default()
+        .into_iter()
+        .map(std::path::PathBuf::from)
+        .map(Into::into)
+        .collect();
+    sources.extend(objects.unwrap_or_default().into_iter().map(|manifest| {
+        webui::ProjectionManifestSource::Inline {
+            manifest_path: manifest.path.into(),
+            json: manifest.json,
+        }
+    }));
+    sources
+}
+
+#[allow(clippy::cast_possible_truncation)] // stats are bounded by component/file counts
+fn js_build_result(result: webui::BuildResult) -> JsBuildResult {
     // Flatten css_files into alternating [filename, content, ...] for JS interop
     let css_files: Vec<String> = result
         .css_files
@@ -294,7 +310,7 @@ pub fn build(options: JsBuildOptions) -> napi::Result<JsBuildResult> {
         .collect();
     let warnings: Vec<String> = result.warnings.iter().map(|d| d.to_string()).collect();
 
-    Ok(JsBuildResult {
+    JsBuildResult {
         protocol: Buffer::from(result.protocol_bytes),
         css_files,
         component_asset_files,
@@ -317,7 +333,7 @@ pub fn build(options: JsBuildOptions) -> napi::Result<JsBuildResult> {
             protocol_size_bytes: result.stats.protocol_size_bytes as u32,
             token_count: result.stats.token_count as u32,
         },
-    })
+    }
 }
 
 fn js_lazy_pack_file(pack: webui::LazyPackFile) -> JsLazyPackFile {

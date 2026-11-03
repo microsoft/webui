@@ -10,6 +10,7 @@ import { describe, test, before, after } from 'node:test';
 import { strict as assert } from 'node:assert';
 import {
   build,
+  prepareBuild,
   inspect,
   Protocol,
 } from '@microsoft/webui';
@@ -19,7 +20,7 @@ import type {
   PreparedState,
   StreamStep,
 } from '@microsoft/webui';
-import { existsSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, writeFileSync, mkdtempSync, rmSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { createServer, get } from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -27,8 +28,95 @@ import { once } from 'node:events';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { analyzeMetafile, build as bundle, type Metafile } from 'esbuild';
+import { esbuildProjection } from '@microsoft/webui/projection.js';
 
 let appDir: string;
+
+test('retained public build bundles generated imports once and finishes the same native snapshot', async () => {
+  const directory = mkdtempSync(resolve(process.cwd(), '..', 'webui-delivery', '.tmp-retained-build-'));
+  try {
+    writeFileSync(join(directory, 'index.html'), '<app-shell></app-shell>');
+    writeFileSync(join(directory, 'app-shell.html'), '<if condition="open" lazy><p>{{serverOnly}}</p></if>');
+    writeFileSync(join(directory, 'app-shell.css'), ':host { display: block; }');
+    writeFileSync(join(directory, 'app-shell.ts'), `
+      import { WebUIElement, observable } from '@microsoft/webui-framework';
+      class AppShell extends WebUIElement { @observable open = false; }
+      AppShell.define('app-shell');
+    `);
+    writeFileSync(join(directory, 'main.ts'), "import './.webui/lazy.webui.js'; import './app-shell.ts';");
+    const options = { appDir: directory, plugin: 'webui', modulesOut: join(directory, '.webui') };
+    const prepared = prepareBuild(options);
+    const generated = prepared.lazyScriptsModule;
+    const packs = prepared.lazyPackFiles;
+    assert.ok(generated);
+    assert.equal(prepared.componentAssetFiles.length, 0);
+    prepared.writeModules();
+    const generatedPath = join(options.modulesOut, generated.fileName);
+    assert.equal(readFileSync(generatedPath, 'utf8'), generated.content);
+    const modified = statSync(generatedPath).mtimeMs;
+    prepared.writeModules();
+    assert.equal(statSync(generatedPath).mtimeMs, modified);
+    const manifestPath = join(directory, 'dist', 'webui-projection.json');
+    await bundle({
+      entryPoints: [join(directory, 'main.ts')], outdir: join(directory, 'dist'),
+      bundle: true, splitting: true, format: 'esm',
+      define: { __WEBUI_DEV__: 'false' },
+      tsconfigRaw: { compilerOptions: { experimentalDecorators: true, useDefineForClassFields: false } },
+      plugins: [esbuildProjection({ manifest: manifestPath })],
+    });
+    const expected = build({ ...options, projectionManifests: [manifestPath] });
+    for (const name of ['index.html', 'app-shell.html', 'app-shell.css']) {
+      rmSync(join(directory, name));
+    }
+    const result = prepared.finish({
+      projectionManifestObjects: [{ path: manifestPath, manifest: JSON.parse(readFileSync(manifestPath, 'utf8')) }],
+    });
+    assert.deepEqual(JSON.parse(inspect(result.protocol)), JSON.parse(inspect(expected.protocol)));
+    assert.deepEqual(result.cssFiles, expected.cssFiles);
+    assert.deepEqual(result.lazyScriptsModule, generated);
+    assert.deepEqual(result.lazyPackFiles, packs);
+    assert.throws(() => prepared.finish(), /already been consumed/);
+    assert.throws(() => prepared.writeModules(), /already been consumed/);
+    assert.throws(() => prepared.componentAssetFiles, /already been consumed/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('failed retained manifest validation consumes the native compilation', () => {
+  const prepared = prepareBuild({ appDir });
+  assert.equal(prepared.lazyScriptsModule, undefined);
+  assert.deepEqual(prepared.lazyPackFiles, []);
+  assert.throws(() => prepared.finish({ projectionManifests: ['missing.json'] }), /PROJ-B002/);
+  assert.throws(() => prepared.finish(), /already been consumed/);
+  assert.throws(() => prepared.lazyScriptsModule, /already been consumed/);
+  assert.throws(() => prepared.lazyPackFiles, /already been consumed/);
+});
+
+test('all example production scripts perform at most one full WebUI compilation', () => {
+  const root = resolve(process.cwd(), '..', '..', 'examples', 'app');
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    const file = join(root, entry.name, 'package.json');
+    if (!entry.isDirectory() || !existsSync(file)) continue;
+    const { scripts } = JSON.parse(readFileSync(file, 'utf8')) as { scripts: Record<string, string> };
+    const pending = [scripts.build ?? ''];
+    let compilations = 0;
+    while (pending.length) {
+      const script = pending.pop();
+      assert.ok(script !== undefined);
+      compilations += [...script.matchAll(/-- build\b/g)].length;
+      if (script.includes('node build.mjs')) {
+        assert.match(readFileSync(join(root, entry.name, 'build.mjs'), 'utf8'), /runWebUIBuild\(/);
+        compilations++;
+      }
+      for (const [, name] of script.matchAll(/pnpm run ([\w:-]+)/g)) {
+        assert.ok(scripts[name], `${entry.name}: missing ${name}`);
+        pending.push(scripts[name]);
+      }
+    }
+    assert.ok(compilations <= 1, `${entry.name} compiles templates ${compilations} times`);
+  }
+});
 
 test('generated lazy installer emits only selected behavior in deferred chunks through public imports', async () => {
   const directory = mkdtempSync(resolve(process.cwd(), '..', 'webui-delivery', 'lazy-composition-'));

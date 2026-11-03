@@ -99,19 +99,20 @@ settings pack names it, and the dialog's template data also lists it for the
 region (`lc`), so the browser requests it together with the pack instead of
 after it.
 
-After building the workspace packages, `pnpm run build` runs `webui build`
-twice around the client bundle, then type-checks:
+`pnpm run build` first builds the native addon and workspace packages, runs
+`build.mjs`, then type-checks. The shared `../../build-client.mjs` orchestration:
 
-1. `build:modules` builds without the projection manifest and writes
-   `.webui/lazy.webui.js` and `.webui/lazy.webui.d.ts` (`--modules-out ./.webui`).
-2. `build:client` bundles `src/index.ts` with `../../build-client.mjs`, which
-   also writes `dist/webui-projection.json`.
-3. `build:protocol` builds `dist/` with that manifest. The generated module
-   does not depend on the projection, so it stays the same.
+1. Calls `prepareBuild()` once and writes `.webui/lazy.webui.js` and its
+   declaration with `writeModules()`.
+2. Bundles `src/index.ts`, producing `dist/webui-projection.json`.
+3. Calls `finish()` on the retained compilation with that manifest, then
+   publishes the protocol, CSS, and packs. Templates and CSS are not compiled
+   again.
 
 `start:server` passes `--modules-out ./.webui` as well, so `webui serve --watch`
 keeps both files current after each rebuild, and the esbuild watcher picks up
-any change. `src/index.ts` cannot be bundled or type-checked until they exist.
+any change. Development retains separate client/server watchers.
+`src/index.ts` cannot be bundled or type-checked until the generated files exist.
 
 ## Failures
 

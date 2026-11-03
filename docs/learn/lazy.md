@@ -156,10 +156,12 @@ scripts, map the tag to a specifier with `--component-module tag=specifier` (or
 `componentModules` in `build()`). The build warns about a scripted component
 that a region introduces without a known module.
 
-When you build with a [state projection](../build/hydration#build-time-state-projection)
-manifest, run `webui build` once without it to write the generated module,
-bundle the client, then build again with the manifest. The generated module
-never depends on the projection.
+When using [state projection](../build/hydration#build-time-state-projection),
+use [Node `prepareBuild()`](../build/integrations/node#single-compilation-builds)
+or [Rust `prepare_build()`](../build/integrations/rust#build) to compile
+once. Publish the generated modules, bundle the client, then finalize the
+retained compilation with its manifest. The generated module never depends on
+the projection.
 
 ### Pages and isolated hover previews
 

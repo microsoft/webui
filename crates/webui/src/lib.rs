@@ -27,6 +27,7 @@ mod error;
 mod lazy_report;
 mod lazy_scripts;
 mod module_preload;
+mod prepared_build;
 mod projection;
 pub mod server;
 pub mod streaming;
@@ -35,6 +36,7 @@ mod style_bundle;
 pub use component_assets::{render_component_assets, ComponentAssetFile, ComponentAssetGraph};
 pub use error::WebUIError;
 pub use lazy_scripts::{GeneratedDeclaration, GeneratedModule};
+pub use prepared_build::{prepare_build, PreparedBuild};
 pub use webui_handler::lazy_packs::{
     LazyPackFile, LazyScript, LazyTrigger, LAZY_SCRIPTS_DECLARATION, LAZY_SCRIPTS_MODULE,
     PACK_OUTPUT_DIR,
@@ -71,7 +73,6 @@ use std::collections::{BTreeMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
 use webui_discovery::{DiscoveryPlugin, FastDiscoveryPlugin, WebUIDiscoveryPlugin};
 use webui_parser::plugin::fast_v2::FastV2ParserPlugin;
 use webui_parser::plugin::fast_v3::FastV3ParserPlugin;
@@ -485,66 +486,7 @@ fn streaming_without_projection_warning(entry: &str, boundary_count: usize) -> D
 /// invalid, or the protocol cannot be serialized.
 #[must_use = "BuildResult contains the compiled protocol and statistics"]
 pub fn build(options: BuildOptions) -> Result<BuildResult, WebUIError> {
-    let started = Instant::now();
-
-    if let Some(base) = options.asset_base.as_deref() {
-        validate_asset_base(base).map_err(invalid_asset_base_option)?;
-    }
-    lazy_scripts::validate_mappings(&options.component_modules)?;
-    let mut raw = build_protocol_inner(&options)?;
-    // Packs are referenced from final metadata, so identity is assigned last.
-    let mut lazy_pack_files = webui_handler::lazy_packs::emit(&mut raw.protocol)?;
-    raw.protocol.asset_base = options.asset_base.unwrap_or_default();
-    raw.protocol.assign_build_id()?;
-
-    let protocol_bytes = raw.protocol.to_protobuf()?;
-    let startup = if lazy_pack_files.is_empty() {
-        HashSet::new()
-    } else {
-        webui_handler::lazy_packs::startup_components(&raw.protocol, &options.entry)
-    };
-    let lazy_scripts_module = lazy_scripts::resolve(
-        &mut lazy_pack_files,
-        &lazy_scripts::ScriptSources {
-            scripts: &raw.component_scripts,
-            mappings: &options.component_modules,
-            modules_dir: options.modules_out.as_deref().unwrap_or(&options.app_dir),
-            startup: &startup,
-        },
-        &mut raw.warnings,
-    )?;
-    let metafile =
-        if options.metafile && (raw.asset_metafile.is_some() || !lazy_pack_files.is_empty()) {
-            lazy_report::measure(&mut lazy_pack_files)?;
-            Some(component_assets::render_metafile(
-                raw.asset_metafile.as_ref(),
-                &lazy_pack_files,
-            )?)
-        } else {
-            None
-        };
-
-    let stats = BuildStats {
-        duration: started.elapsed(),
-        fragment_count: raw.fragment_count,
-        component_count: raw.component_count,
-        css_file_count: raw.css_files.len(),
-        protocol_size_bytes: protocol_bytes.len(),
-        token_count: raw.token_count,
-    };
-
-    Ok(BuildResult {
-        protocol: raw.protocol,
-        protocol_bytes,
-        css_files: raw.css_files,
-        component_asset_files: raw.component_asset_files,
-        metafile,
-        lazy_pack_files,
-        lazy_scripts_module,
-        component_templates: raw.component_templates,
-        warnings: raw.warnings,
-        stats,
-    })
+    prepare_build(options)?.finish(Vec::new())
 }
 
 /// Build a WebUI application and write output files to disk.
@@ -660,6 +602,8 @@ struct RawBuildOutput {
     fragment_count: usize,
     component_count: usize,
     token_count: usize,
+    module_entry_srcs: Vec<String>,
+    boundary_count: usize,
 }
 
 /// Internal build logic shared by `build()` and `build_to_disk()`.
@@ -876,37 +820,8 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
             )
         })
         .count();
-    // Resolve projection only after template compilation. Ordinary path/inline
-    // builds pay the same validation cost, while orchestrators can overlap
-    // parser work with an in-flight client bundle through a pending source.
-    let merged_manifest = projection::load_and_merge(&options.projection_manifests)?;
     let mut protocol = WebUIProtocol::with_tokens(fragment_records, token_analysis.protocol_tokens);
-    protocol.initial_state_strategy = if merged_manifest.is_some() {
-        webui_protocol::InitialStateStrategy::Components as i32
-    } else {
-        webui_protocol::InitialStateStrategy::Full as i32
-    };
-
-    // Advisory: without a projection manifest every streaming checkpoint falls
-    // back to serializing the entire state object, so the cost is
-    // O(boundaries x full state) rather than O(boundaries x that boundary's
-    // own keys). The build still works, so this is a warning.
-    if boundary_count > 0 && merged_manifest.is_none() {
-        warnings.push(streaming_without_projection_warning(
-            &options.entry,
-            boundary_count,
-        ));
-    }
-
-    // Resolve `modulepreload` hints once, at build time. The shared chunks an
-    // entry statically imports are named only inside that entry's bytes, so
-    // the preload scanner cannot find them; hinting them removes a serialized
-    // round trip. The handler writes the result verbatim.
-    if let Some(merged) = &merged_manifest {
-        let mut preloads = module_preload::resolve(&merged.entry_closures, &module_entry_srcs);
-        protocol.module_preloads = std::mem::take(&mut preloads.hrefs);
-        warnings.append(&mut preloads.warnings);
-    }
+    protocol.initial_state_strategy = webui_protocol::InitialStateStrategy::Full as i32;
 
     // Record CSS delivery and per-component Shadow DOM ownership.
     protocol.set_css_strategy(match options.css {
@@ -1011,37 +926,16 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
         component.template = artifact.template.clone();
         component.template_json = artifact.template_json.clone();
         component.template_functions = artifact.template_functions.clone();
-        // Manifest keys are the initial hydration surface. Navigation is the
-        // union of manifest client keys and Rust-compiled template roots.
-        // Scriptless components are never governed by a manifest: they keep
-        // their Rust-derived surface regardless of projection.
-        let manifest_entry = if artifact.is_scripted {
-            merged_manifest
-                .as_ref()
-                .and_then(|merged| merged.components.get(&artifact.tag_name))
-        } else {
-            None
-        };
-        let (hydration_mode, hydration_keys) = match manifest_entry {
-            Some(entry) => encode_state_surface(&StateSurface::Keys(entry.hydration_keys.clone())),
-            None => encode_state_surface(&artifact.hydration),
-        };
+        let (hydration_mode, hydration_keys) = encode_state_surface(&artifact.hydration);
         component.hydration_mode = hydration_mode;
         component.hydration_keys = hydration_keys;
-        let (navigation_mode, navigation_keys) = match manifest_entry {
-            Some(entry) => {
-                let union =
-                    projection::union_keys(&entry.navigation_keys, &artifact.template_roots);
-                encode_state_surface(&StateSurface::Keys(union))
-            }
-            None => encode_state_surface(&artifact.navigation),
-        };
+        let (navigation_mode, navigation_keys) = encode_state_surface(&artifact.navigation);
         component.navigation_mode = Some(navigation_mode);
         component.navigation_keys = navigation_keys;
         for fragment in &artifact.lazy_templates {
-            let mut data = fragment.data.clone();
-            data.inherit_owner_state(component);
-            protocol.client_fragments.insert(fragment.id.clone(), data);
+            protocol
+                .client_fragments
+                .insert(fragment.id.clone(), fragment.data.clone());
         }
     }
 
@@ -1052,19 +946,6 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
         options.metafile,
     )?;
     component_asset_graph.retain_entry_protocol(&mut protocol)?;
-    // Strict projection coverage applies to scripted components retained in the
-    // entry protocol. Asset-only roots use their static template payloads and
-    // never participate in protocol projection.
-    if let Some(merged) = &merged_manifest {
-        let entry_scripted_tags: Vec<&str> = component_templates
-            .iter()
-            .filter(|artifact| {
-                artifact.is_scripted && protocol.fragments.contains_key(&artifact.tag_name)
-            })
-            .map(|artifact| artifact.tag_name.as_str())
-            .collect();
-        projection::validate_coverage(&merged.components, &entry_scripted_tags)?;
-    }
     let fragment_count = protocol
         .fragments
         .values()
@@ -1084,6 +965,8 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
         fragment_count,
         component_count,
         token_count,
+        module_entry_srcs,
+        boundary_count,
     })
 }
 
@@ -1912,6 +1795,150 @@ mod tests {
             "unexpected build error: {}",
             error.chain_message()
         );
+    }
+
+    #[test]
+    fn retained_build_finalizes_projection_without_recompiling_templates_or_css() {
+        let app = create_app_dir(&[
+            ("index.html", "<app-owner></app-owner>"),
+            (
+                "app-owner.html",
+                r#"<if condition="open" lazy><p>{{serverOnly}}</p></if>"#,
+            ),
+            ("app-owner.ts", "export {};"),
+            ("app-owner.css", ":host { display: block; }"),
+        ]);
+        let options = || BuildOptions {
+            app_dir: app.path().to_path_buf(),
+            plugin: Some(Plugin::WebUI),
+            modules_out: Some(app.path().join(".webui")),
+            ..BuildOptions::default()
+        };
+        let prepared = prepare_build(options()).unwrap();
+        let generated = prepared.lazy_scripts_module().unwrap().clone();
+        let packs = prepared.lazy_pack_files().to_vec();
+        assert!(prepared.component_asset_files().is_empty());
+        prepared.write_modules().unwrap();
+        let module = app.path().join(".webui/lazy.webui.js");
+        let modified = fs::metadata(&module).unwrap().modified().unwrap();
+        prepared.write_modules().unwrap();
+        assert_eq!(fs::metadata(module).unwrap().modified().unwrap(), modified);
+
+        let manifest_json = projection::test_support::build_valid_manifest_json(
+            app.path(),
+            &[("app-owner.ts", "source")],
+            &[("app-owner.js", "output")],
+            &[(
+                "app-owner",
+                "app-owner.ts",
+                &["app-owner.js"],
+                &["open"],
+                &["open"],
+            )],
+        );
+        let manifest = projection::test_support::write_manifest(
+            app.path(),
+            "webui-projection.json",
+            &manifest_json,
+        );
+        let mut complete_options = options();
+        complete_options.projection_manifests = vec![manifest.clone().into()];
+        let expected = build(complete_options).unwrap();
+        for name in ["index.html", "app-owner.html", "app-owner.css"] {
+            fs::remove_file(app.path().join(name)).unwrap();
+        }
+        let actual = prepared.finish(vec![manifest.into()]).unwrap();
+        assert_eq!(
+            serde_json::to_value(&actual.protocol).unwrap(),
+            serde_json::to_value(&expected.protocol).unwrap(),
+        );
+        assert_eq!(actual.css_files, expected.css_files);
+        assert_eq!(actual.lazy_scripts_module, Some(generated));
+        assert_eq!(actual.lazy_pack_files, packs);
+        assert_eq!(
+            actual.protocol.components["app-owner"].hydration_keys,
+            ["open"]
+        );
+        assert_eq!(
+            actual.protocol.client_fragments["app-owner::lazy:@0"].state_keys,
+            ["open", "serverOnly"],
+        );
+    }
+
+    #[test]
+    fn retained_build_publishes_component_inputs_and_keeps_unprojected_state() {
+        let app = create_app_dir(&[
+            ("index.html", "<p>Entry</p>"),
+            ("asset-card.html", "<p>{{title}}</p>"),
+        ]);
+        let prepared = prepare_build(BuildOptions {
+            app_dir: app.path().to_path_buf(),
+            plugin: Some(Plugin::WebUI),
+            modules_out: Some(app.path().join(".webui")),
+            component_asset_roots: vec!["asset-card".into()],
+            ..BuildOptions::default()
+        })
+        .unwrap();
+        assert!(prepared.lazy_scripts_module().is_none());
+        assert!(prepared.lazy_pack_files().is_empty());
+        assert!(!prepared.component_asset_files().is_empty());
+        prepared.write_modules().unwrap();
+        for file in prepared.component_asset_files() {
+            assert_eq!(
+                fs::read_to_string(app.path().join(".webui").join(&file.name)).unwrap(),
+                file.content
+            );
+        }
+        fs::remove_file(app.path().join("index.html")).unwrap();
+        let result = prepared.finish(Vec::new()).unwrap();
+        assert_eq!(
+            result.protocol.initial_state_strategy,
+            webui_protocol::InitialStateStrategy::Full as i32
+        );
+    }
+
+    #[test]
+    fn retained_build_validates_late_manifest_coverage_and_stale_outputs() {
+        let app = create_app_dir(&[
+            ("index.html", "<app-owner></app-owner>"),
+            ("app-owner.html", "<p>{{title}}</p>"),
+            ("app-owner.ts", "export {};"),
+        ]);
+        for stale in [false, true] {
+            let prepared = prepare_build(BuildOptions {
+                app_dir: app.path().to_path_buf(),
+                plugin: Some(Plugin::WebUI),
+                ..BuildOptions::default()
+            })
+            .unwrap();
+            let components = [(
+                "app-owner",
+                "app-owner.ts",
+                &["app-owner.js"][..],
+                &["title"][..],
+                &["title"][..],
+            )];
+            let json = projection::test_support::build_valid_manifest_json(
+                app.path(),
+                &[("app-owner.ts", "source")],
+                &[("app-owner.js", "output")],
+                if stale { &components } else { &[] },
+            );
+            let manifest =
+                projection::test_support::write_manifest(app.path(), "projection.json", &json);
+            if stale {
+                fs::write(app.path().join("app-owner.js"), "changed after bundle").unwrap();
+            }
+            let error = prepared
+                .finish(vec![manifest.into()])
+                .err()
+                .unwrap()
+                .chain_message();
+            assert!(
+                error.contains(if stale { "PROJ-M004" } else { "PROJ-B001" }),
+                "{error}"
+            );
+        }
     }
 
     #[test]

@@ -244,6 +244,13 @@ Unproven analysis fails the build; without manifests, unknown surfaces
 conservatively select all state. Scriptless components require no JavaScript
 analysis. The handler never opens manifests or bundles at request time.
 
+When generated client modules are bundler inputs, the build retains its
+compiled templates and styles across bundling. These inputs are independent of
+state projection. Finalization validates the completed manifests, applies
+projection and preload metadata, then assigns the final content identity and
+serializes the protocol. It does not rediscover or recompile templates.
+This retained compilation is build-time ownership only, never request-time state.
+
 Initial hydration and partial navigation have separate state surfaces.
 `None` means proven empty, `Keys` means an exact set, and `All` means full
 state is required. Initial state includes proven authored observable/attribute

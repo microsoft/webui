@@ -2,7 +2,7 @@
 // Licensed under the MIT license.
 
 // Builds one NTP fixture the way an application with its own bundler would:
-// `webui build` (Node `build()`) writes the generated modules, esbuild bundles
+// Node `prepareBuild()` supplies generated modules, esbuild bundles
 // the client with code splitting and the projection plugin, then a second
 // build with the projection manifest produces the protocol, CSS, and packs.
 
@@ -118,7 +118,7 @@ const hrefs = text => [...text.matchAll(/"href":"([^"]+)"/g)].map(match => match
  * Build fixture `key` (`<variant>-<css>`, or `probe-<css>` for the lazy app
  * with eager and idle triggers) under `scratch`.
  */
-export async function buildFixture({ key, scratch, root, build, Protocol, bundle, esbuildProjection, probeTriggers }) {
+export async function buildFixture({ key, scratch, root, prepareBuild, Protocol, bundle, esbuildProjection, probeTriggers }) {
   const [name, css] = key.split('-');
   const variant = name === 'probe' ? 'lazy' : name;
   const dir = join(scratch, key);
@@ -128,10 +128,14 @@ export async function buildFixture({ key, scratch, root, build, Protocol, bundle
     appDir: dir, plugin: 'webui', css, modulesOut,
     ...(variant === 'assets' ? { componentAssetRoots: ASSET_ROOTS } : {}),
   };
-  let first;
+  const prepared = prepareBuild({ ...options, metafile: true });
+  const first = {
+    lazyScriptsModule: prepared.lazyScriptsModule,
+    componentAssetFiles: prepared.componentAssetFiles,
+    lazyPackFiles: prepared.lazyPackFiles,
+  };
   if (variant !== 'eager') {
     // The generated modules never depend on the projection, so they come first.
-    first = build(options);
     if (variant === 'lazy') {
       const { fileName, content, declaration } = first.lazyScriptsModule;
       writeModules(modulesOut, [fileName, content, declaration.fileName, declaration.content]);
@@ -159,12 +163,12 @@ export async function buildFixture({ key, scratch, root, build, Protocol, bundle
     mkdirSync(dirname(file.path), { recursive: true });
     writeFileSync(file.path, file.contents);
   }
-  const built = build({ ...options, projectionManifests: [manifest], metafile: true });
+  const built = prepared.finish({ projectionManifests: [manifest] });
   if (variant === 'lazy') {
-    assert.deepEqual(built.lazyScriptsModule, first.lazyScriptsModule, `${key}: lazy.webui.js is stable across passes`);
+    assert.deepEqual(built.lazyScriptsModule, first.lazyScriptsModule, `${key}: lazy.webui.js is stable across preparation and finalization`);
   }
   if (variant === 'assets') {
-    assert.deepEqual(built.componentAssetFiles, first.componentAssetFiles, `${key}: component assets are stable across passes`);
+    assert.deepEqual(built.componentAssetFiles, first.componentAssetFiles, `${key}: component assets are stable across preparation and finalization`);
   }
   assert.equal(built.lazyPackFiles.length, variant === 'lazy' ? Object.keys(UIS).length : 0, `${key}: pack count`);
 
@@ -220,7 +224,7 @@ export async function buildFixture({ key, scratch, root, build, Protocol, bundle
   const html = Buffer.from(protocol.render(STATE));
   return {
     key, variant, css, dir, protocol, files, packs, regions, config, ui, startupScripts, startupCss,
-    warnings: [...(first?.warnings ?? []), ...built.warnings],
+    warnings: built.warnings,
     lazyScriptsModule: first?.lazyScriptsModule?.content,
     sizes: {
       htmlBrotli5: brotli(html, 5).length,

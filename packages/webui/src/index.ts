@@ -171,6 +171,29 @@ export interface BuildResult {
   stats: BuildStats;
 }
 
+/** Completed client manifests for finalizing a retained compilation. */
+export type FinishBuildOptions = Pick<
+  BuildOptions,
+  "projectionManifests" | "projectionManifestObjects"
+>;
+
+/**
+ * Single-use compilation retained while its generated modules are bundled.
+ * A finish attempt consumes it, including when manifest validation fails.
+ */
+export interface PreparedBuild {
+  /** Projection-independent generated lazy behavior imports. */
+  readonly lazyScriptsModule?: GeneratedModule;
+  /** Projection-independent component modules, as [filename, content, ...]. */
+  readonly componentAssetFiles: string[];
+  /** Projection-independent template packs and region metadata. */
+  readonly lazyPackFiles: LazyPackFile[];
+  /** Atomically publish bundler inputs to modulesOut (or appDir). */
+  writeModules(): void;
+  /** Validate completed client manifests and serialize this compilation. */
+  finish(options?: FinishBuildOptions): BuildResult;
+}
+
 /** Options for rendering a protocol. */
 export interface RenderOptions {
   /** Fragment ID to start rendering from (default: "index.html"). */
@@ -291,27 +314,24 @@ export interface PartialResponse {
 
 interface NativeAddon {
   Protocol?: new (protocol: Buffer, plugin?: string) => NativeProtocol;
-  build(options: {
-    appDir: string;
-    entry?: string;
-    css?: string;
-    dom?: string;
-    cssBundle?: boolean;
-    plugin?: string;
-    components?: string[];
-    componentAssetRoots?: string[];
-    metafile?: boolean;
-    cssFileNameTemplate?: string;
-    assetBase?: string;
-    componentModules?: Record<string, string>;
-    modulesOut?: string;
-    projectionManifests?: string[];
-    projectionManifestObjects?: Array<{
-      path: string;
-      json: string;
-    }>;
-  }): BuildResult;
+  prepareBuild(options: NativeBuildOptions): NativePreparedBuild;
+  build(options: NativeBuildOptions): BuildResult;
   inspect(protocolData: Buffer): string;
+}
+
+type NativeBuildOptions = Omit<BuildOptions, "projectionManifestObjects"> & {
+  projectionManifestObjects?: Array<{ path: string; json: string }>;
+};
+
+interface NativePreparedBuild {
+  readonly lazyScriptsModule: GeneratedModule | null;
+  readonly componentAssetFiles: string[];
+  readonly lazyPackFiles: LazyPackFile[];
+  writeModules(): void;
+  finish(options: Pick<
+    NativeBuildOptions,
+    "projectionManifests" | "projectionManifestObjects"
+  >): BuildResult;
 }
 
 interface NativeProtocol {
@@ -413,6 +433,17 @@ function addonInstallHelp(): string {
 
 // ── Build API ────────────────────────────────────────────────────────
 
+function nativeBuildOptions<T extends FinishBuildOptions>(options: T) {
+  const { projectionManifestObjects, ...nativeOptions } = options;
+  return {
+    ...nativeOptions,
+    projectionManifestObjects: projectionManifestObjects?.map(({ path, manifest }) => ({
+      path,
+      json: JSON.stringify(manifest),
+    })),
+  };
+}
+
 /** Build a WebUI application from an app directory. */
 export function build(options: BuildOptions): BuildResult {
   const native = loadAddon();
@@ -421,16 +452,30 @@ export function build(options: BuildOptions): BuildResult {
       `[webui] Native addon is incompatible: build() is required. ${addonInstallHelp()}`,
     );
   }
-  const { projectionManifestObjects, ...nativeOptions } = options;
-  return native.build({
-    ...nativeOptions,
-    projectionManifestObjects: projectionManifestObjects?.map(
-      ({ path, manifest }) => ({
-        path,
-        json: JSON.stringify(manifest),
-      })
-    ),
-  });
+  return native.build(nativeBuildOptions(options));
+}
+
+/**
+ * Compile templates/CSS once, exposing generated inputs before client bundling.
+ * Write these inputs, bundle the client, then finish with its projection manifest.
+ */
+export function prepareBuild(options: BuildOptions): PreparedBuild {
+  const native = loadAddon();
+  if (typeof native.prepareBuild !== "function") {
+    throw new Error(
+      `[webui] Native addon is incompatible: prepareBuild() is required. ${addonInstallHelp()}`,
+    );
+  }
+  const prepared = native.prepareBuild(nativeBuildOptions(options));
+  return {
+    get lazyScriptsModule() { return prepared.lazyScriptsModule ?? undefined; },
+    get componentAssetFiles() { return prepared.componentAssetFiles; },
+    get lazyPackFiles() { return prepared.lazyPackFiles; },
+    writeModules() { prepared.writeModules(); },
+    finish(options = {}) {
+      return prepared.finish(nativeBuildOptions(options));
+    },
+  };
 }
 
 // ── Runtime protocol API ─────────────────────────────────────────────

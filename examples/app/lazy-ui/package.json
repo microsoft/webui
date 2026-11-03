@@ -5,8 +5,8 @@
   "type": "module",
   "webuiProjectionManifest": "./dist/webui-projection.json",
   "scripts": {
-    "build": "pnpm run build:deps && pnpm run build:modules && pnpm run build:client && pnpm run build:protocol && pnpm run typecheck",
-    "build:deps": "pnpm --filter @microsoft/webui --filter @microsoft/webui-framework run build",
+    "build": "pnpm run build:deps && node build.mjs && pnpm run typecheck",
+    "build:deps": "cargo build --release -p microsoft-webui-node && pnpm --filter @microsoft/webui --filter @microsoft/webui-framework run build",
     "build:modules": "cargo run -p microsoft-webui-cli -- build ./src --plugin=webui --theme=@microsoft/webui-examples-theme --out ./dist --modules-out ./.webui",
     "build:client": "node ../../build-client.mjs",
     "build:protocol": "cargo run -p microsoft-webui-cli -- build ./src --plugin=webui --projection-manifest ./dist/webui-projection.json --theme=@microsoft/webui-examples-theme --out ./dist --modules-out ./.webui",

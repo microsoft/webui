@@ -36,7 +36,7 @@ const require = createRequire(join(root, 'packages', 'webui-test-support', 'pack
 const { build: bundle, version: esbuildVersion } = require('esbuild');
 const { chromium } = require('@playwright/test');
 assert.ok(process.env.WEBUI_ADDON_PATH, 'Set WEBUI_ADDON_PATH to the freshly built release addon.');
-const { build, Protocol } = await import(pathToFileURL(join(root, 'packages', 'webui', 'dist', 'index.js')).href);
+const { prepareBuild, Protocol } = await import(pathToFileURL(join(root, 'packages', 'webui', 'dist', 'index.js')).href);
 const { esbuildProjection } = await import(pathToFileURL(join(root, 'packages', 'webui', 'dist', 'projection', 'index.js')).href);
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((pairs, value, index, all) => {
@@ -285,7 +285,8 @@ async function generate() {
         const options = { appDir: dir, plugin: 'webui', css: 'style', modulesOut: join(dir, '.webui') };
         // The generated loader never depends on the projection, so it is built
         // first and bundled like application code.
-        const generated = variant === 'plain' ? undefined : build(options).lazyScriptsModule;
+        const prepared = prepareBuild(options);
+        const generated = prepared.lazyScriptsModule;
         if (generated) {
           mkdirSync(options.modulesOut, { recursive: true });
           writeFileSync(join(options.modulesOut, generated.fileName), generated.content);
@@ -310,8 +311,8 @@ async function generate() {
           const notes = (error.errors ?? []).flatMap(entry => entry.notes ?? []).map(note => note.text);
           throw new Error(`${error.message}\n${notes.join('\n')}`);
         });
-        const built = build({ ...options, projectionManifests: [manifest] });
-        assert.deepEqual(built.lazyScriptsModule, generated, 'lazy.webui.js is stable across builds');
+        const built = prepared.finish({ projectionManifests: [manifest] });
+        assert.deepEqual(built.lazyScriptsModule, generated, 'lazy.webui.js is stable across preparation and finalization');
         const packs = new Map();
         for (const pack of built.lazyPackFiles ?? []) {
           packs.set(pack.fileName, compress(Buffer.from(pack.content)));
