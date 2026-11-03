@@ -46,10 +46,29 @@ import type {
 } from './template.js';
 import type {
   ScopeFrame,
+  TemplateEventListener,
   TemplateInstance,
 } from './element/types.js';
 
 type EventHandler = (...args: unknown[]) => unknown;
+
+interface BoundTemplateEvent extends TemplateEventListener {
+  readonly owner: WebUIElement;
+  readonly method: EventHandler;
+  readonly args: CompiledEventArgs;
+  readonly scope: ScopeFrame | undefined;
+}
+
+function resolveEventArg(owner: TemplateElement, arg: CompiledEventArg, event: Event, scope?: ScopeFrame): unknown {
+  switch (arg[0]) {
+    case 'e': return event;
+    case 'p': return owner.$resolveValue(arg[1], scope);
+    case 's': return arg[1];
+    case 'n': return arg[1];
+    case 'b': return !!arg[1];
+    case 'z': return null;
+  }
+}
 
 /**
  * Per-instance escape hatches. `w-render="eager"` disables the complete
@@ -359,130 +378,38 @@ export class WebUIElement extends TemplateElement {
     resolver: (root: Node | null, path: TemplateNodeIndex) => Node | null,
     scope?: ScopeFrame,
   ): void {
-    this.$wireEvents(instance, root, meta, resolver, scope);
-    const rootEvents = (meta as TemplateMeta).re;
-    // Only composed inner events reach these host listeners.
-    if (rootEvents) {
-      for (let i = 0; i < rootEvents.length; i++) {
-        this.$addEvent(instance, this, rootEvents[i][0], rootEvents[i][1], rootEvents[i][2], undefined);
-      }
-    }
-    this.$wireRefs(instance, root, meta, resolver);
-  }
-
-  /**
-   * Wire element events.
-   *
-   * Listeners attach to the bound element, never the render root.
-   * `$wireEvents` runs once per block instance, so delegating would stack one
-   * listener per block on the same node and fire all of them per dispatch — and
-   * would never see non-bubbling events such as `focus`.
-   */
-  private $wireEvents(
-    instance: TemplateInstance,
-    root: Node | null,
-    meta: TemplateBlockMeta,
-    resolver: (root: Node | null, path: TemplateNodeIndex) => Node | null,
-    scope?: ScopeFrame,
-  ): void {
     const groups = meta.eg;
-    if (!groups) return;
-    for (let i = 0; i < groups.length; i++) {
-      const [eventName, bindings] = groups[i];
-      for (let j = 0; j < bindings.length; j++) {
-        const [handlerName, args, target] = bindings[j];
-        const el = resolver(root, target);
-        if (el && el.nodeType === 1) {
-          this.$addEvent(instance, el, eventName, handlerName, args, scope);
+    const rootEvents = (meta as TemplateMeta).re;
+    let capacity = rootEvents?.length ?? 0;
+    if (groups) {
+      for (let i = 0; i < groups.length; i++) capacity += groups[i][1].length;
+    }
+    if (capacity > 0) {
+      const listeners = new Array<TemplateEventListener>(capacity);
+      let count = 0;
+      if (groups) {
+        for (let i = 0; i < groups.length; i++) {
+          const [eventName, bindings] = groups[i];
+          for (let j = 0; j < bindings.length; j++) {
+            const [handlerName, args, target] = bindings[j];
+            const el = resolver(root, target);
+            if (el && el.nodeType === 1) {
+              const listener = this.$addEvent(el, eventName, handlerName, args, scope);
+              if (listener) listeners[count++] = listener;
+            }
+          }
         }
       }
+      // Only composed inner events reach these host listeners.
+      if (rootEvents) {
+        for (let i = 0; i < rootEvents.length; i++) {
+          const listener = this.$addEvent(this, rootEvents[i][0], rootEvents[i][1], rootEvents[i][2]);
+          if (listener) listeners[count++] = listener;
+        }
+      }
+      listeners.length = count;
+      instance.listeners = listeners;
     }
-  }
-
-  /** Attach a direct listener for an event binding. */
-  private $addEvent(
-    instance: TemplateInstance,
-    target: EventTarget,
-    eventName: string,
-    handlerName: string,
-    args: CompiledEventArgs,
-    scope?: ScopeFrame,
-  ): void {
-    const method = (this as Record<string, unknown>)[handlerName];
-    if (typeof method !== 'function') return;
-    const listener = (event: Event): void => this.$callEventHandler(method as EventHandler, args, event, scope);
-    target.addEventListener(eventName, listener);
-    (instance.cleanups ??= []).push(() => target.removeEventListener(eventName, listener));
-  }
-
-  private $callEventHandler(
-    method: EventHandler,
-    args: CompiledEventArgs,
-    event: Event,
-    scope?: ScopeFrame,
-  ): void {
-    switch (args.length) {
-      case 0:
-        method.call(this);
-        return;
-      case 1:
-        method.call(this, this.$resolveEventArg(args[0], event, scope));
-        return;
-      case 2:
-        method.call(
-          this,
-          this.$resolveEventArg(args[0], event, scope),
-          this.$resolveEventArg(args[1], event, scope),
-        );
-        return;
-      case 3:
-        method.call(
-          this,
-          this.$resolveEventArg(args[0], event, scope),
-          this.$resolveEventArg(args[1], event, scope),
-          this.$resolveEventArg(args[2], event, scope),
-        );
-        return;
-      case 4:
-        method.call(
-          this,
-          this.$resolveEventArg(args[0], event, scope),
-          this.$resolveEventArg(args[1], event, scope),
-          this.$resolveEventArg(args[2], event, scope),
-          this.$resolveEventArg(args[3], event, scope),
-        );
-        return;
-      default:
-        method.apply(this, this.$resolveEventArgs(args, event, scope));
-    }
-  }
-
-  private $resolveEventArgs(args: CompiledEventArgs, event: Event, scope?: ScopeFrame): unknown[] {
-    const resolved: unknown[] = [];
-    for (let i = 0; i < args.length; i++) {
-      resolved.push(this.$resolveEventArg(args[i], event, scope));
-    }
-    return resolved;
-  }
-
-  private $resolveEventArg(arg: CompiledEventArg, event: Event, scope?: ScopeFrame): unknown {
-    switch (arg[0]) {
-      case 'e': return event;
-      case 'p': return this.$resolveValue(arg[1], scope);
-      case 's': return arg[1];
-      case 'n': return arg[1];
-      case 'b': return !!arg[1];
-      case 'z': return null;
-    }
-  }
-
-  /** Wire compiler-owned refs and release them with their view. */
-  private $wireRefs(
-    instance: TemplateInstance,
-    root: Node | null,
-    meta: TemplateBlockMeta,
-    resolver: (root: Node | null, path: TemplateNodeIndex) => Node | null,
-  ): void {
     const refs = meta.rf;
     if (!refs) return;
     const owner = this as Record<string, unknown>;
@@ -491,13 +418,74 @@ export class WebUIElement extends TemplateElement {
       const node = resolver(root, target);
       if (!node || node.nodeType !== 1) continue;
       owner[name] = node;
-      // Component roots are destroyed with their DOM retained. Only removable
-      // blocks (including hostless fragment roots) need per-ref cleanup.
+      // Component roots retain their DOM; only removable views release refs.
       if (!(meta as TemplateMeta).v || meta.f) {
         (instance.cleanups ??= []).push(removeNodes => {
           if (removeNodes && owner[name] === node) owner[name] = undefined;
         });
       }
+    }
+  }
+
+  /** Attach a direct listener for an event binding. */
+  private $addEvent(
+    target: EventTarget,
+    eventName: string,
+    handlerName: string,
+    args: CompiledEventArgs,
+    scope?: ScopeFrame,
+  ): BoundTemplateEvent | undefined {
+    const method = (this as Record<string, unknown>)[handlerName];
+    if (typeof method !== 'function') return;
+    const listener: BoundTemplateEvent = {
+      owner: this, target, eventName, method: method as EventHandler, args, scope,
+      handleEvent: handleTemplateEvent,
+    };
+    target.addEventListener(eventName, listener);
+    return listener;
+  }
+
+}
+
+function handleTemplateEvent(this: BoundTemplateEvent, event: Event): void {
+  const { owner, method, args, scope } = this;
+  switch (args.length) {
+    case 0:
+      method.call(owner);
+      return;
+    case 1:
+      method.call(owner, resolveEventArg(owner, args[0], event, scope));
+      return;
+    case 2:
+      method.call(
+        owner,
+        resolveEventArg(owner, args[0], event, scope),
+        resolveEventArg(owner, args[1], event, scope),
+      );
+      return;
+    case 3:
+      method.call(
+        owner,
+        resolveEventArg(owner, args[0], event, scope),
+        resolveEventArg(owner, args[1], event, scope),
+        resolveEventArg(owner, args[2], event, scope),
+      );
+      return;
+    case 4:
+      method.call(
+        owner,
+        resolveEventArg(owner, args[0], event, scope),
+        resolveEventArg(owner, args[1], event, scope),
+        resolveEventArg(owner, args[2], event, scope),
+        resolveEventArg(owner, args[3], event, scope),
+      );
+      return;
+    default: {
+      const values = new Array<unknown>(args.length);
+      for (let i = 0; i < args.length; i++) {
+        values[i] = resolveEventArg(owner, args[i], event, scope);
+      }
+      method.apply(owner, values);
     }
   }
 }

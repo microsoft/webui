@@ -4,7 +4,7 @@
 import { strict as assert } from 'node:assert';
 import { after, beforeEach, test } from 'node:test';
 import type { CondBinding, TemplateInstance } from './element/types.js';
-import type { CompiledConditionalMeta, LazyTrigger, TemplateBlockMeta, TemplateMeta } from './template-types.js';
+import type { CompiledConditionalMeta, CompiledEventArgs, LazyTrigger, TemplateBlockMeta, TemplateMeta } from './template-types.js';
 
 const restore: [string, PropertyDescriptor | undefined][] = [];
 
@@ -188,16 +188,13 @@ test('$prefetch(path) selects regions whose condition reads that path or a path 
 
 test('a compiled event binding passes its string literal to $prefetch', () => {
   const host = component('prefetch-event', owner('prefetch-event', [[0, 4, ['settingsOpen']], [1, 4, ['other']]]));
-  const bound = new Map<string, Listener>();
-  const button = {
-    nodeType: 1,
-    addEventListener(type: string, listener: Listener): void { bound.set(type, listener); },
-    removeEventListener(): void {},
+  const button = new class extends EventTarget {
+    nodeType = 1;
   };
-  const instance = { texts: [], attrs: [], conds: [], repeats: [] } as unknown as TemplateInstance;
+  const instance: TemplateInstance = { container: null, nodes: [], texts: [], attrs: [], conds: [], repeats: [] };
   (host as unknown as {
-    $wireEvents(instance: TemplateInstance, root: null, meta: TemplateMeta, resolve: () => unknown): void;
-  }).$wireEvents(instance, null, {
+    $finalize(instance: TemplateInstance, root: null, meta: TemplateMeta, resolve: () => unknown): void;
+  }).$finalize(instance, null, {
     v: 3,
     h: '<button></button>',
     eg: [
@@ -205,9 +202,47 @@ test('a compiled event binding passes its string literal to $prefetch', () => {
       ['focus', [['$prefetch', [['s', 'settingsOpen']], 1]]],
     ],
   }, () => button);
-  bound.get('pointerenter')!(new Event('pointerenter'));
+  button.dispatchEvent(new Event('pointerenter'));
   assert.deepEqual(requests, [{ url: pack('prefetch-event', 0), priority: 'high' }]);
-  assert.equal(typeof bound.get('focus'), 'function');
+  const listeners = instance.listeners!;
+  assert.equal(listeners.length, 2);
+  assert.equal(listeners[0].handleEvent, listeners[1].handleEvent, 'Dispatch code is shared, not a per-event closure');
+  assert.equal(instance.cleanups, undefined, 'Listener records replace per-event removal closures');
+  (host as unknown as { $disposeInstance(instance: TemplateInstance, removeNodes: boolean): void })
+    .$disposeInstance(instance, false);
+  assert.equal(listeners.length, 0);
+  requests.length = 0;
+  button.dispatchEvent(new Event('focus'));
+  button.dispatchEvent(new Event('pointerenter'));
+  assert.deepEqual(requests, [], 'Retained root DOM no longer calls disposed event handlers');
+});
+
+test('shared direct dispatch preserves its owner and zero through five arguments', () => {
+  const calls: unknown[][] = [];
+  const receivers: unknown[] = [];
+  const host = Object.assign(component('dispatch-width', owner('dispatch-width', [])), {
+    capture(this: unknown, ...args: unknown[]): void {
+      receivers.push(this);
+      calls.push(args);
+    },
+  });
+  const button = new class extends EventTarget { nodeType = 1; };
+  const interactive = host as unknown as {
+    $finalize(instance: TemplateInstance, root: null, meta: TemplateMeta, resolve: () => unknown): void;
+    $disposeInstance(instance: TemplateInstance, removeNodes: boolean): void;
+  };
+  for (let count = 0; count <= 5; count++) {
+    const args: CompiledEventArgs = Array.from({ length: count }, (_, index) => ['n', index]);
+    const instance: TemplateInstance = { container: null, nodes: [], texts: [], attrs: [], conds: [], repeats: [] };
+    interactive.$finalize(instance, null, {
+      v: 3, h: '', eg: [['click', [['capture', args, 1]]]],
+    }, () => button);
+    button.dispatchEvent(new Event('click'));
+    assert.equal(receivers[count], host);
+    assert.deepEqual(calls[count], Array.from({ length: count }, (_, index) => index));
+    interactive.$disposeInstance(instance, false);
+  }
+  assert.equal(calls.length, 6);
 });
 
 test('only removable views retain ref cleanup, including hostless fragment roots', () => {

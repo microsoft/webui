@@ -59,6 +59,7 @@ import type {
   CompiledAttrMeta,
   CompiledAttrPart,
   CompiledCondition,
+  CompiledTextRunMeta,
   TemplateNodeIndex,
   TemplateSlot,
 } from './template.js';
@@ -139,8 +140,7 @@ const DEV: boolean = typeof __WEBUI_DEV__ === 'undefined' || __WEBUI_DEV__;
 // ── Caches ──────────────────────────────────────────────────────
 
 /** Encoded next marker boundary per text slot, built once per template. */
-const textMarkerBoundaryCache = new WeakMap<TemplateBlockMeta, Int32Array>();
-const NO_TEXT_MARKER_BOUNDARIES = new Int32Array(0);
+const textMarkerBoundaryCache = new WeakMap<TemplateBlockMeta, ArrayLike<number>>();
 const RAW_MARKER_BOUNDARY_BASE = 0x40000000;
 
 /**
@@ -199,14 +199,9 @@ function appendPathBinding<T>(bindings: T[], binding: T): void {
  * `meta.r` indexes plus one; large positive values encode raw-range indexes.
  * The compiler assigns gapless order values within each static slot.
  */
-function getTextMarkerBoundaries(meta: TemplateBlockMeta): Int32Array {
+function getTextMarkerBoundaries(meta: TemplateBlockMeta, texts: CompiledTextRunMeta[]): ArrayLike<number> {
   const cached = textMarkerBoundaryCache.get(meta);
   if (cached) return cached;
-  const texts = meta.tx;
-  if (!texts) {
-    textMarkerBoundaryCache.set(meta, NO_TEXT_MARKER_BOUNDARIES);
-    return NO_TEXT_MARKER_BOUNDARIES;
-  }
 
   const markers = new Map<string, number>();
   if (meta.c) {
@@ -229,12 +224,14 @@ function getTextMarkerBoundaries(meta: TemplateBlockMeta): Int32Array {
     rawIndex++;
   }
 
-  const boundaries = new Int32Array(texts.length);
+  let boundaries: Int32Array | undefined;
   for (let i = 0; i < texts.length; i++) {
-    boundaries[i] = markers.get(slotKey(texts[i][0], 1)) ?? 0;
+    const marker = markers.get(slotKey(texts[i][0], 1));
+    if (marker) (boundaries ??= new Int32Array(texts.length))[i] = marker;
   }
-  textMarkerBoundaryCache.set(meta, boundaries);
-  return boundaries;
+  const result = boundaries ?? EMPTY_ARR;
+  textMarkerBoundaryCache.set(meta, result);
+  return result;
 }
 
 // ── Sentinels ───────────────────────────────────────────────────
@@ -246,7 +243,6 @@ const WEBUI_SET_STATE_KEY = Symbol.for('microsoft.webui.setStateKey');
 /** Branded fatal-stream cleanup hook, invoked before `data-ws` is removed. */
 const STREAMING_BOUNDARY_ABANDON = Symbol.for('microsoft.webui.boundaryAbandon');
 
-const templateTagByCtor = new WeakMap<Function, string>();
 const pendingAncestorDescendants = new WeakMap<Element, TemplateElement[]>();
 
 interface PendingParentState {
@@ -257,7 +253,25 @@ interface PendingParentState {
 const pendingParentStateByElement = new WeakMap<Element, PendingParentState>();
 
 function bindingArray<T>(count: number): T[] {
-  return count > 0 ? [] : EMPTY_ARR as unknown as T[];
+  return count > 0 ? new Array<T>(count) : EMPTY_ARR as unknown as T[];
+}
+
+function createTemplateInstance(
+  root: Node,
+  meta: TemplateBlockMeta,
+  nodes: Node[],
+  scope?: ScopeFrame,
+): TemplateInstance {
+  const instance: TemplateInstance = {
+    scope, container: root as ParentNode & Node, nodes,
+    texts: bindingArray<TextBinding>(meta.tx?.length ?? 0),
+    attrs: bindingArray<AttrBinding>(meta.a?.length ?? 0),
+    conds: bindingArray<CondBinding>(meta.c?.length ?? 0),
+    repeats: bindingArray<RepeatBinding>(meta.r?.length ?? 0),
+  };
+  const fragment = lazyBlockOwner(meta);
+  if (fragment) instance.fragment = fragment;
+  return instance;
 }
 
 function queuePendingParentState(
@@ -327,11 +341,11 @@ function rangeNodesArray(start: Node, end: Node | null): Node[] {
  * template state even when the class never declared an `@attr title` property.
  */
 function defineTemplateConstructor(
-  ctor: TemplateObservedConstructor,
+  constructor: Function,
   tagName: string,
   meta: TemplateMeta,
 ): void {
-  templateTagByCtor.set(ctor, tagName);
+  const ctor = constructor as TemplateObservedConstructor;
   const attrs = meta.ta ?? EMPTY_ARR;
   if (attrs.length > 0) {
     const existing = ctor.observedAttributes ?? EMPTY_ARR;
@@ -581,9 +595,7 @@ export class TemplateElement extends HTMLElement {
     if (!meta) {
       // Shared chunks can evaluate before the entry's installers. Metadata
       // can also arrive later; native define() snapshots its observer surface.
-      deferTemplateDefinition(tagName, ctor, (metadata) => {
-        defineTemplateConstructor(ctor, tagName, metadata);
-      });
+      deferTemplateDefinition(tagName, ctor, defineTemplateConstructor);
       return;
     }
     defineTemplateConstructor(ctor, tagName, meta);
@@ -1395,10 +1407,8 @@ export class TemplateElement extends HTMLElement {
 
   private $templateMeta(): TemplateMeta | undefined {
     if (this.$meta) return this.$meta;
-    const tag = templateTagByCtor.get(this.constructor as Function);
-    if (tag) return getTemplate(tag);
-    const tagName = this.tagName;
-    return tagName ? getTemplate(tagName.toLowerCase()) : undefined;
+    const tag = this.localName;
+    return tag ? getTemplate(tag) : undefined;
   }
 
   private $templateRootForAttribute(name: string): string | undefined {
@@ -1737,15 +1747,7 @@ export class TemplateElement extends HTMLElement {
 
   private $wire(root: Node, meta: TemplateBlockMeta, scope?: ScopeFrame): TemplateInstance {
     const ownerDocument = this.ownerDocument;
-    const instance: TemplateInstance = {
-      scope, container: root as ParentNode & Node, nodes: childNodesArray(root),
-      texts: bindingArray<TextBinding>(meta.tx?.length ?? 0),
-      attrs: bindingArray<AttrBinding>(meta.a?.length ?? 0),
-      conds: bindingArray<CondBinding>(meta.c?.length ?? 0),
-      repeats: bindingArray<RepeatBinding>(meta.r?.length ?? 0),
-    };
-    const fragment = lazyBlockOwner(meta);
-    if (fragment) instance.fragment = fragment;
+    const instance = createTemplateInstance(root, meta, childNodesArray(root), scope);
 
     // Resolve every static insertion reference before inserting dynamic nodes.
     // Any insertion shifts childNodes and invalidates later compiled offsets.
@@ -1762,6 +1764,7 @@ export class TemplateElement extends HTMLElement {
 
     // Text bindings: create direct nodes and queue their compiled placement.
     let rawIndex = 0;
+    let textCount = 0;
     if (meta.tx) {
       for (let i = 0; i < meta.tx.length; i++) {
         const entry = meta.tx[i];
@@ -1776,18 +1779,18 @@ export class TemplateElement extends HTMLElement {
           const start = ownerDocument.createComment(rawMarker(rawIndex));
           end = ownerDocument.createComment(rawMarker(rawIndex, true));
           rawIndex++;
-          instance.texts.push({
+          instance.texts[textCount++] = {
             node: start,
             parts,
             scope,
             raw: true,
             rawEnd: end,
             rawOwner: instance,
-          });
+          };
           node = start;
         } else {
           const textNode = ownerDocument.createTextNode('');
-          instance.texts.push({ node: textNode, parts, scope });
+          instance.texts[textCount++] = { node: textNode, parts, scope };
           node = textNode;
         }
         pendingSlots[pendingSlotCount++] = {
@@ -1801,8 +1804,11 @@ export class TemplateElement extends HTMLElement {
       }
     }
 
+    instance.texts.length = textCount;
+
     // Conditional bindings: create insertion anchors and queue their placement.
     // Visible blocks release these anchors during the first binding pass.
+    let condCount = 0;
     if (meta.c) {
       for (let i = 0; i < meta.c.length; i++) {
         const [condition, blockIndex, slotMeta] = meta.c[i];
@@ -1818,7 +1824,7 @@ export class TemplateElement extends HTMLElement {
           owner: instance,
           instance: null,
         };
-        instance.conds.push(binding);
+        instance.conds[condCount++] = binding;
         pendingSlots[pendingSlotCount++] = {
           parent,
           before: parent.childNodes[beforeIndex] || null,
@@ -1829,7 +1835,10 @@ export class TemplateElement extends HTMLElement {
       }
     }
 
+    instance.conds.length = condCount;
+
     // Repeat bindings: create stable anchors and queue their placement.
+    let repeatCount = 0;
     if (meta.r) {
       for (let i = 0; i < meta.r.length; i++) {
         const [collection, itemVar, blockIndex, slotMeta, keyPath] = meta.r[i];
@@ -1845,7 +1854,7 @@ export class TemplateElement extends HTMLElement {
         if (keyPath !== undefined) {
           binding.keyState = createRepeatKeyState(keyPath);
         }
-        instance.repeats.push(binding);
+        instance.repeats[repeatCount++] = binding;
         pendingSlots[pendingSlotCount++] = {
           parent,
           before: parent.childNodes[beforeIndex] || null,
@@ -1855,6 +1864,8 @@ export class TemplateElement extends HTMLElement {
         if (order > 0) needsSlotOrdering = true;
       }
     }
+
+    instance.repeats.length = repeatCount;
 
     // Attribute bindings (no DOM mutation — safe to resolve inline)
     this.$wireAttrs(instance, meta, scope, (i) => elements[i] ?? null);
@@ -1895,18 +1906,10 @@ export class TemplateElement extends HTMLElement {
     rangeEnd: Node | null = null,
   ): TemplateInstance {
     const ownerDocument = this.ownerDocument;
-    const instance: TemplateInstance = {
-      scope,
-      container: ssrRoot as ParentNode & Node,
-      // A block range snapshots its nodes once its own markers are gone.
-      nodes: rangeStart ? EMPTY_ARR as unknown as Node[] : childNodesArray(ssrRoot),
-      texts: bindingArray<TextBinding>(meta.tx?.length ?? 0),
-      attrs: bindingArray<AttrBinding>(meta.a?.length ?? 0),
-      conds: bindingArray<CondBinding>(meta.c?.length ?? 0),
-      repeats: bindingArray<RepeatBinding>(meta.r?.length ?? 0),
-    };
-    const fragment = lazyBlockOwner(meta);
-    if (fragment) instance.fragment = fragment;
+    // A block range snapshots its nodes once its own markers are gone.
+    const instance = createTemplateInstance(
+      ssrRoot, meta, rangeStart ? EMPTY_ARR as unknown as Node[] : childNodesArray(ssrRoot), scope,
+    );
 
     // Collect SSR markers for deferred removal.  Closing markers
     // (<!--/wc-->, <!--/wr-->) and item markers (<!--wi-->) must stay in
@@ -1929,6 +1932,7 @@ export class TemplateElement extends HTMLElement {
     // anchors, but never add or permanently remove elements outside a block
     // range, so the element pairing stays valid for the whole pass.
     let rawTextCount = 0;
+    let textCount = 0;
     if (meta.tx) {
       for (let i = 0; i < meta.tx.length; i++) {
         if (meta.tx[i][2] === 1) rawTextCount++;
@@ -1943,7 +1947,9 @@ export class TemplateElement extends HTMLElement {
       rangeEnd,
     );
     const ssrElements = ssrIndex.elements;
-    const textMarkerBoundaries = getTextMarkerBoundaries(meta);
+    const textMarkerBoundaries = meta.tx && (meta.c?.length || meta.r?.length || rawTextCount)
+      ? getTextMarkerBoundaries(meta, meta.tx)
+      : EMPTY_ARR;
 
     // Text bindings — find existing text nodes rendered by the server
     if (meta.tx) {
@@ -1973,7 +1979,7 @@ export class TemplateElement extends HTMLElement {
           ) {
             binding.rawValue = this.$resolveParts(parts, scope);
           }
-          instance.texts.push(binding);
+          instance.texts[textCount++] = binding;
         } else {
           // A block range bounds its root-level slots, not the shared parent.
           const rootStart = ssrParent === ssrRoot ? rangeStart : undefined;
@@ -2001,10 +2007,12 @@ export class TemplateElement extends HTMLElement {
             textNode = ownerDocument.createTextNode('');
             ssrParent.insertBefore(textNode, before);
           }
-          instance.texts.push({ node: textNode, parts, scope });
+          instance.texts[textCount++] = { node: textNode, parts, scope };
         }
       }
     }
+
+    instance.texts.length = textCount;
 
     // Attribute bindings
     this.$wireAttrs(
@@ -2075,7 +2083,7 @@ export class TemplateElement extends HTMLElement {
           anchor: liveAnchor,
           scope, owner: instance, instance: condInstance,
         };
-        instance.conds.push(binding);
+        instance.conds[i] = binding;
       }
     }
 
@@ -2166,7 +2174,7 @@ export class TemplateElement extends HTMLElement {
             seedHydratedRepeatKeys(binding, items);
           }
         }
-        instance.repeats.push(binding);
+        instance.repeats[i] = binding;
       }
     }
 
@@ -2274,7 +2282,11 @@ export class TemplateElement extends HTMLElement {
     resolve: (index: TemplateNodeIndex) => Node | null,
     primeSSRComplexProperties = false,
   ): void {
-    if (!meta.a || !meta.ag) return;
+    if (!meta.a || !meta.ag) {
+      instance.attrs.length = 0;
+      return;
+    }
+    let attrCount = 0;
     for (let g = 0; g < meta.ag.length; g++) {
       const [targetIndex, start, count] = meta.ag[g];
       const el = resolve(targetIndex);
@@ -2283,7 +2295,7 @@ export class TemplateElement extends HTMLElement {
         const entry = meta.a[start + j];
         if (!entry) continue;
         const binding = this.$makeAttr(el as Element, entry, scope);
-        instance.attrs.push(binding);
+        instance.attrs[attrCount++] = binding;
         if (
           primeSSRComplexProperties &&
           binding.kind === ATTR_KIND_COMPLEX &&
@@ -2293,6 +2305,7 @@ export class TemplateElement extends HTMLElement {
         }
       }
     }
+    instance.attrs.length = attrCount;
   }
 
   /**
@@ -2856,6 +2869,13 @@ export class TemplateElement extends HTMLElement {
       if (cleanups) {
         for (const cleanup of cleanups) cleanup(removeNodes);
         cleanups.length = 0;
+      }
+      const listeners = instance.listeners;
+      if (listeners) {
+        for (const listener of listeners) {
+          listener.target.removeEventListener(listener.eventName, listener);
+        }
+        listeners.length = 0;
       }
       if (removeNodes) {
         this.$removeInstanceNodes(instance);

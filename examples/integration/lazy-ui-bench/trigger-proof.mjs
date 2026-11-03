@@ -15,6 +15,15 @@ export async function verifyTriggerFixture(browser, url, target, legacy, packNam
     await page.waitForFunction(() => window.__bench?.hydrated);
     const proof = await page.evaluate(async ({ target, legacy }) => {
       const app = document.querySelector('bench-app');
+      if (!target) {
+        app.title = 'Updated workspace';
+        await app.$flushUpdates();
+        return {
+          definitions: app instanceof customElements.get('bench-app'),
+          startupText: app.shadowRoot.querySelector('h1').textContent === 'Updated workspace',
+          legacy,
+        };
+      }
       const owner = app.shadowRoot.querySelector(target);
       const flush = async element => {
         await (element.$rendered?.() ?? element.$flushUpdates());
@@ -33,11 +42,15 @@ export async function verifyTriggerFixture(browser, url, target, legacy, packNam
       result.event = owner.dialog.open;
       result.bodyRef = owner.introNode === owner.dialog.querySelector('.intro');
       result.repeat = owner.dialog.querySelectorAll('.items li').length === 5;
+      const selects = [...owner.dialog.querySelectorAll('select')];
+      result.independentRepeats = selects.length === 6
+        && selects[0].options[0] !== selects[5].options[0];
       owner.intro = 'Updated introduction';
       owner.text = 'Updated text';
       owner.enabled = false;
       owner.badge = 'Updated badge';
       owner.items = [{ name: 'Updated row', detail: 'Updated detail' }];
+      owner.options = [{ value: 'updated', label: 'Updated option' }];
       await flush(owner);
       result.text = owner.dialog.querySelector('.intro').textContent === 'Updated introduction';
       result.attribute = owner.dialog.querySelector('input:not([type=checkbox])').value === 'Updated text';
@@ -45,6 +58,8 @@ export async function verifyTriggerFixture(browser, url, target, legacy, packNam
       result.childState = owner.dialog.querySelector('bench-badge').label === 'Updated badge';
       result.repeatUpdate = owner.dialog.querySelectorAll('.items li').length === 1
         && owner.dialog.querySelector('.items li strong').textContent === 'Updated row';
+      result.sharedRepeatUpdates = selects.every(select => select.options.length === 1
+        && select.options[0].value === 'updated' && select.options[0].textContent === 'Updated option');
       const oldRef = owner.introNode;
       owner.dialog.querySelector('.close').click();
       result.closeEvent = !owner.dialog.open && !owner.ready;
@@ -54,6 +69,16 @@ export async function verifyTriggerFixture(browser, url, target, legacy, packNam
       result.releasesRef = owner.introNode === undefined;
       result.legacy = legacy;
       result.detachedRef = oldRef && !oldRef.isConnected;
+      const created = document.createElement(target);
+      app.shadowRoot.append(created);
+      await flush(created);
+      result.createdRef = created.dialog === created.shadowRoot.querySelector('dialog');
+      created.ready = true;
+      await flush(created);
+      result.createdBody = created.introNode === created.dialog.querySelector('.intro')
+        && created.dialog.querySelectorAll('.items li').length === 5;
+      result.createdStyle = getComputedStyle(created.dialog).borderRadius === '12px';
+      created.remove();
       return result;
       async function pageResult() {
         while (!window.__bench.result && !window.__bench.error) await new Promise(resolve => setTimeout(resolve, 0));

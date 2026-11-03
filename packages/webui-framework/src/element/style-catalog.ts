@@ -53,8 +53,8 @@ export function sameComponentStyleResource(
   const currentMembers = current.members;
   const nextMembers = next.members;
   if (
-    currentMembers?.length !== nextMembers?.length ||
-    currentMembers?.some((member, index) => member !== nextMembers?.[index])
+    currentMembers !== nextMembers &&
+    (!currentMembers || !nextMembers || !sameComponentStyleClosure(currentMembers, nextMembers))
   ) {
     return false;
   }

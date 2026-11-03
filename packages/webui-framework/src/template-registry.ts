@@ -87,7 +87,7 @@ function runtimeTemplateFnCount(registry: RuntimeTemplateFns): number {
 
 interface PendingTemplateDefinition {
   readonly ctor: Function;
-  readonly define: (meta: TemplateMeta) => void;
+  readonly define: (ctor: Function, tagName: string, meta: TemplateMeta) => void;
 }
 
 /** Authored definitions waiting for runtime startup or compiled metadata. */
@@ -110,7 +110,7 @@ function completeTemplateDefinition(tag: string): void {
   const meta = getTemplate(tag);
   if (!meta) return;
   pendingTemplateDefinitions.delete(tag);
-  pending.define(meta);
+  pending.define(pending.ctor, tag, meta);
 }
 let prepareResources: (
   (templates: Record<string, TemplateMeta>) => Promise<void> | undefined
@@ -343,7 +343,7 @@ export function prepareAssetTemplateData(
 export function deferTemplateDefinition(
   tagName: string,
   ctor: Function,
-  define: (meta: TemplateMeta) => void,
+  define: (ctor: Function, tagName: string, meta: TemplateMeta) => void,
 ): void {
   const pending = pendingTemplateDefinitions.get(tagName);
   if (pending) {
@@ -404,6 +404,11 @@ export function releaseSSRBootstrapState(): void {
   const runtime = window.__webui;
   if (runtime?.state !== undefined) {
     delete runtime.state;
+  }
+  // The installed style bridge owns validated, detached definitions for later
+  // mounts and navigation. The one-shot wire catalog is not a second registry.
+  if (runtime && window.__webuiRegisterComponentStyles) {
+    delete runtime.componentStyles;
   }
 }
 

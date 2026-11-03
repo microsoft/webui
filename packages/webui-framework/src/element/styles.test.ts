@@ -3,6 +3,7 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, test } from 'node:test';
+import { sameComponentStyleResource } from './style-catalog.js';
 import {
   claimSsrComponentStyles,
   COMPONENT_LINKS_EAGER,
@@ -13,6 +14,21 @@ import {
   setCssModuleLoaderForTests,
   type ComponentStyles,
 } from './styles.js';
+
+test('resource equality shares member comparison without conflating absent and empty members', () => {
+  const resource = { kind: 'link' as const, href: '/component.css' };
+  assert.equal(sameComponentStyleResource(resource, { ...resource }), true);
+  assert.equal(sameComponentStyleResource(resource, { ...resource, members: [] }), false);
+  assert.equal(sameComponentStyleResource({ ...resource, members: [] }, resource), false);
+  const members = ['first', 'second'];
+  assert.equal(sameComponentStyleResource({ ...resource, members }, { ...resource, members }), true);
+  assert.equal(sameComponentStyleResource(
+    { ...resource, members }, { ...resource, members: [...members] },
+  ), true);
+  assert.equal(sameComponentStyleResource(
+    { ...resource, members }, { ...resource, members: ['second', 'first'] },
+  ), false);
+});
 
 class FakeElement {
   localName: string;

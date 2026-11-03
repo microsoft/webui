@@ -288,8 +288,15 @@ known component roots, retaining sparse direct edges rather than materializing
 every root's transitive closure. Named fragment cycles are traversed iteratively.
 Plugins that do not need the graph retain their existing finalization behavior.
 
-Native constructors keep tag/observed-attribute identity, not a complete template
-object. Instances look up current metadata at mount time. The optional template
+Identical immutable leaf sections within one delivery owner may share a local
+block index. Sharing compares their complete compiled bindings, layout, events and
+refs, not just HTML, and never crosses independently addressable lazy regions.
+Each mounted view still creates its own DOM, bindings, scope and cleanup records.
+Local block positions are compiled references, not source-order identities.
+
+Native constructors keep observed-attribute names, not a complete template
+object. Instances use native `localName` for tag identity rather than a second
+constructor registry, and look up current metadata at mount time. The optional template
 cache adapter must be installed before metadata is consumed; otherwise it cannot
 reconstruct the ownership of existing consumers and fails explicitly.
 
@@ -396,6 +403,9 @@ boundary. The text-to-marker relation is encoded once into an `Int32Array`
 cached by template metadata, so every instance resolves a structural boundary
 in O(1) without retaining a `Map`. This avoids rescanning sibling ranges and
 prevents adjacent dynamic slots from claiming the same text node.
+Sections without text, without structural/raw markers, or without any
+co-located text-to-marker relation use the shared empty index; they do not
+allocate or retain a per-template boundary array.
 
 ---
 
@@ -546,12 +556,17 @@ On reactive flip:
 
 Two flavours:
 
-- **Element events** (`@click="{handler(item.id, e)}"`): wired via `$wireEvents`. The compiled metadata emits `eg` groups shaped as `[event, [[handler, argSpecs, targetPath, usesEvent?]]]`. Hydration resolves `targetPath` to the real element and captures the active scope frame so `argSpecs` resolve against the same repeat item or component state at dispatch time. Listeners attach to the bound element, so `event.currentTarget` is correct and `stopPropagation()` behaves as authored.
+- **Element events** (`@click="{handler(item.id, e)}"`): wired during view finalization. The compiled metadata emits `eg` groups shaped as `[event, [[handler, argSpecs, targetPath, usesEvent?]]]`. Hydration resolves `targetPath` to the real element and retains the active scope frame so `argSpecs` resolve against the same repeat item or component state at dispatch time. Listeners attach to the bound element, so `event.currentTarget` is correct and `stopPropagation()` behaves as authored.
 
-  Bindings are never delegated to the render root. `$wireEvents` runs once per block instance and the render root is shared across instances, so delegating would stack one listener per block on the same node and fire all of them per dispatch — O(N) for no reduction in listener count. It would also miss non-bubbling events (`focus`, `blur`, `mouseenter`, `load`, `error`, `toggle`, media) and app-defined events dispatched without `bubbles: true`, which no shipped event-name table can cover.
+  Bindings are never delegated to the render root. Finalization runs once per block instance and the render root is shared across instances, so delegating would stack one listener per block on the same node and fire all of them per dispatch — O(N) for no reduction in listener count. It would also miss non-bubbling events (`focus`, `blur`, `mouseenter`, `load`, `error`, `toggle`, media) and app-defined events dispatched without `bubbles: true`, which no shipped event-name table can cover.
 - **Root events** (`re` field): used for `@custom-event` on the component's `<template>` root. Attached to the **host element**, the only node that observes both events dispatched on the host itself (which never enter the shadow tree) and `composed` events on their way out of it. Non-composed events (`change`, `submit`, `select`, media) stop at the shadow root by design and are bound per element instead. Because the listener is on the host, `event.target` is retargeted to the host for inner events — use `event.composedPath()[0]` to recover the originating element.
 
-Listener cleanup is automatic. `$destroy` (called from `disconnectedCallback` via a microtask, so repeat reconciliation moves don't trigger teardown) removes everything wired during `$mount`.
+Each direct listener is also its removal record and shares dispatch code;
+listeners do not allocate separate dispatch and removal closures. The view sizes
+its listener storage from compiled binding counts. Listener cleanup is automatic.
+`$destroy` (called from `disconnectedCallback` via a microtask, so repeat
+reconciliation moves don't trigger teardown) removes everything wired during
+`$mount`, including listeners on retained root DOM.
 
 ---
 
@@ -570,6 +585,10 @@ Partial navigation, progressive streaming, and component assets share the same
 required `componentStyles` catalog. Module resources carry their CSS directly;
 the catalog installs each specifier's import map once per owning Document
 before importing it, then reuses the cached parsed sheet for every target.
+Once bootstrap state is released with the style bridge installed, the
+Document-owned validated catalog remains available for future mounts and the
+serialized bootstrap catalog is discarded. Resource-only consumers without
+that bridge retain their fallback catalog.
 
 Client Shadow roots share Link resources per owning Document and resolved URL.
 The first newly attached root to mount a stylesheet keeps its native link and

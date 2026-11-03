@@ -23,7 +23,148 @@ On macOS/Linux point `WEBUI_ADDON_PATH` at the release `libwebui_node.dylib` /
 overrides it). With their defaults, `ntp.mjs` takes about 75 minutes and
 `triggers.mjs` about 26. Run one benchmark at a time on an otherwise idle machine.
 
-## Validated browser-delivery comparison: 2026-11-02 to 2026-11-03
+## Plain renderer ownership follow-up
+
+The plain app now retains less startup V8 heap than matching main on both
+existing workloads. This is a compiler/renderer ownership correction, not a lazy
+prefetch change: the plain bundle still excludes the lazy runtime entirely.
+The benchmark preserves the same fields, rows, components, styles, state and
+completed hydration, and separately proves new client-created components,
+independent repeat instances, refs, events and structural updates.
+
+The comparison pins main to `fd2d75282e29638442f161e202bf109d38e3ceb3`
+and the previous redesign to `ef61b28ec72ea5d61f145a619d63d436c818659e`.
+Each uses its own matching native producer and browser client. Frozen fixtures
+preserve their actual HTML, script and packs, allowing all three complete builds
+to alternate in one browser run instead of mixing compiler and client contracts.
+Conditions remain Edge 156.0.4314.58, Node 26.13.0, esbuild 0.28.2, Windows on
+Core Ultra 9 285K, release addons, no throttling, cold contexts, one discarded
+warmup, two independent nine-round runs for s1/s30, and two forced collections
+per heap sample. The confirmation also includes s0. Useful-work
+proof and heap snapshots run separately from timed samples.
+
+| Workload / build | Startup JS raw / gzip / Brotli (bytes) | Initial JSON (bytes) | Startup V8 heap (bytes) |
+| --- | ---: | ---: | ---: |
+| s1 main | 88,610 / 27,833 / 24,676 | 7,391 | 1,473,808 |
+| s1 `ef61b28e` | 89,316 / 28,613 / 25,136 | 7,575 | 1,483,564 |
+| s1 ownership correction | 88,972 / 28,621 / 25,172 | 6,980 | 1,472,132 |
+| s30 main | 106,201 / 29,176 / 25,268 | 194,102 | 2,114,412 |
+| s30 `ef61b28e` | 106,920 / 29,952 / 25,692 | 195,626 | 2,136,940 |
+| s30 ownership correction | 106,577 / 29,964 / 25,700 | 177,776 | 2,047,092 |
+
+The correction saves **1,676 / 67,320 bytes versus main** and
+**11,432 / 89,848 bytes versus `ef61b28e`**, for s1 / s30 respectively.
+The table uses the plain confirmation; `ef61b28e` s30 is 40 bytes lower in the
+other run, making that run's improvement 89,808 bytes. Both final runs have
+identical current s1/s30 medians; the combined observed
+ranges are 1,472,120–1,472,132 and 2,047,080–2,047,132 bytes. The zero-dialog
+diagnostic also improves against main:
+1,409,300 versus 1,409,824 bytes, rather than `ef61b28e`'s 1,413,060.
+These are repeatable observations for these profiles, not an engine-independent
+or universal application heap guarantee. JavaScript is not a proxy for retained
+memory: s30 removes 343 raw bytes but adds 12 gzip / 8 Brotli bytes versus
+`ef61b28e`. Compared with main it adds 376 raw / 788 gzip / 432 Brotli bytes.
+All existing budgets remain unchanged; the public incremental-lazy profile is
+2,606 Brotli bytes against its approved 2,609-byte limit.
+
+### Why plain previously cost more
+
+The extra heap was not an unloaded lazy pack. Equal-instrumentation snapshots
+of `ef61b28e` versus main attribute 8,088 / 16,060 self-size bytes to engine code
+on s1 / s30. The module's context-local-name table crosses a capacity boundary
+from 4,116 to 8,212 bytes in both profiles. Other growth scales with metadata:
+s30 has 150 extra arrays from dependency and ref tuples, about 2,400 object
+bytes plus 2,160 backing-store bytes. These are distinct sources, not a claim
+that every byte of code or every array is unnecessary.
+
+The correction removes redundant ownership rather than reproducing main's
+missing removed-view ref cleanup:
+
+- The compiler shares complete, identical immutable leaf metadata within one
+  delivery owner. Each dialog's six identical option blocks become one local
+  block; all six repeat views still own separate DOM, scope and bindings.
+  Lazy identities and independently delivered regions stay separate. No runtime
+  alias map, new wire format or extra normalization pass is introduced.
+- Binding and direct-listener arrays reserve their compiled size, and client
+  creation and SSR hydration share one instance initializer. Direct listeners are also their
+  removal records and share one dispatcher, instead of retaining dispatch and
+  removal closures. Events remain direct, including non-bubbling events.
+- Ordinary startup owns no streaming completion record. Shared definition
+  callbacks replace per-definition closures; native host identity replaces the
+  redundant constructor-to-tag registry. Authored change dispatch uses its
+  existing canonical path. Irregular attribute names no longer require a
+  module-owned dictionary and duplicate value strings.
+- Bootstrap release drops the serialized style catalog only after the installed
+  style bridge owns validated detached definitions. Resource-only consumers
+  keep their fallback catalog. Templates without neighboring dynamic markers
+  share the existing empty sentinel instead of allocating zero-filled topology
+  arrays. Stylesheet resource members reuse the closure comparison rather than
+  retaining another comparison callback.
+
+Separate final snapshots support those retainer paths. Versus `ef61b28e`,
+s1 has 54 fewer Array objects and 1,140 fewer backing-store bytes; s30 has
+1,533 fewer Arrays (24,528 self-size bytes) and 27,240 fewer backing-store
+bytes. These totals include nested compiled tuples, not just top-level block
+objects. A dialog's root conditional/listener storage is 28 bytes per array
+instead of the old 92-byte push-grown conditional/cleanup arrays. Empty
+binding arrays are shared. Engine-code self-size falls 6,956 / 10,224 bytes;
+the context-local-name table alone falls 4,096 bytes. Three unused Int32Array
+objects disappear even in the minimal diagnostic. These are aggregate snapshot
+self-sizes, not additive dominator-retained-size estimates or native DOM bytes.
+
+At startup the native DOM counts match exactly: 43 / 420 nodes and 17 / 46
+listeners for s1 / s30 in every build. After one open the correction retains
+30 fewer native nodes; after close it retains 32 fewer than main, not a hidden
+DOM substitute for the JavaScript saving. Native byte size/RSS is not measured.
+After one open V8 heap is 2,348,468 / 2,903,644 bytes, versus main's
+2,352,252 / 2,976,200. After close s30 remains 67,356 bytes below main, but
+s1 is **2,352 bytes above main**; startup parity does not establish parity at
+every later lifecycle point. Main still retains its stale removed-body ref.
+
+There is no demonstrated first-open speedup: s1 / s30 click-to-paint medians
+are 16.0 / 15.4 ms versus main's 15.6 / 15.0 ms and `ef61b28e`'s
+15.3 / 15.4 ms in the mixed plain/demand run. The corresponding mount-work
+medians are 2.7 / 2.6 ms, versus 2.9 / 2.8 ms for both baselines.
+In the plain confirmation run hydration is 25.4 / 36.2 ms, versus main's
+26.3 / 36.1 ms and `ef61b28e`'s 27.4 / 38.9 ms. Main's s30 hydration
+median was 26.4 ms in the other run: these timings do not establish a general
+hydration-speed improvement. Frame/input scheduling remains part
+of click-to-paint; no work or fetch moves outside its original timing window.
+
+Within the same final build, demand lazy reduces s30 startup heap from
+2,047,092 to 1,856,008 bytes and initial JSON from 177,776 to 60,609 bytes,
+but increases startup JS Brotli from 25,700 to 28,114 bytes. Its cold first
+open remains 33.3 ms versus plain's 15.4 ms (and `ef61b28e` demand's
+33.3 ms), with about 2.6 ms in the measured resource wait. The separate
+input-fetch proof observes 13.6 ms to headers and 0.2 ms to JSON decode,
+versus a standalone fetch's 1.8 ms to headers and 0.3 ms decode. These
+overlapping observations are not additive CPU stages. The demand-fetch floor
+has not disappeared. On s1 demand costs 7,072 startup heap bytes versus plain;
+lazy is not a universal win for small apps.
+
+After opening/closing all 30 dialogs three times in separate two-context
+memory runs, plain retains 2,323,476 bytes versus main's 2,445,944 and
+`ef61b28e`'s 2,466,848. Native nodes are 5,824 versus 6,784 / 6,724, with
+46 listeners in all three. Demand retains 2,281,204 bytes versus
+`ef61b28e`'s 2,321,148, with 424 nodes and no loaded region packs after
+release. These cycle summaries use the harness's lower-middle statistic for
+two contexts; individual runs remain in the report. Heap still grows between
+cycles, and three cycles do not prove a steady-state plateau. Pack release
+does not unload browser modules.
+
+Frozen matching builds can be reproduced without a browser using
+`--write-fixtures <file> --fixture-label main` with the matching addon and
+`--legacy-framework <main-entry>`, or label `ef61` with
+`--framework <ef61-entry>`. Then select the current addon and run:
+
+```powershell
+node examples\integration\lazy-ui-bench\triggers.mjs --samples 9 --memory-samples 2 --profile none --scenarios s0,s1,s30 --variants plain --caches cold --read-fixtures target\plain-matching-main-fixtures.json,target\plain-matching-ef61-fixtures.json --out target\plain-ownership-confirmation.json
+```
+
+## Prior ref/lifetime correction: 2026-11-02 to 2026-11-03
+
+This historical section records `ef61b28e`; "corrected" below refers to that
+commit. The ownership results above supersede its remaining startup-heap gap.
 
 These measurements supersede the earlier mixed-producer comparison reporting
 +419 Brotli bytes and +17,264 heap bytes. That experiment paired the current

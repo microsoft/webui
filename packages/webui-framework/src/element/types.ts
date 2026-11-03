@@ -91,12 +91,16 @@ export interface TemplateInstance {
   attrs: AttrBinding[];
   conds: CondBinding[];
   repeats: RepeatBinding[];
-  /**
-   * Per-instance listener cleanup. Event listeners attach to the elements a
-   * block owns, so nested conditional/repeat instances must explicitly
-   * unregister when their block leaves the DOM.
-   */
+  /** View-owned cleanup, including refs of removable blocks. */
   cleanups?: Array<(removeNodes: boolean) => void>;
+  /** Direct listeners owned by this view, with shared dispatch code. */
+  listeners?: TemplateEventListener[];
+}
+
+/** A removable direct listener; the listener record is also its DOM callback. */
+export interface TemplateEventListener extends EventListenerObject {
+  readonly target: EventTarget;
+  readonly eventName: string;
 }
 
 /** Conditional block state. Visible blocks need no live DOM anchor. */

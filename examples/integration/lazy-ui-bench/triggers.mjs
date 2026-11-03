@@ -16,6 +16,8 @@
 //        [--legacy-framework path/to/compiled/main/index.js] (plain only)
 //        [--baseline-framework path/to/compiled/before/index.js] (interleaved client comparison)
 //        [--probe true] [--snapshots directory] (separate attribution runs)
+//        [--write-fixtures file] (compile with this producer/client, without launching a browser)
+//        [--read-fixtures file] (interleave a previously compiled matching producer/client)
 
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
@@ -55,6 +57,7 @@ const PROFILES = {
 const PROFILE_NAME = args.profile ?? 'mobile';
 const PROFILE = PROFILES[PROFILE_NAME];
 const SCENARIOS = {
+  s0: { dialogs: 0, fields: 24, rows: 5, target: 0 },
   s1: { dialogs: 1, fields: 24, rows: 5, target: 0 },
   s30: { dialogs: 30, fields: 24, rows: 5, target: 17 },
 };
@@ -317,13 +320,15 @@ async function generate() {
         assert.equal(packs.size, variant === 'plain' ? 0 : scenario.dialogs);
         fixtures.set(`${id}/${variant}`, {
           id, variant, owners, target: ownerTag(scenario.target),
-          protocol: new Protocol(built.protocol, { plugin: 'webui' }),
+          html: new Protocol(built.protocol, { plugin: 'webui' })
+            .render({ title: 'Workspace', status: 'Ready' }).toString(),
+          legacy: !!legacyFramework,
           script: compress(readFileSync(outfile)), packs,
         });
       }
     }
   } finally {
-    rmSync(scratch, { recursive: true, force: true });
+    rmSync(scratch, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
   return fixtures;
 }
@@ -344,7 +349,7 @@ async function serve(fixtures) {
     };
     if (!fixture) return response.writeHead(404).end();
     if (rest.length === 0) {
-      const html = Buffer.from(fixture.protocol.render({ title: 'Workspace', status: 'Ready' }));
+      const html = Buffer.from(fixture.html);
       const body = { raw: html, br: brotliCompressSync(html, { params: { [constants.BROTLI_PARAM_QUALITY]: 5 } }) };
       return send('text/html; charset=utf-8', 'no-store', body);
     }
@@ -411,8 +416,10 @@ async function sample(browser, origin, fixture, cache) {
     if (cache === 'warm') {
       const primer = await context.newPage();
       await prepare(primer, url, fixture.variant);
-      await primer.locator(fixture.target).locator('button.trigger').click();
-      await waitFor(primer, '!!window.__bench.result || !!window.__bench.error');
+      if (fixture.owners.length) {
+        await primer.locator(fixture.target).locator('button.trigger').click();
+        await waitFor(primer, '!!window.__bench.result || !!window.__bench.error');
+      }
       await primer.close();
       // Chromium tears down a closed page's compositor about a second later, on
       // the renderer main thread that same-origin pages share; measuring then
@@ -434,7 +441,19 @@ async function sample(browser, origin, fixture, cache) {
     await prepare(page, url, fixture.variant);
     const startup = await page.evaluate(() => ({ hydratedAt: window.__bench.hydratedAt, tasks: window.__bench.longTasks.slice() }));
     const heapStartup = await heap(cdp);
+    const domStartup = await cdp.send('Memory.getDOMCounters');
     if (args.snapshots) await snapshot(cdp, resolve(args.snapshots, `${fixture.id}-${fixture.variant}-startup.heapsnapshot`));
+    if (!fixture.owners.length) {
+      return {
+        hydratedMs: startup.hydratedAt,
+        startupTbtMs: tbt(within(startup.tasks, 0, startup.hydratedAt + 2_000)),
+        heapStartup, heapOpen: heapStartup, heapClosed: heapStartup,
+        domStartup, domOpen: domStartup, domClosed: domStartup,
+        openMs: 0, inputDelayMs: 0, waitMs: 0, renderMs: 0, modalMs: 0, paintMs: 0,
+        reopenMs: 0, openTbtMs: 0,
+        startupNetwork: network(requests, 'startup'), openNetwork: network(requests, 'open'),
+      };
+    }
     phase.current = 'open';
     const button = page.locator(fixture.target).locator('button.trigger');
     if (fixture.variant === 'intent') {
@@ -446,6 +465,7 @@ async function sample(browser, origin, fixture, cache) {
     const open = await page.evaluate(() => ({ result: window.__bench.result, error: window.__bench.error, tasks: window.__bench.longTasks.slice() }));
     if (open.error) throw new Error(open.error);
     const heapOpen = await heap(cdp);
+    const domOpen = await cdp.send('Memory.getDOMCounters');
     if (args.snapshots) await snapshot(cdp, resolve(args.snapshots, `${fixture.id}-${fixture.variant}-open.heapsnapshot`));
     const spans = args.probe ? await page.evaluate(() => window.__triggerSpans) : undefined;
     const reopen = await page.evaluate(() => window.__bench.reopen());
@@ -454,6 +474,7 @@ async function sample(browser, origin, fixture, cache) {
     // Let the runtime release the closed region at idle.
     await page.waitForTimeout(1_000);
     const heapClosed = await heap(cdp);
+    const domClosed = await cdp.send('Memory.getDOMCounters');
     const timing = open.result;
     return {
       openMs: timing.painted - timing.inputAt,
@@ -467,6 +488,7 @@ async function sample(browser, origin, fixture, cache) {
       hydratedMs: startup.hydratedAt,
       startupTbtMs: tbt(within(startup.tasks, 0, startup.hydratedAt + 2_000)),
       heapStartup, heapOpen, heapClosed,
+      domStartup, domOpen, domClosed,
       startupNetwork: network(requests, 'startup'),
       openNetwork: network(requests, 'open'),
       ...(spans ? { spans, start: timing.start, renderedAt: timing.rendered } : {}),
@@ -483,11 +505,15 @@ async function memory(browser, origin, fixture) {
     const page = await context.newPage();
     const cdp = await context.newCDPSession(page);
     await prepare(page, `${origin}/${fixture.id}/${fixture.variant}/`, fixture.variant);
-    const result = { startup: await heap(cdp), cycles: [] };
+    const result = { startup: await heap(cdp), domStartup: await cdp.send('Memory.getDOMCounters'), cycles: [] };
     for (let cycle = 1; cycle <= 3; cycle++) {
       await page.evaluate(() => window.__bench.cycle());
       await page.waitForTimeout(1_000);
-      result.cycles.push({ heap: await heap(cdp), loaded: await page.evaluate(() => window.__bench.loaded()) });
+      result.cycles.push({
+        heap: await heap(cdp),
+        dom: await cdp.send('Memory.getDOMCounters'),
+        loaded: await page.evaluate(() => window.__bench.loaded()),
+      });
     }
     return result;
   } finally {
@@ -511,6 +537,32 @@ function summarize(samples) {
 }
 
 const fixtures = await generate();
+if (args['write-fixtures']) {
+  writeFileSync(resolve(args['write-fixtures']), JSON.stringify({
+    label: args['fixture-label'] ?? 'main',
+    addon: process.env.WEBUI_ADDON_PATH,
+    framework: legacyFramework || frameworkEntry,
+    fixtures: [...fixtures.values()].map(fixture => ({
+      ...fixture, script: fixture.script.raw.toString('base64'),
+      packs: [...fixture.packs].map(([name, body]) => [name, body.raw.toString('base64')]),
+    })),
+  }));
+  process.exit(0);
+}
+if (args['read-fixtures']) {
+  for (const file of list(args['read-fixtures'])) {
+    const saved = JSON.parse(readFileSync(resolve(file), 'utf8'));
+    for (const fixture of saved.fixtures) {
+      const id = `${fixture.id}-${saved.label}`;
+      assert.ok(!fixtures.has(`${id}/${fixture.variant}`), `Duplicate fixture: ${id}/${fixture.variant}`);
+      fixtures.set(`${id}/${fixture.variant}`, {
+        ...fixture, id,
+        script: compress(Buffer.from(fixture.script, 'base64')),
+        packs: new Map(fixture.packs.map(([name, raw]) => [name, compress(Buffer.from(raw, 'base64'))])),
+      });
+    }
+  }
+}
 const { server, origin } = await serve(fixtures);
 const browser = await chromium.launch({ channel: process.env.WEBUI_BENCH_CHANNEL ?? 'msedge' }).catch(() => chromium.launch());
 const report = {
@@ -520,6 +572,7 @@ const report = {
     hoverDwellMs: DWELL_MS, samples: SAMPLES, warmups: WARMUPS, memorySamples: MEMORY_SAMPLES,
     addon: process.env.WEBUI_ADDON_PATH,
     legacyFramework, frameworkEntry, baselineFramework: args['baseline-framework'],
+    matchingFixtures: args['read-fixtures'],
     snapshots: args.snapshots, probe: args.probe,
   },
   sizes: {}, results: [], memory: [], proof: {},
@@ -528,13 +581,13 @@ try {
   if (args.snapshots) mkdirSync(resolve(args.snapshots), { recursive: true });
   for (const fixture of fixtures.values()) {
     report.proof[`${fixture.id}/${fixture.variant}`] = await verifyTriggerFixture(
-      browser, `${origin}/${fixture.id}/${fixture.variant}/`, fixture.target, !!legacyFramework,
+      browser, `${origin}/${fixture.id}/${fixture.variant}/`, fixture.owners.length ? fixture.target : undefined, fixture.legacy,
       [...fixture.packs.keys()].find(name => name.startsWith(`${fixture.target}.`)),
     );
   }
   for (const fixture of fixtures.values()) {
     const packs = [...fixture.packs.values()];
-    const html = fixture.protocol.render({ title: 'Workspace', status: 'Ready' }).toString();
+    const html = fixture.html;
     const marker = html.indexOf('id="webui-data"');
     assert.ok(marker >= 0, 'Initial bootstrap data must be present.');
     const dataStart = html.indexOf('>', marker) + 1;
@@ -569,11 +622,13 @@ try {
     report.results.push({ scenario: fixture.id, variant: fixture.variant, cache, errors, summary: samples.length ? summarize(samples) : undefined, samples });
   }
   if (scenarios.includes('s30') && MEMORY_SAMPLES > 0) {
-    for (const variant of variants.filter(name => name === 'plain' || name === 'demand')) {
+    for (const fixture of fixtures.values()) {
+      if (!fixture.id.startsWith('s30') || (fixture.variant !== 'plain' && fixture.variant !== 'demand')) continue;
       const runs = [];
-      for (let i = 0; i < MEMORY_SAMPLES; i++) runs.push(await memory(browser, origin, fixtures.get(`s30/${variant}`)));
+      for (let i = 0; i < MEMORY_SAMPLES; i++) runs.push(await memory(browser, origin, fixture));
       report.memory.push({
-        variant,
+        scenario: fixture.id,
+        variant: fixture.variant,
         startup: stats(runs.map(run => run.startup)).median,
         cycles: [0, 1, 2].map(cycle => stats(runs.map(run => run.cycles[cycle].heap)).median),
         loadedAfterRelease: runs.map(run => run.cycles.at(-1).loaded),
@@ -596,8 +651,8 @@ console.table(report.results.filter(row => row.summary).map(({ scenario, variant
   reopenMs: Math.round(s.reopenMs.median), openPackBytes: s.openNetwork.bytes, closedKiB: kib(s.heapClosed.median),
   errors: errors.length,
 })));
-console.table(report.memory.map(({ variant, startup, cycles, loadedAfterRelease }) => ({
-  variant, startupKiB: kib(startup), cycle1KiB: kib(cycles[0]), cycle3KiB: kib(cycles[2]),
+console.table(report.memory.map(({ scenario, variant, startup, cycles, loadedAfterRelease }) => ({
+  scenario, variant, startupKiB: kib(startup), cycle1KiB: kib(cycles[0]), cycle3KiB: kib(cycles[2]),
   loadedAfterRelease: loadedAfterRelease.join(','),
 })));
 console.table(Object.entries(report.sizes).map(([key, size]) => ({ key, ...size })));

@@ -86,34 +86,26 @@ export function isHydrationStartupPending(): boolean {
   return !documentReady;
 }
 
-/** Whether a streaming page has opted into the boundary-aware completion gate. */
-let streamingGateActive = false;
+const enum StreamingStatus {
+  Terminal = 1,
+  Aborted = 2,
+}
 
-/** Whether the terminal streaming record (`[sequence, 4, 0, {}]`) has committed. */
-let terminalReached = false;
+const enum StreamingField {
+  Status,
+  Boundaries,
+  LateActivations,
+}
 
-/**
- * Whether the streaming gate was aborted by the coordinator's failure path.
- * Once aborted, `webui:hydration-complete` must never fire: settling an
- * abandoned late-activation waiter during failure would otherwise drive the
- * pending counters to zero and dispatch completion for a stream that never
- * legitimately finished. A one-way latch — a failed stream cannot un-fail.
- */
-let streamingGateAborted = false;
+/** Compact counters share Array storage without a page-specific object shape. */
+type StreamingGate = [status: number, boundaries: number, lateActivations: number];
 
-/** How many streamed boundaries have started committing but not finished. */
-let pendingBoundaries = 0;
+/** Ordinary hydration owns no streaming completion state. */
+let streamingGate: StreamingGate | undefined;
 
-/**
- * How many deferred SSR roots are waiting on a not-yet-defined custom element
- * class to be activated by the streaming coordinator. A boundary can commit
- * (its scaffolding removed, markers gone) while some of its roots still can't
- * hydrate because their class hasn't loaded yet; completion must wait for
- * those late activations too, or `webui:hydration-complete` would fire while
- * roots are still inert. Accounted per unique undefined tag by the
- * coordinator, not per instance.
- */
-let pendingLateActivations = 0;
+function requireStreamingGate(): StreamingGate {
+  return streamingGate ??= [0, 0, 0];
+}
 
 /**
  * Call before a component begins hydration.
@@ -149,7 +141,7 @@ export function runHydrationBatch<T>(work: () => T): T {
 
 /** Opt this page into the streaming-aware completion gate. Idempotent. */
 export function beginStreamingGate(): void {
-  streamingGateActive = true;
+  requireStreamingGate();
 }
 
 /**
@@ -160,12 +152,12 @@ export function beginStreamingGate(): void {
  * `completed` latch prevents a second dispatch either way).
  */
 export function abortStreamingGate(): void {
-  streamingGateAborted = true;
+  requireStreamingGate()[StreamingField.Status] |= StreamingStatus.Aborted;
 }
 
 /** Call when a streamed boundary begins committing its roots. */
 export function markBoundaryPending(): void {
-  pendingBoundaries++;
+  requireStreamingGate()[StreamingField.Boundaries]++;
 }
 
 /**
@@ -173,9 +165,10 @@ export function markBoundaryPending(): void {
  * `terminal` is true for the boundary carrying the terminal record.
  */
 export function markBoundaryCommitted(terminal: boolean): void {
-  if (pendingBoundaries === 0) return;
-  pendingBoundaries--;
-  if (terminal) terminalReached = true;
+  const gate = streamingGate;
+  if (!gate || gate[StreamingField.Boundaries] === 0) return;
+  gate[StreamingField.Boundaries]--;
+  if (terminal) gate[StreamingField.Status] |= StreamingStatus.Terminal;
   tryComplete();
 }
 
@@ -185,7 +178,7 @@ export function markBoundaryCommitted(terminal: boolean): void {
  * by exactly one `settleLateActivation()` when that wait resolves.
  */
 export function markLateActivationPending(): void {
-  pendingLateActivations++;
+  requireStreamingGate()[StreamingField.LateActivations]++;
 }
 
 /**
@@ -193,8 +186,9 @@ export function markLateActivationPending(): void {
  * defined and its deferred roots were activated, or the wait was abandoned).
  */
 export function settleLateActivation(): void {
-  if (pendingLateActivations === 0) return;
-  pendingLateActivations--;
+  const gate = streamingGate;
+  if (!gate || gate[StreamingField.LateActivations] === 0) return;
+  gate[StreamingField.LateActivations]--;
   tryComplete();
 }
 
@@ -208,20 +202,17 @@ function tryComplete(): void {
   if (
     completed ||
     !documentReady ||
-    streamingGateAborted ||
     pendingCount !== 0
   ) return;
   // The application can arrive before the independent coordinator asset.
   // The server's mode marker still reserves completion for its terminal.
-  if (!streamingGateActive && hasBrowserDocument && isStreamingHydrationMode()) {
-    streamingGateActive = true;
+  if (!streamingGate && hasBrowserDocument && isStreamingHydrationMode()) {
+    requireStreamingGate();
   }
-  if (!started && !streamingGateActive) return;
-  if (
-    streamingGateActive &&
-    (!terminalReached || pendingBoundaries !== 0 || pendingLateActivations !== 0)
-  )
-    return;
+  const gate = streamingGate;
+  if (!started && !gate) return;
+  if (gate && (gate[StreamingField.Status] !== StreamingStatus.Terminal
+    || gate[StreamingField.Boundaries] !== 0 || gate[StreamingField.LateActivations] !== 0)) return;
 
   completed = true;
   // A streaming page with no components at all reaches terminal without ever
@@ -258,11 +249,11 @@ export function __getLifecycleStateForTests(): {
     pendingCount,
     started,
     completed,
-    streamingGateActive,
-    streamingGateAborted,
-    terminalReached,
-    pendingBoundaries,
-    pendingLateActivations,
+    streamingGateActive: streamingGate !== undefined,
+    streamingGateAborted: !!((streamingGate?.[StreamingField.Status] ?? 0) & StreamingStatus.Aborted),
+    terminalReached: !!((streamingGate?.[StreamingField.Status] ?? 0) & StreamingStatus.Terminal),
+    pendingBoundaries: streamingGate?.[StreamingField.Boundaries] ?? 0,
+    pendingLateActivations: streamingGate?.[StreamingField.LateActivations] ?? 0,
   };
 }
 
@@ -271,9 +262,5 @@ export function __resetLifecycleForTests(): void {
   pendingCount = 0;
   started = false;
   completed = false;
-  streamingGateActive = false;
-  streamingGateAborted = false;
-  terminalReached = false;
-  pendingBoundaries = 0;
-  pendingLateActivations = 0;
+  streamingGate = undefined;
 }
