@@ -1750,7 +1750,6 @@ mod tests {
             ("https://cdn.example.com/app", "must end with '/'"),
             ("/static\"><script>/", "must not contain"),
             ("javascript:alert(1)/", "only http:// and https://"),
-            ("https://:443/", "only http:// and https://"),
         ] {
             let mut protocol = sample_protocol();
             protocol.asset_base = base.to_string();

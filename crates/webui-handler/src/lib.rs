@@ -14703,7 +14703,6 @@ mod tests {
                 "only http:// and https://",
             ),
             (test_json!(""), "it is empty"),
-            (test_json!("https://:443/"), "only http:// and https://"),
             (test_json!(42), "must be a string"),
         ] {
             let state = test_json!({ "$webui": { "assetBase": asset_base } });

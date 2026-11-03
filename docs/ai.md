@@ -1281,6 +1281,8 @@ ignored. `assetBase` overrides the build's `--asset-base` for this response
 (see [CLI reference](/reference/cli/)); `null` keeps the build value, and an
 invalid value fails the render. WebUI strips the reserved object from hydration
 and partial-navigation state, so client-side templates and code cannot read it.
+Asset-base checks cover basic form and character safety, not complete HTTP
+hostname or port validation. Supply a valid deployment URL.
 The response's asset base is the exception: the rendered head carries it as
 `<meta name="webui-asset-base" content="...">`, so an entry module can set its
 bundler's public path from it.

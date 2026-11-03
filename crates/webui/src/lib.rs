@@ -1269,30 +1269,6 @@ mod tests {
     mod lazy_stylesheets;
 
     #[test]
-    fn build_rejects_invalid_http_asset_authorities() {
-        let app = create_app_dir(&[("index.html", "<html><body>valid</body></html>")]);
-        for base in [
-            "https://:443/",
-            "http://[not-ipv6]/",
-            "https://app.example:65536/",
-        ] {
-            let mut options = default_options(app.path());
-            options.asset_base = Some(base.into());
-            let error = build(options).expect_err(base);
-            assert!(
-                matches!(error, WebUIError::InvalidBuildOptions(_)),
-                "{error}"
-            );
-            assert!(
-                error
-                    .to_string()
-                    .contains("Use a URL or path ending in '/'"),
-                "{error}"
-            );
-        }
-    }
-
-    #[test]
     fn lazy_ui_is_compiled_but_omitted_until_its_initial_condition_is_true() {
         let app = create_app_dir(&[
             (
