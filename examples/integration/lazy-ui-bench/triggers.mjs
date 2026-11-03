@@ -14,6 +14,8 @@
 //        [--scenarios s1,s30] [--variants plain,demand,intent,idle,eager] [--caches cold,warm]
 //        [--memory-samples 5] [--out target/lazy-triggers.json]
 //        [--legacy-framework path/to/compiled/main/index.js] (plain only)
+//        [--baseline-framework path/to/compiled/before/index.js] (interleaved client comparison)
+//        [--probe true] [--snapshots directory] (separate attribution runs)
 
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
@@ -25,6 +27,7 @@ import { dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { brotliCompressSync, constants, gzipSync } from 'node:zlib';
+import { verifyTriggerFixture, snapshot, installTriggerProbe } from './trigger-proof.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const require = createRequire(join(root, 'packages', 'webui-test-support', 'package.json'));
@@ -60,6 +63,10 @@ const variants = list(args.variants, 'plain,demand,intent,idle,eager');
 const caches = list(args.caches, 'cold,warm');
 // Compare the pre-redesign automatic startup entry without changing the app.
 const legacyFramework = args['legacy-framework'];
+const frameworkEntry = args.framework;
+const clients = args['baseline-framework']
+  ? [{ suffix: '', entry: frameworkEntry }, { suffix: '-before', entry: args['baseline-framework'] }]
+  : [{ suffix: '', entry: legacyFramework || frameworkEntry }];
 assert.ok(!legacyFramework || variants.every(variant => variant === 'plain'), 'Legacy startup supports only the plain comparison.');
 const OUTPUT = resolve(args.out ?? join(root, 'target', 'lazy-triggers.json'));
 // Package specifiers let the projection plugin recognize the framework's decorators.
@@ -84,7 +91,7 @@ function dialogBody(n, fields) {
   let html = `<header class="sheet-head"><h2>${title(word(n, 0, 1))} settings ${n}</h2>`
     + '<bench-badge label="{{badge}}"></bench-badge>'
     + '<button type="button" class="close" @click="{close()}" aria-label="Close">&#215;</button></header>'
-    + '<p class="intro">{{intro}}</p><form class="sheet-form" @submit="{apply(e)}">';
+    + '<p class="intro" w-ref="{introNode}">{{intro}}</p><form class="sheet-form" @submit="{apply(e)}">';
   for (let f = 0; f < fields; f++) {
     if (f % 8 === 0) html += `${f > 0 ? '</fieldset>' : ''}<fieldset><legend>${title(word(n, f, 2))} and ${word(n, f, 3)}</legend>`;
     const label = `${title(word(n, f, 4))} ${word(n, f, 5)}`;
@@ -235,7 +242,7 @@ export class BenchDialog${n} extends WebUIElement {
   @observable ready = false; @observable intro = 'Introduction ${n}.'; @observable badge = 'Local';
   @observable text = 'Value'; @observable enabled = true; @observable choice = 'b';
   @observable options = OPTIONS; @observable items = ITEMS;
-  dialog!: HTMLDialogElement;
+  dialog!: HTMLDialogElement; introNode?: HTMLParagraphElement;
   protected override hydratedCallback(): void { bench.region(this); }
   open(): void { void bench.open(this); }
   close(): void { bench.close(this); }
@@ -266,8 +273,9 @@ async function generate() {
   const scratch = mkdtempSync(join(root, 'target', 'lazy-triggers-'));
   const fixtures = new Map();
   try {
-    for (const id of scenarios) {
-      const scenario = SCENARIOS[id];
+    for (const scenarioId of scenarios) for (const client of clients) {
+      const id = scenarioId + client.suffix;
+      const scenario = SCENARIOS[scenarioId];
       for (const variant of variants) {
         const dir = join(scratch, id, variant);
         const owners = writeApp(dir, scenario, variant);
@@ -287,7 +295,12 @@ async function generate() {
           entryPoints: [join(dir, 'main.ts')], outfile, bundle: true, format: 'esm', minify: true,
           platform: 'browser', target: 'es2022', legalComments: 'none', absWorkingDir: dir,
           nodePaths: [join(root, 'examples', 'app', 'lazy-ui', 'node_modules')],
-          ...(legacyFramework ? { alias: { '@microsoft/webui-framework': resolve(legacyFramework) } } : {}),
+          ...(client.entry ? { alias: {
+            '@microsoft/webui-framework/runtime.js': resolve(dirname(client.entry), 'runtime.js'),
+            '@microsoft/webui-framework/styles.js': resolve(dirname(client.entry), 'styles-entry.js'),
+            '@microsoft/webui-framework/lazy.js': resolve(dirname(client.entry), 'lazy-entry.js'),
+            '@microsoft/webui-framework': resolve(client.entry),
+          } } : {}),
           tsconfigRaw: { compilerOptions: { experimentalDecorators: true, useDefineForClassFields: false } },
           supported: { 'import-attributes': true }, define: { __WEBUI_DEV__: 'false' },
           plugins: [esbuildProjection({ manifest })], logLevel: 'silent',
@@ -298,7 +311,7 @@ async function generate() {
         const built = build({ ...options, projectionManifests: [manifest] });
         assert.deepEqual(built.lazyScriptsModule, generated, 'lazy.webui.js is stable across builds');
         const packs = new Map();
-        for (const pack of built.lazyPackFiles) {
+        for (const pack of built.lazyPackFiles ?? []) {
           packs.set(pack.fileName, compress(Buffer.from(pack.content)));
         }
         assert.equal(packs.size, variant === 'plain' ? 0 : scenario.dialogs);
@@ -407,6 +420,7 @@ async function sample(browser, origin, fixture, cache) {
       await delay(PRIMER_TEARDOWN_MS);
     }
     const page = await context.newPage();
+    if (args.probe) await page.addInitScript(installTriggerProbe);
     const cdp = await context.newCDPSession(page);
     const phase = { current: 'startup' };
     const requests = track(cdp, phase);
@@ -420,6 +434,7 @@ async function sample(browser, origin, fixture, cache) {
     await prepare(page, url, fixture.variant);
     const startup = await page.evaluate(() => ({ hydratedAt: window.__bench.hydratedAt, tasks: window.__bench.longTasks.slice() }));
     const heapStartup = await heap(cdp);
+    if (args.snapshots) await snapshot(cdp, resolve(args.snapshots, `${fixture.id}-${fixture.variant}-startup.heapsnapshot`));
     phase.current = 'open';
     const button = page.locator(fixture.target).locator('button.trigger');
     if (fixture.variant === 'intent') {
@@ -431,6 +446,8 @@ async function sample(browser, origin, fixture, cache) {
     const open = await page.evaluate(() => ({ result: window.__bench.result, error: window.__bench.error, tasks: window.__bench.longTasks.slice() }));
     if (open.error) throw new Error(open.error);
     const heapOpen = await heap(cdp);
+    if (args.snapshots) await snapshot(cdp, resolve(args.snapshots, `${fixture.id}-${fixture.variant}-open.heapsnapshot`));
+    const spans = args.probe ? await page.evaluate(() => window.__triggerSpans) : undefined;
     const reopen = await page.evaluate(() => window.__bench.reopen());
     phase.current = 'close';
     await page.evaluate(() => window.__bench.closeTarget());
@@ -452,6 +469,7 @@ async function sample(browser, origin, fixture, cache) {
       heapStartup, heapOpen, heapClosed,
       startupNetwork: network(requests, 'startup'),
       openNetwork: network(requests, 'open'),
+      ...(spans ? { spans, start: timing.start, renderedAt: timing.rendered } : {}),
     };
   } finally {
     await context.close();
@@ -487,7 +505,7 @@ function summarize(samples) {
   const summary = {};
   for (const key of Object.keys(samples[0])) {
     if (typeof samples[0][key] === 'number') summary[key] = stats(samples.map(s => s[key]));
-    else summary[key] = Object.fromEntries(Object.keys(samples[0][key]).map(k => [k, stats(samples.map(s => s[key][k])).median]));
+    else if (!Array.isArray(samples[0][key])) summary[key] = Object.fromEntries(Object.keys(samples[0][key]).map(k => [k, stats(samples.map(s => s[key][k])).median]));
   }
   return summary;
 }
@@ -501,11 +519,19 @@ const report = {
     os: `${platform()} ${release()}`, cpu: cpus()[0]?.model, profile: PROFILE_NAME, profileSettings: PROFILE ?? null,
     hoverDwellMs: DWELL_MS, samples: SAMPLES, warmups: WARMUPS, memorySamples: MEMORY_SAMPLES,
     addon: process.env.WEBUI_ADDON_PATH,
-    legacyFramework,
+    legacyFramework, frameworkEntry, baselineFramework: args['baseline-framework'],
+    snapshots: args.snapshots, probe: args.probe,
   },
-  sizes: {}, results: [], memory: [],
+  sizes: {}, results: [], memory: [], proof: {},
 };
 try {
+  if (args.snapshots) mkdirSync(resolve(args.snapshots), { recursive: true });
+  for (const fixture of fixtures.values()) {
+    report.proof[`${fixture.id}/${fixture.variant}`] = await verifyTriggerFixture(
+      browser, `${origin}/${fixture.id}/${fixture.variant}/`, fixture.target, !!legacyFramework,
+      [...fixture.packs.keys()].find(name => name.startsWith(`${fixture.target}.`)),
+    );
+  }
   for (const fixture of fixtures.values()) {
     const packs = [...fixture.packs.values()];
     const html = fixture.protocol.render({ title: 'Workspace', status: 'Ready' }).toString();
@@ -542,7 +568,7 @@ try {
   for (const { fixture, cache, samples, errors } of configs) {
     report.results.push({ scenario: fixture.id, variant: fixture.variant, cache, errors, summary: samples.length ? summarize(samples) : undefined, samples });
   }
-  if (scenarios.includes('s30')) {
+  if (scenarios.includes('s30') && MEMORY_SAMPLES > 0) {
     for (const variant of variants.filter(name => name === 'plain' || name === 'demand')) {
       const runs = [];
       for (let i = 0; i < MEMORY_SAMPLES; i++) runs.push(await memory(browser, origin, fixtures.get(`s30/${variant}`)));

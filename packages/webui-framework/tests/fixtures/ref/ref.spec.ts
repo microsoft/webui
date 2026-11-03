@@ -19,6 +19,7 @@ test.describe('ref fixture', () => {
     });
 
     expect(hasRef).toBe(true);
+    await expect(page.locator('test-ref .input')).not.toHaveAttribute('w-ref');
   });
 
   test('reads the input value through the ref', async ({ page }) => {
@@ -52,6 +53,7 @@ test.describe('ref fixture', () => {
     const host = page.locator('test-ref');
     await host.locator('.toggle').click();
     await expect(host.locator('.conditional')).toHaveCount(1);
+    await expect(host.locator('.conditional')).not.toHaveAttribute('w-ref');
     expect(await host.evaluate(element =>
       (element as TestRef).conditionalEl === element.shadowRoot?.querySelector('.conditional'),
     )).toBe(true);
@@ -59,5 +61,21 @@ test.describe('ref fixture', () => {
     await expect(host.locator('.conditional')).toHaveCount(0);
     expect(await host.evaluate(element => (element as TestRef).conditionalEl)).toBeUndefined();
     expect(await host.evaluate(element => (element as TestRef).inputEl instanceof HTMLInputElement)).toBe(true);
+  });
+
+  test('removing a view preserves a newer assignment to its owner ref', async ({ page }) => {
+    const host = page.locator('test-ref');
+    await host.locator('.toggle').click();
+    await expect(host.locator('.conditional')).toHaveCount(1);
+    await host.evaluate(element => {
+      const owner = element as TestRef;
+      owner.conditionalEl = owner.inputEl;
+    });
+    await host.locator('.toggle').click();
+    await expect(host.locator('.conditional')).toHaveCount(0);
+    expect(await host.evaluate(element => {
+      const owner = element as TestRef;
+      return owner.conditionalEl === owner.inputEl;
+    })).toBe(true);
   });
 });

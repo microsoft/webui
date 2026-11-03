@@ -360,7 +360,13 @@ export class WebUIElement extends TemplateElement {
     scope?: ScopeFrame,
   ): void {
     this.$wireEvents(instance, root, meta, resolver, scope);
-    if ((meta as TemplateMeta).re) this.$wireRoot(instance, (meta as TemplateMeta).re!);
+    const rootEvents = (meta as TemplateMeta).re;
+    // Only composed inner events reach these host listeners.
+    if (rootEvents) {
+      for (let i = 0; i < rootEvents.length; i++) {
+        this.$addEvent(instance, this, rootEvents[i][0], rootEvents[i][1], rootEvents[i][2], undefined);
+      }
+    }
     this.$wireRefs(instance, root, meta, resolver);
   }
 
@@ -393,21 +399,6 @@ export class WebUIElement extends TemplateElement {
     }
   }
 
-  /**
-   * Wire root-level events from the `<template>` wrapper onto the host element.
-   *
-   * The host observes events dispatched on the host itself (which never enter
-   * the shadow tree) plus every `composed` event on its way out of it.
-   * Non-composed events (`change`, `submit`, `select`, media) stop at the
-   * shadow root by design and are bound per element instead. `event.target` is
-   * retargeted to the host for inner events; use `event.composedPath()[0]`.
-   */
-  private $wireRoot(instance: TemplateInstance, re: [string, string, CompiledEventArgs][]): void {
-    for (let i = 0; i < re.length; i++) {
-      this.$addEvent(instance, this, re[i][0], re[i][1], re[i][2], undefined);
-    }
-  }
-
   /** Attach a direct listener for an event binding. */
   private $addEvent(
     instance: TemplateInstance,
@@ -421,11 +412,7 @@ export class WebUIElement extends TemplateElement {
     if (typeof method !== 'function') return;
     const listener = (event: Event): void => this.$callEventHandler(method as EventHandler, args, event, scope);
     target.addEventListener(eventName, listener);
-    this.$addCleanup(instance, () => target.removeEventListener(eventName, listener));
-  }
-
-  private $addCleanup(instance: TemplateInstance, cleanup: () => void): void {
-    (instance.cleanups ??= []).push(cleanup);
+    (instance.cleanups ??= []).push(() => target.removeEventListener(eventName, listener));
   }
 
   private $callEventHandler(
@@ -504,9 +491,13 @@ export class WebUIElement extends TemplateElement {
       const node = resolver(root, target);
       if (!node || node.nodeType !== 1) continue;
       owner[name] = node;
-      (instance.cleanups ??= []).push(removeNodes => {
-        if (removeNodes && owner[name] === node) owner[name] = undefined;
-      });
+      // Component roots are destroyed with their DOM retained. Only removable
+      // blocks (including hostless fragment roots) need per-ref cleanup.
+      if (!(meta as TemplateMeta).v || meta.f) {
+        (instance.cleanups ??= []).push(removeNodes => {
+          if (removeNodes && owner[name] === node) owner[name] = undefined;
+        });
+      }
     }
   }
 }

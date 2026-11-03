@@ -235,6 +235,12 @@ tuples once before hydration.
 | `lc` | Link builds only: for the same regions, the stylesheet paths, relative to the asset base, that each region's pack registers, in closure order without duplicates. Regions without any are left out, and the field is absent when none remain. The lazy runtime preloads them in parallel with the pack. |
 | `rf` | Compiler-owned refs `[name, elementIndex]`. Absence is proven empty; the renderer never scans attributes to reconstruct refs. |
 
+Ref source attributes are compiler-only. Both SSR HTML and compiled template
+HTML omit `w-ref`; `rf` is the sole delivered ref-binding representation.
+Only removable views retain ref-release callbacks: ordinary component roots
+retain their DOM on destruction, while local blocks and hostless lazy fragment
+roots clear a ref only if it still points at their own node.
+
 The same metadata serves both paths:
 
 - **SSR hydration** numbers the live SSR DOM in the same pre-order the compiler numbered the template, skipping structural block ranges.

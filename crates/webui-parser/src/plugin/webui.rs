@@ -409,7 +409,7 @@ impl ParserPlugin for WebUIParserPlugin {
             self.element_events.set(self.element_events.get() + 1);
             return AttributeAction::Skip;
         }
-        if attr_name == "key" {
+        if attr_name == "key" || attr_name == "w-ref" {
             return AttributeAction::Skip;
         }
         AttributeAction::Keep
@@ -817,7 +817,7 @@ impl ConditionFunctionEmitter {
 /// | first concrete `key="{{v.id}}"`       | optional fifth `r[]` field | relative repeat key path stored   |
 /// | `<link>` / `<style>` child nodes      | `h`                        | preserved in static HTML          |
 /// | `@event="{handler(e)}"`               | `eg[]`                     | element kept marker-free          |
-/// | `w-ref="name"` / `w-ref={name}`       | *(stays in HTML)*          | *(unchanged)*                     |
+/// | `w-ref={name}`                       | *(removed)*               | Compiled owner ref                |
 /// | `<outlet />` / `<outlet></outlet>`    | *(stays in HTML)*          | `<outlet></outlet>`               |
 ///
 /// # Errors
@@ -1930,9 +1930,6 @@ fn compile_section(
             }
         }
 
-        // w-ref stays in static HTML as-is — the runtime binds from the DOM directly.
-        // No metadata entry needed; the attribute value IS the property name.
-
         // Copy character
         let ch = &input[i..];
         if let Some(c) = ch.chars().next() {
@@ -2350,6 +2347,9 @@ fn serialize_fragment_element(
     out.push_str(&element.tag_name);
 
     for attr in &element.attrs {
+        if attr.name == "w-ref" {
+            continue;
+        }
         if let Some((start, count)) = parse_attr_group_marker(&attr.name) {
             attr_groups.push((element_index, start, count));
             continue;
@@ -3408,7 +3408,7 @@ fn parse_regular_tag(
 
         if name == "w-ref" {
             // Validate: w-ref must use {braces} to bind to a component property.
-            // This is a fatal build-time check — the runtime also validates.
+            // Keep the source until finalization records its element ordinal.
             if let Some(val) = value {
                 if !val.starts_with('{') || !val.ends_with('}') {
                     return Err(Diagnostic::error("invalid w-ref binding")
@@ -4225,7 +4225,7 @@ mod tests {
         assert_eq!(plugin.classify_attribute("@keydown"), AttributeAction::Skip);
         assert_eq!(plugin.classify_attribute("key"), AttributeAction::Skip);
         assert_eq!(plugin.classify_attribute("data-key"), AttributeAction::Keep);
-        assert_eq!(plugin.classify_attribute("w-ref"), AttributeAction::Keep);
+        assert_eq!(plugin.classify_attribute("w-ref"), AttributeAction::Skip);
         assert_eq!(plugin.classify_attribute("class"), AttributeAction::Keep);
     }
 
@@ -4706,18 +4706,17 @@ mod tests {
     }
 
     #[test]
-    fn test_w_ref_stays_in_html() {
+    fn test_w_ref_compiles_without_retaining_its_source_attribute() {
         let result = generate_compiled_template("my-comp", r#"<input w-ref="{myInput}" />"#);
-        // w-ref stays in the static HTML — runtime binds from the DOM directly
-        assert!(result.contains("w-ref"));
-        assert!(result.contains("myInput"));
+        assert!(!result.contains("w-ref"));
+        assert!(result.contains(r#""rf":[["myInput",1]]"#));
     }
 
     #[test]
-    fn test_w_ref_unquoted_stays_in_html() {
+    fn test_w_ref_unquoted_compiles_without_retaining_its_source_attribute() {
         let result = generate_compiled_template("my-comp", r#"<span w-ref={myLabel}>0</span>"#);
-        assert!(result.contains("w-ref"));
-        assert!(result.contains("myLabel"));
+        assert!(!result.contains("w-ref"));
+        assert!(result.contains(r#""rf":[["myLabel",1]]"#));
     }
 
     #[test]
@@ -5393,10 +5392,9 @@ mod tests {
             "my-comp",
             r#"<button w-ref="{myBtn}" @click="{onClick()}">{{label}}</button>"#,
         );
-        // w-ref stays in HTML (quotes escaped inside JS string)
         assert_no_client_markers(&result);
-        assert!(result.contains("w-ref"));
-        assert!(result.contains("myBtn"));
+        assert!(!result.contains("w-ref"));
+        assert!(result.contains(r#""rf":[["myBtn",1]]"#));
         // event compiled
         assert!(result.contains("\"click\""));
         assert!(result.contains("\"onClick\""));

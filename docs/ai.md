@@ -400,6 +400,9 @@ The braces are **required**. A non-braced `w-ref="searchInput"` fails the build
 with `invalid-w-ref`. Declare the property in the class:
 `searchInput!: HTMLInputElement;`
 
+Read that property, not a `[w-ref]` DOM attribute. The authoring directive is
+removed from delivered HTML.
+
 Use `w-ref` only for imperative browser APIs - `focus()`, `scrollIntoView()`,
 `showModal()`, `showPopover()`, measurement. Never use it to read or write
 state that a template binding could express.

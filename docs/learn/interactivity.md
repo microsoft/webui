@@ -437,6 +437,9 @@ focusInput(): void {
 (or the unquoted `w-ref={inputEl}`), never `w-ref="inputEl"`. The build fails
 with an actionable error otherwise.
 
+Read the component property, not a `[w-ref]` DOM attribute. `w-ref` is an
+authoring directive and is removed from delivered HTML.
+
 Refs inside `<if>` or `<for>` bodies are cleared to `undefined` when their owning
 view is removed. Declare those refs as optional, such as
 `inputEl?: HTMLInputElement`, and use them only while the body is mounted.

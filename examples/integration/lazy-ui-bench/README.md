@@ -23,54 +23,150 @@ On macOS/Linux point `WEBUI_ADDON_PATH` at the release `libwebui_node.dylib` /
 overrides it). With their defaults, `ntp.mjs` takes about 75 minutes and
 `triggers.mjs` about 26. Run one benchmark at a time on an otherwise idle machine.
 
-## Controlled browser-delivery comparison: 2026-11-02
+## Validated browser-delivery comparison: 2026-11-02 to 2026-11-03
 
-The bounded `s30` workload has 30 dialogs with 24 fields and five rows each.
-These runs used Windows, Edge 156.0.4314.58, Node 26.13.0, esbuild 0.28.2,
-the release addon, no throttling, cold contexts, one discarded warmup, three
-timing samples, and two additional memory contexts. Heap readings follow forced
-GC. All cases passed their interaction checks without page errors.
+These measurements supersede the earlier mixed-producer comparison reporting
++419 Brotli bytes and +17,264 heap bytes. That experiment paired the current
+producer with main's client. Ordinary interactions worked, but main ignored the
+new compiled ref metadata and reconstructed refs from source attributes. It also
+did not provide the redesign's removed-view ref cleanup. Treating the input and
+cleanup work as identical concealed those differences.
 
-Comparison A uses the **same plain app**, current compiler/projection and state,
-with the framework at main `fd2d75282e29638442f161e202bf109d38e3ceb3`
-versus the corrected redesign. Main uses its automatic startup entry; the
-redesign explicitly starts its rendering and stylesheet runtime. Neither loads
-the optional component-template cache, which this workload does not use and main
-did not provide. Comparison B changes only plain versus demand-lazy on the
-corrected redesign.
+Comparison A now builds **both the native producer and browser client** from main
+`fd2d75282e29638442f161e202bf109d38e3ceb3`, versus matching producer/client
+builds of `60ff3167` and this correction. The app is the same: 30 dialogs, 24
+fields and five rows per dialog, with root and removable-body refs. An unmeasured
+context first verifies definitions, styles, events, refs, text/input/boolean
+bindings, child state, repeat updates, and body removal. Main's stale removed-body
+ref is explicitly recorded, not silently counted as equivalent cleanup.
+Main uses automatic startup; redesign cases explicitly select the runtime and
+styles entry. No case imports the optional component-template cache.
 
-| Browser entry | Startup JS raw / gzip / Brotli (bytes) | Initial bootstrap JSON (bytes) | Startup heap (bytes) | Hydration (ms) | First open (ms) |
+Comparison B keeps the corrected producer/client fixed and changes only plain
+versus demand-lazy. A further nine-round interleaved comparison uses that same
+producer with corrected versus archived `60ff3167` clients, isolating the runtime
+change from the compiler's smaller HTML. Compiler versions are not mixed with
+main's client.
+
+Conditions: Windows, Edge 156.0.4314.58, Node 26.13.0, esbuild 0.28.2,
+release native addons, no throttling, cold browser contexts, one discarded
+warmup, nine samples per configuration, alternating configuration order each
+round. Matching main and the full pre-correction build run separately; only the
+same-producer before/after clients and plain/lazy cases are interleaved. Heap
+values are retained V8 used heap after two forced collections, not total browser
+or native DOM memory. Profiling/snapshots are separate from timing samples.
+
+| Producer / client | Startup JS raw / gzip / Brotli (bytes) | Initial JSON (bytes) | Startup heap (bytes) | Hydration (ms) | First open (ms) |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Main, plain | 106,201 / 29,173 / 25,304 | 195,506 | 2,119,056 | 40.2 | 15.0 |
-| Redesign, plain | 106,974 / 29,954 / 25,723 | 195,506 | 2,136,320 | 39.7 | 14.8 |
-| Redesign, demand | 114,530 / 32,704 / 28,184 | 61,179 | 1,884,960 | 39.8 | 32.9 |
+| Main, plain | 106,201 / 29,176 / 25,268 | 194,102 | 2,114,412 | 41.4 | 15.7 |
+| `60ff3167`, plain | 106,974 / 29,954 / 25,760 | 196,856 | 2,140,108 | 44.7 | 15.6 |
+| Corrected, plain | 106,920 / 29,952 / 25,692 | 195,626 | 2,136,900 | 40.9 | 28.7 |
+| `60ff3167`, demand | 114,530 / 32,706 / 28,124 | 61,179 | 1,884,960 | 40.4 | 33.6 |
+| Corrected, demand | 114,476 / 32,689 / 28,072 | 60,609 | 1,882,392 | 39.2 | 60.6 |
 
-The redesign is **not a startup-memory win by itself** here: plain adds 419
-Brotli bytes and 17,264 heap bytes over main. Lazy reduces initial JSON by
-134,327 bytes and startup heap by 251,360 bytes versus redesigned plain, but
-adds 2,461 Brotli bytes of JavaScript and about 18 ms to first open. Initial
-HTML is 254,114 bytes plain versus 112,227 lazy; measured compressed startup
-HTML + JS transfers are 34,892 / 35,311 / 32,544 bytes respectively. The opened
-lazy dialog requests a 1,444-byte transferred pack. After three all-dialog
-open/close cycles, the separate memory runs retain 2,450,064 / 2,464,960 /
-2,330,708 heap bytes; no lazy body remains registered after release.
+The final run's browser callback/frame cadence differs from the earlier runs:
+the archived client in that **same interleaved run** also opens plain in 29.5 ms
+and demand in 60.2 ms. Do not compare the final 28.7 / 60.6 ms directly with
+the earlier 15.6 / 33.6 ms as a framework regression. On the identical corrected
+producer, archived/corrected clients retain 2,139,004 / 2,136,900 bytes plain
+and 1,884,456 / 1,882,392 demand: the runtime-only saving is 2,104 / 2,064 bytes.
 
-These are small, unthrottled laboratory samples, not statistically established
-timing improvements or a complete NTP/mobile comparison. JavaScript byte counts
-alone do not establish heap behavior. In particular, do not infer a hydration
-speedup from the sub-millisecond differences. Historical NTP results below remain
-historical, including their startup-memory cost versus component assets.
+### What improved, and what did not
+
+The correction removes two unnecessary representations of refs: delivered
+`w-ref` attributes duplicate compiled ref data, and component-root ref cleanup
+callbacks can never clear anything because root destruction retains its DOM.
+Removable blocks and hostless lazy fragment roots still release their refs.
+Plain startup loses 1,230 JSON bytes and 3,208 retained heap bytes; demand loses
+570 JSON bytes and 2,568 heap bytes. Initial HTML falls from 255,464 to 253,724
+bytes plain and 112,227 to 111,147 bytes demand.
+
+Equal-instrumentation heap snapshots confirm the actual root retainers: the 30
+dialogs retain 30 listener cleanup entries instead of 60 listener/ref entries.
+They lose 30 ref closures and 60 contexts (1,320 self-size bytes). Removing two
+one-off event wrappers eliminates two more closures: 32 fewer closures total,
+896 bytes. Strings fall by 1,152 bytes, including smaller template strings and
+removed method names. Engine code and other object changes partially offset
+the saving. Snapshot self-size deltas explain the allocations; they are not a
+precise dominator decomposition or the same metric as V8 used heap.
+Against main, pre-correction snapshots also have 150 extra metadata arrays
+(five per dialog) and their backing storage: compiled dependencies and root/body
+ref tuples are real retained data, not a bundle-size estimate. The one-dialog
+profile still costs 9,756 heap bytes over main after correction; the 30-dialog
+profile costs 22,488. The remaining common graph/code and per-dialog metadata
+cost has **not** been eliminated.
+
+Inlining two one-off event wrappers offsets the root-lifetime check: startup
+JavaScript falls 54 raw bytes, 2 gzip / 68 Brotli bytes plain, and 17 gzip /
+52 Brotli bytes demand. Plain still costs 424 Brotli bytes over matching main.
+A shared event-listener/disposal prototype was measured and
+discarded: it saved about 3.5 KiB at startup but added 455 raw script bytes and
+increased the public incremental-lazy profile to 2,637 Brotli bytes. The retained
+implementation measures **2,609 bytes** in the independent public
+incremental-lazy profile. The user explicitly approved raising only that
+assertion from 2,600 to 2,609 bytes to retain the roughly 2 KiB runtime saving.
+All other budgets and error/readiness assertions are unchanged. Component-assets
+startup raw / gzip / Brotli is 89,890 / 28,793 / 25,232 bytes; total is
+92,117 / 29,961 / 26,195, within every existing application budget.
+
+After one open, plain retained heap is 2,999,284 bytes versus 3,002,432 before;
+after close/release it is 3,012,480 versus 3,015,628. Demand is 2,763,372 versus
+2,765,916 after open and 2,786,928 versus 2,789,352 after close/release.
+Two separate all-dialog memory contexts retain 2,468,680 bytes plain and
+2,328,532 demand after three cycles, versus 2,469,276 / 2,323,488 before.
+No lazy region remains registered after release. These remain bounded laboratory
+observations, not a full NTP/mobile rerun or a claim that JavaScript unloads.
+The earlier demand contexts differed by 7,944 bytes, larger than the cycle delta;
+the final demand median is actually 5,044 bytes higher. These small independent
+samples do not establish a long-run memory improvement.
+
+### Cold first-open critical path
+
+There is **no demonstrated first-open speedup**. In the final nine-round
+same-producer comparison, archived/corrected clients open demand UI in
+60.2 / 60.6 ms; plain is 29.5 / 28.7 ms. An earlier intermediate candidate and
+archived client both opened demand in 33.3 ms. These differences within each
+paired run do not establish a speedup.
+Closed template data remains outside bootstrap, and no fetch moves before click.
+
+Final demand's uninstrumented medians split into 1.3 ms input delay, 2.1 ms
+until response end, 28.5 ms remaining pre-dialog time, 4.7 ms `showModal()`, and
+23.3 ms to the harness's post-frame marker. Plain is 1.2 / 0 / 2.8 / 4.5 /
+20.1 ms respectively. The 28.5 ms bucket is **not framework CPU**.
+
+A separate probe observes one representative demand activation: fetch headers
+resolve after 13.2 ms, JSON decoding takes 0.4 ms, registration notification
+0.2 ms, template HTML preparation 0.3 ms, and 25 imports/clones total 0.4 ms.
+Templates finish mounting about 3.5 ms after headers resolve. This Style-mode
+workload has no additional script download or pending Link stylesheet.
+Most importantly, an ordinary native `fetch()` in a real button click, without
+any lazy loader, also waits 12.8 ms for headers despite Resource Timing ending
+after 1.4 ms; the same fetch outside an input turn takes 1.7 ms. Browser
+input/network callback scheduling and frame alignment explain most of the extra
+latency here, rather than a serial template-processing mechanism. In the final
+run the same native-click control takes 26.7 ms (archived client: 26.4 ms),
+while Resource Timing ends after 1.7 / 1.4 ms. This independently reproduces
+the changed callback cadence without a lazy loader. It does not prove that
+every browser or network has the same floor.
+
+Reproduce without profiling first:
 
 ```powershell
-node examples\integration\lazy-ui-bench\triggers.mjs --samples 3 --memory-samples 2 --profile none --scenarios s30 --variants plain,demand --caches cold --out target\redesign-lazy-no-cache.json
+node examples\integration\lazy-ui-bench\triggers.mjs --samples 9 --memory-samples 2 --profile none --scenarios s1,s30 --variants plain,demand --caches cold --out target\corrected.json
+# Same producer, interleaved clients:
+node examples\integration\lazy-ui-bench\triggers.mjs --samples 9 --memory-samples 0 --profile none --scenarios s1,s30 --variants plain,demand --caches cold --baseline-framework target\before-framework\packages\webui-framework\dist\index.js --out target\paired.json
 ```
 
-For comparison A, extract and compile the main framework's public entry locally,
-then run the same command with `--variants plain` and
+For comparison A, first select a **matching main native addon** through
+`WEBUI_ADDON_PATH`, then use `--variants plain` and
 `--legacy-framework target\main-framework\packages\webui-framework\dist\index.js`.
-That switch selects main's automatic startup contract and is limited to plain
-apps. Reports include raw/compressed JavaScript, initial HTML/bootstrap sizes,
-browser conditions, individual samples, and the post-GC memory cycles.
+For full before/after comparison, likewise select the corresponding archived
+producer and use `--framework` for its client. Build public package entries
+before benchmarking; do not rely on stale `dist` or incremental build metadata.
+Use `--probe true` for separate stage attribution and native-fetch controls, or
+`--snapshots target\heaps` for separate heap attribution, not timed comparisons.
+Reports include useful-work proof, individual samples, conditions, byte counts,
+and post-GC memory cycles. Historical NTP results below remain historical.
 
 ## NTP-shaped comparison
 

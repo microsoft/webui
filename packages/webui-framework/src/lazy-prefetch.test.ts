@@ -4,7 +4,7 @@
 import { strict as assert } from 'node:assert';
 import { after, beforeEach, test } from 'node:test';
 import type { CondBinding, TemplateInstance } from './element/types.js';
-import type { CompiledConditionalMeta, LazyTrigger, TemplateMeta } from './template-types.js';
+import type { CompiledConditionalMeta, LazyTrigger, TemplateBlockMeta, TemplateMeta } from './template-types.js';
 
 const restore: [string, PropertyDescriptor | undefined][] = [];
 
@@ -208,6 +208,36 @@ test('a compiled event binding passes its string literal to $prefetch', () => {
   bound.get('pointerenter')!(new Event('pointerenter'));
   assert.deepEqual(requests, [{ url: pack('prefetch-event', 0), priority: 'high' }]);
   assert.equal(typeof bound.get('focus'), 'function');
+});
+
+test('only removable views retain ref cleanup, including hostless fragment roots', () => {
+  const host = component('ref-lifetime', owner('ref-lifetime', []));
+  const node = { nodeType: 1 } as unknown as Node;
+  const interactive = host as unknown as {
+    ref?: Node;
+    $finalize(instance: TemplateInstance, root: null, meta: TemplateBlockMeta, resolve: () => Node): void;
+  };
+  const wire = (meta: TemplateBlockMeta): TemplateInstance => {
+    const instance = { texts: [], attrs: [], conds: [], repeats: [] } as unknown as TemplateInstance;
+    interactive.$finalize(instance, null, meta, () => node);
+    assert.equal(interactive.ref, node);
+    return instance;
+  };
+  const root: TemplateMeta = { v: 3, h: '', rf: [['ref', 1]] };
+  assert.equal(wire(root).cleanups, undefined, 'Component roots retain their DOM on destroy');
+  for (const meta of [{ h: '', rf: root.rf }, { ...root, f: region('ref-lifetime') }]) {
+    const instance = wire(meta);
+    assert.equal(instance.cleanups?.length, 1);
+    instance.cleanups![0](false);
+    assert.equal(interactive.ref, node, 'Retained DOM keeps its refs');
+    const replacement = { nodeType: 1 } as unknown as Node;
+    interactive.ref = replacement;
+    instance.cleanups![0](true);
+    assert.equal(interactive.ref, replacement, 'Disposing an older view cannot clear a newer ref');
+    interactive.ref = node;
+    instance.cleanups![0](true);
+    assert.equal(interactive.ref, undefined);
+  }
 });
 
 test('speculative loads wait for prerendering to end while activation does not', async () => {
