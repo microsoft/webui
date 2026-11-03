@@ -256,6 +256,23 @@ describe('WebUIRouter', () => {
   });
 
   describe('ensureLoaded ownership', () => {
+    test('an empty request before bootstrap is a no-op, not bootstrap for a nonempty request', async t => {
+      const previous = globals().__webui;
+      delete globals().__webui;
+      let requests = 0;
+      t.mock.method(globalThis, 'fetch', async () => { requests++; return Response.json({}); });
+      try {
+        const router = new WebUIRouter();
+        await router.ensureLoaded();
+        assert.equal(globals().__webui, undefined, 'an empty request must not initialize runtime state');
+        await assert.rejects(router.ensureLoaded('x-unbootstrapped'), TypeError);
+        assert.equal(globals().__webui, undefined, 'missing bootstrap must not be hidden for real requests');
+        assert.equal(requests, 0);
+      } finally {
+        globals().__webui = previous;
+      }
+    });
+
     test('restores requested resident templates after collection during a shared missing fetch', async () => {
       const router = new WebUIRouter();
       const originalFetch = globalThis.fetch;

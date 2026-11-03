@@ -363,6 +363,7 @@ export class WebUIRouter {
    * Batch-fetches missing templates from `/_webui/templates` in a single request.
    */
   async ensureLoaded(...tags: string[]): Promise<void> {
+    if (tags.length === 0) return;
     const registry = (window.__webui as RouterRuntimeGlobal | undefined)?.templates;
     const retained = new Array<unknown>(tags.length);
     const missing: string[] = [];
