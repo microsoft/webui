@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { createServer, type ServerResponse } from 'node:http';
+import { createServer, request, type Server, type ServerResponse } from 'node:http';
 import { writeFile } from 'node:fs/promises';
 import { test, expect } from '@playwright/test';
 import type { PartialResponse } from '../src/cache.js';
@@ -25,11 +25,136 @@ type StreamingTestWindow = typeof window & {
   __streamStateCalls?: string[][];
 };
 
+async function listenLoopback(server: Server): Promise<URL> {
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('fixture must bind TCP');
+  return new URL(`http://127.0.0.1:${address.port}`);
+}
+
+async function fetchFixtureResponse(
+  target: string,
+  backend: URL,
+  headers: Headers,
+): Promise<Response> {
+  const query = target.indexOf('?');
+  const pathname = query < 0 ? target : target.slice(0, query);
+  if (
+    !pathname.startsWith('/') || pathname.startsWith('//') ||
+    pathname.includes('\\') || pathname.includes('#')
+  ) {
+    return new Response('Expected an origin-form request target', { status: 400 });
+  }
+  const upstream = new URL(backend.href);
+  upstream.pathname = pathname;
+  upstream.search = query < 0 ? '' : target.slice(query);
+  upstream.hash = '';
+  return fetch(upstream, { headers, redirect: 'manual' });
+}
+
+async function requestTarget(
+  origin: URL,
+  target: string,
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const outgoing = request({
+      hostname: origin.hostname,
+      port: origin.port,
+      path: target,
+    }, response => {
+      const status = response.statusCode;
+      if (status === undefined) {
+        response.resume();
+        reject(new Error('fixture response must include an HTTP status'));
+        return;
+      }
+      let body = '';
+      response.setEncoding('utf8');
+      response.on('data', chunk => { body += chunk; });
+      response.on('error', reject);
+      response.on('end', () => resolve({ status, body }));
+    });
+    outgoing.on('error', reject);
+    outgoing.setTimeout(10_000, () => outgoing.destroy(new Error('fixture request timed out')));
+    outgoing.end();
+  });
+}
+
+test('streaming fixture proxy rejects upstream origin escapes', async ({}, testInfo) => {
+  const sentinelTargets: string[] = [];
+  const intendedTargets: string[] = [];
+  const failures: Error[] = [];
+  const sentinel = createServer((request, response) => {
+    sentinelTargets.push(request.url!);
+    response.end('unexpected sentinel upstream');
+  });
+  const servers = [sentinel];
+  try {
+    const sentinelOrigin = await listenLoopback(sentinel);
+    const intended = createServer((request, response) => {
+      intendedTargets.push(request.url!);
+      if (request.url === '/redirect') {
+        response.writeHead(302, { location: `${sentinelOrigin.origin}/redirected` });
+      }
+      response.end(request.url);
+    });
+    servers.push(intended);
+    const intendedOrigin = await listenLoopback(intended);
+    const proxy = createServer((request, response) => {
+      void (async () => {
+        const upstream = await fetchFixtureResponse(
+          request.url!, intendedOrigin, new Headers({ accept: 'text/plain' }),
+        );
+        response.writeHead(upstream.status);
+        response.end(await upstream.text());
+      })().catch(error => {
+        failures.push(error);
+        response.destroy(error);
+      });
+    });
+    servers.push(proxy);
+    const proxyOrigin = await listenLoopback(proxy);
+    const normalTarget = '/normal%20path?value=a%2Fb&value=2&value=%25';
+    const normal = await requestTarget(proxyOrigin, normalTarget);
+    const relative = await requestTarget(proxyOrigin, `//${sentinelOrigin.host}/relative`);
+    const absolute = await requestTarget(proxyOrigin, `${sentinelOrigin.origin}/absolute`);
+    const redirect = await requestTarget(proxyOrigin, '/redirect');
+    const ledgerPath = testInfo.outputPath('proxy-origin-regression.json');
+    await writeFile(ledgerPath, JSON.stringify({
+      intendedOrigin, sentinelOrigin, proxyOrigin, normal, relative, absolute, redirect,
+      intendedTargets, sentinelTargets,
+    }, null, 2));
+    await testInfo.attach('proxy-origin-regression', {
+      path: ledgerPath, contentType: 'application/json',
+    });
+    expect(normal).toEqual({ status: 200, body: normalTarget });
+    expect.soft(relative.status).toBe(400);
+    expect.soft(absolute.status).toBe(400);
+    expect.soft(redirect.status).toBe(302);
+    expect.soft(sentinelTargets).toEqual([]);
+    expect(intendedTargets).toEqual([normalTarget, '/redirect']);
+    expect(failures).toEqual([]);
+  } finally {
+    for (const server of servers) {
+      server.closeAllConnections();
+      if (!server.listening) continue;
+      await new Promise<void>((resolve, reject) =>
+        server.close(error => error ? reject(error) : resolve()),
+      );
+    }
+  }
+});
+
 for (const terminal of ['eof', 'abort', 'error'] as const) {
   test(`ordinary zero-freshness NDJSON releases ownership after ${terminal}`, async ({
     page,
     baseURL,
   }, testInfo) => {
+    if (!baseURL) throw new Error('router fixture requires a configured baseURL');
+    const backend = new URL(baseURL);
     const tail = Promise.withResolvers<ServerResponse>();
     const closed = Promise.withResolvers<void>();
     const requests: Array<{ path: string; accept: string; inventory: string }> = [];
@@ -49,7 +174,7 @@ for (const terminal of ['eof', 'abort', 'error'] as const) {
         }
         const accept = headers.get('accept') ?? '';
         requests.push({ path, accept, inventory: headers.get('x-webui-inventory') ?? '' });
-        const upstream = await fetch(new URL(path, baseURL), { headers });
+        const upstream = await fetchFixtureResponse(path, backend, headers);
         if (path === '/items/1' && accept.includes('application/json')) {
           const partial = await upstream.json() as PartialResponse;
           revision++;
@@ -84,10 +209,7 @@ for (const terminal of ['eof', 'abort', 'error'] as const) {
         response.destroy(error);
       });
     });
-    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
-    const address = server.address();
-    if (!address || typeof address === 'string') throw new Error('fixture must bind TCP');
-    const origin = `http://127.0.0.1:${address.port}`;
+    const origin = (await listenLoopback(server)).origin;
     page.on('console', message => consoleMessages.push({
       type: message.type(), text: message.text(),
     }));
