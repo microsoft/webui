@@ -9,7 +9,7 @@ import { relative, resolve, sep } from 'node:path';
 import { brotliCompressSync, gzipSync } from 'node:zlib';
 import type { FixtureRequestContext } from './fixture-server.js';
 
-/** Real generated-only split-page graph, independently served from ordinary fixtures. */
+/** Generated lazy graph with manual page switching and real partial route navigation. */
 export async function prepareLazyPages(
   fixture: string,
   outDir: string,
@@ -29,7 +29,10 @@ export async function prepareLazyPages(
   const manifest = resolve(outDir, 'webui-projection.json');
   const publicPath = '/dist/lazy-pages/';
   const output = await bundle({
-    entryPoints: { application: resolve(fixture, 'application.ts') },
+    entryPoints: {
+      application: resolve(fixture, 'application.ts'),
+      routed: resolve(fixture, '../../../../webui-delivery/tests/fixtures/lazy-routes/index.ts'),
+    },
     outdir: outDir, publicPath, entryNames: '[name]-[hash]', chunkNames: '[name]-[hash]',
     bundle: true, splitting: true, format: 'esm', minify: true,
     platform: 'browser', target: 'es2022', tsconfig,
@@ -37,16 +40,20 @@ export async function prepareLazyPages(
     plugins: [esbuildProjection({ manifest })],
   });
   const built = build({ ...options, projectionManifests: [manifest] });
+  const routed = build({ ...options, entry: 'routed.html', projectionManifests: [manifest] });
   const independent = build({ ...options, entry: 'other-document.html' });
-  if (built.lazyScriptsModule?.content !== first.lazyScriptsModule.content) {
+  if (built.lazyScriptsModule?.content !== first.lazyScriptsModule.content
+    || routed.lazyScriptsModule?.content !== first.lazyScriptsModule.content) {
     throw new Error('Generated installer changed after projection.');
   }
   const protocol = new Protocol(built.protocol, { plugin: 'webui' });
+  const routeProtocol = new Protocol(routed.protocol, { plugin: 'webui' });
   const outputs: Record<string, {
     bytes: number; gzip: number; brotli: number;
     inputs: string[]; imports: { path: string; kind: string }[];
   }> = {};
   let application = '';
+  let routeApplication = '';
   for (const [file, details] of Object.entries(output.metafile.outputs)) {
     const url = publicPath + relative(outDir, resolve(file)).split(sep).join('/');
     const bytes = readFileSync(resolve(file));
@@ -56,29 +63,46 @@ export async function prepareLazyPages(
       imports: details.imports,
     };
     if (details.entryPoint?.endsWith('application.ts')) application = url;
+    if (details.entryPoint?.endsWith('lazy-routes/index.ts')) routeApplication = url;
   }
-  if (!application) throw new Error('Lazy pages fixture has no application output.');
+  if (!application || !routeApplication) throw new Error('Lazy pages fixture has no application output.');
   const state = {
     pageA: false, pageB: false, help: '', sibling: false, nested: false, warm: false,
-    message: 'Page-owned value', count: 0,
+    message: 'Page-owned value', count: 0, title: 'Home from SSR',
   };
   const html = protocol.render({
     ...state, $webui: { bodyEnd: `<script type="module" src="${application}"></script>` },
   }, { entry: 'page.html' }).toString();
   const assets = new Map<string, [string, string]>();
-  for (const pack of built.lazyPackFiles) assets.set(`/lazy-pages/${pack.path}`, [pack.content, 'application/json']);
+  for (const pack of [...built.lazyPackFiles, ...routed.lazyPackFiles]) {
+    assets.set(`/lazy-pages/${pack.path}`, [pack.content, 'application/json']);
+  }
   for (let i = 0; i < built.cssFiles.length; i += 2) {
     assets.set(`/lazy-pages/${built.cssFiles[i]}`, [built.cssFiles[i + 1], 'text/css']);
   }
   const graph = JSON.stringify({
-    application, outputs,
+    application, routeApplication, outputs,
     registrationBytes: Buffer.byteLength(first.lazyScriptsModule.content),
     registration: first.lazyScriptsModule.content,
     independentEntryRegistration: independent.lazyScriptsModule?.content,
     packs: built.lazyPackFiles.map(pack => ({ region: pack.region, path: `/lazy-pages/${pack.path}`, scripts: pack.scripts, stylesheets: pack.stylesheets })),
+    routePacks: routed.lazyPackFiles.map(pack => ({ region: pack.region, path: `/lazy-pages/${pack.path}`, scripts: pack.scripts, stylesheets: pack.stylesheets })),
   });
   writeFileSync(resolve(outDir, 'graph.json'), graph);
-  return ({ url, send }): boolean => {
+  return ({ req, url, send }): boolean => {
+    if (['/lazy-routes/', '/lazy-routes/preview', '/lazy-routes/other'].includes(url.pathname)) {
+      if (req.headers.accept === 'application/json') {
+        const inventory = req.headers['x-webui-inventory'];
+        send(200, routeProtocol.renderPartial(
+          state, 'routed.html', url.pathname, typeof inventory === 'string' ? inventory : '',
+        ), 'application/json');
+      } else {
+        send(200, routeProtocol.render({
+          ...state, $webui: { bodyEnd: `<script type="module" src="${routeApplication}"></script>` },
+        }, { entry: 'routed.html', requestPath: url.pathname }), 'text/html; charset=utf-8');
+      }
+      return true;
+    }
     if (url.pathname === '/lazy-pages/fixture.html') {
       send(200, html, 'text/html; charset=utf-8');
       return true;
