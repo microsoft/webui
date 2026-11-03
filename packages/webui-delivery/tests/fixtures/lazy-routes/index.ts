@@ -10,6 +10,7 @@ const router = new WebUIRouter();
 Object.assign(window, { lazyRouteRouter: router });
 startRuntime();
 router.start({
+  templateEndpoint: '/lazy-routes/templates',
   loaders: {
     'preview-page': () => import('../../../../webui-framework/tests/fixtures/lazy-pages/src/preview-page.ts'),
     'unrelated-page': () => import('../../../../webui-framework/tests/fixtures/lazy-pages/src/unrelated-page.ts'),

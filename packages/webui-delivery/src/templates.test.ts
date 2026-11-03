@@ -28,6 +28,7 @@ test('injected stylesheet links resolve against the runtime asset base', t => {
   });
   const runtime = window.__webui ??= {};
   const previousBase = runtime.assetBase;
+  const documentBase = Object.getOwnPropertyDescriptor(document, 'baseURI');
   Object.defineProperty(document, 'baseURI', { configurable: true, value: 'https://site.example/news/' });
   runtime.assetBase = 'https://cdn.example/assets/';
   try {
@@ -45,9 +46,33 @@ test('injected stylesheet links resolve against the runtime asset base', t => {
     injectCssLinks({ css: ['local.css'] }, injected);
     assert.equal(appended.at(-1)?.href, 'https://site.example/news/local.css');
   } finally {
-    Reflect.deleteProperty(document, 'baseURI');
+    if (documentBase) Object.defineProperty(document, 'baseURI', documentBase);
+    else Reflect.deleteProperty(document, 'baseURI');
     if (previousBase === undefined) delete runtime.assetBase;
     else runtime.assetBase = previousBase;
+  }
+});
+
+test('resource-only styles use the response metadata base and reject an invalid configured base', t => {
+  const appended: { href?: string }[] = [];
+  t.mock.method(document.head, 'appendChild', (link: { href?: string }) => appended.push(link));
+  t.mock.method(document, 'querySelector', () => ({ content: '/override/' }));
+  const runtime = window.__webui ??= {};
+  const previous = runtime.assetBase;
+  delete runtime.assetBase;
+  try {
+    const injected = new Set<string>();
+    injectCssLinks({ css: ['card.css'] }, injected);
+    assert.equal(appended[0].href, 'http://localhost/override/card.css');
+    runtime.assetBase = 'https://:443/';
+    assert.throws(() => injectCssLinks({ css: ['missing.css'] }, injected), TypeError);
+    assert.equal(appended.length, 1, 'an invalid base cannot fall back to another deployment');
+    runtime.assetBase = '/correct/';
+    injectCssLinks({ css: ['missing.css'] }, injected);
+    assert.equal(appended[1].href, 'http://localhost/correct/missing.css', 'a failed URL does not poison the retry');
+  } finally {
+    if (previous === undefined) delete runtime.assetBase;
+    else runtime.assetBase = previous;
   }
 });
 

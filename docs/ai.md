@@ -1284,6 +1284,9 @@ and partial-navigation state, so client-side templates and code cannot read it.
 The response's asset base is the exception: the rendered head carries it as
 `<meta name="webui-asset-base" content="...">`, so an entry module can set its
 bundler's public path from it.
+Compiler-emitted FAST 2/3 Link stylesheets follow that asset base for SSR and
+client-created components, including templates loaded through WebUI delivery.
+Authored links keep their authored URLs.
 
 **Never put request-derived or otherwise untrusted content in `$webui`.** The
 values are not escaped and can create an XSS vulnerability. See

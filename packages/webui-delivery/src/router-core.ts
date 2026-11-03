@@ -364,10 +364,12 @@ export class WebUIRouter {
    */
   async ensureLoaded(...tags: string[]): Promise<void> {
     const registry = (window.__webui as RouterRuntimeGlobal | undefined)?.templates;
-
+    const retained = new Array<unknown>(tags.length);
     const missing: string[] = [];
-    for (const tag of tags) {
-      if (!registry?.[tag] && !window.__webuiRetainTemplate?.(tag) && !this.loadPromises.has(tag)) {
+    for (let i = 0; i < tags.length; i++) {
+      const tag = tags[i];
+      retained[i] = registry?.[tag] ?? window.__webuiRetainTemplate?.(tag);
+      if (!retained[i] && !this.loadPromises.has(tag)) {
         missing.push(tag);
       }
     }
@@ -399,6 +401,20 @@ export class WebUIRouter {
     }
 
     if (promises.length > 0) await Promise.all(promises);
+    const current = (window.__webui as RouterRuntimeGlobal).templates ??= {};
+    for (let i = 0; i < tags.length; i++) {
+      const tag = tags[i];
+      // The operation, not its registry object, owns resident entries across awaits.
+      const template = current[tag] ?? retained[i] ?? window.__webuiRetainTemplate?.(tag);
+      if (!template) {
+        // FAST owns its declarative templates in the document, not this registry.
+        if (!document.querySelector(`f-template[name="${tag}"]`)) {
+          throw new Error(`[Router] Template <${tag}> is missing after loading. Check the component template endpoint and matching build.`);
+        }
+        continue;
+      }
+      current[tag] = template;
+    }
   }
 
   /** Garbage-collect all cached templates to free memory. */

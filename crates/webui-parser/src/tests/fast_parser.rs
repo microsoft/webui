@@ -207,7 +207,7 @@ fn plugins_keep_shadow_css_in_captured_template() {
     for (strategy, expected) in [
         (
             CssStrategy::Link,
-            "<link rel=\"stylesheet\" href=\"x-card.css\">",
+            "<link rel=\"stylesheet\" data-webui-stylesheet href=\"x-card.css\">",
         ),
         (CssStrategy::Style, "<style>.card{color:red}</style>"),
     ] {

@@ -267,6 +267,39 @@ test('regions the page or a prefetch registered are never tracked or released', 
   assert.ok(registry()[id]);
 });
 
+test('never-opened packs stay warm; closing releases only the root, not ordinary pack templates', async () => {
+  const id = region('policy-owner');
+  const child = 'policy-child';
+  const url = '_webui/packs/policy-owner.json';
+  const base = pack('policy-owner');
+  const templates = { ...base.templates as Record<string, TemplateMeta> };
+  templates[id] = { ...templates[id], d: [child] };
+  templates[child] = { v: 3, h: '<p>shared</p>' };
+  serve(url, { ...base, templates, required: [id, child], inventory: '06', bits: { [id]: 1, [child]: 2 } });
+  const saved = Object.getOwnPropertyDescriptor(globalThis, 'customElements');
+  Object.defineProperty(globalThis, 'customElements', { configurable: true, value: { get: () => true } });
+  try {
+    await runtime.load(id, url);
+    const root = registry()[id];
+    const ordinary = registry()[child];
+    runtime.disposed();
+    runIdle();
+    assert.equal(registry()[id], root, 'never-opened warming is intentional');
+    const binding = bindingFor(id);
+    binding.instance = {} as TemplateInstance;
+    runtime.opened(id, binding);
+    binding.instance = null;
+    runtime.disposed();
+    runIdle();
+    assert.equal(registry()[id], undefined);
+    assert.equal(registry()[child], ordinary, 'shared template collection is independent of closing one region');
+    assert.ok(Number.parseInt(browser.__webui.inventory ?? '', 16) & 4, 'the ordinary template inventory bit stays available');
+  } finally {
+    if (saved) Object.defineProperty(globalThis, 'customElements', saved);
+    else Reflect.deleteProperty(globalThis, 'customElements');
+  }
+});
+
 test('intent prefetches the waiting regions of every owner on the event path once', async () => {
   const id = region('intent-owner');
   const nested = region('intent-owner', 1);
@@ -414,7 +447,9 @@ test('resources that fail after a pack publishes keep its region unready until a
   );
   try {
     requests.length = 0;
+    const inventory = browser.__webui.inventory;
     await assert.rejects(runtime.load(id, url), /styles failed/);
+    assert.equal(browser.__webui.inventory, inventory, 'failed readiness cannot acknowledge the pack');
     assert.ok(registry()[id], 'the failed install published its templates');
     assert.equal(runtime.installing(url), true, 'published templates without resources cannot mount');
     await runtime.load(id, url);

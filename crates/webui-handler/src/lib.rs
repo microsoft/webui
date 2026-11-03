@@ -19,6 +19,7 @@ pub mod route_handler;
 pub mod route_matcher;
 pub(crate) mod route_renderer;
 pub(crate) mod streaming;
+mod template_assets;
 
 #[doc(hidden)]
 pub use html_encode::{append_escaped_to_bytes, append_escaped_to_string};
@@ -3774,12 +3775,11 @@ impl WebUIHandler {
                 if template_payloads.is_none() {
                     // Non-JS templates (FAST plugins) - emit separately
                     if let Some(ref p) = context.plugin {
-                        p.emit_templates(
-                            context.protocol,
-                            &reachable,
-                            context.nonce,
-                            context.writer,
-                        )?;
+                        let mut writer = template_assets::TemplateAssetWriter {
+                            base: context.state_inject.effective_asset_base(context.protocol),
+                            writer: context.writer,
+                        };
+                        p.emit_templates(context.protocol, &reachable, context.nonce, &mut writer)?;
                     }
                 }
 
@@ -14703,6 +14703,7 @@ mod tests {
                 "only http:// and https://",
             ),
             (test_json!(""), "it is empty"),
+            (test_json!("https://:443/"), "only http:// and https://"),
             (test_json!(42), "must be a string"),
         ] {
             let state = test_json!({ "$webui": { "assetBase": asset_base } });

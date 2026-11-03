@@ -412,11 +412,15 @@ impl WebUIHandler {
         }
         if template_payloads.is_none() {
             if let Some(plugin) = context.plugin.as_ref() {
+                let mut writer = crate::template_assets::TemplateAssetWriter {
+                    base: context.state_inject.effective_asset_base(context.protocol),
+                    writer: context.writer,
+                };
                 plugin.emit_templates_slice(
                     context.protocol,
                     &new_template_tags,
                     context.nonce,
-                    context.writer,
+                    &mut writer,
                 )?;
             }
         }

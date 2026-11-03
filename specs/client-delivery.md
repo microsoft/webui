@@ -55,6 +55,11 @@ availability bitsets instead of replacing one another's bits. Explicit template
 collection resets inventory and advances a document-local epoch. A request
 captures the epoch before starting; after collection its resource data may still
 be accepted, but its old inventory acknowledgement cannot resurrect evicted bits.
+`ensureLoaded()` retains its requested resident metadata only for the operation,
+restores requested entries removed during an awaited fetch, and verifies the
+complete requested set before resolving. Its in-flight map contains no completed
+payloads; later collection can release those entries normally. FAST availability
+is its document-owned declarative template, not a WebUI metadata registry entry.
 
 This local epoch is distinct from the compiler's deterministic artifact identity.
 Initial and partial payloads carry the identity, and clients validate response
@@ -166,6 +171,17 @@ reads back the base, and application code can read it before the runtime
 parses `#webui-data`, for example to set a bundler's public path. Neither is
 written without a base. Module preload hints never take the base: they name
 the application's own entry-script imports, which WebUI does not relocate.
+
+FAST 2/3 Link templates carry a compiler-owned `data-webui-stylesheet` marker on
+their injected root link. Stored hrefs remain deployment-relative. Buffered and
+streamed SSR prefix only this marked href during payload emission; partial and
+component-template strings remain relative, and delivery resolves the marked
+link against the document's runtime asset base, or its response metadata before
+runtime startup, before FAST consumes the inner template. A resource-only
+consumer does not need router or renderer initialization. Invalid configured
+bases fail rather than redirecting resource work to the document origin.
+Authored links are not marked or relocated. The marker is a literal
+compiled substitution point, not a request-time HTML parsing step.
 
 ### Packs
 
@@ -288,9 +304,13 @@ the type, version, and region; registers only templates the document does not
 already hold (registered, still held by the template cache, which registers
 them again, or still alive after release); runs their condition closures with
 the document nonce and the compiler-owned Trusted Types policy; publishes them
-through the registration event, waiting for its readiness; and then merges the
-pack's inventory bits. Every template a pack names is registered at that point,
-so its bits are safe to merge in any inventory epoch.
+through the registration event; joins its definition and style readiness; and
+then merges the pack's inventory bits only if the publication's epoch is still
+current. Collection during either awaited step invalidates that acknowledgement
+for the entire pack, including ordinary dependencies, even if a weak cache lookup
+still finds its root. Reusable document-owned styles remain installed; suppressing
+an old acknowledgement does not release them. Failed readiness leaves the pack
+unready and unacknowledged so the next activation retries.
 
 Triggers arm when the block containing a closed region renders or hydrates:
 intent through one delegated document listener for pointer, focus, and touch

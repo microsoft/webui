@@ -14,6 +14,7 @@ interface BrowserGlobals {
     whenDefined(name: string): Promise<unknown>;
   };
   document: {
+    baseURI: string;
     createElement(): Record<string, unknown>;
     getElementById(id: string): null;
     querySelector(): null;
@@ -64,6 +65,7 @@ if (typeof customElements === 'undefined') {
 }
 if (typeof document === 'undefined') {
   g.document = {
+    baseURI: 'http://localhost/',
     createElement: () => ({ setAttribute() {}, style: {} }),
     getElementById: () => null,
     querySelector: () => null,

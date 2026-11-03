@@ -135,9 +135,10 @@ fn has_supported_form(base: &str) -> bool {
         // A colon before any slash starts a URL scheme.
         Some(colon) if base.as_bytes()[colon] == b':' => {
             let scheme = &base[..colon];
-            let host = base[colon + 1..].strip_prefix("//");
             (scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https"))
-                && host.is_some_and(|rest| !rest.is_empty() && !rest.starts_with('/'))
+                && base[colon + 1..].starts_with("//")
+                && !base[colon + 3..].starts_with('/')
+                && url::Url::parse(base).is_ok_and(|url| url.has_host())
         }
         _ => !base.starts_with("//"),
     }
@@ -200,6 +201,33 @@ mod tests {
         ] {
             let error = validate_asset_base(base).expect_err(base);
             assert_eq!(error.problem(), problem, "{base:?}");
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_http_authorities() {
+        for base in [
+            "https://:443/",
+            "http://user@:80/",
+            "https://host:invalid/",
+            "https://host:65536/",
+            "https://[not-an-ip]/",
+            "https://[::1/",
+            "https://host%00/",
+            "https://host%2fother/",
+            "http://256.0.0.1/",
+        ] {
+            let error = validate_asset_base(base).expect_err(base);
+            assert_eq!(error.problem(), AssetBaseProblem::UnsupportedUrl, "{base}");
+        }
+        for base in [
+            "http://localhost:0/",
+            "https://[::1]:443/assets/",
+            "https://127.0.0.1:65535/",
+            "https://caf\u{e9}.example/caf\u{e9}/",
+            "https://user:password@cdn.example.com/path/",
+        ] {
+            assert_eq!(validate_asset_base(base), Ok(()), "{base}");
         }
     }
 

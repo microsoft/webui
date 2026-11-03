@@ -255,6 +255,62 @@ describe('WebUIRouter', () => {
     });
   });
 
+  describe('ensureLoaded ownership', () => {
+    test('restores requested resident templates after collection during a shared missing fetch', async () => {
+      const router = new WebUIRouter();
+      const originalFetch = globalThis.fetch;
+      const originalCollect = window.__webuiCollectTemplates;
+      const originalRetain = window.__webuiRetainTemplate;
+      let respond!: (response: Response) => void;
+      const response = new Promise<Response>(resolve => { respond = resolve; });
+      const requested: string[] = [];
+      const resident = { v: 3, h: '<p>resident</p>' };
+      globals().__webui!.templates!['x-resident'] = resident;
+      globalThis.fetch = async input => {
+        requested.push(String(input));
+        return response;
+      };
+      window.__webuiRetainTemplate = () => undefined;
+      window.__webuiCollectTemplates = () => {
+        delete globals().__webui!.templates!['x-resident'];
+        globals().__webui!.inventory = '';
+        globals().__webui!.inventoryEpoch = 1;
+        return 1;
+      };
+      try {
+        const first = router.ensureLoaded('x-resident', 'x-missing');
+        const joined = router.ensureLoaded('x-resident', 'x-missing');
+        router.gc();
+        assert.equal(globals().__webui!.templates!['x-resident'], undefined);
+        respond(Response.json({ templates: { 'x-missing': { v: 3, h: '<p>missing</p>' } }, inventory: '03' }));
+        await Promise.all([first, joined]);
+        assert.equal(requested.length, 1, 'concurrent calls share the missing fetch');
+        assert.match(requested[0], /\?t=x-missing&/);
+        assert.equal(globals().__webui!.templates!['x-resident'], resident);
+        assert.ok(globals().__webui!.templates!['x-missing']);
+        assert.equal(globals().__webui!.inventory, '', 'old response bits stay invalidated');
+        router.gc();
+        assert.equal(globals().__webui!.templates!['x-resident'], undefined, 'completed calls do not pin templates');
+      } finally {
+        globalThis.fetch = originalFetch;
+        window.__webuiCollectTemplates = originalCollect;
+        window.__webuiRetainTemplate = originalRetain;
+      }
+    });
+
+    test('rejects an incomplete resource response without unbounded retries', async () => {
+      const originalFetch = globalThis.fetch;
+      let requests = 0;
+      globalThis.fetch = async () => { requests++; return Response.json({ templates: {} }); };
+      try {
+        await assert.rejects(new WebUIRouter().ensureLoaded('x-absent'), /x-absent.*missing/);
+        assert.equal(requests, 1);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+  });
+
   describe('destroy', () => {
     test('start rolls back all synchronous bootstrap failures', () => {
       const router = new WebUIRouter();

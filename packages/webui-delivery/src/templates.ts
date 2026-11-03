@@ -105,6 +105,10 @@ export function registerTemplatesAndStyles(
           const container = document.createDocumentFragment();
           const temp = document.createElement('div');
           temp.innerHTML = template;
+          for (const root of temp.querySelectorAll<HTMLTemplateElement>('f-template > template')) {
+            const link = root.content.querySelector<HTMLLinkElement>('link[data-webui-stylesheet]');
+            if (link) link.href = resolveAssetHref(link.getAttribute('href')!);
+          }
           while (temp.firstChild) container.appendChild(temp.firstChild);
           document.body.appendChild(container);
         } else {
@@ -258,23 +262,20 @@ export function injectCssLinks(
   if (data.css) {
     for (const href of data.css) {
       if (!injectedCss.has(href)) {
-        injectedCss.add(href);
         const link = document.createElement('link');
         link.rel = 'stylesheet';
         link.href = resolveAssetHref(href);
         document.head.appendChild(link);
+        injectedCss.add(href);
       }
     }
   }
 }
 
 function resolveAssetHref(href: string): string {
-  try {
-    const base = window.__webui?.assetBase;
-    return new URL(href, base ? new URL(base, document.baseURI) : document.baseURI).href;
-  } catch {
-    return href;
-  }
+  const base = window.__webui?.assetBase
+    ?? document.querySelector<HTMLMetaElement>('meta[name=webui-asset-base]')?.content;
+  return new URL(href, base ? new URL(base, document.baseURI) : document.baseURI).href;
 }
 
 /** Await optional runtime readiness while allowing a stale navigation to stop promptly. */

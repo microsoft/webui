@@ -48,9 +48,8 @@ interface TemplatePack {
 
 /** A region template this runtime registered and may release. */
 interface Registration {
-  url: string;
   bit: number | undefined;
-  epoch: number;
+  epoch: number | undefined;
 }
 
 /**
@@ -116,7 +115,7 @@ function revive(id: string): TemplateMeta | undefined {
   if (!template) return undefined;
   const runtime = window.__webui ??= {};
   (runtime.templates ??= {})[id] = template;
-  registered.set(id, { url: entry.url, bit: entry.bit, epoch: runtime.inventoryEpoch ?? 0 });
+  registered.set(id, { bit: entry.bit, epoch: runtime.inventoryEpoch });
   if (entry.bit !== undefined) runtime.inventory = writeBit(runtime.inventory ?? '', entry.bit, true);
   return template;
 }
@@ -187,6 +186,7 @@ export function unloaded(region: string, url: string, owner: string): boolean {
 async function install(pack: TemplatePack, region: string, url: string, priority: Priority): Promise<void> {
   if (pack?.type !== 'webui-pack' || pack.version !== 1 || pack.fragment !== region) throw mismatch(url, region);
   const runtime = window.__webui ??= {};
+  const epoch = runtime.inventoryEpoch;
   const registry = getTemplateRegistry();
   const templates = pack.templates ?? {};
   let fresh: Record<string, TemplateMeta> | undefined;
@@ -227,22 +227,24 @@ async function install(pack: TemplatePack, region: string, url: string, priority
         waitUntil: (ready: PromiseLike<unknown>) => { waits.push(ready); },
       },
     }));
-    // Registration failures surface here rather than as a missing region.
-    if (waits.length > 0) await Promise.all(waits);
-    if (typeof __WEBUI_DEV__ === 'undefined' || __WEBUI_DEV__) {
-      warnUnscriptedComponents(region, fresh, hasPendingTemplateDefinition);
-    }
-    if (fresh[region]) {
-      registered.set(region, { url, bit: pack.bits?.[region], epoch: runtime.inventoryEpoch ?? 0 });
-    }
+  }
+  // `styles.js` returns nothing while speculative styles wait for window load.
+  const resources = window.__webuiPrepareResources?.(pack.required ?? [], priority);
+  if (resources) waits.push(resources);
+  // Join definition/style readiness once; neither waits for the other to start.
+  if (waits.length > 0) await Promise.all(waits);
+  if (typeof __WEBUI_DEV__ === 'undefined' || __WEBUI_DEV__) {
+    if (fresh) warnUnscriptedComponents(region, fresh, hasPendingTemplateDefinition);
   }
   if (!resolve(region)) throw mismatch(url, region);
-  // Every template a pack names is present now, so its bits are safe to merge.
-  runtime.inventory = mergeBits(runtime.inventory ?? '', pack.inventory ?? '');
-  runtime.styleInventory = mergeBits(runtime.styleInventory ?? '', pack.styleInventory ?? '');
-  // `styles.js` returns nothing to wait for while it holds a speculative
-  // install's stylesheets for the window load event.
-  await window.__webuiPrepareResources?.(pack.required ?? [], priority);
+  if (fresh?.[region]) {
+    registered.set(region, { bit: pack.bits?.[region], epoch });
+  }
+  // Collection invalidates the whole publication, including ordinary dependencies.
+  if (epoch === runtime.inventoryEpoch) {
+    runtime.inventory = mergeBits(runtime.inventory ?? '', pack.inventory ?? '');
+    runtime.styleInventory = mergeBits(runtime.styleInventory ?? '', pack.styleInventory ?? '');
+  }
   unready.delete(url);
 }
 
@@ -514,7 +516,7 @@ function releaseInactive(): void {
     registered.delete(region);
     const template = runtime?.templates?.[region];
     // Template collection already reset this epoch's registry and inventory.
-    if (!runtime || !template || record.epoch !== (runtime.inventoryEpoch ?? 0)) continue;
+    if (!runtime || !template || record.epoch !== runtime.inventoryEpoch) continue;
     delete runtime.templates![region];
     released.set(region, { ...record, template: new WeakRef(template) });
     if (record.bit !== undefined) runtime.inventory = writeBit(runtime.inventory ?? '', record.bit, false);

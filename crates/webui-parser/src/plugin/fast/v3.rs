@@ -215,8 +215,8 @@ fn generate_f_template_from_processed(tag_name: &str, processed_template: &str) 
 pub(super) fn style_injection_snippet(style: ComponentStyleDelivery<'_>) -> Option<String> {
     match style {
         ComponentStyleDelivery::Link { href } => {
-            let mut link = String::with_capacity(30 + href.len());
-            link.push_str("<link rel=\"stylesheet\" href=\"");
+            let mut link = String::with_capacity(53 + href.len());
+            link.push_str("<link rel=\"stylesheet\" data-webui-stylesheet href=\"");
             link.push_str(href);
             link.push_str("\">");
             Some(link)
@@ -854,7 +854,7 @@ mod tests {
             .register_component_template(
                 "my-comp",
                 &comp,
-                r#"<template><link rel="stylesheet" href="my-comp.css"><div>hello</div></template>"#,
+                r#"<template><link rel="stylesheet" data-webui-stylesheet href="my-comp.css"><div>hello</div></template>"#,
             )
             .unwrap();
 
@@ -867,7 +867,9 @@ mod tests {
         assert!(html.contains("</f-template>"));
         assert!(html.contains("<template>"));
         assert!(html.contains("</template>"));
-        assert!(html.contains("<link rel=\"stylesheet\" href=\"my-comp.css\">"));
+        assert!(
+            html.contains("<link rel=\"stylesheet\" data-webui-stylesheet href=\"my-comp.css\">")
+        );
         assert!(html.contains("<div>hello</div>"));
     }
 
@@ -1040,7 +1042,7 @@ mod tests {
             CssStrategy::Link,
             &CssLinkOptions::default(),
         );
-        assert!(out.contains(r#"<link rel="stylesheet" href="my-btn.css">"#));
+        assert!(out.contains(r#"<link rel="stylesheet" data-webui-stylesheet href="my-btn.css">"#));
         assert!(
             out.find("<link").expect("link present") < out.find("f-ref=").expect("binding present"),
             "Link stays ahead of the body (unchanged placement): {out}"

@@ -324,15 +324,15 @@ a build ID in the path, set it in the render state. The request value overrides
 { "$webui": { "assetBase": "https://cdn.example.com/b123/" } }
 ```
 
-A base must end with `/` and be an `http://` or `https://` URL, an absolute path
+A base must end with `/` and be an `http://` or `https://` URL with a valid host
+and optional port, an absolute path
 such as `/static/`, or a relative path such as `static/`. It cannot contain
 whitespace, control characters, quotes, `<`, `>`, `\`, `?`, or `#`. An invalid
 `--asset-base` fails the build; an invalid `$webui.assetBase` fails the render
 before any output is written. Publish the packs and stylesheets where the base
-points; a base on another origin needs CORS for pack requests. FAST
-`<f-template>` payloads keep relative stylesheet hrefs, which FAST resolves
-against the document, so FAST builds that publish Link-mode CSS on another host
-should also serve it from the document's origin or use `--css style`.
+points; a base on another origin needs CORS for pack requests. FAST 2/3 Link-mode
+CSS uses the same base for SSR, client-created components, and templates loaded
+through WebUI delivery. Authored stylesheet links keep their authored URLs.
 
 **Bundler public path:**
 

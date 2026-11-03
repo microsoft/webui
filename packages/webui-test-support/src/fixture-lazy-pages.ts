@@ -101,6 +101,13 @@ export async function prepareLazyPages(
   });
   writeFileSync(resolve(outDir, 'graph.json'), graph);
   return ({ req, url, send }): boolean => {
+    if (url.pathname === '/lazy-routes/templates') {
+      send(200, routeProtocol.renderComponentTemplates(
+        (url.searchParams.get('t') ?? '').split(','),
+        url.searchParams.get('inv') ?? '',
+      ), 'application/json');
+      return true;
+    }
     if (['/lazy-routes/', '/lazy-routes/preview', '/lazy-routes/other'].includes(url.pathname)) {
       if (req.headers.accept === 'application/json') {
         const inventory = req.headers['x-webui-inventory'];

@@ -301,6 +301,38 @@ test('real router: SSR chain, partial navigation and hover stay isolated across 
   expect(errors).toEqual([]);
 });
 
+test('real router: ensureLoaded retains resident ownership across collection and a held missing fetch', async ({ page }) => {
+  await page.goto('/lazy-routes/');
+  await activeRoute(page, 'routed-home');
+  const held = Promise.withResolvers<void>();
+  await page.route('**/lazy-routes/templates?*', async route => {
+    await held.promise;
+    await route.continue();
+  });
+  const request = page.waitForRequest('**/lazy-routes/templates?*');
+  await page.evaluate(() => {
+    const router = (window as unknown as { lazyRouteRouter: { ensureLoaded(...tags: string[]): Promise<void> } }).lazyRouteRouter;
+    Object.assign(window, { ensureResident: router.ensureLoaded('routed-home', 'sibling-panel') });
+  });
+  expect(new URL((await request).url()).searchParams.get('t')).toBe('sibling-panel');
+  await page.evaluate(() =>
+    (window as unknown as { lazyRouteRouter: { gc(): void } }).lazyRouteRouter.gc(),
+  );
+  expect(await page.evaluate(() => !!window.__webui?.templates?.['routed-home'])).toBe(false);
+  held.resolve();
+  await page.evaluate(() => (window as unknown as { ensureResident: Promise<void> }).ensureResident);
+  expect(await page.evaluate(() => ({
+    resident: !!window.__webui?.templates?.['routed-home'],
+    missing: !!window.__webui?.templates?.['sibling-panel'],
+    inventory: window.__webui?.inventory,
+  }))).toEqual({ resident: true, missing: true, inventory: '' });
+  await expect(page.locator('routed-home')).toBeVisible();
+  await page.evaluate(() =>
+    (window as unknown as { lazyRouteRouter: { gc(): void } }).lazyRouteRouter.gc(),
+  );
+  expect(await page.evaluate(() => !!window.__webui?.templates?.['routed-home'])).toBe(false);
+});
+
 test('real router: direct SSR preview resolves its page loader without fetching closed bodies', async ({ page }) => {
   const { graph, requests } = await observe(page, 'routed');
   const errors: string[] = [];

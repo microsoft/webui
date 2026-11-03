@@ -11,6 +11,10 @@
     "esbuild": "catalog:"
   },
   "exports": {
+    "./fixture-fast-assets": {
+      "types": "./src/fixture-fast-assets.ts",
+      "default": "./src/fixture-fast-assets.ts"
+    },
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"

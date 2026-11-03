@@ -249,8 +249,84 @@ fn asset_base_keeps_fast_shadow_template_links_relative() {
         result.protocol.component_style_resource("my-card"),
         Some(filename.as_str())
     );
-    assert!(template.contains(&format!(r#"<link rel="stylesheet" href="{filename}">"#)));
+    assert!(template.contains(&format!(
+        r#"<link rel="stylesheet" data-webui-stylesheet href="{filename}">"#
+    )));
     assert!(!template.contains("cdn.example.com"));
+}
+
+#[test]
+fn fast_link_templates_resolve_asset_bases_without_rewriting_authored_links() {
+    let app = create_app_dir(&[
+        (
+            "index.html",
+            "<html><body><my-card></my-card></body></html>",
+        ),
+        (
+            "my-card.html",
+            r#"<template shadowrootmode="open"><link rel="stylesheet" href="authored.css"><div>Card</div></template>"#,
+        ),
+        ("my-card.css", "div { color: red; }"),
+    ]);
+    for (plugin, handler) in [
+        (
+            Plugin::FastV2,
+            WebUIHandler::with_plugin(|| {
+                Box::new(webui_handler::plugin::fast_v2::FastV2HydrationPlugin::new())
+            }),
+        ),
+        (
+            Plugin::FastV3,
+            WebUIHandler::with_plugin(|| {
+                Box::new(webui_handler::plugin::fast_v3::FastV3HydrationPlugin::new())
+            }),
+        ),
+    ] {
+        let mut options = default_options(app.path());
+        options.plugin = Some(plugin);
+        options.css = CssStrategy::Link;
+        options.asset_base = Some("/static/".into());
+        let result = build(options).unwrap();
+        assert!(!result.protocol.components["my-card"]
+            .template
+            .contains("/static/"));
+        let filename = &result.css_files[0].0;
+        let protocol = Protocol::new(result.protocol);
+        for (state, base) in [
+            (serde_json::json!({}), "/static/"),
+            (
+                serde_json::json!({"$webui":{"assetBase":"/override/"}}),
+                "/override/",
+            ),
+        ] {
+            let mut writer = StringWriter { buf: String::new() };
+            handler
+                .render(
+                    &protocol,
+                    &state,
+                    &RenderOptions::new("index.html", "/nested/"),
+                    &mut writer,
+                )
+                .unwrap();
+            let template = writer.buf.split("<f-template").nth(1).unwrap();
+            let escaped_base = base.replace('/', "&#x2F;");
+            assert!(
+                template.contains(&format!(r#"href="{escaped_base}{filename}""#)),
+                "{template}"
+            );
+            assert!(template.contains(r#"href="authored.css""#), "{template}");
+        }
+        let partial = protocol
+            .render_component_templates(&["my-card"], "")
+            .unwrap();
+        let template = partial["templates"]["my-card"].as_str().unwrap();
+        assert!(template.contains("data-webui-stylesheet"), "{template}");
+        assert!(
+            template.contains(&format!(r#"href="{filename}""#)),
+            "{template}"
+        );
+        assert!(template.contains(r#"href="authored.css""#), "{template}");
+    }
 }
 
 #[test]

@@ -689,7 +689,7 @@ mod tests {
             .register_component_template(
                 "my-comp",
                 &comp,
-                r#"<template><link rel="stylesheet" href="my-comp.css"><div>hello</div></template>"#,
+                r#"<template><link rel="stylesheet" data-webui-stylesheet href="my-comp.css"><div>hello</div></template>"#,
             )
             .unwrap();
 
@@ -702,7 +702,9 @@ mod tests {
         assert!(html.contains("</f-template>"));
         assert!(html.contains("<template>"));
         assert!(html.contains("</template>"));
-        assert!(html.contains("<link rel=\"stylesheet\" href=\"my-comp.css\">"));
+        assert!(
+            html.contains("<link rel=\"stylesheet\" data-webui-stylesheet href=\"my-comp.css\">")
+        );
         assert!(html.contains("<div>hello</div>"));
     }
 
