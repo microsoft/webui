@@ -35,6 +35,14 @@ type TransitionTestWindow = typeof window & {
   __transitionRejections: Array<{ name: string; message: string; promise: string }>;
 };
 
+type CacheTestWindow = typeof window & {
+  __testRouter: {
+    activeComponent: string;
+    startupNavigation: Promise<void> | null;
+    navCache: { has(path: string): boolean } | null;
+  };
+};
+
 async function waitForDashboardRoute(page: Page): Promise<void> {
   await page.waitForFunction(() => {
     const dashboard = document.querySelector('route-shell')?.shadowRoot
@@ -417,6 +425,41 @@ test.describe('client-side navigation', () => {
     await page.locator('nav a[href="/items/1"]').click();
     await expect(page.locator('main h2')).toContainText('Item 1');
   });
+});
+
+test('zero freshness releases completed responses and refetches same-clock revisits', async ({ page }) => {
+  let requests = 0;
+  await page.route('**/items/1', async route => {
+    if (!route.request().headers()['accept']?.includes('application/json')) {
+      await route.continue();
+      return;
+    }
+    const response = await route.fetch();
+    const partial = await response.json() as DashboardPartial;
+    requests++;
+    await route.fulfill({
+      response,
+      headers: { ...response.headers(), 'cache-control': 'no-store' },
+      json: { ...partial, state: { ...partial.state, itemId: `1 revision ${requests}` } },
+    });
+  });
+  await page.clock.setFixedTime(new Date('2026-11-03T03:00:00Z'));
+  await page.goto('/beta?cache=zero');
+  await page.waitForFunction(() => {
+    const router = (window as CacheTestWindow).__testRouter;
+    return router?.activeComponent === 'page-beta' && router.startupNavigation === null;
+  });
+
+  await page.locator('nav a[href="/items/1"]').click();
+  await expect(page.locator('h2')).toHaveText('Item 1 revision 1');
+  expect(await page.evaluate(() =>
+    (window as CacheTestWindow).__testRouter.navCache?.has('/items/1'),
+  )).toBe(false);
+  await page.locator('nav a[href="/beta"]').click();
+  await expect(page.locator('h2')).toHaveText('Beta Page');
+  await page.locator('nav a[href="/items/1"]').click();
+  await expect(page.locator('h2')).toHaveText('Item 1 revision 2');
+  expect(requests).toBe(2);
 });
 
 test.describe('browser history', () => {

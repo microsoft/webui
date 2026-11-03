@@ -134,6 +134,8 @@ export class NavigationCache {
     // Clean up old tag-index references before overwriting
     this.evict(requestPath);
 
+    if (!streaming && !preload && (staleTime ?? this.config.staleTime) === 0) return;
+
     // Evict LRU entries if at capacity
     while (this.cache.size >= this.config.maxEntries) {
       const oldest = this.cache.keys().next().value;
