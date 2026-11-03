@@ -46,7 +46,13 @@ async function fetchFixtureResponse(
     !pathname.startsWith('/') || pathname.startsWith('//') ||
     pathname.includes('\\') || pathname.includes('#')
   ) {
-    return new Response('Expected an origin-form request target', { status: 400 });
+    return new Response('Expected an origin-form request target', {
+      status: 400,
+      headers: {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'X-Content-Type-Options': 'nosniff',
+      },
+    });
   }
   const upstream = new URL(backend.href);
   upstream.pathname = pathname;
@@ -58,7 +64,12 @@ async function fetchFixtureResponse(
 async function requestTarget(
   origin: URL,
   target: string,
-): Promise<{ status: number; body: string }> {
+): Promise<{
+  status: number;
+  body: string;
+  contentType: string | undefined;
+  contentTypeOptions: string | string[] | undefined;
+}> {
   return new Promise((resolve, reject) => {
     const outgoing = request({
       hostname: origin.hostname,
@@ -75,7 +86,11 @@ async function requestTarget(
       response.setEncoding('utf8');
       response.on('data', chunk => { body += chunk; });
       response.on('error', reject);
-      response.on('end', () => resolve({ status, body }));
+      response.on('end', () => resolve({
+        status, body,
+        contentType: response.headers['content-type'],
+        contentTypeOptions: response.headers['x-content-type-options'],
+      }));
     });
     outgoing.on('error', reject);
     outgoing.setTimeout(10_000, () => outgoing.destroy(new Error('fixture request timed out')));
@@ -89,6 +104,8 @@ test('streaming fixture proxy rejects upstream origin escapes', async ({}, testI
   const failures: Error[] = [];
   const sentinel = createServer((request, response) => {
     sentinelTargets.push(request.url!);
+    response.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    response.setHeader('X-Content-Type-Options', 'nosniff');
     response.end('unexpected sentinel upstream');
   });
   const servers = [sentinel];
@@ -96,6 +113,8 @@ test('streaming fixture proxy rejects upstream origin escapes', async ({}, testI
     const sentinelOrigin = await listenLoopback(sentinel);
     const intended = createServer((request, response) => {
       intendedTargets.push(request.url!);
+      response.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      response.setHeader('X-Content-Type-Options', 'nosniff');
       if (request.url === '/redirect') {
         response.writeHead(302, { location: `${sentinelOrigin.origin}/redirected` });
       }
@@ -108,7 +127,10 @@ test('streaming fixture proxy rejects upstream origin escapes', async ({}, testI
         const upstream = await fetchFixtureResponse(
           request.url!, intendedOrigin, new Headers({ accept: 'text/plain' }),
         );
-        response.writeHead(upstream.status);
+        response.writeHead(upstream.status, {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'X-Content-Type-Options': 'nosniff',
+        });
         response.end(await upstream.text());
       })().catch(error => {
         failures.push(error);
@@ -130,7 +152,14 @@ test('streaming fixture proxy rejects upstream origin escapes', async ({}, testI
     await testInfo.attach('proxy-origin-regression', {
       path: ledgerPath, contentType: 'application/json',
     });
-    expect(normal).toEqual({ status: 200, body: normalTarget });
+    expect(normal).toEqual({
+      status: 200, body: normalTarget,
+      contentType: 'text/plain; charset=utf-8', contentTypeOptions: 'nosniff',
+    });
+    for (const result of [normal, relative, absolute, redirect]) {
+      expect(result.contentType).toBe('text/plain; charset=utf-8');
+      expect(result.contentTypeOptions).toBe('nosniff');
+    }
     expect.soft(relative.status).toBe(400);
     expect.soft(absolute.status).toBe(400);
     expect.soft(redirect.status).toBe(302);
