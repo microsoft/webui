@@ -1548,8 +1548,10 @@ describe('WebUIRouter', () => {
       priv.navCache = new NavigationCache({ staleTime: 0, gcTime: 300_000, maxEntries: 50 });
 
       // Store a cache entry, then manipulate its timestamp to make it stale
-      priv.navCache.store('/about', { state: {}, templates: {}, path: '/about' });
+      priv.navCache.store('/about', { state: {}, templates: {}, path: '/about' }, true);
       const entry = priv.navCache.getEntry('/about');
+      assert.equal(entry.preload, true, 'fixture should exercise preload freshness');
+      assert.ok(priv.navCache.lookup('/about'), 'zero-config preload should initially be fresh');
       entry.ts = Date.now() - 10_000;
 
       // lookup should return null for stale entries

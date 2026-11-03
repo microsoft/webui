@@ -179,7 +179,10 @@ export interface NavigationEvent {
 export interface CacheConfig {
   /**
    * Maximum age (ms) before a cached response is considered stale and refetched.
-   * @default 0 (always fresh — caching disabled)
+   * Zero disables reuse of ordinary completed JSON responses, including immediate
+   * revisits. Server `cacheControl.staleTime` overrides this value; preloaded
+   * responses still receive a minimum five-second freshness window.
+   * @default 0
    */
   staleTime?: number;
   /**
