@@ -1111,9 +1111,7 @@ Route loaders (`static loader({ params, query, signal })`) and actions
 (`static action({ formData, params, signal })`, enabled by
 `Router.start({ actions: true })`) live on the component class. Cache and
 preload are optional runtime tiers; a default `Router.start()` does not load the
-cache module. For complete JSON navigation responses, `staleTime: 0` disables
-reuse even on immediate revisits. A server `cacheControl.staleTime` overrides
-the configured value; preloaded responses still get at least five seconds.
+cache module.
 
 Every route intended for partial navigation must register a custom element.
 Scriptless templates are registered by the compiler-owned host runtime. If a

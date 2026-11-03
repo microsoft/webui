@@ -258,11 +258,6 @@ Declare cache tags on routes as HTML attributes:
 
 The `{threadId}` placeholder is resolved at render time by the Rust handler. The server includes resolved `cacheTags` in the JSON partial. On revisit within `staleTime`, the cached response is used instantly.
 
-For complete JSON navigation responses, `staleTime: 0` disables reuse, even for
-an immediate revisit. The server's `cacheControl.staleTime` overrides the
-configured value, including an explicit `0` overriding a positive setting.
-Preloaded responses retain their minimum five-second freshness window.
-
 ### Tag-Based Invalidation
 
 Declare which tags a route invalidates after mutations:

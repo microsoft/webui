@@ -350,10 +350,6 @@ Tag placeholders must name declared route parameters. For `/email/42`,
 `thread:{threadId}` becomes `thread:42`. Revisit a cached path within
 `staleTime` to reuse its response without another fetch.
 
-For complete JSON navigation responses, `staleTime: 0` disables reuse, even for
-an immediate revisit. The server's `cacheControl.staleTime` overrides the
-configured value, including an explicit `0` overriding a positive setting.
-
 <webui-blockquote appearance="tip" title="Preload + cache interaction" icon="💡">
 
 When `preload: true` is enabled, hover fetches write to the same cache. Preloaded entries get a minimum 5-second freshness window even when `staleTime` is 0 (disabled).
