@@ -93,12 +93,36 @@ export class StreamingSession {
 }
 
 /**
+ * Build protocol bytes, lazy-region template packs, and `lazy.webui.js`.
+ *
+ * `options` is an optional object with `projectionManifests`, `dom`
+ * (`"shadow"` or `"light"`), `assetBase` (a public URL or path ending in `/`
+ * that maps to the output directory; requests override it with
+ * `$webui.assetBase`), `componentModules` (module specifiers keyed by custom
+ * element tag), and `modulesOut` (the virtual directory that will receive
+ * `lazy.webui.js`; relative specifiers start there, at the file map root by
+ * default).
+ *
+ * Returns `{ protocol, lazyPackFiles, lazyScriptsModule?, warnings }`.
+ * `protocol` is a `Uint8Array`. Each `lazyPackFiles` item has `fileName`,
+ * `content`, `path`, `region`, `owner`, `trigger`, `hash`, `bytes`,
+ * `scripts`, and `stylesheets`; publish its content at `path` in the output
+ * directory. WASM builds inline component CSS, so `stylesheets` is always
+ * empty, and they do not measure brotli sizes. `lazyScriptsModule` is
+ * `{ fileName, content, declaration: { fileName, content } }`, the generated
+ * `lazy.webui.js` and its `lazy.webui.d.ts`, when the build has lazy regions.
+ */
+export function buildApp(files: any, entry: string, options?: any | null): any;
+
+/**
  * Build protocol protobuf bytes from virtual files without rendering.
  *
  * `dom` accepts `"shadow"` (default) or `"light"` for unwrapped components;
  * authored open Shadow roots remain Shadow in either mode.
  *
- * Returns the serialized `WebUIProtocol` as protobuf bytes.
+ * Returns the serialized `WebUIProtocol` as protobuf bytes. Templates with
+ * lazy regions also need their template packs; use `buildApp` from the
+ * combined WASM build, which returns both.
  */
 export function build_protocol(files: any, entry: string, projection_manifests?: any | null, dom?: string | null): Uint8Array;
 
@@ -108,6 +132,7 @@ export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_protocol_free: (a: number, b: number) => void;
     readonly __wbg_streamingsession_free: (a: number, b: number) => void;
+    readonly buildApp: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly build_protocol: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
     readonly protocol_new: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly protocol_render: (a: number, b: number, c: number, d: number, e: number) => void;

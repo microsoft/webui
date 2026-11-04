@@ -361,12 +361,56 @@ export class StreamingSession {
 if (Symbol.dispose) StreamingSession.prototype[Symbol.dispose] = StreamingSession.prototype.free;
 
 /**
+ * Build protocol bytes, lazy-region template packs, and `lazy.webui.js`.
+ *
+ * `options` is an optional object with `projectionManifests`, `dom`
+ * (`"shadow"` or `"light"`), `assetBase` (a public URL or path ending in `/`
+ * that maps to the output directory; requests override it with
+ * `$webui.assetBase`), `componentModules` (module specifiers keyed by custom
+ * element tag), and `modulesOut` (the virtual directory that will receive
+ * `lazy.webui.js`; relative specifiers start there, at the file map root by
+ * default).
+ *
+ * Returns `{ protocol, lazyPackFiles, lazyScriptsModule?, warnings }`.
+ * `protocol` is a `Uint8Array`. Each `lazyPackFiles` item has `fileName`,
+ * `content`, `path`, `region`, `owner`, `trigger`, `hash`, `bytes`,
+ * `scripts`, and `stylesheets`; publish its content at `path` in the output
+ * directory. WASM builds inline component CSS, so `stylesheets` is always
+ * empty, and they do not measure brotli sizes. `lazyScriptsModule` is
+ * `{ fileName, content, declaration: { fileName, content } }`, the generated
+ * `lazy.webui.js` and its `lazy.webui.d.ts`, when the build has lazy regions.
+ * @param {any} files
+ * @param {string} entry
+ * @param {any | null} [options]
+ * @returns {any}
+ */
+export function buildApp(files, entry, options) {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        const ptr0 = passStringToWasm0(entry, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.buildApp(retptr, addHeapObject(files), ptr0, len0, isLikeNone(options) ? 0 : addHeapObject(options));
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+        if (r2) {
+            throw takeObject(r1);
+        }
+        return takeObject(r0);
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
+/**
  * Build protocol protobuf bytes from virtual files without rendering.
  *
  * `dom` accepts `"shadow"` (default) or `"light"` for unwrapped components;
  * authored open Shadow roots remain Shadow in either mode.
  *
- * Returns the serialized `WebUIProtocol` as protobuf bytes.
+ * Returns the serialized `WebUIProtocol` as protobuf bytes. Templates with
+ * lazy regions also need their template packs; use `buildApp` from the
+ * combined WASM build, which returns both.
  * @param {any} files
  * @param {string} entry
  * @param {any | null} [projection_manifests]
@@ -509,6 +553,16 @@ function __wbg_get_imports() {
             const ret = result;
             return ret;
         },
+        __wbg_instanceof_Object_80ad464782e2bd73: function(arg0) {
+            let result;
+            try {
+                result = getObject(arg0) instanceof Object;
+            } catch (_) {
+                result = false;
+            }
+            const ret = result;
+            return ret;
+        },
         __wbg_instanceof_Uint8Array_f935dbb0aa7cdeed: function(arg0) {
             let result;
             try {
@@ -525,6 +579,10 @@ function __wbg_get_imports() {
         },
         __wbg_iterator_5cebbb86e33c6dd6: function() {
             const ret = Symbol.iterator;
+            return addHeapObject(ret);
+        },
+        __wbg_keys_ec7f8c0c2370d91d: function(arg0) {
+            const ret = Object.keys(getObject(arg0));
             return addHeapObject(ret);
         },
         __wbg_length_36bd29c6848c2144: function(arg0) {
@@ -562,6 +620,9 @@ function __wbg_get_imports() {
         __wbg_prototypesetcall_de8e0d9553586985: function(arg0, arg1, arg2) {
             Uint8Array.prototype.set.call(getArrayU8FromWasm0(arg0, arg1), getObject(arg2));
         },
+        __wbg_set_6be42768c690e380: function(arg0, arg1, arg2) {
+            getObject(arg0)[takeObject(arg1)] = takeObject(arg2);
+        },
         __wbg_set_8155bb79a948541b: function() { return handleError(function (arg0, arg1, arg2) {
             const ret = Reflect.set(getObject(arg0), getObject(arg1), getObject(arg2));
             return ret;
@@ -581,6 +642,11 @@ function __wbg_get_imports() {
         __wbindgen_cast_0000000000000002: function(arg0, arg1) {
             // Cast intrinsic for `Ref(String) -> Externref`.
             const ret = getStringFromWasm0(arg0, arg1);
+            return addHeapObject(ret);
+        },
+        __wbindgen_cast_0000000000000003: function(arg0) {
+            // Cast intrinsic for `U64 -> Externref`.
+            const ret = BigInt.asUintN(64, arg0);
             return addHeapObject(ret);
         },
         __wbindgen_object_clone_ref: function(arg0) {

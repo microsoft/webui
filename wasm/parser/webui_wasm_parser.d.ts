@@ -7,7 +7,9 @@
  * `dom` accepts `"shadow"` (default) or `"light"` for unwrapped components;
  * authored open Shadow roots remain Shadow in either mode.
  *
- * Returns the serialized `WebUIProtocol` as protobuf bytes.
+ * Returns the serialized `WebUIProtocol` as protobuf bytes. Templates with
+ * lazy regions also need their template packs; use `buildApp` from the
+ * combined WASM build, which returns both.
  */
 export function build_protocol(files: any, entry: string, projection_manifests?: any | null, dom?: string | null): Uint8Array;
 
