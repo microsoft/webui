@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+import { FLUSH_UPDATES } from '../../../src/render-scheduler.js';
 import { expect, test } from '@playwright/test';
 
 test.describe('multi repeat fixture', () => {
@@ -43,7 +44,7 @@ test.describe('multi repeat fixture', () => {
         { title: 'Alpha', href: '/alpha', active: 'false' },
         { title: 'Beta', href: '/beta', active: 'true' },
       ];
-      host.$flushUpdates();
+      host[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
 
       const root = host?.shadowRoot ?? host;
       const listB = root?.querySelector('.list-b');

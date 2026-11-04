@@ -10,9 +10,17 @@ class CompletionRoot extends WebUIElement {
   @observable showUnloaded = false;
   @observable payload = { label: 'loaded' };
   @observable html = '';
+  @observable showAction = false;
+  declare actionButton: HTMLButtonElement;
   captureInChanged = false;
   throwInChanged = false;
   pending: Promise<void> | undefined;
+
+  async revealAction(): Promise<void> {
+    this.showAction = true;
+    await this.$whenRendered();
+    this.actionButton.focus();
+  }
 
   valueChanged(): void {
     if (this.captureInChanged) this.pending = this.$whenRendered();
@@ -23,8 +31,11 @@ class CompletionRoot extends WebUIElement {
 class CompletionChild extends WebUIElement {
   @attr value = '0';
   @observable derived = 1;
+  captureInChanged = false;
+  pending: Promise<void> | undefined;
 
   valueChanged(_old: string | undefined, next: string): void {
+    if (this.captureInChanged) this.pending = this.$whenRendered();
     this.derived = Number(next) + 1;
   }
 }

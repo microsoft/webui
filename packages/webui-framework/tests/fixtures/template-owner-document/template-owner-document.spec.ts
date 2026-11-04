@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+import { FLUSH_UPDATES } from '../../../src/render-scheduler.js';
 import { expect, test } from '@playwright/test';
 
 test.beforeEach(async ({ page }) => {
@@ -169,11 +170,11 @@ for (const tag of ['test-owner-shadow', 'test-owner-light']) {
         host.label = 'updated';
         host.showConditional = false;
         host.items = [];
-        host.$flushUpdates();
+        host[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
         const cleared = snapshot();
         host.showConditional = true;
         host.items = [{ id: 'second' }, { id: 'third' }];
-        host.$flushUpdates();
+        host[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
         return {
           initial,
           cleared,
@@ -244,7 +245,7 @@ declare global {
     showConditional: boolean;
     items: { id: string }[];
     readonly $ready: boolean;
-    $flushUpdates(): void;
+    [FLUSH_UPDATES](): void;
   }
 
   interface TestOwnerProbe extends HTMLElement {

@@ -2,17 +2,18 @@
 // Licensed under the MIT license.
 
 /**
- * Benchmark fixture — a component with many bindings to measure $update() cost.
+ * Benchmark fixture — a component with many bindings to measure setter batching.
  *
  * 50 text bindings across 10 observable properties (5 bindings each),
  * 10 attribute bindings, 5 boolean-conditional attributes, and 2 repeats.
  * This exercises every binding kind in the update loop.
  *
- * The benchmark mutates a single property and measures how long the
- * framework takes to run $update(), which currently walks ALL bindings
- * regardless of which property changed.
+ * Mutations coalesce before rendering. These timings measure setter/queue
+ * overhead, not completed DOM updates; the render-completion benchmark measures
+ * end-to-end rendering.
  */
 
+import { FLUSH_UPDATES } from '../../../src/render-scheduler.js';
 import { WebUIElement, observable } from '../../../src/index.js';
 
 export class TestBench extends WebUIElement {
@@ -37,7 +38,7 @@ export class TestBench extends WebUIElement {
       this.prop0 = `warm-${i}`;
     }
 
-    // Benchmark: mutate ONE property, measure total $update() time
+    // Benchmark: mutate ONE property, measuring setter/queue overhead.
     const singleStart = performance.now();
     for (let i = 0; i < iterations; i++) {
       this.prop0 = `single-${i}`;
@@ -101,24 +102,24 @@ export class TestBenchRepeat extends WebUIElement {
 
     const createStart = performance.now();
     this.items = data;
-    this.$flushUpdates();
+    this[FLUSH_UPDATES]();
     const createTime = performance.now() - createStart;
 
     const updateStart = performance.now();
     for (let i = 0; i < updateIterations; i++) {
       this.items = i % 2 === 0 ? swapped : data;
-      this.$flushUpdates();
+      this[FLUSH_UPDATES]();
     }
     const updateTime = performance.now() - updateStart;
 
     const clearStart = performance.now();
     this.items = [];
-    this.$flushUpdates();
+    this[FLUSH_UPDATES]();
     const clearTime = performance.now() - clearStart;
 
     const create2Start = performance.now();
     this.items = data;
-    this.$flushUpdates();
+    this[FLUSH_UPDATES]();
     const create2Time = performance.now() - create2Start;
 
     const result = {

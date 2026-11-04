@@ -61,6 +61,15 @@ import type {
 } from './template.js';
 import { hydrationStart, hydrationEnd } from './lifecycle.js';
 import {
+  enqueueRender,
+  finishRender,
+  flushRender,
+  FLUSH_UPDATES,
+  RENDER,
+  RENDER_PENDING,
+  REQUEST_UPDATE,
+} from './render-scheduler.js';
+import {
   blockRenderWork,
   destroyRenderWork,
   disconnectRenderWork,
@@ -71,6 +80,7 @@ import {
   finishRenderRemoval,
   leaveRenderWork,
   MOUNT_WORK,
+  observingRender,
   queueRenderWork,
   unblockRenderWork,
   UPDATE_WORK,
@@ -473,7 +483,7 @@ export class TemplateElement extends HTMLElement {
   private $hasUnknownScopes = false;
   private $templateState: Record<string, unknown> | null = null;
   private $dirtyPaths: Set<string> | null = null;
-  private $pendingFlush = false;
+  [RENDER_PENDING] = 0;
   /** Observable paths written while connected but before hydration finished
    *  (constructor, `@observable` field initializer, or before
    *  `super.connectedCallback()`). Checked against the SSR DOM at `$ready` to
@@ -673,7 +683,7 @@ export class TemplateElement extends HTMLElement {
         this.$ready = true;
         this.$syncAuthoredAttributes();
         this.$notifyHydrated();
-        this.$update();
+        this[REQUEST_UPDATE]();
       } finally {
         hydrationEnd();
       }
@@ -740,8 +750,8 @@ export class TemplateElement extends HTMLElement {
     reconnecting = false,
   ): void {
     if (this.$hydrated) return;
-    queueRenderWork(this, MOUNT_WORK);
-    const previous = enterRenderWork(this);
+    const observed = observingRender;
+    const previous = observed ? enterRenderWork(this) : undefined;
     try {
       this.$mountTemplate(meta, forceSSR, ssrState, hasBoundaryState, reconnecting);
       if (this.$hydrated && !this.$deferredSSR) unblockRenderWork(this);
@@ -749,8 +759,7 @@ export class TemplateElement extends HTMLElement {
       failRenderWork(this, error);
       throw error;
     } finally {
-      if (!this.$deferredClientMount) finishRenderWork(this, MOUNT_WORK);
-      leaveRenderWork(this, previous);
+      if (observed) leaveRenderWork(this, previous);
     }
   }
 
@@ -893,7 +902,7 @@ export class TemplateElement extends HTMLElement {
 
       // Client-created components: flush current attr/observable values
       // into the freshly-wired template DOM. Call $updateInstance directly
-      // to avoid the $update() path-index build — it will be lazy-built
+      // to avoid the path-index build — it will be lazy-built
       // on the first reactive change instead.
       if (!isSSR && clientRoot) {
         this.$updateInstance(this.$root);
@@ -954,6 +963,7 @@ export class TemplateElement extends HTMLElement {
         }
         if (deferredStyles) {
           this.$deferredClientMount = true;
+          queueRenderWork(this, MOUNT_WORK);
           this.$ready = false;
           deferredHydrationFinish = true;
         }
@@ -1041,7 +1051,6 @@ export class TemplateElement extends HTMLElement {
     this.$pathIndex = undefined;
     this.$wildcardBindings = undefined;
     this.$dirtyPaths = null;
-    this.$pendingFlush = false;
     this.$preReadyWrites = null;
     this.$hydrated = false;
     this.$deferredClientMount = false;
@@ -1084,7 +1093,7 @@ export class TemplateElement extends HTMLElement {
       owned = keyOwned || owned;
     }
     this.$afterExternalStateWrite(owned);
-    this.$flushUpdates();
+    this[FLUSH_UPDATES]();
   }
 
   protected $observableNames(): Set<string> {
@@ -1411,7 +1420,8 @@ export class TemplateElement extends HTMLElement {
   }
 
   protected $notifyHydrated(): void {
-    const previous = enterRenderWork(this);
+    const observed = observingRender;
+    const previous = observed ? enterRenderWork(this) : undefined;
     try {
       if (!this.$mountPhase) this.$mountPhase = MOUNTED;
       if (!this.$reconcileAuthoredState()) return;
@@ -1424,7 +1434,7 @@ export class TemplateElement extends HTMLElement {
       failRenderWork(this, error);
       throw error;
     } finally {
-      leaveRenderWork(this, previous);
+      if (observed) leaveRenderWork(this, previous);
     }
   }
 
@@ -1461,7 +1471,7 @@ export class TemplateElement extends HTMLElement {
   protected $setTemplateState(key: string, value: unknown): boolean {
     const changed = this.$writeTemplateState(key, value);
     if (changed) {
-      this.$update(key);
+      this[REQUEST_UPDATE](key);
     }
     return changed;
   }
@@ -1584,13 +1594,12 @@ export class TemplateElement extends HTMLElement {
     }
   }
 
-  /** Reactive update — called by @observable/@attr setters. */
-  $update(path?: string): void {
+  [REQUEST_UPDATE](path?: string): void {
     if (!this.$ready || !this.$root) {
       if (this.$deferredClientMount) return;
       if (path && this.$deferredSSR) this.$recordDeferredWrite(path);
       // A reactive write arrived while connected but before hydration
-      // completed. `$update` cannot touch the DOM yet, so record the path and
+      // completed. No binding can touch the DOM yet, so record the path and
       // check it against the SSR DOM once hydrated (see #379). `DEV` gates the
       // recording so production bundles never allocate the tracking Set.
       if (DEV && path && this.isConnected) this.$recordPreReadyWrite(path);
@@ -1606,11 +1615,7 @@ export class TemplateElement extends HTMLElement {
         // Batch path-specific updates via microtask coalescing.
         if (!this.$dirtyPaths) this.$dirtyPaths = new Set();
         this.$dirtyPaths.add(path);
-        if (!this.$pendingFlush) {
-          this.$pendingFlush = true;
-          queueRenderWork(this, UPDATE_WORK);
-          queueMicrotask(() => this.$flush());
-        }
+        enqueueRender(this);
         return;
       }
     }
@@ -1626,7 +1631,7 @@ export class TemplateElement extends HTMLElement {
       throw error;
     } finally {
       if (tracked) {
-        if (!this.$pendingFlush) finishRenderWork(this, UPDATE_WORK);
+        finishRenderWork(this, UPDATE_WORK);
         leaveRenderWork(this, previous);
       }
     }
@@ -1648,15 +1653,13 @@ export class TemplateElement extends HTMLElement {
     } else {
       this.$dirtyPaths = writes;
     }
-    this.$pendingFlush = true;
-    this.$flush(true);
+    enqueueRender(this);
+    this[RENDER](true);
   }
 
-  /** Synchronously flush all queued path updates. Call this when you need
-   *  the DOM to reflect pending property changes immediately. */
-  $flushUpdates(): void {
+  [FLUSH_UPDATES](): void {
     if (this.$mountPhase === MOUNTED) this.$notifyHydrated();
-    if (this.$pendingFlush) this.$flush();
+    if (this[RENDER_PENDING]) flushRender(this);
   }
 
   /**
@@ -1689,17 +1692,15 @@ export class TemplateElement extends HTMLElement {
   }
 
   /** Flush all queued path updates. Handles re-entrant setter calls. */
-  private $flush(
+  [RENDER](
     requireKnownState = this.$guardUnknownState === true,
   ): void {
-    if (!this.$pendingFlush) return;
+    if (!this[RENDER_PENDING]) return;
     if (!this.$ready || !this.$root) {
       this.$dirtyPaths = null;
-      this.$pendingFlush = false;
-      finishRenderWork(this, UPDATE_WORK);
+      finishRender(this);
       return;
     }
-    const previous = enterRenderWork(this);
     try {
       if (!this.$pathIndex) this.$buildPathIndex();
       if (!this.$pathIndex) return;
@@ -1750,21 +1751,17 @@ export class TemplateElement extends HTMLElement {
     } finally {
       // A rejected sink still propagates its error. Release scheduling and keep
       // unprocessed and re-entrant writes, without retrying the failed path.
-      this.$pendingFlush = false;
-      finishRenderWork(this, UPDATE_WORK);
+      finishRender(this);
       if (this.$dirtyPaths?.size) {
-        this.$pendingFlush = true;
-        queueRenderWork(this, UPDATE_WORK);
-        queueMicrotask(() => this.$flush());
+        enqueueRender(this);
       }
-      leaveRenderWork(this, previous);
     }
   }
 
   // ── Hydration mismatch diagnostic (#379) ──────────────────────
   // A reactive write that runs while the element is connected but before
   // hydration finishes (constructor, `@observable` field initializer, or
-  // before `super.connectedCallback()`) is dropped by `$update`'s pre-ready
+  // before `super.connectedCallback()`) is dropped by the pre-ready
   // guard. Record such writes and, once hydrated, report any that disagree
   // with the trusted SSR DOM. The read-only comparison lives in
   // `hydration-mismatch.ts` (see that module for the full rationale); this
@@ -2355,7 +2352,7 @@ export class TemplateElement extends HTMLElement {
           value,
         )
       ) {
-        const flush = target['$flushUpdates'];
+        const flush = (element as TemplateElement)[FLUSH_UPDATES];
         if (typeof flush === 'function') (flush as () => void).call(element);
         return;
       }

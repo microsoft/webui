@@ -7,6 +7,7 @@
     { "id": "c", "value": "3" }
   ],
   "showUnloaded": false,
+  "showAction": false,
   "payload": { "label": "loaded" },
   "note": "initial"
 }

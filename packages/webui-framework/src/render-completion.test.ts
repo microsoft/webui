@@ -30,6 +30,7 @@ class Host extends HTMLElement {
   parent: Host | null = null;
   connected = true;
   override get parentElement(): Host | null { return this.parent; }
+  override get parentNode(): ParentNode | null { return this.parent; }
   override get assignedSlot(): HTMLSlotElement | null { return null; }
   override get localName(): string { return 'test-render'; }
   override get isConnected(): boolean { return this.connected; }
@@ -73,6 +74,7 @@ test('captures descendants through a foreign-realm shadow root', async () => {
   }
   const shadow = new ForeignShadowRoot();
   class ForeignShadowChild extends Host {
+    override get parentNode(): ParentNode { return shadow; }
     override getRootNode(): Node {
       return shadow;
     }
@@ -323,4 +325,60 @@ test('a later independent blocker does not replace a retired staged generation',
   } finally {
     unblockRenderWork(child);
   }
+});
+
+test('finishing a middle pending job preserves discovery of remaining jobs', async () => {
+  const root = new Host();
+  const children = [new Host(), new Host(), new Host()];
+  for (const child of children) {
+    child.parent = root;
+    queueRenderWork(child, UPDATE_WORK);
+  }
+  finish(children[1]);
+  let completed = false;
+  const waiting = whenRendered(root).then(() => { completed = true; });
+  finish(children[0]);
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(completed, false);
+  finish(children[2]);
+  await waiting;
+});
+
+test('overlapping failure does not release another boundary sharing its remaining jobs', async () => {
+  const root = new Host();
+  const failed = new Host();
+  const child = new Host();
+  const leaf = new Host();
+  failed.parent = root;
+  child.parent = root;
+  leaf.parent = child;
+  for (const target of [failed, child, leaf]) queueRenderWork(target, UPDATE_WORK);
+  const outer = whenRendered(root);
+  let completed = false;
+  const inner = whenRendered(child).then(() => { completed = true; });
+  const error = new Error('one branch failed');
+  const rejected = assert.rejects(outer, value => value === error);
+  failRenderWork(failed, error);
+  finish(failed);
+  finish(child);
+  await rejected;
+  assert.equal(completed, false);
+  finish(leaf);
+  await inner;
+  await whenRendered(root);
+});
+
+test('an update cannot retire a still-pending mount on the same component', async () => {
+  const root = new Host();
+  queueRenderWork(root, MOUNT_WORK);
+  queueRenderWork(root, UPDATE_WORK);
+  let completed = false;
+  const waiting = whenRendered(root).then(() => { completed = true; });
+  finish(root);
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(completed, false);
+  finish(root, MOUNT_WORK);
+  await waiting;
 });

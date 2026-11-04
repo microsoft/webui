@@ -4,7 +4,7 @@
 /**
  * Hydration benchmark fixture.
  *
- * The `bench` fixture measures `$update()` cost once a component is live.
+ * The `bench` fixture measures setter batching once a component is live.
  * This one measures the other half: what it costs to adopt server-rendered
  * DOM in the first place.
  *

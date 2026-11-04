@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+import { REQUEST_UPDATE } from './render-scheduler.js';
 import { strict as assert } from 'node:assert';
 import { describe, test } from 'node:test';
 import type { TemplateMeta } from './template.js';
@@ -143,7 +144,7 @@ test('a rejected binding releases the flush gate and preserves re-entrant update
     $pathIndex: { value: new Map([['raw', entry(rejected)], ['count', entry(valid)]]) },
     $updateBindings: { value(texts: unknown[]) {
       if (texts === rejected) {
-        element.$update('count');
+        element[REQUEST_UPDATE]('count');
         throw failure;
       }
       assert.equal(texts, valid);
@@ -151,14 +152,14 @@ test('a rejected binding releases the flush gate and preserves re-entrant update
     } },
   });
   try {
-    element.$update('raw');
+    element[REQUEST_UPDATE]('raw');
     assert.equal(queued.length, 1);
     assert.throws(() => queued.shift()!(), failure);
     assert.equal(queued.length, 1);
     queued.shift()!();
     assert.equal(updates, 1);
     assert.equal(queued.length, 0);
-    element.$update('count');
+    element[REQUEST_UPDATE]('count');
     assert.equal(queued.length, 1);
     queued.shift()!();
     assert.equal(updates, 2);
@@ -189,15 +190,15 @@ for (const paths of [
       $updateBindings: { value([path]: string[]) {
         if (path === 'raw' || path === 'otherRaw') {
           failures.push(path);
-          element.$update('count');
-          element.$update('reentrant');
+          element[REQUEST_UPDATE]('count');
+          element[REQUEST_UPDATE]('reentrant');
           throw failure;
         }
         applied.push(path);
       } },
     });
     try {
-      for (const path of paths) element.$update(path);
+      for (const path of paths) element[REQUEST_UPDATE](path);
       assert.equal(queued.length, 1);
       assert.throws(() => queued.shift()!(), failure);
       if (paths.includes('otherRaw')) {
@@ -235,8 +236,8 @@ test('a rejected binding does not drop a later path queued before the flush', ()
     } },
   });
   try {
-    element.$update('raw');
-    element.$update('count');
+    element[REQUEST_UPDATE]('raw');
+    element[REQUEST_UPDATE]('count');
     assert.equal(queued.length, 1);
     assert.throws(() => queued.shift()!(), failure);
     assert.equal(queued.length, 1);
@@ -902,7 +903,7 @@ describe('TemplateElement — hydration lifecycle exceptions', () => {
 
   test('a reconnect update throw also balances hydration lifecycle', () => {
     class ThrowingReconnectElement extends TemplateElement {
-      override $update(): void {
+      override [REQUEST_UPDATE](): void {
         throw new Error('reconnect update failed');
       }
     }

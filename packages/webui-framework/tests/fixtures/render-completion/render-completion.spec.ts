@@ -1,12 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+import { FLUSH_UPDATES } from '../../../src/render-scheduler.js';
 import { expect, test, type Page } from '@playwright/test';
 
 type RenderHost = HTMLElement & {
   value: string;
   $whenRendered(): Promise<void>;
-  $flushUpdates(): void;
+  [FLUSH_UPDATES](): void;
   captureInChanged: boolean;
   throwInChanged: boolean;
   pending: Promise<void> | undefined;
@@ -15,6 +16,27 @@ type RenderHost = HTMLElement & {
   note: string;
   html: string;
 };
+
+test('a reactive assignment and completion are sufficient to focus a revealed ref', async ({ page }) => {
+  await page.goto('/render-completion/fixture.html');
+  await expect(page.getByRole('button', { name: 'Continue', exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Show action', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Continue', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Continue', exact: true })).toBeFocused();
+});
+
+test('only completion is exposed as a public rendering control', async ({ page }) => {
+  await page.goto('/render-completion/fixture.html');
+  const controls = await page.evaluate(() => {
+    const root = document.querySelector<RenderHost>('test-completion-root')!;
+    return {
+      completion: typeof root.$whenRendered,
+      update: '$update' in root,
+      flush: '$flushUpdates' in root,
+    };
+  });
+  expect(controls).toEqual({ completion: 'function', update: false, flush: false });
+});
 
 test('one completion includes affected nested Shadow and Light updates', async ({ page }) => {
   await page.goto('/render-completion/fixture.html');
@@ -55,6 +77,21 @@ test('a request from Changed includes the setter trailing that callback', async 
     return child.shadowRoot!.querySelector('.action')!.textContent;
   });
   expect(value).toBe('21');
+});
+
+test('the first boundary can open inside an otherwise unobserved parent render', async ({ page }) => {
+  await page.goto('/render-completion/fixture.html');
+  const value = await page.evaluate(async () => {
+    const root = document.querySelector<RenderHost>('test-completion-root')!;
+    const child = root.shadowRoot!.querySelector<RenderHost>('test-completion-child')!;
+    child.captureInChanged = true;
+    root.value = '50';
+    await Promise.resolve();
+    if (!child.pending) throw new Error('the parent render did not open a child boundary');
+    await child.pending;
+    return child.shadowRoot!.querySelector('.action')!.textContent;
+  });
+  expect(value).toBe('51');
 });
 
 test('callback failure rejects a requested boundary without swallowing the error', async ({ page }) => {

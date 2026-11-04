@@ -1,4 +1,8 @@
 <template shadowrootmode="open">
+  <button @click="{revealAction()}">Show action</button>
+  <if condition="showAction">
+    <button w-ref="{actionButton}">Continue</button>
+  </if>
   <test-completion-child value="{{value}}"></test-completion-child>
   <slot></slot>
   <div class="raw">{{{html}}}</div>

@@ -320,9 +320,17 @@ DOM and refs. Live callbacks remain synchronous, while template updates
 coalesce independently. Disconnect pauses authored effects without losing the
 state needed to reconcile on reconnect.
 
+One browser render scheduler owns the queue of ready component updates and
+drains their synchronous consequences in the same microtask. Resource-gated
+mounts retain explicit pending work without blocking unrelated ready updates.
+Completion observes this scheduler's work rather than maintaining a second
+index of queued updates; ordinary scheduling creates no per-component
+microtask closures or completion promises.
+
 Applications can observe completion of a finite, scoped batch of browser
-render work and its affected descendants without choosing synchronous child
-flush order. This boundary follows rendered ownership and includes started
+render work and its affected descendants through one author-facing completion
+operation, without choosing synchronous child flush order. This boundary
+follows rendered ownership and includes started
 DOM-gated mount continuations, but does not force deferred hydration, wait for
 unrelated future work, or imply paint. Failed or readiness-blocked affected
 work cannot be reported as successful completion. Interaction policy, including

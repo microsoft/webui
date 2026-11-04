@@ -224,8 +224,8 @@ Use `@observable` for internal state that changes over time. When an observable 
 
 Observable values are readable immediately. Changes to bindings are targeted
 and batched in a microtask, so multiple assignments in one turn normally cause
-one DOM update. Call `$flushUpdates()` if code needs pending template updates
-synchronously.
+one DOM update. Use `$whenRendered()` when subsequent code needs the updated
+DOM.
 
 You do not need `@observable` for values that are only read by the template.
 Add `@observable` when TypeScript code needs to read or mutate the value, for
@@ -233,42 +233,61 @@ example in an event handler.
 
 ### Wait for affected rendering
 
-Use `await this.$whenRendered()` before DOM work that depends on pending
-updates in this component **and its affected WebUI descendants**:
+**Change state, await rendering, then use the updated DOM.** Use
+`await this.$whenRendered()` for focus, scrolling, or other DOM work that
+depends on the change. It waits for this component **and its affected WebUI
+descendants**. Reactive assignments already request rendering; no explicit
+update or flush is needed.
 
-```typescript
-this.items = remainingItems;
-await this.$whenRendered();
-// Revalidate focus intent and select a surviving row here.
+For example, show a button in the template:
+
+```html
+<button @click="{revealAction()}">Show action</button>
+<if condition="showAction">
+  <button w-ref="{actionButton}">Continue</button>
+</if>
 ```
 
-The method preserves batching. It includes work pending when requested, the
-rest of the current synchronous turn (including a setter's trailing update
-when called from a Changed callback), synchronous/reentrant render
-consequences, and DOM insertion for affected mounts already waiting for
-stylesheets. Shadow, Light, and slotted descendants participate. Untouched
-dormant components do not participate, and removed rows need not finish
-rendering.
+Then focus it from the component's event handler:
 
-This is a finite render boundary, not subtree idleness or paint. Later
-independent updates, timers, fetches, asynchronous user callbacks, and foreign
-component rendering are outside its guarantee. It does not await layout,
-fonts, images, animations, or general stylesheet readiness. DOM may change
-again before your continuation runs; focus destination and avoiding focus
-theft remain application policy.
+```typescript
+@observable showAction = false;
+declare actionButton: HTMLButtonElement;
 
-Call it on a connected, mounted component. Affected work blocked on lazy
-hydration, unfinished streaming, an unloaded WebUI definition, or missing
-template metadata rejects with an `InvalidStateError`; it does not force
-activation or report partial success. Root disconnection or unexpected loss
-of captured work rejects with an `AbortError`. Render/callback failures reject
-with their original error, and failed stylesheet-gated mounts reject even
-when rendering continues with native links. Handle these rejections at your
-application's error boundary. After the component becomes ready, a new request
-can succeed. Resource-gated mounts have no completion deadline.
+async revealAction(): Promise<void> {
+  this.showAction = true;
+  await this.$whenRendered();
+  this.actionButton.focus();
+}
+```
 
-`$flushUpdates()` remains an instance-local, synchronous escape hatch; it is
-not a descendant-completion boundary.
+Declare `showAction: false` in the initial server state as well. This example
+assumes focus intent is still current when rendering completes. For a wait
+that can outlast the interaction, revalidate that intent before moving focus.
+Handle completion failures at your application's error boundary.
+
+The promise preserves batching and waits for a **finite batch of DOM updates**:
+pending work, changes in the current synchronous turn, and updates they cause
+in affected WebUI descendants. This includes Shadow, Light, and slotted
+descendants and DOM insertion already waiting for component stylesheets.
+Untouched dormant components are not activated.
+
+It does **not** wait for later independent updates, timers, fetches, asynchronous
+user callbacks, or non-WebUI rendering. Completion does not imply layout or
+paint, loaded images or fonts, or finished animations. Use this method instead
+of timers or counting microtasks.
+
+Call it on a connected, mounted component. Handle rejections at your
+application's error boundary:
+
+| Failure | Meaning |
+|---|---|
+| `InvalidStateError` | The component or affected work is not ready, such as deferred hydration, incomplete streaming, or unloaded definitions/templates. Wait for readiness before making a new request. |
+| `AbortError` | The component disconnected or captured work unexpectedly left its scope. |
+| Original error | Rendering, a property callback, or a required mount stylesheet failed. |
+
+Stylesheet waits have no deadline. The DOM can change again before your code
+resumes; focus selection and avoiding focus theft remain application policy.
 
 ### React to Property Changes
 
@@ -293,8 +312,8 @@ For work that runs only once regardless of property values, use
 `hydratedCallback()`. Optional resources and deferred descendants may still
 need readiness checks.
 
-Callback errors propagate. The failed callback is not retried; call
-`$flushUpdates()` or reconnect the element to resume other pending callbacks.
+Callback errors propagate. The failed callback is not retried; reconnecting
+the element resumes other pending initial callbacks.
 
 ### Initial Hydration State
 

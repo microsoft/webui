@@ -819,21 +819,27 @@ closed-shadow click targets. See
 | Method / property | Description |
 |---|---|
 | `this.$emit(name, detail?)` | Dispatch a bubbling CustomEvent |
-| `this.$update()` | Force a reactive update cycle |
-| `this.$flushUpdates()` | Synchronously flush pending updates |
-| `await this.$whenRendered()` | Await a finite batch of pending rendering and affected WebUI descendants, including started DOM-gated mounts |
+| `await this.$whenRendered()` | Wait for pending DOM updates in this component and its affected WebUI descendants before using the updated DOM |
 | `<property>Changed(oldValue, newValue)` | For `@attr` and `@observable`, run once after the component mounts with `oldValue` undefined, then synchronously on each live assignment |
 | `protected hydratedCallback()` | Run synchronously once after the first successful hydration or client mount |
 | `static define(tagName)` | Register as a custom element |
 | Generated component asset root | Import a stable generated `<tag>.webui.js` payload, then wrap its default export with `defineComponentAsset()` |
 
-For post-render DOM work, prefer `$whenRendered()` over flushing children or
-guessing microtask turns. It preserves batching, includes Shadow/Light/slotted
-descendants, rejects affected readiness blockers and rendering failures, and
-does not wait for untouched dormant components, later independent work, or
-paint. Revalidate focus intent and targets after awaiting; focus policy stays
-in the application. See [affected rendering](/learn/interactivity#wait-for-affected-rendering)
-for the readiness, failure, and resource-wait contract.
+**Change state, await rendering, then use the DOM.** Reactive assignments
+request updates automatically:
+
+```typescript
+this.showAction = true;
+await this.$whenRendered();
+this.actionButton.focus(); // w-ref="{actionButton}" on the conditional button
+```
+
+Call it on a connected, mounted component. It includes affected WebUI
+descendants, not unrelated future work or paint. Handle rejections at your
+application's error boundary and recheck focus intent after awaiting. See
+[affected rendering](/learn/interactivity#wait-for-affected-rendering)
+for the complete contract. Do not count microtasks or use timers to guess when
+rendering has finished.
 
 ### Custom events
 
@@ -890,7 +896,7 @@ pre-`super.connectedCallback()` writes safe.
 once with `oldValue` undefined for initial state, then synchronously for each
 live assignment. Template bindings remain batched in a microtask.
 Disconnected changes reconcile on reconnect. A throwing callback is not retried;
-`$flushUpdates()` or reconnect resumes other pending callbacks.
+reconnecting resumes other pending initial callbacks.
 
 Load buffered definitions through a parser-inserted, non-async ES module script
 or a classic `defer` script. Descendants must not structurally mutate a

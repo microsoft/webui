@@ -1,20 +1,25 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-const PREVIOUS = Symbol('render.previous');
-const NEXT = Symbol('render.next');
-const FLAGS = Symbol('render.flags');
-const RENDER_DEPTH = 4;
+import {
+  finishRender,
+  observeRender,
+  pendingRenders,
+  RENDER,
+  RENDER_PENDING,
+} from './render-scheduler.js';
+
+const DEPTH = Symbol('render.depth');
 
 interface WorkElement extends Element {
-  [PREVIOUS]?: WorkElement | null;
-  [NEXT]?: WorkElement;
-  [FLAGS]?: number;
+  [DEPTH]?: number;
+  [RENDER_PENDING]?: number;
 }
 
 interface Completion {
   readonly root: Element;
   readonly pending: Set<WorkElement>;
+  readonly observers: Set<Completion>;
   readonly resolve: () => void;
   readonly reject: (error: unknown) => void;
   stagedBlocked?: Set<BlockedTarget>;
@@ -29,8 +34,9 @@ class BlockedTarget extends WeakRef<Element> {
 
 export const UPDATE_WORK = 1;
 export const MOUNT_WORK = 2;
+export let observingRender = false;
 
-let head: WorkElement | undefined;
+const gated = new Map<WorkElement, number>();
 let active: Set<Completion> | undefined;
 const completions = new Set<Completion>();
 const opening = new Set<Completion>();
@@ -44,18 +50,11 @@ const finalizedBlocked = new FinalizationRegistry<BlockedTarget>(
 );
 
 function inScope(element: Element, root: Node): boolean {
-  let node: Element | null = element;
+  let node: Node | null = element;
   while (node) {
     if (node === root) return true;
-    const parent: Element | null = node.assignedSlot ?? node.parentElement;
-    if (parent) {
-      node = parent;
-    } else {
-      const tree = node.getRootNode();
-      node = tree.nodeType === 11
-        ? (tree as ShadowRoot).host ?? null
-        : null;
-    }
+    node = (node as Element).assignedSlot ?? node.parentNode ??
+      (node.nodeType === 11 ? (node as ShadowRoot).host ?? null : null);
   }
   return false;
 }
@@ -70,11 +69,13 @@ function invalidState(element: Element, reason: string): DOMException {
 
 function release(completion: Completion, error?: { readonly value: unknown }): void {
   if (!completions.delete(completion)) return;
+  observingRender = completions.size !== 0;
+  if (!observingRender) observeRender(undefined);
   opening.delete(completion);
   for (const element of completion.pending) {
     const waiters = workByElement.get(element);
-    waiters?.delete(completion);
-    if (!waiters?.size) workByElement.delete(element);
+    if (waiters?.size === 1) workByElement.delete(element);
+    else waiters?.delete(completion);
     const expected = expectedRemovals.get(element);
     if (expected?.delete(completion) && !expected.size) {
       expectedRemovals.delete(element);
@@ -106,10 +107,16 @@ function include(element: WorkElement, completion: Completion): void {
       !completions.has(completion) || !inScope(element, completion.root)) return;
   let work = workByElement.get(element);
   if (!work) {
-    work = new Set();
+    work = completion.observers;
     workByElement.set(element, work);
+  } else if (!work.has(completion)) {
+    // A single observer is shared across its jobs; only overlaps need a copy.
+    if (work.size === 1) {
+      work = new Set(work);
+      workByElement.set(element, work);
+    }
+    work.add(completion);
   }
-  work.add(completion);
   completion.pending.add(element);
 }
 
@@ -125,30 +132,15 @@ export function queueRenderWork(
   kind: number,
   immediate = false,
 ): boolean {
-  if (immediate && !completions.size) return false;
-  if (completions.size && element.isConnected) expectedRemovals.delete(element);
-  element[FLAGS] = (element[FLAGS] ?? 0) | kind;
-  if (element[PREVIOUS] === undefined) {
-    element[PREVIOUS] = null;
-    element[NEXT] = head;
-    if (head) head[PREVIOUS] = element;
-    head = element;
-  }
-  if (completions.size) enroll(element);
+  if (immediate && !observingRender) return false;
+  if (observingRender && element.isConnected) expectedRemovals.delete(element);
+  gated.set(element, (gated.get(element) ?? 0) | kind);
+  if (observingRender) enroll(element);
   return true;
 }
 
 function detach(element: WorkElement): void {
-  const previous = element[PREVIOUS];
-  if (previous !== undefined) {
-    const next = element[NEXT];
-    if (previous) previous[NEXT] = next;
-    else head = next;
-    if (next) next[PREVIOUS] = previous;
-    element[PREVIOUS] = undefined;
-    element[NEXT] = undefined;
-  }
-  if (!completions.size) return;
+  if (!observingRender) return;
   const work = workByElement.get(element);
   const expected = expectedRemovals.get(element);
   expectedRemovals.delete(element);
@@ -169,18 +161,19 @@ function detach(element: WorkElement): void {
 }
 
 export function finishRenderWork(element: WorkElement, kind: number): void {
-  element[FLAGS] = (element[FLAGS] ?? 0) & ~kind;
-  if (!element[FLAGS]) detach(element);
+  const remaining = (gated.get(element) ?? 0) & ~kind;
+  if (remaining) gated.set(element, remaining);
+  else gated.delete(element);
+  if (!remaining && !element[RENDER_PENDING] && !element[DEPTH]) detach(element);
 }
 
 export function enterRenderWork(element: WorkElement): Set<Completion> | undefined {
   const previous = active;
-  if (!completions.size) {
-    const flags = element[FLAGS] ?? 0;
-    if (flags >= RENDER_DEPTH) element[FLAGS] = flags + RENDER_DEPTH;
+  if (!observingRender) {
+    if (element[DEPTH]) element[DEPTH]++;
     return previous;
   }
-  element[FLAGS] = (element[FLAGS] ?? 0) + RENDER_DEPTH;
+  element[DEPTH] = (element[DEPTH] ?? 0) + 1;
   enroll(element);
   const work = workByElement.get(element);
   active = work;
@@ -204,10 +197,10 @@ export function leaveRenderWork(
   previous: Set<Completion> | undefined,
 ): void {
   active = previous;
-  const flags = element[FLAGS] ?? 0;
-  if (flags < RENDER_DEPTH) return;
-  element[FLAGS] = flags - RENDER_DEPTH;
-  if (!element[FLAGS]) detach(element);
+  const depth = element[DEPTH];
+  if (!depth) return;
+  element[DEPTH] = depth - 1;
+  if (depth === 1 && !element[RENDER_PENDING] && !gated.has(element)) detach(element);
 }
 
 export function invokeRenderCallback(
@@ -216,7 +209,7 @@ export function invokeRenderCallback(
   oldValue: unknown,
   newValue: unknown,
 ): void {
-  const observed = completions.size !== 0;
+  const observed = observingRender;
   const previous = observed ? enterRenderWork(element) : undefined;
   try {
     callback.call(element, oldValue, newValue);
@@ -248,7 +241,7 @@ export function blockRenderWork(element: Element, reason: string): void {
     blocked.add(state);
     finalizedBlocked.register(element, state, state);
   }
-  if (!completions.size) return;
+  if (!observingRender) return;
   for (const completion of opening) {
     if (inScope(element, completion.root)) {
       release(completion, { value: invalidState(element, reason) });
@@ -318,7 +311,9 @@ export function destroyRenderWork(element: WorkElement): void {
       }
     }
   }
-  element[FLAGS] = 0;
+  element[DEPTH] = 0;
+  gated.delete(element);
+  finishRender(element);
   detach(element);
   expectedRemovals.delete(element);
 }
@@ -328,7 +323,7 @@ export function expectRenderRemoval(
   end?: Node,
 ): readonly Node[] | undefined {
   const previous = removing;
-  if (!completions.size) return previous;
+  if (!observingRender) return previous;
   if (end) {
     const nodes: Node[] = [];
     for (let current = node.nextSibling; current && current !== end; current = current.nextSibling) {
@@ -351,17 +346,34 @@ export function whenRendered(element: Element, unavailable?: string): Promise<vo
     const completion: Completion = {
       root: element,
       pending: new Set(),
+      observers: new Set(),
       resolve,
       reject,
       open: true,
     };
+    completion.observers.add(completion);
     completions.add(completion);
+    observingRender = true;
+    observeRender({
+      queued(target) {
+        if (target.isConnected) expectedRemovals.delete(target);
+        enroll(target);
+      },
+      render(target) {
+        const previous = enterRenderWork(target);
+        try {
+          target[RENDER]();
+        } finally {
+          leaveRenderWork(target, previous);
+        }
+      },
+      finished(target) { finishRenderWork(target, 0); },
+    });
     opening.add(completion);
-    let node = head;
-    while (node) {
-      include(node, completion);
-      node = node[NEXT];
+    for (const node of pendingRenders) {
+      if (node) include(node, completion);
     }
+    for (const node of gated.keys()) include(node, completion);
     for (const reference of blocked) {
       const target = reference.deref();
       if (!target) {

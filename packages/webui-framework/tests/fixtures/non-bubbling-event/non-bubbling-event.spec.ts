@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+import { FLUSH_UPDATES } from '../../../src/render-scheduler.js';
 import { expect, test } from '@playwright/test';
 
 test.describe('non-bubbling event fixture', () => {
@@ -19,7 +20,7 @@ test.describe('non-bubbling event fixture', () => {
       const field = root.querySelector('.field') as HTMLInputElement;
       field.focus();
       field.blur();
-      host.$flushUpdates();
+      host[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
       return {
         focuses: host.focuses,
         blurs: host.blurs,
@@ -43,7 +44,7 @@ test.describe('non-bubbling event fixture', () => {
       const root = host.shadowRoot ?? host;
       root.querySelector('.thumb').dispatchEvent(new Event('error'));
       root.querySelector('.box').dispatchEvent(new MouseEvent('mouseenter'));
-      host.$flushUpdates();
+      host[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
       return { errors: host.errors, enters: host.enters };
     });
 
@@ -57,7 +58,7 @@ test.describe('non-bubbling event fixture', () => {
       const root = host.shadowRoot ?? host;
       const rows = root.querySelectorAll('.row-input');
       (rows[1] as HTMLInputElement).focus();
-      host.$flushUpdates();
+      host[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
       return { rowCount: rows.length, lastRowId: host.lastRowId };
     });
 
@@ -70,7 +71,7 @@ test.describe('non-bubbling event fixture', () => {
       const host = document.querySelector('test-non-bubbling') as any;
       const root = host.shadowRoot ?? host;
       root.querySelector('.btn').dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
-      host.$flushUpdates();
+      host[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
       return host.clicks;
     });
 
@@ -86,7 +87,7 @@ test.describe('non-bubbling event fixture', () => {
       const widget = root.querySelector('.widget');
       const picked = new CustomEvent('ui-picked');
       widget.dispatchEvent(picked);
-      host.$flushUpdates();
+      host[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
       return { picks: host.picks, bubbles: picked.bubbles };
     });
 
@@ -99,7 +100,7 @@ test.describe('non-bubbling event fixture', () => {
       const host = document.querySelector('test-non-bubbling') as any;
       const root = host.shadowRoot ?? host;
       root.querySelector('.widget').dispatchEvent(new Event('cuechange'));
-      host.$flushUpdates();
+      host[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
       return host.cues;
     });
 
@@ -114,7 +115,7 @@ test.describe('non-bubbling event fixture', () => {
       const child = document.createElement('span');
       widget.appendChild(child);
       child.dispatchEvent(new CustomEvent('ui-picked', { bubbles: true }));
-      host.$flushUpdates();
+      host[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
       return host.picks;
     });
 
@@ -131,7 +132,7 @@ test.describe('non-bubbling event fixture', () => {
       guard.addEventListener('click', (event: Event) => event.stopPropagation());
       const button = root.querySelector('.guarded') as HTMLButtonElement;
       button.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
-      host.$flushUpdates();
+      host[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
       return host.guardedClicks;
     });
 
@@ -146,15 +147,15 @@ test.describe('non-bubbling event fixture', () => {
 
       // Positive control: the same node, same dispatch, before its block is torn down.
       removed.dispatchEvent(new FocusEvent('focus'));
-      host.$flushUpdates();
+      host[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
       const before = host.lastRowId;
 
       host.items = [{ id: 'a' }];
-      host.$flushUpdates();
+      host[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
 
       host.lastRowId = '';
       removed.dispatchEvent(new FocusEvent('focus'));
-      host.$flushUpdates();
+      host[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
 
       return { before, rows: root.querySelectorAll('.row-input').length, after: host.lastRowId };
     });

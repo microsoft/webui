@@ -18,6 +18,7 @@
  */
 
 import { invokeRenderCallback } from './render-completion.js';
+import { REQUEST_UPDATE } from './render-scheduler.js';
 
 // ---------------------------------------------------------------------------
 // kebab-case attribute naming
@@ -277,7 +278,7 @@ function createReactiveProperty(
       const oldValue = this[backingKey];
       if (Object.is(oldValue, newValue)) {
         if (this['$deferredSSR'] === true) {
-          const update = this['$update'] as
+          const update = this[REQUEST_UPDATE] as
             | ((path?: string) => void)
             | undefined;
           if (update) update.call(this, name);
@@ -319,7 +320,7 @@ function createReactiveProperty(
         (this as unknown as HTMLElement).isConnected ||
         this['$deferredSSR'] === true
       ) {
-        const upd = this['$update'] as ((path?: string) => void) | undefined;
+        const upd = this[REQUEST_UPDATE] as ((path?: string) => void) | undefined;
         if (upd) upd.call(this, name);
       }
     },

@@ -76,8 +76,17 @@ the captured value, including while the element remains detached.
 
 ### Affected-render completion
 
-`TemplateElement.$whenRendered(): Promise<void>` observes a finite batch using
-the existing per-element scheduler. Capture pending jobs, started staged mounts,
+`TemplateElement.$whenRendered(): Promise<void>` is the only public rendering
+control. Reactive update requests and synchronous host flushes use internal
+symbols, not public `$update` or `$flushUpdates` methods.
+
+A shared FIFO scheduler drains ready component updates and their synchronous
+consequences within one microtask. Later application microtasks do not
+interleave between these parent and descendant jobs. A failed job still throws
+to the host and schedules remaining jobs for a subsequent drain. A synchronous
+host flush cancels its old queue slot so a new generation keeps FIFO order.
+
+Completion captures pending jobs, started staged mounts,
 and retained blocked writes in the root's rendered ancestry scope. Walk
 assigned slots, parent elements, and shadow hosts, not DOM subtrees. Keep
 enrollment open until one explicit microtask checkpoint so requests from a
@@ -91,12 +100,17 @@ jobs, user microtasks, async callback returns, timers, and later stream records
 are not automatically included. The boundary covers own DOM/refs and
 synchronous lifecycle work, not foreign component schedulers or paint.
 
-The pending index must discover work queued before a request without eager
-promises. Live work uses a transient intrusive list; blocked targets use weak
+The scheduler's actual ready queue discovers work queued before a request;
+do not mirror updates in a second pending index. Cleared queue slots release
+completed targets. Explicit resource-gated mount work remains separate from
+the ready queue and does not block its drain. Neither path allocates per-job
+wrapper objects or eager promises. Blocked targets use weak
 references and retain no copied state or strong subtree ownership. Initial
 discovery scales with outstanding work and ancestry depth, not just affected
-bindings. Waiter membership exists only for requested boundaries and is released
-on settlement. Do not equate an empty instance queue or the startup hydration
+bindings. Waiter membership exists only for requested boundaries: jobs share a
+single observer set unless requests overlap. Release membership on settlement,
+and bypass observer-scope bookkeeping when no boundary is requested. Do not
+equate an empty instance queue or the startup hydration
 event with affected-descendant completion.
 
 Untouched dormant descendants do not participate. Writes to readiness-blocked

@@ -17,6 +17,7 @@
 
 import { TemplateElement } from './template-element.js';
 import { invokeRenderCallback } from './render-completion.js';
+import { FLUSH_UPDATES } from './render-scheduler.js';
 import {
   disconnectLazyHydration,
   isStreamedLazyActivation,
@@ -181,9 +182,9 @@ export class WebUIElement extends TemplateElement {
     return !this.$pendingPropertyChanges;
   }
 
-  override $flushUpdates(): void {
+  override [FLUSH_UPDATES](): void {
     if (this.$pendingPropertyChanges) this.$notifyHydrated();
-    super.$flushUpdates();
+    super[FLUSH_UPDATES]();
   }
 
   private $flushAuthoredChanges(): void {

@@ -155,6 +155,14 @@ webui build ./src --out ./dist-shadow --plugin webui --css link --dom shadow
 A common architecture is a Light DOM application shell with selected Shadow DOM
 widgets where encapsulation provides concrete value.
 
+## Batch state changes before observing rendering
+
+Make related state changes together, then await `$whenRendered()` only if
+subsequent code needs the updated DOM. Awaiting after each item in a loop
+serializes rendering instead of letting writes coalesce. Use the closest
+component that owns the affected DOM rather than a page-wide ancestor.
+See [post-render DOM work](/learn/interactivity#wait-for-affected-rendering).
+
 ## Prefer Rust on the hottest SSR path
 
 Supported hosts use the WebUI renderer, but host-side state preparation,
