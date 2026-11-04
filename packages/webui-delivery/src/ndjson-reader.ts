@@ -26,6 +26,7 @@ export class NdjsonReader {
   private length = 0;
   private ended = false;
   private reading = false;
+  private cancellation: Promise<void> | undefined;
   private readonly limit: number;
   private readonly signal: AbortSignal | undefined;
   private readonly decoder = new TextDecoder('utf-8', { fatal: true });
@@ -138,6 +139,7 @@ export class NdjsonReader {
 
   /** Release buffered bytes and cancel an unread body. Safe to call repeatedly. */
   async cancel(reason?: unknown): Promise<void> {
+    if (this.cancellation) return this.cancellation;
     const reader = this.reader;
     this.ended = true;
     this.chunk = undefined;
@@ -147,9 +149,11 @@ export class NdjsonReader {
     if (!reader) return;
     try {
       const cancellation = reader.cancel(reason);
+      this.cancellation = cancellation;
       this.releaseReader();
       await cancellation;
     } finally {
+      this.cancellation = undefined;
       this.releaseReader();
     }
   }

@@ -33,7 +33,7 @@ export interface StreamingContext {
   setDeferredReader(reader: Promise<void> | null): void;
   setDeferredGeneration(gen: number): void;
   updateInventory(inv: string, styleInventory?: string): void;
-  markCacheComplete(requestPath: string): void;
+  settleCacheStream(requestPath: string, data: StreamingPartialResponse, completed: boolean): void;
 }
 
 /**
@@ -79,8 +79,12 @@ export async function readStreamingPartial(
     attachDeferredStream(data, {
       async cancel() {
         started = true;
-        await records.cancel();
-        context.setDeferredReader(null);
+        try {
+          await records.cancel();
+        } finally {
+          context.settleCacheStream(requestPath, data, false);
+          context.setDeferredReader(null);
+        }
       },
       start() {
         if (started) return;
@@ -148,7 +152,9 @@ async function continueDeferredRead(
 ): Promise<void> {
   const { context, generation, signal } = options;
   let receivedState = options.receivedState;
+  let completed = false;
   try {
+    if (signal?.aborted || generation !== context.navGeneration) return;
     await records.drain(value => {
       if (signal?.aborted || generation !== context.navGeneration) {
         throw new DOMException('Navigation superseded', 'AbortError');
@@ -160,9 +166,13 @@ async function continueDeferredRead(
     });
     if (signal?.aborted || generation !== context.navGeneration) return;
     if (!receivedState) throw new Error('[Router] NDJSON response ended before deferred state arrived.');
-    context.markCacheComplete(requestPath);
+    completed = true;
   } finally {
-    await records.cancel();
+    try {
+      await records.cancel();
+    } finally {
+      context.settleCacheStream(requestPath, data, completed);
+    }
   }
 }
 

@@ -7,12 +7,13 @@ import './component-definitions';
 import { routerConfig } from './router-config';
 
 const router = new WebUIRouter();
-const zeroFreshness = new URL(location.href).searchParams.get('cache') === 'zero';
+const cacheMode = new URL(location.href).searchParams.get('cache');
+const zeroFreshness = cacheMode === 'zero' || cacheMode === 'zero-stream';
 const start = () => router.start({
   ...routerConfig,
   cache: zeroFreshness ? navigationCache() : routerConfig.cache,
   // The zero-freshness regression exercises completed JSON, not deferred streaming.
-  transport: zeroFreshness ? undefined : ndjson(),
+  transport: cacheMode === 'zero' ? undefined : ndjson(),
   boundaries: routeBoundaries,
   transitions: viewTransitions,
 });

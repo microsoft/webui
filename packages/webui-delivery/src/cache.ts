@@ -162,6 +162,17 @@ export class NavigationCache {
     }
   }
 
+  /** Settle only the stream that owns this entry, releasing ordinary zero-freshness data. */
+  settleStream(requestPath: string, data: PartialResponse, completed: boolean): void {
+    const entry = this.cache.get(requestPath);
+    if (!entry || entry.data !== data) return;
+    if (!entry.preload && (entry.staleTime ?? this.config.staleTime) === 0) {
+      this.evict(requestPath);
+    } else if (completed) {
+      entry.complete = true;
+    }
+  }
+
   /** Evict a single cache entry and clean up its tag index references. */
   evict(requestPath: string): void {
     const entry = this.cache.get(requestPath);
@@ -224,7 +235,7 @@ export class NavigationCache {
     return this.cache.has(requestPath);
   }
 
-  /** Get the raw cache entry (for marking complete after streaming finishes). */
+  /** Get the raw cache entry. */
   getEntry(requestPath: string): CacheEntry | undefined {
     return this.cache.get(requestPath);
   }

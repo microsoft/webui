@@ -108,6 +108,28 @@ test('explicit cancellation discards an unread tail and is idempotent', async ()
   assert.equal(stream.locked, false);
 });
 
+test('concurrent cancellation joins the same cleanup after releasing the reader lock', async () => {
+  const release = Promise.withResolvers<void>();
+  let cancellations = 0;
+  const stream = new ReadableStream<Uint8Array>({
+    cancel() {
+      cancellations++;
+      return release.promise;
+    },
+  });
+  const reader = new NdjsonReader(stream);
+  const first = reader.cancel();
+  assert.equal(stream.locked, false);
+  let settled = false;
+  const second = reader.cancel().then(() => { settled = true; });
+  await Promise.resolve();
+  assert.equal(settled, false, 'another owner cannot settle while cleanup is pending');
+  release.resolve();
+  await Promise.all([first, second]);
+  assert.equal(cancellations, 1);
+  assert.equal(settled, true);
+});
+
 test('invalid buffered records also release an abandoned body', async () => {
   let cancelled = false;
   const stream = new ReadableStream<Uint8Array>({

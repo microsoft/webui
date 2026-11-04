@@ -851,10 +851,10 @@ export class WebUIRouter {
       },
       setDeferredGeneration(g) { self.deferredGeneration = g; },
       updateInventory(inv, styles) { self.updateInventory(inv, epoch, styles); },
-      markCacheComplete(p) {
-        if (requestController?.signal.aborted) return;
-        const entry = self.navCache?.getEntry(p);
-        if (entry) entry.complete = true;
+      settleCacheStream(path, data, completed) {
+        self.navCache?.settleStream(
+          path, data, completed && !requestController?.signal.aborted,
+        );
       },
     };
   }
