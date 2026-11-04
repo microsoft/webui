@@ -81,6 +81,12 @@ pub mod codes {
     pub const MISSING_IF_CONDITION: &str = "missing-if-condition";
     /// `<if condition>` value is not a parseable expression.
     pub const INVALID_IF_CONDITION: &str = "invalid-if-condition";
+    /// The if directive has an unsupported attribute.
+    pub const INVALID_IF_ATTRIBUTE: &str = "invalid-if-attribute";
+    /// `lazy` names an unknown prefetch trigger.
+    pub const INVALID_LAZY_ATTRIBUTE: &str = "invalid-lazy-attribute";
+    /// The selected client plugin does not support deferred component metadata.
+    pub const UNSUPPORTED_LAZY_PLUGIN: &str = "unsupported-lazy-plugin";
     /// A component tag has no matching registered component.
     pub const UNKNOWN_COMPONENT: &str = "unknown-component";
     /// An `@event` handler value is not a valid `{handler()}` expression.
@@ -191,6 +197,21 @@ pub mod codes {
     pub const MULTIPLE_OUTLETS: &str = "multiple-outlets";
     /// Static component assets were requested for a graph containing `<route>`.
     pub const COMPONENT_ASSETS_WITH_ROUTES: &str = "component-assets-with-routes";
+    /// Deferred protocol-backed bodies cannot be pruned into static-only assets.
+    pub const COMPONENT_ASSETS_WITH_LAZY: &str = "component-assets-with-lazy";
+    /// A component module mapping (`--component-module`, `componentModules`)
+    /// names an invalid custom element tag or an unusable module specifier.
+    pub const INVALID_COMPONENT_MODULE: &str = "invalid-component-module";
+    /// A component module mapping names a tag that no registered component
+    /// uses, so the build never needs it. Severity: warning.
+    pub const UNKNOWN_COMPONENT_MODULE: &str = "unknown-component-module";
+    /// A lazy region introduces a client-owned component whose module is
+    /// unknown, so the generated `lazy.webui.js` cannot load its code with the
+    /// region. Severity: warning.
+    pub const LAZY_COMPONENT_WITHOUT_MODULE: &str = "lazy-component-without-module";
+    /// A component's module has no path relative to the generated-modules
+    /// directory, for example because it is on another Windows drive.
+    pub const UNREACHABLE_COMPONENT_MODULE: &str = "unreachable-component-module";
     /// A component's root rendering or hydration policy is malformed.
     pub const INVALID_COMPONENT_RENDER_POLICY: &str = "invalid-component-render-policy";
     /// Lazy rendering omitted the intrinsic block-size estimate needed to

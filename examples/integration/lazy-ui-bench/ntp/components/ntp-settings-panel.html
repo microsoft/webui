@@ -1,0 +1,66 @@
+<template shadowrootmode="open">
+  <section class="panel" role="dialog" aria-labelledby="settings-title" @keydown="{onKeydown(e)}">
+    <header class="head">
+      <h2 id="settings-title" class="title" data-ready>Page settings</h2>
+      <button type="button" class="icon" aria-label="Close page settings" @click="{dismiss()}">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15" /></svg>
+      </button>
+    </header>
+    <div class="body">
+      <fieldset class="group">
+        <legend>Layout</legend>
+        <div class="layouts" role="radiogroup" aria-label="Page layout" @keydown="{onRadioKey(e)}">
+          <for each="option in layouts">
+            <label class="layout">
+              <input type="radio" name="layout" value="{{option.id}}" ?checked="{{option.id == layout}}" @change="{chooseLayout(e)}">
+              <span class="preview preview-{{option.id}}" aria-hidden="true"><i></i><i></i><i></i></span>
+              <span class="layout-name">{{option.label}}</span>
+              <span class="layout-desc">{{option.description}}</span>
+            </label>
+          </for>
+        </div>
+      </fieldset>
+      <fieldset class="group">
+        <legend>Theme</legend>
+        <ntp-swatch-grid label="Theme color" selected="{{theme}}" :items="{{themes}}" @select="{chooseTheme(e)}"></ntp-swatch-grid>
+      </fieldset>
+      <fieldset class="group toggles">
+        <legend>Background and sections</legend>
+        <label class="toggle"><span><strong>Background image</strong><small>Show a photo behind the page.</small></span>
+          <input type="checkbox" role="switch" data-key="showBackground" ?checked="{{showBackground}}" @change="{toggle(e)}"></label>
+        <label class="toggle"><span><strong>Image of the day</strong><small>Change the photo every day.</small></span>
+          <input type="checkbox" role="switch" data-key="imageOfTheDay" ?checked="{{imageOfTheDay}}" @change="{toggle(e)}"></label>
+        <label class="toggle"><span><strong>Quick links</strong><small>Show the sites you visit most.</small></span>
+          <input type="checkbox" role="switch" data-key="showQuickLinks" ?checked="{{showQuickLinks}}" @change="{toggle(e)}"></label>
+        <label class="toggle"><span><strong>Weather</strong><small>Show the forecast for your location.</small></span>
+          <input type="checkbox" role="switch" data-key="showWeather" ?checked="{{showWeather}}" @change="{toggle(e)}"></label>
+        <label class="toggle"><span><strong>Open links in a new tab</strong><small>Keep this page open while you read.</small></span>
+          <input type="checkbox" role="switch" data-key="openInNewTab" ?checked="{{openInNewTab}}" @change="{toggle(e)}"></label>
+        <label class="toggle"><span><strong>Reduce motion</strong><small>Turn off animations and video previews.</small></span>
+          <input type="checkbox" role="switch" data-key="reduceMotion" ?checked="{{reduceMotion}}" @change="{toggle(e)}"></label>
+      </fieldset>
+      <fieldset class="group">
+        <legend>Content</legend>
+        <label class="field"><span>Feed</span>
+          <select @change="{chooseFeed(e)}">
+            <for each="option in feeds"><option value="{{option.id}}" ?selected="{{option.id == feed}}">{{option.label}}</option></for>
+          </select>
+        </label>
+        <label class="field"><span>Quick link rows</span>
+          <select @change="{chooseRows(e)}">
+            <option value="1" ?selected="{{rows == 1}}">One row</option>
+            <option value="2" ?selected="{{rows == 2}}">Two rows</option>
+          </select>
+        </label>
+      </fieldset>
+      <p class="summary" role="status">{{summary}}</p>
+      <if condition="status"><p class="status">{{status}}</p></if>
+    </div>
+    <footer class="foot">
+      <button type="button" class="link" @click="{reset()}">Reset to defaults</button>
+      <span class="spacer"></span>
+      <button type="button" class="secondary" ?disabled="{{pristine}}" @click="{undo()}">Undo</button>
+      <button type="button" class="primary" ?disabled="{{pristine}}" @click="{save()}">Save</button>
+    </footer>
+  </section>
+</template>

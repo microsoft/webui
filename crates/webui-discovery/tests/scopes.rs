@@ -207,6 +207,7 @@ impl DiscoveryPlugin for InlinePlugin {
             html_content: "<span>Inline</span>".to_string(),
             css_content: None,
             is_client_owned: false,
+            script_path: None,
             source: package.name.to_string(),
         }]))
     }
@@ -258,6 +259,16 @@ fn fast_uses_default_html_when_manifest_metadata_is_absent_or_empty() -> TestRes
     let result = discover_source_with_plugin("@fixture/plain/*", root.path(), &plugin)?;
     assert_eq!(result.components.len(), 1);
     assert!(result.components[0].is_client_owned);
+    // The FAST fallback catalog records the sibling module like native discovery.
+    let script = result.components[0]
+        .script_path
+        .as_deref()
+        .ok_or("FAST catalog fallback must record the sibling module")?;
+    assert_eq!(
+        script.file_name().and_then(|name| name.to_str()),
+        Some("plain-card.ts")
+    );
+    assert!(script.is_file());
     Ok(())
 }
 

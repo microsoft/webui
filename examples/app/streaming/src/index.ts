@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+import { startRuntime } from '@microsoft/webui-framework/runtime.js';
 /**
  * Streaming priority-hydration entry point.
  *
@@ -42,6 +43,8 @@ function logHydrationTiming(): void {
 // reaches the parser rather than being bundled into this critical entry.
 import './message-composer/message-composer.js';
 import './feed-item/feed-item.js';
+
+startRuntime();
 
 // Fallback: if hydration already completed before the listener attached,
 // log now instead of missing the event.

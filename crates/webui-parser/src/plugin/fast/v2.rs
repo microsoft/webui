@@ -196,8 +196,8 @@ impl ParserPlugin for FastV2ParserPlugin {
 /// that weren't encountered during initial parsing.
 ///
 /// This uses default Link-mode CSS filenames. Call
-/// [`generate_f_template_with_css_options`] when the build uses custom CSS
-/// filename templates or a public CSS base.
+/// [`generate_f_template_with_css_options`] when the build uses a custom CSS
+/// filename template.
 pub fn generate_f_template(
     tag_name: &str,
     html_content: &str,
@@ -574,6 +574,7 @@ mod tests {
             css_definitions: Vec::new(),
             css_fallback_chains: Vec::new(),
             is_client_owned: false,
+            script_path: None,
         }
     }
 
@@ -688,7 +689,7 @@ mod tests {
             .register_component_template(
                 "my-comp",
                 &comp,
-                r#"<template><link rel="stylesheet" href="my-comp.css"><div>hello</div></template>"#,
+                r#"<template><link rel="stylesheet" data-webui-stylesheet href="my-comp.css"><div>hello</div></template>"#,
             )
             .unwrap();
 
@@ -701,7 +702,9 @@ mod tests {
         assert!(html.contains("</f-template>"));
         assert!(html.contains("<template>"));
         assert!(html.contains("</template>"));
-        assert!(html.contains("<link rel=\"stylesheet\" href=\"my-comp.css\">"));
+        assert!(
+            html.contains("<link rel=\"stylesheet\" data-webui-stylesheet href=\"my-comp.css\">")
+        );
         assert!(html.contains("<div>hello</div>"));
     }
 

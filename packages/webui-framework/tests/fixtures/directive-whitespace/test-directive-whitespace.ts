@@ -2,6 +2,9 @@
 // Licensed under the MIT license.
 
 import { observable, WebUIElement } from '../../../src/index.js';
+import { startRuntime } from '../../../src/runtime.js';
+
+startRuntime();
 
 export interface WhitespaceItem {
   id: string;

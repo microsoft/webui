@@ -1,0 +1,6 @@
+:host { display: block; position: relative; }
+.trigger { display: grid; place-items: center; width: 36px; height: 36px; border: 0; border-radius: 8px; background: transparent; color: #fff; cursor: pointer; }
+.trigger:hover { background: rgb(255 255 255 / 0.16); }
+.trigger svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linejoin: round; }
+.flyout { position: absolute; right: 0; top: 44px; z-index: 5; }
+.flyout:empty { display: none; }

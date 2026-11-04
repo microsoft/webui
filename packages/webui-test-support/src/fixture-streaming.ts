@@ -17,6 +17,7 @@ interface StreamingFixtureOptions {
 interface CoordinatorAsset {
   src: string;
   imports: string[];
+  inputs: string[];
 }
 
 /** Public assets plus internal output identities used by browser regressions. */
@@ -94,7 +95,12 @@ export async function prepareStreamingFixture({
     Buffer.compare(Buffer.from(a), Buffer.from(b)),
   );
   const assets: StreamingFixtureAssets = {
-    coordinator: { src: servedUrl(coordinatorOutput), imports: imports.map(servedUrl) },
+    coordinator: {
+      src: servedUrl(coordinatorOutput), imports: imports.map(servedUrl),
+      inputs: [coordinatorOutput, ...imports].flatMap(output =>
+        Object.entries(built.metafile!.outputs[output].inputs)
+          .filter(([, input]) => input.bytesInOutput > 0).map(([name]) => name.replaceAll('\\', '/'))),
+    },
     application,
     templateHostRuntime,
   };

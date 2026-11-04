@@ -22,47 +22,37 @@
 // ---------------------------------------------------------------------------
 
 /**
- * Map of camelCase property names to their HTML attribute names.
- *
- * ARIA attributes (`ariaXxxYyy → aria-` + lowercase remainder) are handled
- * algorithmically in `toKebabCase`. Only HTML global/element attributes
- * with irregular mappings (concatenated lowercase) need explicit entries.
- */
-const propertyToAttribute: Record<string, string> = Object.assign(Object.create(null) as Record<string, string>, {
-  accessKey: 'accesskey',
-  autoCapitalize: 'autocapitalize',
-  contentEditable: 'contenteditable',
-  crossOrigin: 'crossorigin',
-  dirName: 'dirname',
-  fetchPriority: 'fetchpriority',
-  formAction: 'formaction',
-  formEnctype: 'formenctype',
-  formMethod: 'formmethod',
-  formNoValidate: 'formnovalidate',
-  formTarget: 'formtarget',
-  inputMode: 'inputmode',
-  isMap: 'ismap',
-  maxLength: 'maxlength',
-  minLength: 'minlength',
-  noModule: 'nomodule',
-  noValidate: 'novalidate',
-  readOnly: 'readonly',
-  referrerPolicy: 'referrerpolicy',
-  tabIndex: 'tabindex',
-  useMap: 'usemap',
-});
-
-/**
  * Convert a camelCase DOM property name into its kebab-case HTML attribute form.
  *
- * Optimized for framework-level hot paths where attribute normalization may run
- * thousands of times per render. It performs three progressively cheaper checks:
- * a direct lookup for irregular mappings, a fast path for ARIA attributes, then
- * a tight ASCII-only scan. No regex engines, callbacks, or match objects.
+ * ARIA attributes (`ariaXxxYyy → aria-` + lowercase remainder) are handled
+ * algorithmically. Irregular HTML names use their lowercase spelling without
+ * allocating a module-owned property dictionary and duplicate value strings.
  */
 export function toKebabCase(str: string): string {
-  const mapped = propertyToAttribute[str];
-  if (mapped) return mapped;
+  switch (str) {
+    case 'accessKey':
+    case 'autoCapitalize':
+    case 'contentEditable':
+    case 'crossOrigin':
+    case 'dirName':
+    case 'fetchPriority':
+    case 'formAction':
+    case 'formEnctype':
+    case 'formMethod':
+    case 'formNoValidate':
+    case 'formTarget':
+    case 'inputMode':
+    case 'isMap':
+    case 'maxLength':
+    case 'minLength':
+    case 'noModule':
+    case 'noValidate':
+    case 'readOnly':
+    case 'referrerPolicy':
+    case 'tabIndex':
+    case 'useMap':
+      return str.toLowerCase();
+  }
   // ARIA properties: ariaXxxYyy → aria- + lowercase remainder
   if (str.length > 4 && str.charCodeAt(0) === 97 /* a */ && str.startsWith('aria') && str.charCodeAt(4) >= 65 && str.charCodeAt(4) <= 90) {
     return 'aria-' + str.slice(4).toLowerCase();
@@ -284,33 +274,23 @@ function createReactiveProperty(
       }
       this[backingKey] = newValue;
 
-      let canReflect = false;
       if (attrDefinition) {
         const checkReflection = this['$canRunAuthoredEffects'];
         if (typeof checkReflection === 'function' &&
             (checkReflection as () => boolean).call(this)) {
           reflectPropertyToAttribute(this, attrDefinition, newValue);
-          canReflect = true;
         }
       }
 
       const callback = this[changedKey];
       if (typeof callback === 'function') {
-        if (
-          this['$authoredPhase'] === 1 &&
-          (attrDefinition ? canReflect : (this as unknown as HTMLElement).isConnected)
-        ) {
+        const record = this['$recordPropertyChange'];
+        if (typeof record === 'function') {
+          (record as (name: string, old: unknown) => void)
+            .call(this, name, oldValue);
+        } else {
           (callback as (old: unknown, next: unknown) => void)
             .call(this, oldValue, newValue);
-        } else {
-          const record = this['$recordPropertyChange'];
-          if (typeof record === 'function') {
-            (record as (name: string, old: unknown) => void)
-              .call(this, name, oldValue);
-          } else {
-            (callback as (old: unknown, next: unknown) => void)
-              .call(this, oldValue, newValue);
-          }
         }
       }
 

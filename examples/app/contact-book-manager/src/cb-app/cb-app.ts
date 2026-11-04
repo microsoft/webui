@@ -2,7 +2,7 @@
 // Licensed under the MIT license.
 
 import { WebUIElement, observable } from '@microsoft/webui-framework';
-import { Router } from '@microsoft/webui-router';
+import { router } from '../router.js';
 import { api } from '#api';
 
 // Child components used in cb-app.html
@@ -42,18 +42,18 @@ export class CbApp extends WebUIElement {
   }
 
   onSelectContact(e: ContactEvent): void {
-    Router.navigate(`/contacts/${e.detail.id}`);
+    router.navigate(`/contacts/${e.detail.id}`);
   }
 
   onEditContact(e: ContactEvent): void {
-    Router.navigate(`/contacts/${e.detail.id}/edit`);
+    router.navigate(`/contacts/${e.detail.id}/edit`);
   }
 
   async onDeleteContactEvent(e: ContactEvent): Promise<void> {
     const id = e.detail.id;
     try {
       await api.contacts.delete(id);
-      Router.navigate('/contacts');
+      router.navigate('/contacts');
     } catch {
       console.error(`Failed to delete contact with id ${id}`);
     }
@@ -71,7 +71,7 @@ export class CbApp extends WebUIElement {
   }
 
   onBack(): void {
-    Router.back();
+    router.back();
   }
 
   async onFormSaveEvent(e: FormSaveEvent): Promise<void> {
@@ -84,14 +84,14 @@ export class CbApp extends WebUIElement {
       } else {
         saved = await api.contacts.create(data);
       }
-      Router.navigate(`/contacts/${saved.id}`);
+      router.navigate(`/contacts/${saved.id}`);
     } catch {
       console.error('Failed to save contact', data);
     }
   }
 
   onFormCancel(): void {
-    Router.back();
+    router.back();
   }
 }
 

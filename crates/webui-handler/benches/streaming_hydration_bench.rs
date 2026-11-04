@@ -133,6 +133,7 @@ fn parser_protocol(boundaries: usize) -> Protocol {
             html_content: "<button>{{title}}</button>",
             css_content: None,
             is_client_owned: false,
+            script_path: None,
         })
     {
         panic!("registering <bench-island> failed: {error}");
@@ -798,6 +799,7 @@ fn full_state_protocol(boundaries: usize) -> Protocol {
             html_content: "<button>{{title}}</button>",
             css_content: None,
             is_client_owned: false,
+            script_path: None,
         })
     {
         panic!("registering <bench-island> failed: {error}");

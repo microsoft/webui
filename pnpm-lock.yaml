@@ -238,12 +238,12 @@ importers:
       '@microsoft/webui':
         specifier: workspace:*
         version: link:../../../packages/webui
+      '@microsoft/webui-delivery':
+        specifier: workspace:*
+        version: link:../../../packages/webui-delivery
       '@microsoft/webui-framework':
         specifier: workspace:*
         version: link:../../../packages/webui-framework
-      '@microsoft/webui-router':
-        specifier: workspace:*
-        version: link:../../../packages/webui-router
       '@playwright/test':
         specifier: 'catalog:'
         version: 1.63.0
@@ -293,15 +293,15 @@ importers:
       '@microsoft/webui':
         specifier: workspace:*
         version: link:../../../packages/webui
+      '@microsoft/webui-delivery':
+        specifier: workspace:*
+        version: link:../../../packages/webui-delivery
       '@microsoft/webui-examples-theme':
         specifier: workspace:*
         version: link:../../../packages/webui-examples-theme
       '@microsoft/webui-framework':
         specifier: workspace:*
         version: link:../../../packages/webui-framework
-      '@microsoft/webui-router':
-        specifier: workspace:*
-        version: link:../../../packages/webui-router
       '@playwright/test':
         specifier: 'catalog:'
         version: 1.63.0
@@ -336,6 +336,33 @@ importers:
         specifier: 'catalog:'
         version: 7.0.2
 
+  examples/app/lazy-ui:
+    devDependencies:
+      '@microsoft/webui':
+        specifier: workspace:*
+        version: link:../../../packages/webui
+      '@microsoft/webui-examples-theme':
+        specifier: workspace:*
+        version: link:../../../packages/webui-examples-theme
+      '@microsoft/webui-framework':
+        specifier: workspace:*
+        version: link:../../../packages/webui-framework
+      '@playwright/test':
+        specifier: 'catalog:'
+        version: 1.63.0
+      '@types/node':
+        specifier: 'catalog:'
+        version: 26.5.1
+      esbuild:
+        specifier: 'catalog:'
+        version: 0.28.2
+      tslib:
+        specifier: 'catalog:'
+        version: 2.8.1
+      typescript:
+        specifier: 'catalog:'
+        version: 7.0.2
+
   examples/app/native-services:
     dependencies:
       '@microsoft/webui-framework':
@@ -360,12 +387,12 @@ importers:
       '@microsoft/webui':
         specifier: workspace:*
         version: link:../../../packages/webui
+      '@microsoft/webui-delivery':
+        specifier: workspace:*
+        version: link:../../../packages/webui-delivery
       '@microsoft/webui-framework':
         specifier: workspace:*
         version: link:../../../packages/webui-framework
-      '@microsoft/webui-router':
-        specifier: workspace:*
-        version: link:../../../packages/webui-router
       '@playwright/test':
         specifier: 'catalog:'
         version: 1.63.0
@@ -590,6 +617,36 @@ importers:
 
   packages/webui-darwin-x64: {}
 
+  packages/webui-delivery:
+    devDependencies:
+      '@microsoft/webui-delivery':
+        specifier: workspace:*
+        version: 'link:'
+      '@microsoft/webui-framework':
+        specifier: workspace:*
+        version: link:../webui-framework
+      '@playwright/test':
+        specifier: 'catalog:'
+        version: 1.63.0
+      '@types/dom-navigation':
+        specifier: 'catalog:'
+        version: 1.0.7
+      '@types/dom-view-transitions':
+        specifier: 'catalog:'
+        version: 1.0.6
+      '@types/node':
+        specifier: 'catalog:'
+        version: 26.5.1
+      esbuild:
+        specifier: 'catalog:'
+        version: 0.28.2
+      typescript:
+        specifier: 'catalog:'
+        version: 7.0.2
+      urlpattern-polyfill:
+        specifier: 'catalog:'
+        version: 10.1.0
+
   packages/webui-desktop:
     devDependencies:
       '@types/node':
@@ -702,36 +759,6 @@ importers:
   packages/webui-press-win32-arm64: {}
 
   packages/webui-press-win32-x64: {}
-
-  packages/webui-router:
-    devDependencies:
-      '@microsoft/webui-framework':
-        specifier: workspace:*
-        version: link:../webui-framework
-      '@microsoft/webui-router':
-        specifier: workspace:*
-        version: 'link:'
-      '@playwright/test':
-        specifier: 'catalog:'
-        version: 1.63.0
-      '@types/dom-navigation':
-        specifier: 'catalog:'
-        version: 1.0.7
-      '@types/dom-view-transitions':
-        specifier: 'catalog:'
-        version: 1.0.6
-      '@types/node':
-        specifier: 'catalog:'
-        version: 26.5.1
-      esbuild:
-        specifier: 'catalog:'
-        version: 0.28.2
-      typescript:
-        specifier: 'catalog:'
-        version: 7.0.2
-      urlpattern-polyfill:
-        specifier: 'catalog:'
-        version: 10.1.0
 
   packages/webui-test-support:
     dependencies:

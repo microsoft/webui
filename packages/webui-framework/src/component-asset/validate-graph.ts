@@ -16,7 +16,7 @@ import {
   sameComponentStyleClosure,
   sameComponentStyleResource,
   type ComponentStyleResource,
-} from '../element/styles.js';
+} from '../element/style-catalog.js';
 import type { PreparedComponentAsset } from './registration.js';
 
 /** Validate that assets of one graph declare identical shared styles. */

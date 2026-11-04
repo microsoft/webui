@@ -4,6 +4,7 @@
 import { strict as assert } from 'node:assert';
 import { describe, test } from 'node:test';
 import type { TemplateMeta } from './template.js';
+import type { TemplateInstance } from './element/types.js';
 import { registerStreamingRootResume, resumeStreamingRoot } from './streaming-mode.js';
 
 /**
@@ -14,6 +15,8 @@ import { registerStreamingRootResume, resumeStreamingRoot } from './streaming-mo
 Object.defineProperty(globalThis, 'HTMLElement', {
   value: class HTMLElement {
     tagName = '';
+    get localName(): string { return this.tagName.toLowerCase(); }
+    set localName(value: string) { this.tagName = value.toUpperCase(); }
     isConnected = false;
     childNodes: unknown[] = [];
     children: unknown[] = [];
@@ -88,6 +91,8 @@ Object.defineProperty(globalThis, 'customElements', {
 
 const { TemplateElement } = await import('./template-element.js');
 const { registerTemplateData } = await import('./template.js');
+const { activateTemplateDefinitions } = await import('./template-registry.js');
+activateTemplateDefinitions();
 const {
   ACTIVATION_ACTIVATED,
   ACTIVATION_ANCESTOR_BARRIER,
@@ -110,6 +115,7 @@ const STREAMING_BOUNDARY_ABANDON = Symbol.for('microsoft.webui.boundaryAbandon')
 /** Register template metadata for a tag exactly like `registerTemplateData()`. */
 function registerTemplate(tag: string): void {
   (window as unknown as { __webui: { templates: Record<string, unknown> } }).__webui.templates[tag] = {
+    v: 3,
     h: '<div></div>',
   };
 }
@@ -126,6 +132,182 @@ interface ComplexPropertyWriter {
 interface PendingParentStateConsumer {
   $applyPendingParentState(replayAfterHydration: boolean): void;
 }
+
+test('binding arrays reserve their compiled size instead of push-grown capacity', () => {
+  const originalArray = globalThis.Array;
+  const commentDescriptor = Object.getOwnPropertyDescriptor(document, 'createComment');
+  const allocations = new Map<object, unknown[]>();
+  const root = {
+    nodeType: 11,
+    firstChild: null,
+    childNodes: [] as Node[],
+    insertBefore(node: Node): Node {
+      this.childNodes.push(node);
+      return node;
+    },
+  };
+  try {
+    Object.defineProperty(document, 'createComment', {
+      configurable: true,
+      value: () => ({ nodeType: 8, data: '', parentNode: root }),
+    });
+    globalThis.Array = new Proxy(originalArray, {
+      construct(target, args) {
+        const array = Reflect.construct(target, args);
+        allocations.set(array, args);
+        return array;
+      },
+    });
+    const host = new TemplateElement() as unknown as {
+      $wire(root: Node, meta: TemplateMeta): TemplateInstance;
+    };
+    const instance = host.$wire(root as unknown as Node, {
+      v: 3, h: '', c: [[[() => false, []], 0, [0, 0]]],
+    });
+    assert.deepEqual(allocations.get(instance.conds), [1]);
+    assert.equal(instance.conds.length, 1);
+    assert.equal(instance.conds[0].owner, instance);
+    assert.equal(instance.texts.length, 0);
+    assert.equal(instance.attrs.length, 0);
+    assert.equal(instance.repeats.length, 0);
+  } finally {
+    globalThis.Array = originalArray;
+    if (commentDescriptor) Object.defineProperty(document, 'createComment', commentDescriptor);
+    else Reflect.deleteProperty(document, 'createComment');
+  }
+});
+
+test('SSR text without a neighboring dynamic marker allocates no topology array', () => {
+  const original = globalThis.Int32Array;
+  const text = { nodeType: 3, previousSibling: null, nextSibling: null };
+  const paragraph = {
+    nodeType: 1, localName: 'p', firstChild: text, lastChild: text,
+    childNodes: [text], nextSibling: null as unknown,
+    hasAttribute: () => false,
+  };
+  const end = { nodeType: 8, data: '/wc', nextSibling: null };
+  const start = { nodeType: 8, data: 'wc', nextSibling: end, parentNode: null as unknown };
+  paragraph.nextSibling = start;
+  const root = {
+    nodeType: 11, firstChild: paragraph, childNodes: [paragraph, start, end],
+    removeChild(node: unknown) {
+      this.childNodes.splice(this.childNodes.indexOf(node as typeof end), 1);
+    },
+  };
+  start.parentNode = root;
+  Object.assign(end, { parentNode: root });
+  let allocations = 0;
+  try {
+    globalThis.Int32Array = new Proxy(original, {
+      construct(target, args) {
+        allocations++;
+        return Reflect.construct(target, args);
+      },
+    });
+    const host = new TemplateElement() as unknown as {
+      $hydrate(root: Node, meta: TemplateMeta): TemplateInstance;
+    };
+    const instance = host.$hydrate(root as unknown as Node, {
+      v: 3, h: '<p></p>', l: [3, 1],
+      tx: [[[1, 0], ['hello']]],
+      c: [[[() => false, []], 0, [0, 1]]],
+    });
+    assert.equal(instance.texts[0].node, text);
+    assert.equal(instance.conds.length, 1);
+    assert.equal(allocations, 0);
+  } finally {
+    globalThis.Int32Array = original;
+  }
+});
+
+test('registered constructors retain attribute names, not complete template metadata', () => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'customElements');
+  const constructors = new Map<string, CustomElementConstructor>();
+  Object.defineProperty(globalThis, 'customElements', {
+    configurable: true,
+    value: {
+      get: (tag: string) => constructors.get(tag),
+      define: (tag: string, ctor: CustomElementConstructor) => constructors.set(tag, ctor),
+    },
+  });
+  const tag = 'collectible-template';
+  const metadata: TemplateMeta = { v: 3, h: '<span></span>', tr: ['title'], ta: ['title'] };
+  window.__webui!.templates![tag] = metadata;
+  class CollectibleTemplate extends TemplateElement {
+    templateMetadata(): TemplateMeta | undefined {
+      return this.$currentTemplateMetadata();
+    }
+  }
+  try {
+    CollectibleTemplate.define(tag);
+    assert.deepEqual(Reflect.get(CollectibleTemplate, 'observedAttributes'), ['title']);
+    assert.equal(Object.getOwnPropertyDescriptor(CollectibleTemplate, 'observedAttributes')?.get, undefined);
+    const element = new CollectibleTemplate();
+    let constructorReads = 0;
+    Object.defineProperties(element, {
+      localName: { value: tag },
+      constructor: { get() { constructorReads++; return CollectibleTemplate; } },
+    });
+    assert.equal(element.templateMetadata(), metadata);
+    assert.equal(constructorReads, 0, 'Native host identity replaces the constructor-to-tag registry');
+
+    delete window.__webui!.templates![tag];
+    assert.equal(element.templateMetadata(), undefined);
+    assert.deepEqual(Reflect.get(CollectibleTemplate, 'observedAttributes'), ['title']);
+  } finally {
+    delete window.__webui!.templates![tag];
+    if (previous) Object.defineProperty(globalThis, 'customElements', previous);
+    else Reflect.deleteProperty(globalThis, 'customElements');
+  }
+});
+
+for (const wildcard of [false, true]) {
+  test(`unmounted template state preserves unrelated SSR bindings (wildcard: ${wildcard})`, () => {
+    const element = new TemplateElement();
+    const rootTexts: unknown[] = [];
+    const wildcardTexts: unknown[] = [];
+    const updated: unknown[][] = [];
+    const bindings = (texts: unknown[]) => ({ texts, attrs: [], conds: [], repeats: [] });
+    Object.defineProperties(element, {
+      $ready: { value: true },
+      $root: { value: bindings(rootTexts) },
+      $meta: { value: { h: '', tr: ['deferredValue'] } },
+      $pathIndex: { value: new Map() },
+      $wildcardBindings: { value: wildcard ? bindings(wildcardTexts) : null },
+      $updateBindings: { value(texts: unknown[]) { updated.push(texts); } },
+    });
+
+    element.setState({ deferredValue: 'Loaded before the body mounts' });
+    assert.equal(element.$resolveValue('deferredValue'), 'Loaded before the body mounts');
+    assert.equal(updated.length, wildcard ? 1 : 0);
+    if (wildcard) assert.equal(updated[0], wildcardTexts);
+
+    updated.length = 0;
+    element.$update('untracked.path');
+    assert.equal(updated.length, 1, 'unknown paths retain the full-update behavior');
+    assert.equal(updated[0], rootTexts);
+    element.$update();
+    assert.equal(updated.length, 2, 'an explicit full update still visits the root');
+  });
+}
+
+test('an observable without live bindings does not trigger a full template update', () => {
+  const names = new Set(['deferredValue']);
+  class DormantObservable extends TemplateElement {
+    protected override $observableNames(): Set<string> { return names; }
+  }
+  const element = new DormantObservable();
+  let updates = 0;
+  Object.defineProperties(element, {
+    $ready: { value: true },
+    $root: { value: { texts: [], attrs: [], conds: [], repeats: [] } },
+    $pathIndex: { value: new Map() },
+    $updateBindings: { value() { updates++; } },
+  });
+  element.$update('deferredValue');
+  element.$flushUpdates();
+  assert.equal(updates, 0);
+});
 
 test('a rejected binding releases the flush gate and preserves re-entrant updates', () => {
   const originalQueue = globalThis.queueMicrotask;
@@ -524,7 +706,7 @@ describe('TemplateElement — streamed-host activation ownership', () => {
       setAttribute(name: string, value: string): void;
       [STREAMING_BOUNDARY_ACTIVATE](state?: Record<string, unknown>): number;
     };
-    raw.$meta = { h: '<span></span>' };
+    raw.$meta = { v: 3, h: '<span></span>' };
     raw.setAttribute('data-ws', '');
 
     raw[STREAMING_BOUNDARY_ACTIVATE]({ detached: true });
@@ -796,6 +978,7 @@ describe('TemplateElement.define — ordinary (non-streaming) authored definitio
       // its partial navigation response resolves.
       registerTemplateData({
         [tag]: {
+          v: 3,
           h: '<div><span></span></div>',
           tr: ['title'],
           ta: ['title'],
@@ -816,6 +999,7 @@ describe('TemplateElement.define — ordinary (non-streaming) authored definitio
         attributeChangedCallback(name: string, oldValue: string | null, newValue: string | null): void;
         $templateState: Record<string, unknown> | null;
       };
+      Object.defineProperty(el, 'localName', { value: tag });
 
       // A client-created host now carries `title` in `observedAttributes`,
       // so the browser calls `attributeChangedCallback` for it.

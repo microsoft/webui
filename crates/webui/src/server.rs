@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-//! High-level server helper for custom Rust servers using `webui-router`.
+//! High-level server helper for custom Rust servers using `webui-delivery`.
 //!
 //! This module provides [`serve_request`] which encapsulates:
 //! - Route parameter extraction from the URL
@@ -66,7 +66,7 @@ impl<'a> ServeRequest<'a> {
 pub enum ServeResponse {
     /// Full HTML page for initial load or browser refresh.
     Html(String),
-    /// JSON partial for client-side navigation via `webui-router`.
+    /// JSON partial for client-side navigation via `webui-delivery`.
     Json(String),
 }
 
@@ -77,7 +77,7 @@ pub enum ServeResponse {
 /// containing state, chain, inventory, and template metadata.
 ///
 /// For JSON requests: returns a partial response with route-scoped state,
-/// needed templates, and inventory for the `webui-router` client.
+/// needed templates, and inventory for the `webui-delivery` client.
 ///
 /// # Arguments
 /// - `protocol` — The compiled WebUI protocol from [`build`](crate::build)

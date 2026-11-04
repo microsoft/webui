@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+import { startRuntime } from '../../../src/runtime.js';
+import '../../../src/styles-entry.js';
 /**
  * Benchmark fixture — a component with many bindings to measure $update() cost.
  *
@@ -14,6 +16,8 @@
  */
 
 import { WebUIElement, observable } from '../../../src/index.js';
+
+startRuntime();
 
 export class TestBench extends WebUIElement {
   @observable prop0 = 'v0';

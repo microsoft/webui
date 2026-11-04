@@ -16,10 +16,13 @@ from microsoft_webui import BoundaryMode, Plugin, Renderer
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
 
-FIXTURES = Path(__file__).parents[1] / "tests" / "fixtures"
-PROTOCOL_PATH = FIXTURES / "protocol.bin"
+FIXTURES = Path(os.environ.get(
+    "WEBUI_TEST_FIXTURES",
+    Path(__file__).resolve().parents[3] / "target" / "python-fixtures",
+))
+PROTOCOL_PATH = FIXTURES / "app" / "protocol.bin"
 PROTOCOL_BYTES = PROTOCOL_PATH.read_bytes()
-STREAMING_PROTOCOL_BYTES = (FIXTURES / "streaming_protocol.bin").read_bytes()
+STREAMING_PROTOCOL_BYTES = (FIXTURES / "streaming-app" / "protocol.bin").read_bytes()
 STATE = {"title": "Benchmark", "name": "Ada", "status": "ready"}
 STREAMING_STATE = {
     **STATE,

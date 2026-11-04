@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+import { startRuntime } from '../../../src/runtime.js';
+import '../../../src/styles-entry.js';
 import {
   WebUIElement,
   attr,
@@ -9,8 +11,11 @@ import {
   type TemplateMeta,
 } from '../../../src/index.js';
 
+startRuntime();
+
 const templates: Record<string, TemplateMeta> = {
   'test-runtime-life': {
+    v: 3,
     h: '<span></span>',
     l: [3, 1],
     tx: [
@@ -21,16 +26,19 @@ const templates: Record<string, TemplateMeta> = {
     th: 1,
   },
   'test-runtime-effects': {
+    v: 3,
     h: '<span></span>',
     l: [3, 1],
     th: 1,
   },
   'test-runtime-throw': {
+    v: 3,
     h: '<span></span>',
     l: [3, 1],
     th: 1,
   },
   'test-runtime-immediate': {
+    v: 3,
     h: '<span></span>',
     l: [3, 1],
   },
@@ -101,7 +109,7 @@ function registerTemplates(): void {
 }
 
 const streaming = !!document.querySelector('meta[name="webui-streaming"][content="1"]');
-const routerLate = !!document.querySelector('meta[name="webui-router-late"][content="1"]');
+const routerLate = !!document.querySelector('meta[name="webui-delivery-late"][content="1"]');
 // Ordinary pages publish metadata synchronously; streaming and Router-late
 // pages hold definitions until that same metadata registration arrives.
 TestRuntimeImmediate.define('test-runtime-immediate');

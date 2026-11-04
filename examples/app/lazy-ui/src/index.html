@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<!--
+THESIS: A small, usable workspace demonstrates native lazy overlays in place.
+OWN-WORLD: Shared WebUI example tokens, system typography, neutral surfaces, blue actions.
+STORY: Read the list, inspect activity in a popover, adjust the view in a dialog.
+FIRST VIEWPORT: Workspace heading and two clear actions above a three-row reading list.
+FORM: A scoped Operate example in the existing example catalog; no replacement visual system.
+-->
+<html lang="{{language}}" dir="{{textdirection}}">
+<head>
+  <meta charset="utf-8">
+  <base href="{{basePath}}">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{title}}</title>
+  <style>
+    :root { /*{{{tokens.light}}}*/ color-scheme: light; }
+    @media (prefers-color-scheme: dark) {
+      :root { /*{{{tokens.dark}}}*/ color-scheme: dark; }
+    }
+    body {
+      margin: 0;
+      background: var(--color-neutral-50);
+      color: var(--color-neutral-800);
+      font-family: var(--font-family-base);
+      font-size: var(--font-size-l);
+      line-height: var(--line-height-base);
+    }
+  </style>
+</head>
+<body>
+  <lazy-workspace></lazy-workspace>
+  <script type="module" src="./index.js"></script>
+</body>
+</html>

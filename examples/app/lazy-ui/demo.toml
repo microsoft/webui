@@ -1,0 +1,17 @@
+name = "Lazy UI"
+description = "Native popover and dialog with on-demand template bodies, fresh state, and no routes"
+backend = "node"
+
+[server]
+type = "webui-cli"
+plugin = "webui"
+source = "src"
+servedir = "dist"
+state = "data/state.json"
+theme = "@microsoft/webui-examples-theme"
+projection-manifest = ["dist/webui-projection.json"]
+
+[api]
+type = "node"
+entry = "server/index.mjs"
+port-offset = 1

@@ -20,6 +20,8 @@ mod parser;
 
 #[cfg(feature = "handler")]
 pub use handler::Protocol;
+#[cfg(feature = "all")]
+pub use parser::build_app;
 #[cfg(feature = "parser")]
 pub use parser::build_protocol;
 

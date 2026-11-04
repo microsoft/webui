@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+import { startRuntime } from '@microsoft/webui-framework/runtime.js';
 /**
  * Calculator hydration entry point.
  *
@@ -21,6 +22,8 @@ function logHydrationTiming(): void {
 // Side-effect imports — register custom elements and trigger hydration.
 import './calc-app/calc-app.js';
 import './calc-button/calc-button.js';
+
+startRuntime();
 
 // Fallback: if hydration already completed before the listener, log now
 if (performance.getEntriesByName('webui:hydrate:total', 'measure').length > 0) {

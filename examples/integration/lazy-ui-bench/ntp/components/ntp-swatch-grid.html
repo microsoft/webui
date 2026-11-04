@@ -1,0 +1,12 @@
+<template shadowrootmode="open">
+  <div class="grid" role="listbox" aria-label="{{label}}" @keydown="{onKey(e)}">
+    <for each="item in items">
+      <button type="button" class="swatch" role="option" data-id="{{item.id}}" title="{{item.label}}"
+        style="--swatch: {{item.color}}" ?data-selected="{{item.id == selected}}" @click="{choose(e)}">
+        <span class="chip" aria-hidden="true"></span>
+        <span class="name">{{item.label}}</span>
+      </button>
+    </for>
+  </div>
+  <p class="hint" data-ready>{{hint}}</p>
+</template>

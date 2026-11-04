@@ -13,8 +13,7 @@ use crate::{CssFallbackChain, CssParser, LegalComments, ParserError, Result};
 use std::collections::{HashMap, HashSet};
 #[cfg(feature = "fs")]
 use std::fs;
-#[cfg(feature = "fs")]
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 #[cfg(feature = "fs")]
 use walkdir::WalkDir;
@@ -33,6 +32,7 @@ type ProcessedCss = (String, Vec<String>, Vec<CssFallbackChain>);
 ///     css_definitions: Vec::new(),
 ///     css_fallback_chains: Vec::new(),
 ///     is_client_owned: false,
+///     script_path: None,
 /// };
 /// assert_eq!(component.tag_name, "example-card");
 /// ```
@@ -55,6 +55,13 @@ pub struct Component {
 
     /// Whether authored browser code owns this custom element tag.
     pub is_client_owned: bool,
+
+    /// The authored module that defines this custom element, when known.
+    ///
+    /// Path registration records the template's `.ts` sibling, else its `.js`
+    /// sibling. Builds use it to load the element's code with the lazy regions
+    /// that introduce it.
+    pub script_path: Option<PathBuf>,
 }
 
 /// Inputs for registering a component from content strings.
@@ -71,10 +78,12 @@ pub struct ComponentRegistration<'a> {
     pub css_content: Option<&'a str>,
     /// Whether authored browser code owns this custom element tag.
     pub is_client_owned: bool,
+    /// The authored module that defines the custom element, when known.
+    pub script_path: Option<&'a Path>,
 }
 
 impl<'a> ComponentRegistration<'a> {
-    /// Create a component registration.
+    /// Create a component registration without a known module path.
     #[must_use]
     pub fn new(
         tag_name: &'a str,
@@ -87,7 +96,15 @@ impl<'a> ComponentRegistration<'a> {
             html_content,
             css_content,
             is_client_owned,
+            script_path: None,
         }
+    }
+
+    /// Record the authored module that defines the custom element.
+    #[must_use]
+    pub fn with_script_path(mut self, script_path: &'a Path) -> Self {
+        self.script_path = Some(script_path);
+        self
     }
 }
 
@@ -113,8 +130,8 @@ pub struct ComponentRegistry {
 }
 
 #[cfg(feature = "fs")]
-// Return whether a component has an accessible sibling module.
-fn has_component_script(html_path: &Path) -> Result<bool> {
+// Return a component's accessible sibling module, preferring `.ts` over `.js`.
+fn component_script(html_path: &Path) -> Result<Option<PathBuf>> {
     for ext in ["ts", "js"] {
         let candidate = html_path.with_extension(ext);
         if candidate.try_exists().map_err(|source| ParserError::IO {
@@ -124,10 +141,10 @@ fn has_component_script(html_path: &Path) -> Result<bool> {
             ),
             source,
         })? {
-            return Ok(true);
+            return Ok(Some(candidate));
         }
     }
-    Ok(false)
+    Ok(None)
 }
 
 impl Default for ComponentRegistry {
@@ -285,7 +302,8 @@ impl ComponentRegistry {
             (None, Vec::new(), Vec::new())
         };
 
-        let is_client_owned = has_component_script(html_path)?;
+        let script_path = component_script(html_path)?;
+        let is_client_owned = script_path.is_some();
 
         let render_policy =
             parse_component_render_policy(&resolved.tag_name, &resolved.parser_content)?;
@@ -304,6 +322,7 @@ impl ComponentRegistry {
             css_definitions,
             css_fallback_chains,
             is_client_owned,
+            script_path,
         };
 
         self.render_policies
@@ -331,6 +350,7 @@ impl ComponentRegistry {
             html_content,
             css_content,
             is_client_owned,
+            script_path,
         } = registration;
 
         let (resolved, authored_source) =
@@ -380,6 +400,7 @@ impl ComponentRegistry {
             css_definitions,
             css_fallback_chains,
             is_client_owned,
+            script_path: script_path.map(Path::to_path_buf),
         };
 
         // Register the component
@@ -619,6 +640,8 @@ mod tests {
         let html_path = fs.add_file("components/scripted-card.html", "<p>Scripted</p>");
         std::fs::write(html_path.with_extension("ts"), "export {};")
             .expect("Failed to write sibling script");
+        std::fs::write(html_path.with_extension("js"), "export {};")
+            .expect("Failed to write compiled sibling script");
 
         let mut registry = ComponentRegistry::new();
         registry
@@ -629,6 +652,7 @@ mod tests {
             .get("scripted-card")
             .expect("Failed to retrieve registered component");
         assert!(component.is_client_owned);
+        assert_eq!(component.script_path, Some(html_path.with_extension("ts")));
     }
 
     #[test]
@@ -647,6 +671,7 @@ mod tests {
             .get("scripted-card")
             .expect("Failed to retrieve registered component");
         assert!(component.is_client_owned);
+        assert_eq!(component.script_path, Some(html_path.with_extension("js")));
     }
 
     #[test]
@@ -683,6 +708,7 @@ mod tests {
             .get("scripted-card")
             .expect("Failed to retrieve registered component");
         assert!(!component.is_client_owned);
+        assert!(component.script_path.is_none());
     }
 
     #[test]
@@ -744,6 +770,21 @@ mod tests {
         assert_eq!(component.html_content, html_content);
         assert_eq!(component.css_content.as_deref(), Some(css_content));
         assert!(component.is_client_owned);
+        assert!(component.script_path.is_none());
+
+        let module = Path::new("src/module-component/module-component.ts");
+        registry
+            .register_component(
+                ComponentRegistration::new("module-component", html_content, None, true)
+                    .with_script_path(module),
+            )
+            .expect("register component with module");
+        assert_eq!(
+            registry
+                .get("module-component")
+                .and_then(|component| component.script_path.as_deref()),
+            Some(module)
+        );
     }
 
     #[test]

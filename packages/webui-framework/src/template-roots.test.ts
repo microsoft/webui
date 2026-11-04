@@ -14,6 +14,7 @@ import {
 describe('template root metadata helpers', () => {
   test('use compiler-emitted roots and attributes without scanning bindings', () => {
     const meta: TemplateMeta = {
+      v: 3,
       h: '<p></p>',
       tr: ['displayValue', 'readOnly'],
       ta: ['display-value', 'readonly'],
@@ -28,7 +29,7 @@ describe('template root metadata helpers', () => {
   });
 
   test('uses the compiler-owned dormant host flag directly', () => {
-    assert.equal(templateNeedsStaticHost({ h: '<p></p>', th: 1 }), true);
-    assert.equal(templateNeedsStaticHost({ h: '<p></p>' }), false);
+    assert.equal(templateNeedsStaticHost({ v: 3, h: '<p></p>', th: 1 }), true);
+    assert.equal(templateNeedsStaticHost({ v: 3, h: '<p></p>' }), false);
   });
 });

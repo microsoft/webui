@@ -1,0 +1,98 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
+import { attr, observable, WebUIElement } from '@microsoft/webui-framework';
+import { fetchState } from '../state-api.js';
+
+export class LazyPopover extends WebUIElement {
+  @attr({ mode: 'boolean' }) slowData = false;
+  @observable activityReady = false;
+  @observable activityLoading = false;
+  @observable activityError = '';
+
+  triggerElement!: HTMLButtonElement;
+  popoverElement!: HTMLElement;
+  private request?: AbortController;
+  private generation = 0;
+
+  override hydratedCallback(): void {
+    if (this.activityReady) this.popoverElement.showPopover();
+  }
+
+  override disconnectedCallback(): void {
+    this.generation++;
+    this.request?.abort();
+    super.disconnectedCallback();
+  }
+
+  onToggle(event: ToggleEvent): void {
+    if (event.newState === 'closed') {
+      const focused = this.shadowRoot?.activeElement;
+      if (focused && this.popoverElement.contains(focused)) this.triggerElement.focus();
+      return;
+    }
+    if (this.activityReady) return;
+    event.preventDefault();
+    if (this.activityLoading) this.clear();
+    else void this.load();
+  }
+
+  onToggled(event: ToggleEvent): void {
+    if (event.newState === 'closed' && !this.popoverElement.matches(':popover-open') && this.activityReady) {
+      this.clear();
+    }
+  }
+
+  onKeydown(event: KeyboardEvent): void {
+    if (event.key === 'Escape' && this.activityLoading) {
+      event.preventDefault();
+      this.clear();
+    }
+  }
+
+  /** `load()` reports a body that fails to load, so the runtime does not report it again. */
+  onLazyError(event: CustomEvent<{ error: unknown }>): void {
+    event.preventDefault();
+  }
+
+  async load(): Promise<void> {
+    this.triggerElement.focus();
+    const generation = ++this.generation;
+    this.request?.abort();
+    const request = new AbortController();
+    this.request = request;
+    this.activityLoading = true;
+    this.activityError = '';
+    try {
+      const state = await fetchState('activity', this.slowData, request.signal);
+      if (generation !== this.generation || request.signal.aborted) return;
+      this.setState(state);
+      this.activityReady = true;
+      // Show the popover once its body exists, so it never opens empty. This
+      // rejects when the body cannot load, and the catch below reports it.
+      await this.$rendered();
+      if (generation !== this.generation) return;
+      this.popoverElement.showPopover({ source: this.triggerElement });
+    } catch (error) {
+      if (generation === this.generation && !request.signal.aborted) {
+        console.error('Activity failed to load:', error);
+        this.activityReady = false;
+        this.activityError = 'Activity could not be loaded. Please try again.';
+      }
+    } finally {
+      if (generation === this.generation) this.activityLoading = false;
+    }
+  }
+
+  private clear(): void {
+    this.generation++;
+    this.request?.abort();
+    this.request = undefined;
+    this.activityReady = false;
+    this.activityLoading = false;
+    this.activityError = '';
+    this.setState({ activityItems: [], activitySummary: '', activityStamp: '' });
+  }
+}
+
+LazyPopover.define('lazy-popover');

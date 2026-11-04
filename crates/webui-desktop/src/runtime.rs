@@ -129,6 +129,8 @@ pub struct DesktopRuntime {
     entry: String,
     state: Value,
     css_files: HashMap<String, String>,
+    /// Source-mode lazy-region packs keyed by their `_webui/packs/<file>` path.
+    lazy_packs: HashMap<String, String>,
     asset_root: Option<PathBuf>,
     #[cfg(all(feature = "native", target_os = "macos"))]
     bundle_root: Option<PathBuf>,
@@ -174,6 +176,16 @@ impl DesktopRuntime {
         )?;
         let asset_root = canonical_asset_root(config.asset_root.as_ref())?;
         let css_files = build_result.css_files.into_iter().collect();
+        let lazy_packs = build_result
+            .lazy_pack_files
+            .into_iter()
+            .map(|pack| {
+                (
+                    format!("{}/{}", webui::PACK_OUTPUT_DIR, pack.file_name),
+                    pack.content,
+                )
+            })
+            .collect();
         let protocol = Protocol::new(build_result.protocol);
         let startup_state = state_for_request(StateRequestContext {
             protocol: &protocol,
@@ -201,6 +213,7 @@ impl DesktopRuntime {
             entry: config.build_options.entry,
             state,
             css_files,
+            lazy_packs,
             asset_root,
             #[cfg(all(feature = "native", target_os = "macos"))]
             bundle_root: None,
@@ -308,6 +321,7 @@ impl DesktopRuntime {
             entry: manifest.entry,
             state,
             css_files: HashMap::new(),
+            lazy_packs: HashMap::new(),
             asset_root: Some(asset_root),
             #[cfg(all(feature = "native", target_os = "macos"))]
             bundle_root: Some(bundle_root),
@@ -363,6 +377,13 @@ impl DesktopRuntime {
                     200,
                     "text/css; charset=utf-8",
                     css.as_bytes().to_vec(),
+                ));
+            }
+            if let Some(pack) = self.lazy_packs.get(request_path.trim_start_matches('/')) {
+                return Ok(DesktopProtocolResponse::new(
+                    200,
+                    "application/json",
+                    pack.as_bytes().to_vec(),
                 ));
             }
 
@@ -1142,6 +1163,64 @@ mod tests {
             .handle_request(&DesktopProtocolRequest::get("/%2e%2e/protocol.bin"))
             .unwrap_err();
         assert!(matches!(err, DesktopError::InvalidAssetPath { .. }));
+    }
+
+    #[test]
+    fn source_and_bundle_runtimes_serve_lazy_packs() {
+        let dir = TempDir::new().unwrap();
+        let app = dir.path().join("app");
+        let bundle = dir.path().join("bundle");
+        write_file(&app, "index.html", "<app-owner></app-owner>");
+        write_file(
+            &app,
+            "app-owner.html",
+            r#"<if condition="show" lazy="idle"><p>Body</p></if>"#,
+        );
+        let packs = webui::build(build_options(app.clone()))
+            .unwrap()
+            .lazy_pack_files;
+        assert_eq!(packs.len(), 1);
+        let path = format!("/{}/{}", webui::PACK_OUTPUT_DIR, packs[0].file_name);
+
+        let source =
+            DesktopRuntime::from_source(DesktopSourceConfig::new(build_options(app.clone())))
+                .unwrap();
+        let response = source
+            .handle_request(&DesktopProtocolRequest::get(&path))
+            .unwrap();
+        assert_eq!(response.status, 200);
+        assert_eq!(response.content_type, "application/json");
+        assert_eq!(
+            response.body.into_bytes().unwrap(),
+            packs[0].content.as_bytes()
+        );
+
+        crate::build_desktop_bundle(crate::DesktopBundleOptions {
+            build_options: build_options(app),
+            out_dir: bundle.clone(),
+            state_file: None,
+            asset_root: None,
+            token_css: None,
+            app_id: "com.microsoft.webui.bundle".to_string(),
+            app_name: "Bundle Host".to_string(),
+            version: "0.0.0".to_string(),
+            publisher: "Microsoft".to_string(),
+            window: crate::WindowOptions::default(),
+            icon_file: None,
+            shell: crate::DesktopShellConfig::default(),
+            package_targets: Vec::new(),
+        })
+        .unwrap();
+        let bundled = DesktopRuntime::from_bundle(bundle).unwrap();
+        let response = bundled
+            .handle_request(&DesktopProtocolRequest::get(&path))
+            .unwrap();
+        assert_eq!(response.status, 200);
+        assert_eq!(response.content_type, "application/json");
+        assert_eq!(
+            response.body.into_bytes().unwrap(),
+            packs[0].content.as_bytes()
+        );
     }
 
     #[test]

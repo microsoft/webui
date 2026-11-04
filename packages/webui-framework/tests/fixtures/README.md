@@ -29,6 +29,17 @@ The test server (`tests/server.ts`) uses `fixture-render.ts` to:
 
 Static files (JS bundles, CSS) are served from the fixtures root as-is.
 
+### Generated lazy fixture entries
+
+The `lazy-pages` manual application and the delivery package's `lazy-routes`
+application are source-type-checked before Playwright starts its fixture server.
+They must not import files from the ignored fixture output directory.
+`prepareLazyPages()` first compiles the real lazy installer and its declaration,
+then writes ignored bootstrap entries that import that installer before the
+typed application source. Esbuild bundles those entries with the normal
+projection adapter. This keeps both fresh-checkout type-checking and the real
+generated loading contract covered without committing generated assets.
+
 ## Creating a new fixture
 
 1. Create `fixtures/<name>/src/index.html` with your page template

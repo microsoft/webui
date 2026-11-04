@@ -1,7 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-//! Link-mode CSS filename and public href resolution.
+//! Link-mode CSS filename resolution.
+//!
+//! Emitted file names are also the hrefs stored in the protocol and client
+//! payloads: they are paths relative to the asset base, which maps to the
+//! build output directory. The base itself is applied when rendering.
 
 use crate::{AssetFileNameTemplate, ParserError, Result, DEFAULT_ASSET_FILE_NAME_TEMPLATE};
 use std::collections::HashMap;
@@ -10,21 +14,19 @@ use std::sync::{Arc, Mutex};
 /// Default Link-mode CSS filename template.
 pub const DEFAULT_CSS_FILE_NAME_TEMPLATE: &str = DEFAULT_ASSET_FILE_NAME_TEMPLATE;
 
-/// Configures Link-mode CSS filenames and public hrefs.
+/// Configures Link-mode CSS filenames.
 #[derive(Debug, Clone)]
 pub struct CssLinkOptions {
     file_name_template: AssetFileNameTemplate,
-    public_base: Option<String>,
     cache: Arc<Mutex<HashMap<String, CssLinkHref>>>,
 }
 
 /// Resolved Link-mode CSS asset path data.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CssLinkHref {
-    /// Local filename emitted by build output.
+    /// File name emitted in the build output directory. Protocol hrefs and
+    /// client payloads use it as a path relative to the asset base.
     pub filename: String,
-    /// Public href used in parser/handler `<link>` tags.
-    pub href: String,
 }
 
 impl CssLinkOptions {
@@ -32,23 +34,19 @@ impl CssLinkOptions {
     ///
     /// # Errors
     ///
-    /// Returns [`ParserError::Css`] when the template contains unknown tokens,
-    /// unsafe path bytes, or an unsafe public base.
-    pub fn try_new(file_name_template: String, public_base: Option<String>) -> Result<Self> {
+    /// Returns [`ParserError::Css`] when the template contains unknown tokens
+    /// or unsafe path bytes.
+    pub fn try_new(file_name_template: String) -> Result<Self> {
         let file_name_template =
             AssetFileNameTemplate::try_new(file_name_template, "css_file_name_template")
                 .map_err(|error| ParserError::Css(error.to_string()))?;
-        if let Some(base) = public_base.as_deref() {
-            validate_css_public_base(base)?;
-        }
         Ok(Self {
             file_name_template,
-            public_base,
             cache: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
-    /// Resolve the local filename and public href for a component stylesheet.
+    /// Resolve the emitted filename for a component stylesheet.
     ///
     /// Results are cached by component tag. A `CssLinkOptions` value should be
     /// scoped to one build/component registry where each tag maps to exactly
@@ -65,14 +63,11 @@ impl CssLinkOptions {
             }
         }
 
-        let filename = self
-            .file_name_template
-            .resolve(tag_name, "css", css_content.as_bytes());
-        let href = match self.public_base.as_deref() {
-            Some(base) => join_css_public_base(base, &filename),
-            None => filename.clone(),
+        let resolved = CssLinkHref {
+            filename: self
+                .file_name_template
+                .resolve(tag_name, "css", css_content.as_bytes()),
         };
-        let resolved = CssLinkHref { filename, href };
 
         let mut cache = self
             .cache
@@ -84,7 +79,7 @@ impl CssLinkOptions {
             .clone()
     }
 
-    /// Resolve the local filename and public href for a bundled CSS chunk.
+    /// Resolve the emitted filename for a bundled CSS chunk.
     ///
     /// Chunk names live in a build-owned namespace rather than the component
     /// registry, so this deliberately bypasses the per-tag cache: a chunk and a
@@ -92,26 +87,17 @@ impl CssLinkOptions {
     /// content hash.
     #[must_use]
     pub fn resolve_chunk(&self, chunk_name: &str, css_content: &str) -> CssLinkHref {
-        let filename = self
-            .file_name_template
-            .resolve(chunk_name, "css", css_content.as_bytes());
-        let href = match self.public_base.as_deref() {
-            Some(base) => join_css_public_base(base, &filename),
-            None => filename.clone(),
-        };
-        CssLinkHref { filename, href }
+        CssLinkHref {
+            filename: self
+                .file_name_template
+                .resolve(chunk_name, "css", css_content.as_bytes()),
+        }
     }
 
     /// File name template used for Link-mode CSS files.
     #[must_use]
     pub fn file_name_template(&self) -> &str {
         self.file_name_template.file_name_template()
-    }
-
-    /// Optional public base prepended to Link-mode CSS hrefs.
-    #[must_use]
-    pub fn public_base(&self) -> Option<&str> {
-        self.public_base.as_deref()
     }
 }
 
@@ -121,7 +107,6 @@ impl Default for CssLinkOptions {
             file_name_template: AssetFileNameTemplate::new_unchecked(
                 DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
             ),
-            public_base: None,
             cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -129,42 +114,11 @@ impl Default for CssLinkOptions {
 
 impl PartialEq for CssLinkOptions {
     fn eq(&self, other: &Self) -> bool {
-        self.file_name_template == other.file_name_template && self.public_base == other.public_base
+        self.file_name_template == other.file_name_template
     }
 }
 
 impl Eq for CssLinkOptions {}
-
-fn validate_css_public_base(base: &str) -> Result<()> {
-    if base.is_empty() {
-        return Err(ParserError::Css(
-            "css_public_base cannot be empty".to_string(),
-        ));
-    }
-    if contains_invalid_href_byte(base) {
-        return Err(ParserError::Css(
-            "css_public_base cannot contain quotes, angle brackets, backslashes, or whitespace"
-                .to_string(),
-        ));
-    }
-    Ok(())
-}
-
-fn join_css_public_base(base: &str, css_filename: &str) -> String {
-    let mut href = String::with_capacity(base.len() + css_filename.len() + 1);
-    href.push_str(base);
-    if !base.ends_with('/') {
-        href.push('/');
-    }
-    href.push_str(css_filename);
-    href
-}
-
-fn contains_invalid_href_byte(value: &str) -> bool {
-    value
-        .bytes()
-        .any(|b| matches!(b, b'"' | b'\'' | b'<' | b'>' | b'\\') || b.is_ascii_whitespace())
-}
 
 #[cfg(test)]
 #[allow(clippy::disallowed_methods)]
@@ -181,7 +135,7 @@ mod tests {
 
     #[test]
     fn hash_template_uses_content_hash() {
-        let options = CssLinkOptions::try_new("[name]-[hash].[ext]".to_string(), None).unwrap();
+        let options = CssLinkOptions::try_new("[name]-[hash].[ext]".to_string()).unwrap();
         assert!(options.file_name_template.uses_hash());
         let first = options.resolve("my-card", ".card { color: red; }");
         let second = options.resolve("other-card", ".card { color: blue; }");
@@ -203,7 +157,7 @@ mod tests {
             "[name]|[hash].[ext]",
             "résumé-[hash].[ext]",
         ] {
-            let result = CssLinkOptions::try_new(template.to_string(), None);
+            let result = CssLinkOptions::try_new(template.to_string());
             assert!(result.is_err(), "template should be rejected: {template}");
         }
     }

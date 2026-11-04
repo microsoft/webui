@@ -34,6 +34,12 @@ pub struct DiscoveredComponent {
     pub css_content: Option<String>,
     /// Whether authored browser code owns this custom element tag.
     pub is_client_owned: bool,
+    /// The authored module that defines the custom element, when discovery
+    /// found one: the template's `.ts` sibling, else its `.js` sibling.
+    ///
+    /// `None` for scriptless components and for components whose ownership
+    /// comes from other evidence, such as package metadata.
+    pub script_path: Option<PathBuf>,
     /// The original source identifier (for display/diagnostics)
     pub source: String,
 }
@@ -130,15 +136,18 @@ pub fn discover_source_with_plugin(
     })
 }
 
-/// Return whether a component has an authored sibling module.
+/// Return a component's authored sibling module, preferring `.ts` over `.js`.
+///
+/// `candidate` is a scratch buffer holding the template path; its extension
+/// is replaced while probing.
 ///
 /// Use `try_exists()` rather than `exists()`: `exists()` converts metadata
 /// errors into `false`, which could silently classify an inaccessible authored
 /// component as scriptless and bypass projection-manifest coverage.
-pub(crate) fn has_sibling_script(
+pub(crate) fn sibling_script(
     candidate: &mut PathBuf,
     package_root: Option<&Path>,
-) -> Result<bool> {
+) -> Result<Option<PathBuf>> {
     for ext in ["ts", "js"] {
         candidate.set_extension(ext);
         let exists = if let Some(root) = package_root {
@@ -152,10 +161,10 @@ pub(crate) fn has_sibling_script(
             })?
         };
         if exists {
-            return Ok(true);
+            return Ok(Some(candidate.clone()));
         }
     }
-    Ok(false)
+    Ok(None)
 }
 
 /// Collect the resolved local paths from source strings for file watching.
@@ -267,6 +276,35 @@ mod tests {
             .unwrap();
 
         assert!(!plain.is_client_owned);
+        assert!(plain.script_path.is_none());
         assert!(interactive.is_client_owned);
+        assert_eq!(
+            interactive.script_path.as_deref(),
+            Some(tmp.path().join("interactive-card.ts").as_path())
+        );
+    }
+
+    #[test]
+    fn local_discovery_records_the_sibling_module_and_prefers_typescript() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let folder = tmp.path().join("settings-panel");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::write(folder.join("settings-panel.html"), "<p>Settings</p>").unwrap();
+        std::fs::write(folder.join("settings-panel.js"), "export {};").unwrap();
+
+        let script = |plugin: &dyn DiscoveryPlugin| {
+            plugin.discover_local(tmp.path()).unwrap()[0]
+                .script_path
+                .clone()
+        };
+        let plugins: [&dyn DiscoveryPlugin; 2] =
+            [&WebUIDiscoveryPlugin::new(), &FastDiscoveryPlugin::new()];
+        for plugin in plugins {
+            assert_eq!(script(plugin), Some(folder.join("settings-panel.js")));
+        }
+        std::fs::write(folder.join("settings-panel.ts"), "export {};").unwrap();
+        for plugin in plugins {
+            assert_eq!(script(plugin), Some(folder.join("settings-panel.ts")));
+        }
     }
 }

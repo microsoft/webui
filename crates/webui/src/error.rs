@@ -83,6 +83,13 @@ pub enum WebUIError {
     #[error("{0}")]
     ComponentAssets(Box<webui_parser::Diagnostic>),
 
+    /// Component module failure with a structured diagnostic: an invalid
+    /// [`BuildOptions::component_modules`](crate::BuildOptions::component_modules)
+    /// mapping, or a module that `lazy.webui.js` cannot import by a relative
+    /// path.
+    #[error("{0}")]
+    ComponentModules(Box<webui_parser::Diagnostic>),
+
     /// Bundler-neutral state projection manifest failure: malformed schema,
     /// stale/missing input or output file, build-ID mismatch, conflicting or
     /// duplicate fragment ownership, missing scripted-component coverage, or

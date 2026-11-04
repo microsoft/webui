@@ -3,6 +3,7 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, test } from 'node:test';
+import { sameComponentStyleResource } from './style-catalog.js';
 import {
   claimSsrComponentStyles,
   COMPONENT_LINKS_EAGER,
@@ -13,6 +14,21 @@ import {
   setCssModuleLoaderForTests,
   type ComponentStyles,
 } from './styles.js';
+
+test('resource equality shares member comparison without conflating absent and empty members', () => {
+  const resource = { kind: 'link' as const, href: '/component.css' };
+  assert.equal(sameComponentStyleResource(resource, { ...resource }), true);
+  assert.equal(sameComponentStyleResource(resource, { ...resource, members: [] }), false);
+  assert.equal(sameComponentStyleResource({ ...resource, members: [] }, resource), false);
+  const members = ['first', 'second'];
+  assert.equal(sameComponentStyleResource({ ...resource, members }, { ...resource, members }), true);
+  assert.equal(sameComponentStyleResource(
+    { ...resource, members }, { ...resource, members: [...members] },
+  ), true);
+  assert.equal(sameComponentStyleResource(
+    { ...resource, members }, { ...resource, members: ['second', 'first'] },
+  ), false);
+});
 
 class FakeElement {
   localName: string;
@@ -156,6 +172,26 @@ describe('component style resources', () => {
       children.map(child => child.getAttribute('data-webui-strategy')),
       ['style', 'style'],
     );
+  });
+
+  test('link resources resolve compiler paths against the runtime asset base', async () => {
+    const document = Object.assign(fakeDocument(), {
+      baseURI: 'https://site.example/news/',
+      defaultView: { __webui: { assetBase: 'https://cdn.example/assets/' } },
+    });
+    registerComponentStyles({
+      version: 1,
+      strategy: 'link',
+      resources: { card: { kind: 'link', href: 'app-card.css' } },
+      closures: { root: ['card'] },
+    }, document);
+
+    await installComponentStyles('root', document);
+
+    const [link] = (document.head as unknown as FakeParent).children;
+    assert.equal(link.rel, 'stylesheet');
+    assert.equal(link.href, 'https://cdn.example/assets/app-card.css');
+    assert.equal(link.getAttribute('data-webui-resource'), 'card');
   });
 
   test('a bundled resource covers its member component closures', async () => {

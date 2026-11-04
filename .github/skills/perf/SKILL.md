@@ -1,11 +1,11 @@
 ---
 name: perf
-description: Speed and memory performance rules for Rust crates, the Node addon, webui-framework, and webui-router.
+description: Speed and memory performance rules for Rust crates, the Node addon, webui-framework, and webui-delivery.
 ---
 
 # Performance
 
-WebUI's value proposition is speed and low memory usage. Every change to core Rust crates, `@microsoft/webui-framework`, or `@microsoft/webui-router` must be evaluated through two lenses: **throughput** (how fast) and **memory** (how little).
+WebUI's value proposition is speed and low memory usage. Every change to core Rust crates, `@microsoft/webui-framework`, or `@microsoft/webui-delivery` must be evaluated through two lenses: **throughput** (how fast) and **memory** (how little).
 
 Server memory is not cheap. Client memory is not unlimited. Every allocation that can be avoided is a win on both sides.
 
@@ -58,9 +58,9 @@ These apply to `packages/webui-framework` (the client-side Web Component runtime
 4. **Strip SSR markers after hydration.** Comment nodes used as markers are removed from the DOM once wiring is complete - they don't persist as memory overhead.
 5. **Scope frames are stack-allocated.** `<for>` loop item variables use a linked-list scope chain, not cloned Maps or Objects.
 
-## TypeScript - `@microsoft/webui-router` rules
+## TypeScript - `@microsoft/webui-delivery` rules
 
-These apply to `packages/webui-router` (the client-side SPA router).
+These apply to `packages/webui-delivery` (the client-side SPA router).
 
 ### Speed
 

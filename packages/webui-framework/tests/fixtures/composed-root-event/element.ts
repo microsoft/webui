@@ -1,7 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+import { startRuntime } from '../../../src/runtime.js';
+import '../../../src/styles-entry.js';
 import { WebUIElement, observable, attr } from '../../../src/index.js';
+
+startRuntime();
 
 // Grandchild — emits a composed custom event.
 export class TestChild extends WebUIElement {

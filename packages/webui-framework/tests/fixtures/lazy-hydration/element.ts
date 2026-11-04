@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+import { startRuntime } from '../../../src/runtime.js';
+import '../../../src/styles-entry.js';
 import '../../../src/lazy-hydration-entry.js';
 import { attr, observable, WebUIElement } from '../../../src/index.js';
 import {
@@ -17,6 +19,8 @@ import {
   isStreamingHydrationMode,
   resetStreamingModeForTests,
 } from '../../../src/streaming-mode.js';
+
+startRuntime();
 
 declare global {
   interface Window {

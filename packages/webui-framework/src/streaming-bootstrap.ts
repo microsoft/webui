@@ -12,11 +12,18 @@ import type {
 export function applyBoundaryBootstrap(
   bootstrap: BoundaryBootstrap | SpanCompletionPayload,
 ): void {
+  const buildId = bootstrap.buildId;
+  const expected = window.__webui?.buildId;
+  if (buildId !== undefined && (
+    typeof buildId !== 'string' || buildId.length === 0 ||
+    (expected !== undefined && expected !== buildId)
+  )) {
+    throw new Error('[WebUI] Resources use a different document build. Reload the document.');
+  }
   registerComponentStyles(bootstrap.componentStyles);
   if (bootstrap.templates) registerTemplateData(bootstrap.templates);
 
-  const w = window as Window;
-  if (!w.__webui) w.__webui = {};
+  const runtime = window.__webui ??= {};
   const keys = Object.keys(bootstrap);
   for (let i = 0; i < keys.length; i++) {
     const key = keys[i];
@@ -31,18 +38,15 @@ export function applyBoundaryBootstrap(
       key === 'declarationId' ||
       key === 'enclosingSpanInstanceId'
     ) continue;
-    if (key === 'inventory') {
-      w.__webui.inventory = mergeInventory(
-        w.__webui.inventory,
-        bootstrap.inventory,
-      );
+    if (key === 'inventory' || key === 'styleInventory') {
+      runtime[key] = mergeInventory(runtime[key], bootstrap[key]);
       continue;
     }
     if (key === 'css' || key === 'styles') {
-      appendUniqueStrings(w.__webui, key, bootstrap[key]);
+      appendUniqueStrings(runtime, key, bootstrap[key]);
       continue;
     }
-    w.__webui[key] = bootstrap[key];
+    runtime[key] = bootstrap[key];
   }
 }
 

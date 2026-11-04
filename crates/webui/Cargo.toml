@@ -20,8 +20,8 @@ cli = ["microsoft-webui-parser/cli"]
 
 [dependencies]
 microsoft-webui-parser = { path = "../webui-parser", version = "3.0.5" }
-microsoft-webui-protocol = { path = "../webui-protocol", version = "3.0.5", features = ["projection-manifest"] }
-microsoft-webui-handler = { path = "../webui-handler", version = "3.0.5" }
+microsoft-webui-protocol = { path = "../webui-protocol", version = "3.0.5", features = ["projection-manifest", "content-identity"] }
+microsoft-webui-handler = { path = "../webui-handler", version = "3.0.5", features = ["packs"] }
 microsoft-webui-discovery = { path = "../webui-discovery", version = "3.0.5" }
 microsoft-webui-tokens = { path = "../webui-tokens", version = "3.0.5" }
 thiserror = { workspace = true }
@@ -35,6 +35,7 @@ crossbeam-queue = { workspace = true }
 crc32fast = { workspace = true }
 log = { workspace = true }
 rayon = { workspace = true }
+brotli = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
@@ -66,6 +67,10 @@ harness = false
 
 [[bench]]
 name = "server_request_bench"
+harness = false
+
+[[bench]]
+name = "lazy_bench"
 harness = false
 
 [[example]]

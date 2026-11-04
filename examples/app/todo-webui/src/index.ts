@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+import { startRuntime } from '@microsoft/webui-framework/runtime.js';
 /**
  * Todo-webui entry point — bootstraps WebUI Framework hydration.
  *
@@ -32,6 +33,8 @@ function logHydrationTiming(): void {
 // Side-effect imports — register custom elements and trigger hydration
 import './todo-app/todo-app.js';
 import './todo-item/todo-item.js';
+
+startRuntime();
 
 // Fallback: if hydration already completed before the listener, log now
 if (performance.getEntriesByName('webui:hydrate:total', 'measure').length > 0) {

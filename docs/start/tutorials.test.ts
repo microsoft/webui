@@ -284,6 +284,42 @@ async function serve(root: string, command: string) {
   }
 }
 
+test('the lazy guide builds its documented region into a pack the CLI serves', async t => {
+  const guide = fs.readFileSync(path.join(workspace, 'docs/learn/lazy.md'), 'utf8');
+  const template = guide.match(/```html\r?\n<!-- app-shell\.html -->\r?\n([\s\S]*?)```/)?.[1];
+  assert.ok(template, 'the guide must contain its component template');
+  assert.match(guide, /import '\.\.\/dist\/lazy\.webui\.js';/);
+  assert.match(guide, /await this\.\$rendered\(\);/);
+  const owner = 'app-shell';
+  const region = `${owner}::lazy:@0`;
+  const parent = path.join(workspace, 'packages/webui-press/dist-test/sites');
+  fs.mkdirSync(parent, { recursive: true });
+  const root = fs.mkdtempSync(path.join(parent, 'lazy-guide-'));
+  t.after(() => removeFixtureRoot(root));
+  write(path.join(root, 'src/index.html'),
+    `<!doctype html><html><head></head><body><${owner}></${owner}></body></html>`);
+  write(path.join(root, `src/${owner}.html`), template);
+  write(path.join(root, `src/${owner}.ts`), 'export {};');
+  write(path.join(root, 'state.json'), JSON.stringify({ displayName: 'Ada', settingsOpen: false }));
+  const server = await serve(root, 'webui serve ./src --state ./state.json --plugin webui');
+  try {
+    const html = await (await fetch(server.url)).text();
+    assert.ok(!html.includes('<h2>Settings</h2>'), 'a closed body is not delivered with the page');
+    const url = html.match(new RegExp(`"lp":\\{"${region}":"([^"]+)"\\}`))?.[1];
+    assert.match(url ?? '', /^_webui\/packs\/app-shell\.[0-9a-f]{16}\.json$/);
+    const response = await fetch(new URL(url!, server.url));
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get('content-type') ?? '', /application\/json/);
+    const pack = await response.json();
+    assert.equal(pack.type, 'webui-pack');
+    assert.equal(pack.fragment, region);
+    assert.equal(pack.state, undefined);
+    assert.match(pack.templates[region].h, /Settings/);
+  } finally {
+    await server.stop();
+  }
+});
+
 test('Hello World scriptless commands use the documented files', async t => {
   const markdown = lesson('first-page');
   const root = fixtureFrom(t, markdown);

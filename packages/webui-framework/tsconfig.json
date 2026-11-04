@@ -12,7 +12,9 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "declaration": true,
-    "removeComments": true,
+    // Emitted dynamic imports keep their bundler directives (webpackIgnore,
+    // @vite-ignore), which removing comments would strip.
+    "removeComments": false,
     "outDir": "dist",
     "rootDir": "src"
   },

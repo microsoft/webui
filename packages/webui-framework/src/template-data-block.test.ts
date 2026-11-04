@@ -30,7 +30,7 @@ describe('SSR data block loading', () => {
               get textContent(): string {
                 parses++;
                 // `componentStyles` is version 2, which registration rejects.
-                return '{"state":{"title":"Hello"},"componentStyles":{"version":2},"templates":{"greeting":{"h":"<p></p>"}}}';
+                return '{"state":{"title":"Hello"},"componentStyles":{"version":2},"templates":{"greeting":{"v":3,"h":"<p></p>"}}}';
               },
               remove() { removed++; },
             };

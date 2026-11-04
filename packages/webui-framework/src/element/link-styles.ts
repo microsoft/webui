@@ -9,6 +9,9 @@ import {
 } from '../template-content.js';
 import type { TemplateBlockMeta, TemplateMeta } from '../template-types.js';
 import type { ComponentStyles } from './styles.js';
+import { catalogFor } from './style-catalog.js';
+import { resolveAsset } from '../asset-base.js';
+import { speculativeTemplates } from '../speculation.js';
 
 interface LinkStyleFailure {
   readonly href: string;
@@ -103,6 +106,33 @@ export const COMPONENT_ROOT_FRESH = 2;
 
 const READY = Promise.resolve();
 const NO_DESCRIPTORS: readonly TemplateStylesheetDescriptor[] = Object.freeze([]);
+
+/**
+ * Prepare known resources without importing or mounting a component/template body.
+ *
+ * `priority: 'low'` prepares them speculatively (see `preloadComponentAssetStyles`).
+ */
+export function prepareComponentStyleRoots(
+  roots: readonly string[],
+  priority?: RequestPriority,
+): Promise<void> | undefined {
+  const catalog = catalogFor(document);
+  let hrefs: string[] | undefined;
+  let seen: Set<string> | undefined;
+  for (let i = 0; i < roots.length; i++) {
+    const closure = catalog.closures.get(roots[i]);
+    if (!closure) continue;
+    for (let j = 0; j < closure.length; j++) {
+      const resource = catalog.resources.get(closure[j]);
+      if (resource?.kind !== 'link') continue;
+      if (!seen) seen = new Set();
+      if (seen.has(resource.href)) continue;
+      seen.add(resource.href);
+      (hrefs ??= []).push(resource.href);
+    }
+  }
+  return hrefs ? preloadComponentAssetStyles(hrefs, priority) : undefined;
+}
 const NO_LINK_STYLE_STATE: TemplateLinkStyleState = {
   descriptors: NO_DESCRIPTORS,
   ready: READY,
@@ -136,11 +166,38 @@ let speculativeStylesheetPreloads:
   | Map<string, SpeculativeStylesheetPreload | undefined>
   | undefined;
 
-/** Begin preparing Link-mode stylesheets for one compiled template. */
+/**
+ * Hold speculative stylesheet work until the window has loaded.
+ *
+ * Browsers fetch even a low-priority stylesheet preload at high priority, so
+ * speculative preloads must not start while the page is still loading. Returns
+ * whether `prepare` waits for the load event; nothing waits for it meanwhile.
+ */
+function holdSpeculation(prepare: () => void): boolean {
+  if (document.readyState === 'complete') return false;
+  window.addEventListener('load', prepare, { once: true });
+  return true;
+}
+
+/**
+ * Begin preparing Link-mode stylesheets for one compiled template.
+ *
+ * A template that a speculative lazy load registered prepares them at low
+ * priority, once the window has loaded; a mount that needs them sooner
+ * prepares them itself.
+ */
 export function prepareTemplateLinkStyles(
   meta: TemplateBlockMeta,
 ): Promise<void> | undefined {
-  const ready = getTemplateLinkStyleState(meta).ready;
+  let priority: RequestPriority | undefined;
+  if (speculativeTemplates.has(meta) && !templateLinkStyles.has(meta)) {
+    if (
+      templateHtmlMayContainLink(meta.h)
+      && holdSpeculation(() => { void prepareTemplateLinkStyles(meta); })
+    ) return undefined;
+    priority = 'low';
+  }
+  const ready = getTemplateLinkStyleState(meta, priority).ready;
   return ready === READY ? undefined : ready;
 }
 
@@ -176,17 +233,31 @@ export function prepareComponentStyleLinks(
   return preloadComponentAssetStyles(hrefs);
 }
 
-/** Start compiler-owned component asset styles before importing the root module. */
+/**
+ * Start compiler-owned component asset styles before importing the root module.
+ *
+ * Every caller passes compiler-emitted hrefs from style catalogs or component
+ * asset manifests, which are relative to the asset base. One preload per URL
+ * is shared until it is claimed or expires.
+ *
+ * `priority: 'low'` marks speculative preloads: they start once the window
+ * has loaded, and until then the result has nothing to wait for.
+ */
 export function preloadComponentAssetStyles(
   hrefs: readonly string[],
+  priority?: RequestPriority,
 ): Promise<void> | undefined {
   if (hrefs.length === 0 || !supportsConstructableStylesheets()) return undefined;
+  if (
+    priority === 'low'
+    && holdSpeculation(() => { void preloadComponentAssetStyles(hrefs, priority); })
+  ) return undefined;
 
   const preloads = (speculativeStylesheetPreloads ??= new Map());
   let pending: Promise<LinkStyleFailure | undefined>[] | undefined;
   for (let i = 0; i < hrefs.length; i++) {
     if (hrefs[i].length === 0) continue;
-    const href = resolveHref(hrefs[i]);
+    const href = resolveAsset(hrefs[i]);
     const existing = preloads.get(href);
     if (existing) {
       (pending ??= []).push(existing.ready);
@@ -197,7 +268,7 @@ export function preloadComponentAssetStyles(
     // announces the initial component catalog.
     if (hasDocumentStylesheetPreload(href)) continue;
 
-    const link = createStylesheetPreload(href);
+    const link = createStylesheetPreload(href, undefined, priority);
     const startedAt = performanceNow();
     const preload: SpeculativeStylesheetPreload = {
       claimed: false,
@@ -736,7 +807,10 @@ export function rewriteCssUrls(
   return output;
 }
 
-function getTemplateLinkStyleState(meta: TemplateBlockMeta): TemplateLinkStyleState {
+function getTemplateLinkStyleState(
+  meta: TemplateBlockMeta,
+  priority?: RequestPriority,
+): TemplateLinkStyleState {
   const cached = templateLinkStyles.get(meta);
   if (cached) return cached;
 
@@ -764,7 +838,7 @@ function getTemplateLinkStyleState(meta: TemplateBlockMeta): TemplateLinkStyleSt
 
   const pending = new Array<Promise<LinkStyleFailure | undefined>>(descriptors.length);
   for (let i = 0; i < descriptors.length; i++) {
-    pending[i] = warmStylesheet(descriptors[i], state);
+    pending[i] = warmStylesheet(descriptors[i], state, priority);
   }
   state.ready = Promise.all(pending).then(results => {
     state.results = results;
@@ -803,6 +877,7 @@ function removeStylesheetPreloads(state: TemplateLinkStyleState): void {
 function warmStylesheet(
   descriptor: TemplateStylesheetDescriptor,
   state: TemplateLinkStyleState,
+  priority?: RequestPriority,
 ): Promise<LinkStyleFailure | undefined> {
   const href = resolveHref(descriptor.href);
   const fallbackReason = unsupportedLinkReason(descriptor);
@@ -823,7 +898,7 @@ function warmStylesheet(
     releaseStylesheetPreload(speculative.link);
   }
 
-  const preload = createStylesheetPreload(href, descriptor);
+  const preload = createStylesheetPreload(href, descriptor, priority);
   const startedAt = performanceNow();
   trackStylesheetPreload(state, preload, startedAt);
   return waitForStylesheetPreload(preload, href);
@@ -832,11 +907,14 @@ function warmStylesheet(
 function createStylesheetPreload(
   href: string,
   descriptor?: TemplateStylesheetDescriptor,
+  priority?: RequestPriority,
 ): HTMLLinkElement {
   const preload = document.createElement('link');
   preload.rel = 'preload';
   preload.as = 'style';
   preload.href = href;
+  // Speculative preloads must not compete with the page's own requests.
+  if (priority === 'low') preload.fetchPriority = priority;
   if (descriptor?.crossOrigin !== null && descriptor?.crossOrigin !== undefined) {
     preload.crossOrigin = descriptor.crossOrigin;
   }

@@ -1,8 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+import { startRuntime } from '../../../src/runtime.js';
+import '../../../src/styles-entry.js';
 import { WebUIElement, getTemplate, observable } from '../../../src/index.js';
 import { cloneTemplateContent } from '../../../src/template-content.js';
+
+startRuntime();
 
 class TestOwnerProbe extends WebUIElement {
   readonly constructedConnected = this.isConnected;

@@ -181,8 +181,8 @@ impl ParserPlugin for FastV3ParserPlugin {
 /// that weren't encountered during initial parsing.
 ///
 /// This uses default Link-mode CSS filenames. Call
-/// [`generate_f_template_with_css_options`] when the build uses custom CSS
-/// filename templates or a public CSS base.
+/// [`generate_f_template_with_css_options`] when the build uses a custom CSS
+/// filename template.
 pub fn generate_f_template(
     tag_name: &str,
     html_content: &str,
@@ -215,8 +215,8 @@ fn generate_f_template_from_processed(tag_name: &str, processed_template: &str) 
 pub(super) fn style_injection_snippet(style: ComponentStyleDelivery<'_>) -> Option<String> {
     match style {
         ComponentStyleDelivery::Link { href } => {
-            let mut link = String::with_capacity(30 + href.len());
-            link.push_str("<link rel=\"stylesheet\" href=\"");
+            let mut link = String::with_capacity(53 + href.len());
+            link.push_str("<link rel=\"stylesheet\" data-webui-stylesheet href=\"");
             link.push_str(href);
             link.push_str("\">");
             Some(link)
@@ -342,7 +342,7 @@ pub(super) fn f_template_style_injection<'a>(
 ) -> (Option<String>, Option<&'a str>) {
     let css_injection = css_content.and_then(|css| match css_strategy {
         CssStrategy::Link => style_injection_snippet(ComponentStyleDelivery::Link {
-            href: &css_link_options.resolve(tag_name, css).href,
+            href: &css_link_options.resolve(tag_name, css).filename,
         }),
         CssStrategy::Style => style_injection_snippet(ComponentStyleDelivery::Inline { css }),
         CssStrategy::Module => None,
@@ -745,6 +745,7 @@ mod tests {
             css_definitions: Vec::new(),
             css_fallback_chains: Vec::new(),
             is_client_owned: false,
+            script_path: None,
         }
     }
 
@@ -853,7 +854,7 @@ mod tests {
             .register_component_template(
                 "my-comp",
                 &comp,
-                r#"<template><link rel="stylesheet" href="my-comp.css"><div>hello</div></template>"#,
+                r#"<template><link rel="stylesheet" data-webui-stylesheet href="my-comp.css"><div>hello</div></template>"#,
             )
             .unwrap();
 
@@ -866,7 +867,9 @@ mod tests {
         assert!(html.contains("</f-template>"));
         assert!(html.contains("<template>"));
         assert!(html.contains("</template>"));
-        assert!(html.contains("<link rel=\"stylesheet\" href=\"my-comp.css\">"));
+        assert!(
+            html.contains("<link rel=\"stylesheet\" data-webui-stylesheet href=\"my-comp.css\">")
+        );
         assert!(html.contains("<div>hello</div>"));
     }
 
@@ -1039,7 +1042,7 @@ mod tests {
             CssStrategy::Link,
             &CssLinkOptions::default(),
         );
-        assert!(out.contains(r#"<link rel="stylesheet" href="my-btn.css">"#));
+        assert!(out.contains(r#"<link rel="stylesheet" data-webui-stylesheet href="my-btn.css">"#));
         assert!(
             out.find("<link").expect("link present") < out.find("f-ref=").expect("binding present"),
             "Link stays ahead of the body (unchanged placement): {out}"

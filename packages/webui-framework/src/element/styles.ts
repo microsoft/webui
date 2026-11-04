@@ -6,8 +6,10 @@ import {
   installComponentLinkStyles,
 } from './link-styles.js';
 import { setImportMapContent } from '../trusted-types-policy.js';
+import { resolveAsset } from '../asset-base.js';
 import { catalogFor } from './style-catalog.js';
 import type { ComponentStyleResource, DocumentCatalog } from './style-catalog.js';
+export { isComponentStyleMarker, isComponentStyleResourceMarker } from './style-markers.js';
 
 export {
   COMPONENT_LINKS_EAGER,
@@ -127,8 +129,10 @@ const pending = new WeakMap<StyleTarget, Map<string, Promise<CSSStyleSheet>>>();
 const moduleAdoption = new WeakMap<StyleTarget, ModuleAdoptionState>();
 const moduleImportsInstalled = new WeakMap<Document, Set<string>>();
 const moduleImportsSeeded = new WeakSet<Document>();
+// The specifier names an import map entry that `loadModule()` installs, never
+// a module an application bundler can resolve.
 const defaultCssModuleLoader: CssModuleLoader = (specifier) =>
-  import(specifier, { with: { type: 'css' } });
+  import(/* webpackIgnore: true */ /* @vite-ignore */ specifier, { with: { type: 'css' } });
 let loadCssModule = defaultCssModuleLoader;
 
 /** Override CSS module loading in unit tests. */
@@ -213,23 +217,6 @@ function isMatchingResourceMarker(
   return resource.kind === 'link'
     ? candidate.localName === 'link'
     : candidate.localName === 'style';
-}
-
-/** Whether an element is a compiler-owned Link/Style resource marker. */
-export function isComponentStyleMarker(element: Element): boolean {
-  if (typeof element.getAttribute !== 'function') return false;
-  if (element.getAttribute('data-webui-resource') === null) return false;
-  const strategy = element.getAttribute('data-webui-strategy');
-  return (element.localName === 'link' && strategy === 'link') ||
-    (element.localName === 'style' && (strategy === 'style' || strategy === 'module'));
-}
-
-/** Whether an element is any compiler-owned style resource marker. */
-export function isComponentStyleResourceMarker(element: Element): boolean {
-  if (isComponentStyleMarker(element)) return true;
-  return element.localName === 'script' &&
-    element.getAttribute('type') === 'importmap' &&
-    element.getAttribute('data-webui-resource') !== null;
 }
 
 function scanSsrMarkerElements(
@@ -342,7 +329,7 @@ function appendResource(
   if (resource.kind === 'link') {
     const link = document.createElement('link');
     link.rel = 'stylesheet';
-    link.href = resource.href;
+    link.href = resolveAsset(resource.href, document);
     link.setAttribute('data-webui-resource', id);
     link.setAttribute('data-webui-strategy', 'link');
     parent.insertBefore(link, before ?? null);

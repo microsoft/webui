@@ -31,5 +31,9 @@
  */
 
 import { installStreamingCoordinator } from './streaming.js';
+import { installTemplateRegistry } from './template-registry.js';
+import { installHydrationLifecycle } from './lifecycle.js';
 
+installTemplateRegistry();
+installHydrationLifecycle();
 installStreamingCoordinator();

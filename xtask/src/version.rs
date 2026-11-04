@@ -957,7 +957,7 @@ mod tests {
         let pkg = dir.path().join("package.json");
         fs::write(
             &pkg,
-            "{\n  \"name\": \"@microsoft/webui-router\",\n  \"version\": \"1.2.3\",\n  \
+            "{\n  \"name\": \"@microsoft/webui-delivery\",\n  \"version\": \"1.2.3\",\n  \
              \"publishConfig\": {\n    \"tag\": \"latest\"\n  }\n}\n",
         )
         .unwrap();
@@ -982,7 +982,7 @@ mod tests {
         let pkg = dir.path().join("package.json");
         fs::write(
             &pkg,
-            r#"{"name":"@microsoft/webui-router","version":"1.2.3"}"#,
+            r#"{"name":"@microsoft/webui-delivery","version":"1.2.3"}"#,
         )
         .unwrap();
 
@@ -1222,7 +1222,7 @@ microsoft-webui-handler = { path = "../webui-handler", version = "0.0.27" }
         let dir = tempfile::TempDir::new().unwrap();
         let python_root = dir.path().join("crates").join("webui-python");
         let press_root = dir.path().join("packages").join("webui-press");
-        let npm_root = dir.path().join("packages").join("webui-router");
+        let npm_root = dir.path().join("packages").join("webui-delivery");
         fs::create_dir_all(python_root.join("src")).unwrap();
         fs::create_dir_all(&press_root).unwrap();
         fs::create_dir_all(&npm_root).unwrap();
@@ -1254,7 +1254,7 @@ microsoft-webui-handler = { path = "../webui-handler", version = "0.0.27" }
         .unwrap();
         fs::write(
             npm_root.join("package.json"),
-            r#"{"name":"@microsoft/webui-router","version":"1.2.3","publishConfig":{"tag":"latest"}}"#,
+            r#"{"name":"@microsoft/webui-delivery","version":"1.2.3","publishConfig":{"tag":"latest"}}"#,
         )
         .unwrap();
 

@@ -5,7 +5,7 @@ import type { CompiledConditionFn, TemplateMeta } from '../template.js';
 import {
   requireComponentStyles,
   type ComponentStyles,
-} from '../element/styles.js';
+} from '../element/style-catalog.js';
 
 const preparedAssetStyles = new WeakMap<object, ComponentStyles>();
 

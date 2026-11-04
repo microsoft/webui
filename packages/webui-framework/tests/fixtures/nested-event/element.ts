@@ -1,7 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+import { startRuntime } from '../../../src/runtime.js';
+import '../../../src/styles-entry.js';
 import { WebUIElement, observable } from '../../../src/index.js';
+
+startRuntime();
 
 // Child component — has its own event binding.
 export class TestNestedChild extends WebUIElement {

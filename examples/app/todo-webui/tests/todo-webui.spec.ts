@@ -61,10 +61,12 @@ test.describe('SSR rendering', () => {
         hasRepeatSlot: Array.isArray(template?.r?.[0]) && template.r[0].length >= 4,
         eventCount: template?.eg?.reduce((count, [, bindings]) => count + bindings.length, 0) ?? 0,
         hasEvents: Array.isArray(template?.eg),
+        refs: template?.rf?.map(([name]) => name) ?? [],
       };
     });
 
-    expect(meta.h).toContain('w-ref');
+    expect(meta.h).not.toContain('w-ref');
+    expect(meta.refs).toContain('addInput');
     expect(meta.h).not.toContain('data-w-');
     expect(meta.h).not.toContain('data-ev');
     expect(meta.h).not.toContain('{{');
@@ -157,6 +159,9 @@ test.describe('interactivity', () => {
 
     await page.evaluate(() => {
       const app = document.querySelector('todo-app') as any;
+      if (app.addInput !== app.shadowRoot.querySelector('input.add-input')) {
+        throw new Error('The compiled addInput ref must target the hydrated input.');
+      }
       app.addInput.value = 'Write Playwright tests';
       app.addInput.dispatchEvent(new Event('input', { bubbles: true }));
     });

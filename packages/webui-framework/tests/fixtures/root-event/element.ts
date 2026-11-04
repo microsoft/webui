@@ -1,7 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+import { startRuntime } from '../../../src/runtime.js';
+import '../../../src/styles-entry.js';
 import { WebUIElement, observable } from '../../../src/index.js';
+
+startRuntime();
 
 /**
  * Root-level `@event` coverage. The binding lives on the host, so `e.target` is
