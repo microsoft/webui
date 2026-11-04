@@ -74,6 +74,49 @@ Captured pre-upgrade own properties survive constructor defaults and initial
 attribute reactions. An explicit property assignment after upgrade supersedes
 the captured value, including while the element remains detached.
 
+### Affected-render completion
+
+`TemplateElement.$whenRendered(): Promise<void>` observes a finite batch using
+the existing per-element scheduler. Capture pending jobs, started staged mounts,
+and retained blocked writes in the root's rendered ancestry scope. Walk
+assigned slots, parent elements, and shadow hosts, not DOM subtrees. Keep
+enrollment open until one explicit microtask checkpoint so requests from a
+Changed callback include the setter's trailing update. Jobs that run before
+that checkpoint must still be accounted for.
+
+After enrollment closes, propagate membership only through synchronous work
+executing in captured renders and explicitly carried mount continuations.
+Coalesced writes are inseparable from their captured job; new independent
+jobs, user microtasks, async callback returns, timers, and later stream records
+are not automatically included. The boundary covers own DOM/refs and
+synchronous lifecycle work, not foreign component schedulers or paint.
+
+The pending index must discover work queued before a request without eager
+promises. Live work uses a transient intrusive list; blocked targets use weak
+references and retain no copied state or strong subtree ownership. Initial
+discovery scales with outstanding work and ancestry depth, not just affected
+bindings. Waiter membership exists only for requested boundaries and is released
+on settlement. Do not equate an empty instance queue or the startup hydration
+event with affected-descendant completion.
+
+Untouched dormant descendants do not participate. Writes to readiness-blocked
+lazy, streamed, undefined, or missing-template WebUI targets reject instead of
+activating them or succeeding partially. Staged blocked writes created during
+a captured render are checked after insertion. Started stylesheet-gated DOM
+mounts participate even if they started before the request. Carry render
+membership through their reconciliation/append callbacks and report explicit
+load/error/cancellation outcomes. A link failure may preserve native-link
+fallback rendering while rejecting the boundary. This does not impose a
+resource deadline or wait for all CSS on the page.
+
+Structural disposal retires removed descendant jobs. Root disconnection or
+unexpected loss of captured work rejects; same-stack descendant moves that restore the
+scope remain valid. Destruction clears pending and weak blocked entries.
+Failures reject affected waiters with the original error without changing
+existing callback retry or unprocessed-path recovery behavior. Overlapping
+waiters settle independently and exactly once; a settled boundary is never
+reopened. DOM is not frozen between settlement and an await continuation.
+
 There is no flash of content, because the HTML was already on screen at step 2. There is no first render, because the framework never re-renders the DOM that SSR emitted.
 
 ---

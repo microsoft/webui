@@ -17,6 +17,8 @@
  * one unit.
  */
 
+import { invokeRenderCallback } from './render-completion.js';
+
 // ---------------------------------------------------------------------------
 // kebab-case attribute naming
 // ---------------------------------------------------------------------------
@@ -296,20 +298,19 @@ function createReactiveProperty(
 
       const callback = this[changedKey];
       if (typeof callback === 'function') {
+        const element = this as unknown as HTMLElement;
         if (
           this['$authoredPhase'] === 1 &&
-          (attrDefinition ? canReflect : (this as unknown as HTMLElement).isConnected)
+          (attrDefinition ? canReflect : element.isConnected)
         ) {
-          (callback as (old: unknown, next: unknown) => void)
-            .call(this, oldValue, newValue);
+          invokeRenderCallback(element, callback as (old: unknown, next: unknown) => void, oldValue, newValue);
         } else {
           const record = this['$recordPropertyChange'];
           if (typeof record === 'function') {
             (record as (name: string, old: unknown) => void)
               .call(this, name, oldValue);
           } else {
-            (callback as (old: unknown, next: unknown) => void)
-              .call(this, oldValue, newValue);
+            invokeRenderCallback(element, callback as (old: unknown, next: unknown) => void, oldValue, newValue);
           }
         }
       }

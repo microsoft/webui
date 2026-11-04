@@ -231,6 +231,45 @@ You do not need `@observable` for values that are only read by the template.
 Add `@observable` when TypeScript code needs to read or mutate the value, for
 example in an event handler.
 
+### Wait for affected rendering
+
+Use `await this.$whenRendered()` before DOM work that depends on pending
+updates in this component **and its affected WebUI descendants**:
+
+```typescript
+this.items = remainingItems;
+await this.$whenRendered();
+// Revalidate focus intent and select a surviving row here.
+```
+
+The method preserves batching. It includes work pending when requested, the
+rest of the current synchronous turn (including a setter's trailing update
+when called from a Changed callback), synchronous/reentrant render
+consequences, and DOM insertion for affected mounts already waiting for
+stylesheets. Shadow, Light, and slotted descendants participate. Untouched
+dormant components do not participate, and removed rows need not finish
+rendering.
+
+This is a finite render boundary, not subtree idleness or paint. Later
+independent updates, timers, fetches, asynchronous user callbacks, and foreign
+component rendering are outside its guarantee. It does not await layout,
+fonts, images, animations, or general stylesheet readiness. DOM may change
+again before your continuation runs; focus destination and avoiding focus
+theft remain application policy.
+
+Call it on a connected, mounted component. Affected work blocked on lazy
+hydration, unfinished streaming, an unloaded WebUI definition, or missing
+template metadata rejects with an `InvalidStateError`; it does not force
+activation or report partial success. Root disconnection or unexpected loss
+of captured work rejects with an `AbortError`. Render/callback failures reject
+with their original error, and failed stylesheet-gated mounts reject even
+when rendering continues with native links. Handle these rejections at your
+application's error boundary. After the component becomes ready, a new request
+can succeed. Resource-gated mounts have no completion deadline.
+
+`$flushUpdates()` remains an instance-local, synchronous escape hatch; it is
+not a descendant-completion boundary.
+
 ### React to Property Changes
 
 Implement a `<property>Changed(oldValue, newValue)` method to synchronize

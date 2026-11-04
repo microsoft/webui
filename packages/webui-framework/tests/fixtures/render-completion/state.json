@@ -1,0 +1,12 @@
+{
+  "value": "0",
+  "derived": 1,
+  "rows": [
+    { "id": "a", "value": "1" },
+    { "id": "b", "value": "2" },
+    { "id": "c", "value": "3" }
+  ],
+  "showUnloaded": false,
+  "payload": { "label": "loaded" },
+  "note": "initial"
+}

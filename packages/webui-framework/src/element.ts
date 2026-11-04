@@ -16,6 +16,7 @@
  */
 
 import { TemplateElement } from './template-element.js';
+import { invokeRenderCallback } from './render-completion.js';
 import {
   disconnectLazyHydration,
   isStreamedLazyActivation,
@@ -209,7 +210,7 @@ export class WebUIElement extends TemplateElement {
     if (Object.is(oldValue, value)) return;
     const callback = (this as Record<string, unknown>)[`${name}Changed`];
     if (typeof callback === 'function') {
-      (callback as (old: unknown, next: unknown) => void).call(this, oldValue, value);
+      invokeRenderCallback(this, callback as (old: unknown, next: unknown) => void, oldValue, value);
     }
   }
 
@@ -421,11 +422,7 @@ export class WebUIElement extends TemplateElement {
     if (typeof method !== 'function') return;
     const listener = (event: Event): void => this.$callEventHandler(method as EventHandler, args, event, scope);
     target.addEventListener(eventName, listener);
-    this.$addCleanup(instance, () => target.removeEventListener(eventName, listener));
-  }
-
-  private $addCleanup(instance: TemplateInstance, cleanup: () => void): void {
-    (instance.cleanups ??= []).push(cleanup);
+    addCleanup(instance, () => target.removeEventListener(eventName, listener));
   }
 
   private $callEventHandler(
@@ -500,4 +497,8 @@ export class WebUIElement extends TemplateElement {
       if (name) (this as Record<string, unknown>)[name] = refs[i];
     }
   }
+}
+
+function addCleanup(instance: TemplateInstance, cleanup: () => void): void {
+  (instance.cleanups ??= []).push(cleanup);
 }

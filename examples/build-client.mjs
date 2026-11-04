@@ -8,6 +8,7 @@ import { createRequire } from "node:module";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { minifyClient } from "./minify-client.mjs";
 
 let buildTools;
 
@@ -49,6 +50,7 @@ export async function runWebUIClientBuild(options = {}) {
   const watch = process.argv.includes("--watch");
   const color = process.argv.includes("--color=true");
   const { projectionManifest, plugins = [], ...esbuildOptions } = options;
+  const optimize = !watch && esbuildOptions.minify !== false;
   const buildOptions = {
     entryPoints: ["src/index.ts"],
     outdir: "dist",
@@ -58,9 +60,14 @@ export async function runWebUIClientBuild(options = {}) {
     minify: !watch,
     sourcemap: watch,
     ...esbuildOptions,
+    define: {
+      ...(!watch ? { __WEBUI_DEV__: "false" } : {}),
+      ...esbuildOptions.define,
+    },
     color,
     metafile: true,
     plugins: [
+      ...(optimize ? [minifyClient()] : []),
       ...plugins,
       esbuildProjection(
         projectionManifest
@@ -75,7 +82,9 @@ export async function runWebUIClientBuild(options = {}) {
     await context.watch();
     return context;
   }
-  return esbuild.build(buildOptions);
+  const result = await esbuild.build(buildOptions);
+  if (optimize && esbuildOptions.write !== false) delete result.outputFiles;
+  return result;
 }
 
 const invokedPath = process.argv[1];

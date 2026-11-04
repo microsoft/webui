@@ -51,6 +51,18 @@ cd examples/app/native-services && pnpm start
 
 Each app's `package.json` also exposes `pnpm start`, which delegates to the same xtask.
 
+## Client builds
+
+The shared `build-client.mjs` helper bundles with esbuild and enables WebUI
+projection. Production builds use Terser without property mangling, disable
+development diagnostics by default, and generate the projection manifest from
+the final optimized bytes. Source maps, exports, and custom output paths are
+preserved. Watch builds keep esbuild's development output and diagnostics.
+
+Pass `minify: false` to retain readable production JavaScript, or override
+`define.__WEBUI_DEV__` explicitly when diagnostics are needed. Neither option
+changes the availability of framework APIs such as `$whenRendered()`.
+
 ## More Details
 
 See integration-specific READMEs:

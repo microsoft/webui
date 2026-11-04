@@ -821,10 +821,19 @@ closed-shadow click targets. See
 | `this.$emit(name, detail?)` | Dispatch a bubbling CustomEvent |
 | `this.$update()` | Force a reactive update cycle |
 | `this.$flushUpdates()` | Synchronously flush pending updates |
+| `await this.$whenRendered()` | Await a finite batch of pending rendering and affected WebUI descendants, including started DOM-gated mounts |
 | `<property>Changed(oldValue, newValue)` | For `@attr` and `@observable`, run once after the component mounts with `oldValue` undefined, then synchronously on each live assignment |
 | `protected hydratedCallback()` | Run synchronously once after the first successful hydration or client mount |
 | `static define(tagName)` | Register as a custom element |
 | Generated component asset root | Import a stable generated `<tag>.webui.js` payload, then wrap its default export with `defineComponentAsset()` |
+
+For post-render DOM work, prefer `$whenRendered()` over flushing children or
+guessing microtask turns. It preserves batching, includes Shadow/Light/slotted
+descendants, rejects affected readiness blockers and rendering failures, and
+does not wait for untouched dormant components, later independent work, or
+paint. Revalidate focus intent and targets after awaiting; focus policy stays
+in the application. See [affected rendering](/learn/interactivity#wait-for-affected-rendering)
+for the readiness, failure, and resource-wait contract.
 
 ### Custom events
 

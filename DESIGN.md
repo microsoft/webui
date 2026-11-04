@@ -320,6 +320,14 @@ DOM and refs. Live callbacks remain synchronous, while template updates
 coalesce independently. Disconnect pauses authored effects without losing the
 state needed to reconcile on reconnect.
 
+Applications can observe completion of a finite, scoped batch of browser
+render work and its affected descendants without choosing synchronous child
+flush order. This boundary follows rendered ownership and includes started
+DOM-gated mount continuations, but does not force deferred hydration, wait for
+unrelated future work, or imply paint. Failed or readiness-blocked affected
+work cannot be reported as successful completion. Interaction policy, including
+focus recovery, remains owned by the application.
+
 The framework treats compiled HTML and metadata as trusted output of its own
 compiler, not as arbitrary user HTML. Trusted Types support protects compiler
 sinks when available; it is not a sanitizer for triple-brace values or a

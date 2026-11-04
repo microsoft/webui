@@ -49,6 +49,8 @@ interface DeferredContentCallbacks {
   readonly afterAppend?: () => void;
   readonly beforeAppend?: () => void;
   readonly hasAuthorHydrationLifecycle?: boolean;
+  readonly run?: (append: () => void) => void;
+  readonly failed?: (error: Error) => void;
 }
 
 /**
@@ -511,6 +513,10 @@ export function installTemplateLinkStyles(
       `[WebUI] Stylesheet "${href}" failed to load for <${host.localName}>.${reason} ` +
       'The component will continue with its native stylesheet links and may be unstyled.',
     );
+    deferredCallbacks?.failed?.(new Error(
+      `[WebUI] Stylesheet "${href}" failed to load for <${host.localName}>. ` +
+      'Check the stylesheet URL and its network or CSP failure.',
+    ));
     finishMount(false);
   };
 
@@ -601,6 +607,14 @@ export function installTemplateLinkStyles(
   }
 
   function finishMount(reconcileLinks: boolean): void {
+    if (deferredCallbacks?.run) {
+      deferredCallbacks.run(() => commitMount(reconcileLinks));
+    } else {
+      commitMount(reconcileLinks);
+    }
+  }
+
+  function commitMount(reconcileLinks: boolean): void {
     if (deferContent && !contentAppended) {
       const loadKeys = reconcileLinks ? captureNativeLoadKeys(links) : undefined;
       deferredCallbacks?.beforeAppend?.();

@@ -14,6 +14,17 @@ If you are building WebUI apps in this repo, this is the component model used by
 
 > 📖 **Full documentation at [microsoft.github.io/webui](https://microsoft.github.io/webui)**, see the [Interactivity Guide](https://microsoft.github.io/webui/learn/interactivity) for component authoring patterns. For framework internals (hydration, path resolution, reactive update model), see [the hydration contract](https://github.com/microsoft/webui/blob/main/specs/hydration.md).
 
+## Post-render DOM work
+
+`await element.$whenRendered()` waits for a finite batch of pending rendering
+in that connected, mounted component and its affected WebUI descendants.
+It preserves batching and includes started stylesheet-gated DOM insertion,
+without waking untouched dormant components. Affected readiness blockers,
+render errors, and root disconnection reject the promise; completion is not
+layout or paint. Focus selection and rechecking user intent stay in application
+code. See [Wait for affected rendering](https://microsoft.github.io/webui/learn/interactivity#wait-for-affected-rendering)
+for the complete contract. `$flushUpdates()` remains instance-local.
+
 ## Install
 
 Trusted Types support is automatic; no setup call is needed. To enforce it,
