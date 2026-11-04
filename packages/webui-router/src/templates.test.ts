@@ -8,6 +8,7 @@ import { test } from 'node:test';
 
 import { WebUIRouter } from './router.js';
 import {
+  cancelDeferredStream,
   readStreamingPartial,
   startDeferredStream,
   type StreamingContext,
@@ -16,6 +17,7 @@ import {
   registerTemplatesAndStyles,
   waitForTemplateReadiness,
 } from './templates.js';
+import type { PartialResponse } from './cache.js';
 
 interface RegistrationDetail {
   templates: Record<string, unknown>;
@@ -93,7 +95,7 @@ test('streaming registration rejects a stale navigation after readiness wait', a
     },
     setDeferredGeneration() {},
     updateInventory() {},
-    markCacheComplete() {},
+    settleCacheStream() {},
   };
   const body = new ReadableStream<Uint8Array>({
     start(controller) {
@@ -174,7 +176,7 @@ test('streaming defers chunk-two state until route commit', async () => {
     },
     setDeferredGeneration() {},
     updateInventory() {},
-    markCacheComplete() {},
+    settleCacheStream() {},
   };
   let stream!: ReadableStreamDefaultController<Uint8Array>;
   const body = new ReadableStream<Uint8Array>({
@@ -248,7 +250,7 @@ test('same-read chunk-two state is folded into commit data once', async () => {
     },
     setDeferredGeneration() {},
     updateInventory() {},
-    markCacheComplete() {},
+    settleCacheStream() {},
   };
   const body = new ReadableStream<Uint8Array>({
     start(controller) {
@@ -282,6 +284,58 @@ test('same-read chunk-two state is folded into commit data once', async () => {
   await deferredReader;
   assert.deepEqual(received, []);
 });
+
+for (const started of [false, true]) {
+  test(`stream settlement waits for ${started ? 'active' : 'unread'} cancellation`, async () => {
+    const cancelling = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const settlements: Array<{ path: string; data: PartialResponse; completed: boolean }> = [];
+    let generation = 1;
+    let deferred: Promise<void> | null = null;
+    const context: StreamingContext = {
+      get navGeneration() { return generation; },
+      currentRequestPath: '/cancelled',
+      activeChain: [],
+      nonce: '',
+      injectedCss: new Set(),
+      setDeferredReader(reader) { deferred = reader; },
+      setDeferredGeneration() {},
+      updateInventory() {},
+      settleCacheStream(path, data, completed) {
+        settlements.push({ path, data, completed });
+      },
+    };
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(
+          '{"path":"/cancelled","chain":[],"templates":{}}\n',
+        ));
+      },
+      cancel() {
+        cancelling.resolve();
+        return release.promise;
+      },
+    });
+    const data = await readStreamingPartial(new Response(body), '/cancelled', context);
+    assert.ok(data);
+    generation++;
+    let pending: Promise<void>;
+    if (started) {
+      startDeferredStream(data);
+      assert.ok(deferred);
+      pending = deferred;
+    } else {
+      pending = cancelDeferredStream(data);
+    }
+    await cancelling.promise;
+    assert.deepEqual(settlements, [], 'pending cancellation must retain live ownership');
+    assert.equal(body.locked, true);
+    release.resolve();
+    await pending;
+    assert.equal(body.locked, false);
+    assert.deepEqual(settlements, [{ path: '/cancelled', data, completed: false }]);
+  });
+}
 
 test('template readiness releases an aborted navigation without cancelling shared work', async () => {
   const controller = new AbortController();
@@ -323,7 +377,7 @@ test('streaming registration releases its reader when readiness rejects', async 
     setDeferredReader() {},
     setDeferredGeneration() {},
     updateInventory() {},
-    markCacheComplete() {},
+    settleCacheStream() {},
   };
 
   try {
@@ -364,7 +418,7 @@ test('router cancels an unread deferred stream when commit rejects', async () =>
     setDeferredReader() {},
     setDeferredGeneration() {},
     updateInventory() {},
-    markCacheComplete() {},
+    settleCacheStream() {},
   };
   const data = await readStreamingPartial(response, '/failed', context);
   assert.ok(data);

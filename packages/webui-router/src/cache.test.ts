@@ -118,23 +118,93 @@ describe('completed navigation response ownership', () => {
     assert.equal(owner.lookup('/items/1'), null);
   });
 
-  test('incomplete and completed streaming response ownership is unchanged', t => {
+  test('ordinary zero-freshness streams release their response and tags on every settlement', t => {
     let now = 1_000;
     t.mock.method(Date, 'now', () => now);
-    const owner = cache();
-    const data = response();
-    owner.store('/items/1', data, false, true);
-    assert.equal(owner.has('/items/1'), true);
-    assert.equal(owner.lookup('/items/1'), null);
-    const entry = owner.getEntry('/items/1');
-    assert.ok(entry);
-    entry.complete = true;
-    assert.equal(owner.lookup('/items/1'), data);
-    now++;
-    assert.equal(owner.lookup('/items/1'), null);
-    assert.equal(owner.has('/items/1'), true);
-    owner.clear();
-    assert.equal(owner.has('/items/1'), false);
+    for (const completed of [true, false]) {
+      for (const configured of [0, 60_000]) {
+        now = 1_000;
+        const owner = cache(configured);
+        const data = response(configured === 0 ? undefined : 0, ['stream']);
+        owner.store('/items/1', data, false, true);
+        assert.equal(owner.has('/items/1'), true);
+        assert.equal(owner.lookup('/items/1'), null);
+        owner.settleStream('/items/1', data, completed);
+        assert.equal(owner.has('/items/1'), false);
+        assert.equal(owner.getEntry('/items/1'), undefined);
+        assert.equal(owner.lookup('/items/1'), null, 'zero disables even same-clock reuse');
+        now = 999;
+        assert.equal(owner.lookup('/items/1'), null, 'rollback cannot revive released streams');
+        const tags = (owner as unknown as { tagIndex: Map<string, Set<string>> }).tagIndex;
+        assert.equal(tags.size, 0);
+      }
+    }
+  });
+
+  test('settling an old same-path stream cannot remove or complete its replacement', () => {
+    for (const completed of [true, false]) {
+      const owner = cache();
+      const old = response(0, ['old']);
+      const replacement = response(0, ['replacement']);
+      owner.store('/items/1', old, false, true);
+      owner.store('/items/1', replacement, false, true);
+      owner.settleStream('/items/1', old, completed);
+      assert.equal(owner.getEntry('/items/1')?.data, replacement);
+      assert.equal(owner.getEntry('/items/1')?.complete, false);
+      owner.invalidateTags(['old']);
+      assert.equal(owner.has('/items/1'), true);
+      owner.settleStream('/items/1', replacement, true);
+      assert.equal(owner.has('/items/1'), false);
+      owner.settleStream('/items/1', old, true);
+      assert.equal(owner.has('/items/1'), false);
+    }
+  });
+
+  test('stream settlement preserves positive freshness and the inclusive preload minimum', t => {
+    let now = 1_000;
+    t.mock.method(Date, 'now', () => now);
+    for (const preload of [false, true]) {
+      now = 1_000;
+      const owner = cache();
+      const data = response(preload ? 0 : 100);
+      owner.store('/items/1', data, preload, true);
+      assert.equal(owner.lookup('/items/1'), null);
+      owner.settleStream('/items/1', data, true);
+      assert.equal(owner.lookup('/items/1'), data);
+      now += preload ? 5_000 : 100;
+      assert.equal(owner.lookup('/items/1'), data);
+      now++;
+      assert.equal(owner.lookup('/items/1'), null);
+      assert.equal(owner.has('/items/1'), true);
+    }
+  });
+
+  test('failed positive-freshness and preload streams remain incomplete', () => {
+    for (const preload of [false, true]) {
+      const owner = cache();
+      const data = response(preload ? 0 : 100);
+      owner.store('/items/1', data, preload, true);
+      owner.settleStream('/items/1', data, false);
+      assert.equal(owner.getEntry('/items/1')?.complete, false);
+      assert.equal(owner.has('/items/1'), true);
+      assert.equal(owner.lookup('/items/1'), null);
+    }
+  });
+
+  test('stream settlement preserves negative, NaN and infinite lifetime comparisons', t => {
+    let now = 1_000;
+    t.mock.method(Date, 'now', () => now);
+    for (const lifetime of [-1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      now = 1_000;
+      const owner = cache(lifetime);
+      const data = response();
+      owner.store('/items/1', data, false, true);
+      owner.settleStream('/items/1', data, true);
+      assert.equal(owner.has('/items/1'), true);
+      assert.equal(owner.lookup('/items/1'), lifetime === -1 ? null : data);
+      now = 998;
+      assert.equal(owner.lookup('/items/1'), data);
+    }
   });
 
   test('negative, NaN and infinite lifetimes keep their existing comparison semantics', t => {

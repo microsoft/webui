@@ -29,7 +29,7 @@ export interface StreamingContext {
   setDeferredReader(reader: Promise<void> | null): void;
   setDeferredGeneration(gen: number): void;
   updateInventory(inv: string): void;
-  markCacheComplete(requestPath: string): void;
+  settleCacheStream(requestPath: string, data: PartialResponse, completed: boolean): void;
 }
 
 /** Internal partial-response marker for an unread deferred stream tail. */
@@ -148,6 +148,7 @@ export async function readStreamingPartial(
       Reflect.deleteProperty(data, '_deferredStream');
       await cancelReader(reader);
       ctx.setDeferredReader(null);
+      ctx.settleCacheStream(requestPath, data, false);
     },
     start() {
       if (consumed) return;
@@ -232,12 +233,12 @@ async function continueDeferredRead(
   try {
     while (true) {
       if (signal?.aborted || generation !== ctx.navGeneration) {
-        reader.cancel().catch(() => {});
+        await reader.cancel().catch(() => {});
         return;
       }
       const { done, value } = await reader.read();
       if (signal?.aborted || generation !== ctx.navGeneration) {
-        reader.cancel().catch(() => {});
+        await reader.cancel().catch(() => {});
         return;
       }
       if (done) {
@@ -249,7 +250,7 @@ async function continueDeferredRead(
 
       if (buffer.length > MAX_NDJSON_BUFFER) {
         console.warn('[Router] NDJSON deferred buffer exceeded limit, aborting');
-        reader.cancel().catch(() => {});
+        await reader.cancel().catch(() => {});
         return;
       }
 
@@ -258,7 +259,10 @@ async function continueDeferredRead(
 
       for (const line of lines) {
         if (!line.trim()) continue;
-        if (generation !== ctx.navGeneration) return; // Stale — stop
+        if (generation !== ctx.navGeneration) {
+          await reader.cancel();
+          return;
+        }
         try {
           const parsed = JSON.parse(line);
           if (parsed.states) {
@@ -290,7 +294,7 @@ async function continueDeferredRead(
     // Release the stream lock and clear the deferred reference
     reader.releaseLock();
     ctx.setDeferredReader(null);
-    if (completed) ctx.markCacheComplete(requestPath);
+    ctx.settleCacheStream(requestPath, data, completed);
   }
 }
 
