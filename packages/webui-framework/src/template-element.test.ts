@@ -128,6 +128,36 @@ interface PendingParentStateConsumer {
   $applyPendingParentState(replayAfterHydration: boolean): void;
 }
 
+for (const wildcard of [false, true]) {
+  test(`an unindexed reactive write preserves batching with wildcard=${wildcard}`, async () => {
+    const element = new TemplateElement();
+    const targeted = ['derived'];
+    const computed = ['computed'];
+    const entry = (texts: string[]) => ({ texts, attrs: [], conds: [], repeats: [] });
+    const applied: string[] = [];
+    let fullRefreshes = 0;
+    Object.defineProperties(element, {
+      $ready: { value: true },
+      $root: { value: {} },
+      $pathIndex: { value: new Map([['derived', entry(targeted)]]) },
+      $wildcardBindings: { value: wildcard ? entry(computed) : null },
+      $updateInstance: { value() { fullRefreshes++; } },
+      $updateBindings: { value(texts: string[]) { applied.push(...texts); } },
+    });
+    element[REQUEST_UPDATE]('derived');
+    element[REQUEST_UPDATE]('value');
+    assert.equal(fullRefreshes, 0);
+    assert.deepEqual(applied, []);
+    await Promise.resolve();
+    assert.deepEqual(applied, wildcard ? ['derived', 'computed'] : ['derived']);
+    element[REQUEST_UPDATE]('value');
+    await Promise.resolve();
+    assert.deepEqual(applied, wildcard ? ['derived', 'computed', 'computed'] : ['derived']);
+    element[REQUEST_UPDATE]();
+    assert.equal(fullRefreshes, 1, 'explicit refresh remains synchronous');
+  });
+}
+
 test('a rejected binding releases the flush gate and preserves re-entrant updates', () => {
   const originalQueue = globalThis.queueMicrotask;
   const queued: VoidFunction[] = [];

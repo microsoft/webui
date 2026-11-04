@@ -1609,18 +1609,17 @@ export class TemplateElement extends HTMLElement {
     // Lazy-build path index on first update (deferred from hydration)
     if (!this.$pathIndex) this.$buildPathIndex();
 
-    if (path && this.$pathIndex) {
-      const entry = this.$pathIndex.get(path);
-      if (entry) {
+    if (path) {
+      if (this.$pathIndex?.has(path) || this.$wildcardBindings) {
         // Batch path-specific updates via microtask coalescing.
         if (!this.$dirtyPaths) this.$dirtyPaths = new Set();
         this.$dirtyPaths.add(path);
         enqueueRender(this);
-        return;
       }
+      return;
     }
 
-    // Full immediate update (initial mount, reconnect, or unknown path).
+    // Explicit refresh (initial mount or reconnect), not a reactive write.
     this.$dirtyPaths = null;
     const tracked = queueRenderWork(this, UPDATE_WORK, true);
     const previous = tracked ? enterRenderWork(this) : undefined;

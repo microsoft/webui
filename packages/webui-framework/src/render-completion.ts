@@ -139,6 +139,13 @@ export function queueRenderWork(
   return true;
 }
 
+function abortRenderScope(completion: Completion): void {
+  release(completion, { value: new DOMException(
+    '[WebUI] Captured render work left its component scope.',
+    'AbortError',
+  ) });
+}
+
 function detach(element: WorkElement): void {
   if (!observingRender) return;
   const work = workByElement.get(element);
@@ -150,10 +157,7 @@ function detach(element: WorkElement): void {
     completion.pending.delete(element);
     if ((!element.isConnected || !inScope(element, completion.root)) &&
         !expected?.has(completion)) {
-      release(completion, { value: new DOMException(
-        '[WebUI] Captured render work left its component scope.',
-        'AbortError',
-      ) });
+      abortRenderScope(completion);
     } else {
       settle(completion);
     }
@@ -167,24 +171,25 @@ export function finishRenderWork(element: WorkElement, kind: number): void {
   if (!remaining && !element[RENDER_PENDING] && !element[DEPTH]) detach(element);
 }
 
-export function enterRenderWork(element: WorkElement): Set<Completion> | undefined {
+export function enterRenderWork(
+  element: WorkElement,
+  queued = false,
+): Set<Completion> | undefined {
   const previous = active;
   if (!observingRender) {
     if (element[DEPTH]) element[DEPTH]++;
     return previous;
   }
   element[DEPTH] = (element[DEPTH] ?? 0) + 1;
-  enroll(element);
+  // Queued jobs enrolled on writes and initial boundary discovery already.
+  if (!queued) enroll(element);
   const work = workByElement.get(element);
   active = work;
   if (work) {
     for (const completion of work) {
       if (!element.isConnected || !inScope(element, completion.root)) {
         if (!expectedRemovals.get(element)?.has(completion)) {
-          release(completion, { value: new DOMException(
-            '[WebUI] Captured render work left its component scope.',
-            'AbortError',
-          ) });
+          abortRenderScope(completion);
         }
       }
     }
@@ -340,6 +345,24 @@ export function finishRenderRemoval(previous: readonly Node[] | undefined): void
   removing = previous;
 }
 
+const renderObserver = {
+  queued(target: Element): void {
+    if (target.isConnected) expectedRemovals.delete(target);
+    enroll(target);
+  },
+  render(target: Element & { [RENDER](): void }): void {
+    const previous = enterRenderWork(target, true);
+    try {
+      target[RENDER]();
+    } finally {
+      leaveRenderWork(target, previous);
+    }
+  },
+  finished(target: WorkElement): void {
+    if (!target[DEPTH] && !gated.has(target)) detach(target);
+  },
+};
+
 export function whenRendered(element: Element, unavailable?: string): Promise<void> {
   if (unavailable) return Promise.reject(invalidState(element, unavailable));
   return new Promise<void>((resolve, reject) => {
@@ -354,21 +377,7 @@ export function whenRendered(element: Element, unavailable?: string): Promise<vo
     completion.observers.add(completion);
     completions.add(completion);
     observingRender = true;
-    observeRender({
-      queued(target) {
-        if (target.isConnected) expectedRemovals.delete(target);
-        enroll(target);
-      },
-      render(target) {
-        const previous = enterRenderWork(target);
-        try {
-          target[RENDER]();
-        } finally {
-          leaveRenderWork(target, previous);
-        }
-      },
-      finished(target) { finishRenderWork(target, 0); },
-    });
+    observeRender(renderObserver);
     opening.add(completion);
     for (const node of pendingRenders) {
       if (node) include(node, completion);

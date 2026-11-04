@@ -166,3 +166,40 @@ test('a captured write enrolls a job already queued independently after sealing'
   finishRenderWork(leaf, MOUNT_WORK);
   await waiting;
 });
+
+test('queued membership still rejects a target moved outside the captured scope', async () => {
+  const root = new Target();
+  const child = new Target();
+  child.parent = root;
+  enqueueRender(child);
+  const waiting = whenRendered(root);
+  const rejected = assert.rejects(waiting, { name: 'AbortError' });
+  child.parent = null;
+  await rejected;
+});
+
+test('a boundary opened within a render captures subsequent coalesced child work', async () => {
+  const root = new Target();
+  const child = new Target();
+  const leaf = new Target();
+  child.parent = root;
+  leaf.parent = child;
+  let inner: Promise<void> | undefined;
+  root.run = () => {
+    enqueueRender(child);
+    inner = whenRendered(child);
+    enqueueRender(child);
+  };
+  child.run = () => { queueRenderWork(leaf, MOUNT_WORK); };
+  enqueueRender(root);
+  const outer = whenRendered(root);
+  let finished = 0;
+  await Promise.resolve();
+  void outer.then(() => { finished++; });
+  void inner!.then(() => { finished++; });
+  await Promise.resolve();
+  assert.equal(finished, 0);
+  finishRenderWork(leaf, MOUNT_WORK);
+  await Promise.all([outer, inner]);
+  assert.equal(finished, 2);
+});
