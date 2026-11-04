@@ -1,7 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import '@microsoft/webui-framework/styles.js';
 import { startRuntime } from '@microsoft/webui-framework/runtime.js';
 import { observable, WebUIElement } from '@microsoft/webui-framework';
 

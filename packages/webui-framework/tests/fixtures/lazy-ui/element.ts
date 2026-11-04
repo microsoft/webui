@@ -2,7 +2,6 @@
 // Licensed under the MIT license.
 
 import { startRuntime } from '../../../src/runtime.js';
-import '../../../src/styles-entry.js';
 import '../../../src/template-cache-entry.js';
 import { registerGeneratedLazyScripts } from '../../../src/lazy-entry.js';
 import { attr, getTemplate, observable, WebUIElement } from '../../../src/index.js';

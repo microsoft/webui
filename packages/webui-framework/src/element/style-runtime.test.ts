@@ -37,7 +37,7 @@ test('registered CSS fails explicitly when only the core entry was loaded', () =
 
   assert.throws(
     () => requireComponentStyleRuntime('styled-card', { v: 3, h: '<p></p>' }, owner),
-    /Styles for <styled-card> require @microsoft\/webui-framework\/styles\.js/,
+    /Call startRuntime\(\) before mounting styled <styled-card>/,
   );
 });
 
@@ -48,7 +48,7 @@ test('template-owned links also require the stylesheet runtime', () => {
   ] satisfies TemplateMeta[]) {
     assert.throws(
       () => requireComponentStyleRuntime('linked-card', meta, ownerDocument()),
-      /Import that entry before startRuntime\(\)/,
+      /Call startRuntime\(\) before mounting styled <linked-card>/,
     );
   }
 });

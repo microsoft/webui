@@ -119,20 +119,26 @@ function walkIndexImportGraph(distDir: string, entry = './index.js'): Set<string
 }
 
 describe('default entry decoupling', () => {
-  test('the core entry excludes stylesheet installation and resource preparation', () => {
+  test('normal bootstrap shares the style installer without optional coordinators', () => {
     const distDir = dirname(fileURLToPath(import.meta.url));
     assert.ok(existsSync(resolve(distDir, 'runtime.js')), 'the renderer installer must be emitted');
     const visited = walkIndexImportGraph(distDir, './runtime.js');
-    for (const forbidden of [
+    for (const required of [
+      './style-installation.js',
       './element/styles.js',
       './element/link-styles.js',
+      './element/style-catalog.js',
+    ]) {
+      assert.equal(visited.has(required), true, `${required} must serve normal bootstrap`);
+    }
+    for (const forbidden of [
       './styles-entry.js',
       './template-cache.js',
       './template-cache-entry.js',
       './streaming-coordinator.js',
       './lazy-hydration-coordinator.js',
     ]) {
-      assert.equal(visited.has(forbidden), false, `${forbidden} must not reach the core entry`);
+      assert.equal(visited.has(forbidden), false, `${forbidden} must not reach normal bootstrap`);
     }
     assert.ok(visited.has('./template-element.js'));
     assert.equal(visited.has('./element.js'), false, 'scriptless runtime does not require authored behavior');

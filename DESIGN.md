@@ -215,6 +215,13 @@ or CSS modules with an SSR style fallback. Optional bundling may group styles
 only when all consuming trees require the same adjacent rules in the same
 order; it cannot change cascade semantics.
 
+Normal browser bootstrap installs a shared style adapter alongside rendering.
+Initial hydration, route responses, lazy packs, and generated component assets
+publish definitions to the same Document-owned catalog and reuse the same
+resource readiness and installation machinery. Delivery adapters validate and
+publish resources; they do not own separate style engines. The installer remains
+isolated from the renderer's binding and block algorithms.
+
 The CSS scanner also records custom-property uses and unresolved fallback
 chains. `webui-tokens` validates optional themes and resolves needed token
 values at build/serve time. The protocol retains an ordered, deduplicated

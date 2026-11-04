@@ -9,8 +9,11 @@ guides; `DESIGN.md` owns the high-level browser boundaries.
 - The framework API entry has no installation side effects. Its explicit
   runtime installer owns the registry bridge, parser-readiness tracking, and
   scriptless hosts. Component classes still own mounting and authored behavior.
-  Stylesheet installation is a separate adapter; required but uninstalled style
-  support fails before an unstyled component mount.
+  Normal `startRuntime()` also installs the combined stylesheet adapter before
+  activating declarations. The adapter has an isolated composition module;
+  the legacy `styles.js` entry calls that same installer and retains its helper
+  exports. Repeated startup or compatibility imports reuse stable runtime and
+  registration functions instead of allocating another adapter.
 - The template-data entry installs no rendering engine. Registration can notify
   an already selected renderer, but does not import one.
 - One router owns URL/history and authoritative-chain reconciliation.
@@ -49,6 +52,13 @@ readiness bridge. A response inventory is acknowledged only after that
 registration succeeds. CSS readiness retains the selected strategy's existing
 native-link and cascade semantics; warming bytes is not permission to apply
 unverified CSS.
+
+SSR bootstrap, component assets, lazy packs, and router responses share the
+framework's Document-owned style catalog and installation engine. Component
+assets register prepared resources directly; route responses use the shared
+registration bridge once normal bootstrap is active. Renderer-independent
+consumers keep their wire validation and pre-bootstrap publication behavior;
+they do not import a second DOM style engine.
 
 Within one inventory epoch, concurrently completing responses merge their
 availability bitsets instead of replacing one another's bits. Explicit template

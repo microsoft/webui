@@ -2,7 +2,6 @@
 // Licensed under the MIT license.
 
 import { startRuntime } from '@microsoft/webui-framework/runtime.js';
-import '@microsoft/webui-framework/styles.js';
 /**
  * Contact-book-manager entry point — bootstraps WebUI Framework hydration
  * and the client-side router.

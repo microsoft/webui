@@ -49,18 +49,20 @@ TypeScript must enable decorator emit:
 
 ## Quick Example
 
-The package root is a pure API barrel. Select rendering and styles once in the
-application entry, then start rendering after the imports:
+The package root is a pure API barrel. Start rendering and component styling
+once in the application entry, after the imports:
 
 ```typescript
 import { startRuntime } from '@microsoft/webui-framework/runtime.js';
-import '@microsoft/webui-framework/styles.js';
 import './counter-card.js';
 
 startRuntime();
 ```
 
-Omit `styles.js` for components without managed CSS. `templates.js` exposes
+`startRuntime()` includes Link, Style, and Module styling. Component assets,
+lazy packs, and routing reuse its style engine and document-owned catalog.
+The existing `styles.js` helper exports and compatibility installer remain
+available, but normal startup needs no separate import. `templates.js` exposes
 registration without a renderer, and `template-cache.js` adds lifetime-aware
 collection when imported before `startRuntime()` or template lookups. Component
 declarations wait for startup and their metadata before registering. See

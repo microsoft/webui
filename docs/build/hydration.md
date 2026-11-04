@@ -142,8 +142,8 @@ try {
 
 Mouse hover can prefetch a route. Pointer-down, focus, and keyboard interaction
 start loading the application; an eligible click waits until it is ready.
-The component-definitions entry imports `startRuntime` from `runtime.js`,
-`styles.js` when needed, and its component modules, then calls `startRuntime()`.
+The component-definitions entry imports `startRuntime` from `runtime.js` and
+its component modules, then calls `startRuntime()`. Styling starts with rendering.
 
 This policy trades first-interaction latency for lower startup JS and heap, so
 measure both. Prefer an eager root with `w-render="lazy"` descendants when
@@ -217,7 +217,6 @@ component registrations needed for early interactivity:
 
 ```typescript
 import { startRuntime } from '@microsoft/webui-framework/runtime.js';
-import '@microsoft/webui-framework/styles.js';
 import '@microsoft/webui-framework/streaming.js';
 import './ntp-page.js';
 import './search-box.js';

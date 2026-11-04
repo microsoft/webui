@@ -2,7 +2,6 @@
 // Licensed under the MIT license.
 
 import { startRuntime } from '@microsoft/webui-framework/runtime.js';
-import '@microsoft/webui-framework/styles.js';
 import { registerGeneratedLazyScripts } from '@microsoft/webui-framework/lazy.js';
 import { observable, WebUIElement } from '@microsoft/webui-framework';
 

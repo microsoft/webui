@@ -127,7 +127,6 @@ Create a browser entry that imports the component:
 // Licensed under the MIT license.
 
 import { startRuntime } from '@microsoft/webui-framework/runtime.js';
-import '@microsoft/webui-framework/styles.js';
 import './my-counter/my-counter.js';
 
 startRuntime();

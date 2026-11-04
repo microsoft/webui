@@ -239,7 +239,7 @@ declare global {
     __webuiRegisterComponentStyles?: (value: unknown) => Promise<void> | undefined;
     __webuiPrepareTemplates?: (templates: Record<string, unknown>) => void;
     /**
-     * Installed by `styles.js`: prepare the stylesheets of component style
+     * Installed by the style runtime: prepare the stylesheets of component style
      * roots. `priority: 'low'` prepares them speculatively, once the window
      * has loaded; until then the result has nothing to wait for.
      */
@@ -248,7 +248,7 @@ declare global {
       priority?: RequestPriority,
     ) => Promise<void> | undefined;
     /**
-     * Installed by `styles.js`: preload base-relative stylesheet paths, shared
+     * Installed by the style runtime: preload base-relative stylesheet paths, shared
      * with later style registration. `priority: 'low'` preloads speculatively,
      * once the window has loaded; until then the result has nothing to wait for.
      */

@@ -387,7 +387,6 @@ across Shadow DOM boundaries.
 // Licensed under the MIT license.
 
 import { startRuntime } from '@microsoft/webui-framework/runtime.js';
-import '@microsoft/webui-framework/styles.js';
 import './todo-app/todo-app.js';
 import './todo-item/todo-item.js';
 

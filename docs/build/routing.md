@@ -638,7 +638,6 @@ startup or template reads, and use a freshly rebuilt protocol:
 
 ```typescript
 import { startRuntime } from '@microsoft/webui-framework/runtime.js';
-import '@microsoft/webui-framework/styles.js';
 import '@microsoft/webui-framework/template-cache.js';
 import './app-shell.js';
 
@@ -942,7 +941,6 @@ Hidden routes use inline `display: none`. Do not override that with
 ```typescript
 // index.ts
 import { startRuntime } from '@microsoft/webui-framework/runtime.js';
-import '@microsoft/webui-framework/styles.js';
 import { WebUIRouter } from '@microsoft/webui-delivery/router.js';
 import './app-shell.js';
 

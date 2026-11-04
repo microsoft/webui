@@ -10,7 +10,7 @@ import {
   registerPreparedComponentStyles,
   validateComponentStylesRegistration,
   type ComponentStyles,
-} from '../element/styles.js';
+} from '../element/style-catalog.js';
 import {
   prepareComponentStyleLinks,
   prepareRegisteredLinkStyles,

@@ -25,21 +25,19 @@ import { WebUIElement, observable } from '@microsoft/webui-framework';
 ```
 
 Start rendering once in the application entry, after its imports.
-Include `styles.js` when using managed component CSS or template stylesheet links:
+Component styling starts automatically:
 
 ```typescript
 import { startRuntime } from '@microsoft/webui-framework/runtime.js';
-import '@microsoft/webui-framework/styles.js';
 import './my-component.js';
 
 startRuntime();
 ```
 
-This composition supports Link, Style, and Module strategies. An unstyled app
-omits `styles.js`. A renderer-only application that encounters managed component styles
-gets an actionable error rather than silently mounting unstyled content.
-The core still includes conditions, repeats, events, refs, and reactive state;
-it is not a different template language.
+`startRuntime()` includes Link, Style, and Module styling, including stylesheet
+readiness for client-created components. Initial hydration, route partials,
+lazy packs, and component assets share the framework's stylesheet catalog and
+installation code; their delivery adapters do not install separate style engines.
 Component modules declare their classes with `.define()`. `startRuntime()`
 registers available declarations synchronously; declarations without metadata
 wait for it to arrive. Repeated startup calls do not repeat installation.
@@ -47,8 +45,8 @@ wait for it to arrive. Repeated startup calls do not repeat installation.
 | Entry | Use |
 | --- | --- |
 | Package root | Pure component, decorator, and data API exports |
-| `runtime.js` | `startRuntime()` starts compiled hydration/client mounting and scriptless hosts, without stylesheet installation |
-| `styles.js` | Component stylesheet installation and readiness |
+| `runtime.js` | `startRuntime()` starts compiled hydration/client mounting, component styling, and scriptless hosts |
+| `styles.js` | Stylesheet helper exports and compatibility installer; no separate import is needed for normal startup |
 | `templates.js` | `getTemplate()` and `registerTemplateData()` without installing a renderer |
 | `template-cache.js` | Optional lifetime-aware template collection |
 | `lazy.js` | Loads `<if lazy>` packs and releases inactive regions; import through generated `lazy.webui.js`. Bare lazy is activation-only; use selective idle or path prefetch for warming |
@@ -64,7 +62,6 @@ Independently bundled application entries must share one framework instance.
 
 ```typescript
 import { startRuntime } from '@microsoft/webui-framework/runtime.js';
-import '@microsoft/webui-framework/styles.js';
 import { collectTemplates } from '@microsoft/webui-framework/template-cache.js';
 import './app-shell.js';
 

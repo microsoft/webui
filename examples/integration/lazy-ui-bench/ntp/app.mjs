@@ -567,7 +567,6 @@ export function writeApp(dir, variant, triggers) {
 /** Write the entry module once the harness configuration is known. */
 export function writeMain(dir, variant, config) {
   let text = `import { startRuntime } from '@microsoft/webui-framework/runtime.js';
-import '@microsoft/webui-framework/styles.js';
 import '@microsoft/webui-framework/template-cache.js';
 `;
   if (variant === 'lazy') text += `import './.webui/lazy.webui.js';\n`;

@@ -43,8 +43,7 @@ export function requireComponentStyleRuntime(
   if (componentStyleRuntime) return componentStyleRuntime;
   if (hasComponentStyleWork(tag, ownerDocument) || containsTemplateLinks(meta)) {
     throw new Error(
-      `[WebUI] Styles for <${tag}> require @microsoft/webui-framework/styles.js. ` +
-      'Import that entry before startRuntime().',
+      `[WebUI] Call startRuntime() before mounting styled <${tag}>.`,
     );
   }
   return undefined;

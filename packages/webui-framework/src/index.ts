@@ -6,8 +6,8 @@
  *
  * Provides a reactive base class, decorators, and hydration utilities for
  * building Web Components that work with WebUI's server-side rendering pipeline.
- * Applications call startRuntime() after importing their installers and component declarations.
- * Importing this API module does not install either runtime.
+ * Applications call startRuntime() after optional installers and component declarations.
+ * Importing this API module does not install rendering or styling.
  *
  * @example
  * ```ts

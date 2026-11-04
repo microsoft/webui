@@ -133,7 +133,7 @@ function revive(id: string): TemplateMeta | undefined {
  *
  * A bundler's `import()` takes no fetch priority, so a `low` load before the
  * window has loaded fetches only the pack and imports the scripts once it
- * has; `styles.js` holds its stylesheets the same way. An activation starts
+ * has; the style runtime holds its stylesheets the same way. An activation starts
  * both at once, also when it joins such a load.
  */
 export function load(
@@ -202,7 +202,7 @@ async function install(pack: TemplatePack, region: string, url: string, priority
     ) continue;
     (fresh ??= {})[id] = templates[id];
     // Registering prepares a template's own stylesheets on paths that pass
-    // styles.js only the template, so the template carries the speculation.
+    // the style runtime only the template, so the template carries the speculation.
     if (priority === 'low') speculativeTemplates.add(templates[id]);
     const source = pack.templateFunctions?.[id];
     if (source) closures += `f[${JSON.stringify(id)}]=${source};`;
@@ -228,7 +228,7 @@ async function install(pack: TemplatePack, region: string, url: string, priority
       },
     }));
   }
-  // `styles.js` returns nothing while speculative styles wait for window load.
+  // Style preparation returns nothing while speculation waits for window load.
   const resources = window.__webuiPrepareResources?.(pack.required ?? [], priority);
   if (resources) waits.push(resources);
   // Join definition/style readiness once; neither waits for the other to start.

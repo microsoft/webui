@@ -126,7 +126,6 @@ starting the renderer:
 
 ```typescript
 import { startRuntime } from '@microsoft/webui-framework/runtime.js';
-import '@microsoft/webui-framework/styles.js';
 import '../dist/lazy.webui.js';
 import './app-shell.js';
 

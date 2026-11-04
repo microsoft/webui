@@ -15,6 +15,15 @@ const consumerRoot = process.env.WEBUI_PACKAGE_TEST_ROOT
   : resolve(root, 'packages', 'webui-delivery');
 const component = `import { WebUIElement } from '@microsoft/webui-framework'; window.Widget = class extends WebUIElement {};`;
 const renderer = `import { startRuntime } from '@microsoft/webui-framework/runtime.js'; ${component} startRuntime();`;
+const assetConsumer = `import { defineComponentAsset } from '@microsoft/webui-framework/component-asset-runtime.js';
+window.asset = defineComponentAsset({
+  type: 'webui-component-asset', version: 4, root: 'asset-card', externalComponents: [],
+  imports: [{
+    templates: { 'asset-card': { v: 3, h: '<p>Asset</p>' } },
+    componentStyles: { version: 1, strategy: 'style', resources: {}, closures: {} },
+  }],
+  componentStyles: { version: 1, strategy: 'style', resources: {}, closures: {} },
+});`;
 
 interface Bundle {
   initialBytes: number;
@@ -28,6 +37,7 @@ interface Bundle {
   inputs: Set<string>;
   initialInputs: Set<string>;
   initialText: string;
+  inputCopies: Map<string, number>;
 }
 
 const entries = {
@@ -42,6 +52,8 @@ const entries = {
   records: `export { ndjson } from '@microsoft/webui-delivery/resources.js';`,
   lazyRegions: `import { registerGeneratedLazyScripts } from '@microsoft/webui-framework/lazy.js'; registerGeneratedLazyScripts({}, {}); ${renderer}`,
   combined: `import { WebUIRouter } from '@microsoft/webui-delivery/router.js'; import '@microsoft/webui-framework/lazy.js'; ${renderer} new WebUIRouter().start();`,
+  componentAssets: assetConsumer,
+  routedAssets: `import { WebUIRouter } from '@microsoft/webui-delivery/router.js'; ${renderer} ${assetConsumer} new WebUIRouter().start();`,
   queryHelper: `export { parseQuery } from '@microsoft/webui-delivery/router.js';`,
   decoratorOnly: `export { observable } from '@microsoft/webui-framework';`,
 };
@@ -99,7 +111,7 @@ async function buildProfile(profile: Profile): Promise<Bundle> {
   const measured: Bundle = {
     initialBytes: 0, initialGzip: 0, totalBytes: 0, totalGzip: 0,
     initialBrotli: 0, totalBrotli: 0, initialRequests: initial.size, chunks: Object.keys(outputs).length,
-    inputs: new Set(), initialInputs: new Set(), initialText: '',
+    inputs: new Set(), initialInputs: new Set(), initialText: '', inputCopies: new Map(),
   };
   for (const [path, output] of Object.entries(outputs)) {
     const bytes = files.get(resolve(root, path));
@@ -119,6 +131,7 @@ async function buildProfile(profile: Profile): Promise<Bundle> {
       if (contribution.bytesInOutput === 0) continue;
       const normalized = input.replaceAll('\\', '/');
       measured.inputs.add(normalized);
+      measured.inputCopies.set(normalized, (measured.inputCopies.get(normalized) ?? 0) + 1);
       if (initial.has(path)) measured.initialInputs.add(normalized);
     }
   }
@@ -147,17 +160,35 @@ test('public helper imports do not retain navigation or rendering implementation
   ]);
 });
 
-test('buffered core excludes CSS preparation and optional coordinators with a measured size reduction', async () => {
+test('normal bootstrap includes styling once and keeps optional coordinators separate', async () => {
   const [core, styled] = await Promise.all([bundle('buffered'), bundle('styled')]);
   excludes(core.inputs, [
-    'element/styles.js', 'element/link-styles.js', 'styles-entry.js', 'asset-base.js',
+    'styles-entry.js',
     'template-cache.js', 'streaming-coordinator.js', 'lazy-hydration-coordinator.js',
   ]);
-  assert.ok(core.initialBytes <= 66_000, `core startup: ${core.initialBytes} bytes`);
-  assert.ok(core.initialGzip <= 22_000, `core startup gzip: ${core.initialGzip} bytes`);
-  assert.ok(core.initialBytes < styled.initialBytes * 0.85, 'core should save at least 15% versus full style installation');
+  assert.ok(core.initialBytes <= 85_000, `default startup: ${core.initialBytes} bytes`);
+  assert.ok(core.initialGzip <= 27_000, `default startup gzip: ${core.initialGzip} bytes`);
+  assert.ok(Math.abs(core.initialBytes - styled.initialBytes) <= 128,
+    'the compatibility import must not bundle another style implementation');
   // The CSS module loader imports a runtime specifier; bundling must leave it native.
   assert.match(styled.initialText, /import\([\w$]+,\{with:\{type:"css"\}\}\)/);
+  assert.match(core.initialText, /import\([\w$]+,\{with:\{type:"css"\}\}\)/);
+});
+
+test('component assets and routing reuse the normal bootstrap style engine', async () => {
+  const [combined, rendererOnly, assetsOnly, routerOnly] = await Promise.all([
+    bundle('routedAssets'), bundle('buffered'), bundle('componentAssets'), bundle('jsonRouter'),
+  ]);
+  for (const file of [
+    '/style-installation.js', '/element/style-catalog.js',
+    '/element/styles.js', '/element/link-styles.js',
+  ]) {
+    const sources = [...combined.inputs].filter(input => input.endsWith(file));
+    assert.equal(sources.length, 1, `${file} must have one shared source`);
+    assert.equal(combined.inputCopies.get(sources[0]), 1, `${file} must contribute code to one output`);
+  }
+  assert.ok(combined.totalBytes < rendererOnly.totalBytes + assetsOnly.totalBytes + routerOnly.totalBytes,
+    'the composed application must reuse shared implementation bytes');
 });
 
 test('JSON-only routing excludes streaming and unselected policies from all emitted chunks', async () => {
@@ -201,7 +232,7 @@ test('lazy regions add one small framework runtime and no delivery code', async 
     'lazy regions must not depend on routing delivery',
   );
   assert.ok([...lazy.initialInputs].some(input => input.endsWith('/lazy-entry.js')));
-  excludes(core.inputs, ['lazy-entry.js', 'lazy-runtime.js', 'lazy-scripts.js', 'asset-base.js', 'speculation.js']);
+  excludes(core.inputs, ['lazy-entry.js', 'lazy-runtime.js', 'lazy-scripts.js']);
   assert.equal(lazy.initialText.includes('defined at startup'), false, 'the startup guard is development-only');
   assert.equal(lazy.initialText.includes('no script defines'), false, 'the missing-script warning is development-only');
   // The rendering core holds no lazy logic, so this is the whole cost of the
@@ -228,7 +259,7 @@ test('combined delivery reuses shared code and records public bundle measurement
     ? 'delivery-packed-public.json' : 'delivery-public-after.json');
   mkdirSync(dirname(output), { recursive: true });
   writeFileSync(output, JSON.stringify(Object.fromEntries(names.map((name, index) => {
-    const { inputs, initialInputs, initialText: _text, ...sizes } = profiles[index];
+    const { inputs, initialInputs, initialText: _text, inputCopies: _copies, ...sizes } = profiles[index];
     return [name, { ...sizes, inputs: [...inputs], initialInputs: [...initialInputs] }];
   })), null, 2));
 });

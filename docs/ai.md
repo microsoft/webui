@@ -929,7 +929,6 @@ onItemSelected(e: CustomEvent): void {
 ```typescript
 // index.ts
 import { startRuntime } from '@microsoft/webui-framework/runtime.js';
-import '@microsoft/webui-framework/styles.js';
 import './app-shell/app-shell.js';
 import './user-card/user-card.js';
 
@@ -947,9 +946,11 @@ See [CSP and delivery](/build/hydration#csp-and-delivery).
 
 The package root and `runtime.js` are pure API entries. Call `startRuntime()`
 after importing selected installers and component modules, including in an
-interaction-loaded component-definitions entry. `styles.js` installs managed CSS
-and can be omitted for an unstyled app. Streaming and visibility
-coordinators remain explicit opt-ins.
+interaction-loaded component-definitions entry. `startRuntime()` automatically
+installs Link, Style, and Module component styling; a separate `styles.js`
+import is unnecessary. Initial hydration, lazy packs, component assets, and
+router responses share the framework's style engine and document-owned catalog.
+Streaming and visibility coordinators remain explicit opt-ins.
 
 Optional template collection requires
 `@microsoft/webui-framework/template-cache.js` before `startRuntime()` or template lookups and a
