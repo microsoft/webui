@@ -114,20 +114,88 @@ function inlineCodeSpans(markdown: string): string[] {
   );
 }
 
+function htmlTagEnd(text: string, start: number): number {
+  if (text.startsWith("<!--", start)) {
+    const end = text.indexOf("-->", start + 4);
+    return end < 0 ? -1 : end + 2;
+  }
+  let index = start + 1;
+  if (text[index] === "/") index++;
+  if (!/[a-z]/i.test(text[index] ?? "")) return -1;
+  index++;
+  while (/[a-z0-9-]/i.test(text[index] ?? "")) index++;
+  if (!/[\s/>]/.test(text[index] ?? "")) return -1;
+  let quote = "";
+  for (; index < text.length; index++) {
+    const character = text[index];
+    if (quote) {
+      if (character === quote) quote = "";
+    } else if (character === '"' || character === "'") {
+      quote = character;
+    } else if (character === ">") {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function headingSlug(markdown: string): string {
+  let slug = "";
+  const append = (character: string) => {
+    if (/^[a-z0-9]$/i.test(character)) {
+      slug += character.toLowerCase();
+    } else if ((character === " " || character === "-" || character === "_") && !slug.endsWith("-")) {
+      slug += "-";
+    }
+  };
+  for (let index = 0; index < markdown.length;) {
+    if (markdown[index] === "\\" && index + 1 < markdown.length) {
+      append(markdown[index + 1]);
+      index += 2;
+      continue;
+    }
+    if (markdown[index] === "`") {
+      let end = index + 1;
+      while (markdown[end] === "`") end++;
+      const delimiter = markdown.slice(index, end);
+      let close = markdown.indexOf(delimiter, end);
+      while (close >= 0 && (markdown[close - 1] === "`" || markdown[close + delimiter.length] === "`")) {
+        close = markdown.indexOf(delimiter, close + delimiter.length);
+      }
+      if (close >= 0) {
+        for (const character of markdown.slice(end, close)) append(character);
+        index = close + delimiter.length;
+        continue;
+      }
+    }
+    if (markdown[index] === "_") {
+      let end = index + 1;
+      while (markdown[end] === "_") end++;
+      if (/^[a-z0-9]$/i.test(markdown[index - 1] ?? "") && /^[a-z0-9]$/i.test(markdown[end] ?? "")) {
+        append("_");
+      }
+      index = end;
+      continue;
+    }
+    if (markdown[index] === "<") {
+      const end = htmlTagEnd(markdown, index);
+      if (end >= 0) {
+        index = end + 1;
+        continue;
+      }
+    }
+    append(markdown[index++]);
+  }
+  return slug.endsWith("-") ? slug.slice(0, -1) : slug;
+}
+
 function headingIds(markdown: string): Set<string> {
   const ids = new Set<string>();
   for (const line of proseLines(markdown)) {
     for (const match of line.matchAll(/\bid=["']([^"']+)["']/g)) ids.add(match[1]);
     const heading = /^#{1,6}\s+(.+)$/.exec(line);
     if (!heading) continue;
-    const slug = heading[1]
-      .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
-      .replace(/<[^>]*>/g, "")
-      .replace(/[`*_~]/g, "")
-      .toLowerCase()
-      .replace(/[^a-z0-9 _-]/g, "")
-      .replace(/[ _-]+/g, "-")
-      .replace(/-$/, "");
+    const slug = headingSlug(heading[1].replace(/\[([^\]]+)\]\([^)]+\)/g, "$1"));
     ids.add(slug);
   }
   return ids;
@@ -178,6 +246,39 @@ function runPnpm(args: string[], cwd: string): string {
   }
   return execFileSync("pnpm", args, options);
 }
+
+test("heading IDs preserve inline code and ignore HTML markup", () => {
+  const markdown = [
+    "# `<for>` Loop Directive",
+    "## The ``<template>`` Tag",
+    "## A <em>formatted</em> heading",
+    '## A <span title=">x">quoted</span> tag',
+    "## A < 5 > 3",
+    "## A <!-- > comment --> heading",
+    "## `<script>alert(1)</script>` as text",
+    "## <<script>script> remaining",
+    "## `foo_bar` and foo_bar",
+    "## _Italic_ and **Bold**",
+    "## <https://example.com/a> link",
+    "## <user@example.com> link",
+    "## [A **linked** label](/some/path)",
+  ].join("\n");
+  assert.deepEqual([...headingIds(markdown)], [
+    "for-loop-directive",
+    "the-template-tag",
+    "a-formatted-heading",
+    "a-quoted-tag",
+    "a-5-3",
+    "a-heading",
+    "scriptalert1script-as-text",
+    "script-remaining",
+    "foo-bar-and-foo-bar",
+    "italic-and-bold",
+    "httpsexamplecoma-link",
+    "userexamplecom-link",
+    "a-linked-label",
+  ]);
+});
 
 test("dependency build hooks do not rewrite the package-only reference", async () => {
   const manifest = JSON.parse(await readFile(path.resolve("package.json"), "utf8"));
@@ -298,6 +399,7 @@ test("packaged links preserve code examples and refresh removed pages", async (t
     "# Reference",
     "[Guide](/learn/lazy#opening)",
     "[Titled](/learn/lazy#opening \"Open\")",
+    "[Inline heading](/learn/lazy#lazy-ui)",
     "`[inline](/not-a-page)`",
     "``[inline](/also-not-a-page)``",
     "```markdown",
@@ -309,7 +411,7 @@ test("packaged links preserve code examples and refresh removed pages", async (t
     "",
   ].join("\n");
   await writeFile(source, canonical);
-  await writeFile(path.join(docs, "learn", "lazy.md"), "# Opening\n[Home](../ai.md)\n");
+  await writeFile(path.join(docs, "learn", "lazy.md"), "# Opening\n[Home](../ai.md)\n## `<lazy>` UI\n");
   await writeFile(path.join(docs, "learn", "obsolete.md"), "# Obsolete\n");
   await mkdir(path.join(docs, ".site"), { recursive: true });
   await writeFile(path.join(docs, ".site", "hidden.md"), "# Site only\n");
@@ -318,6 +420,7 @@ test("packaged links preserve code examples and refresh removed pages", async (t
   const packaged = await readFile(path.join(packageRoot, "ai.md"), "utf8");
   assert.match(packaged, /\[Guide\]\(\.\/docs\/learn\/lazy\.md#opening\)/);
   assert.match(packaged, /\[Titled\]\(\.\/docs\/learn\/lazy\.md#opening "Open"\)/);
+  assert.match(packaged, /\[Inline heading\]\(\.\/docs\/learn\/lazy\.md#lazy-ui\)/);
   assert.match(packaged, /`\[inline\]\(\/not-a-page\)`/);
   assert.match(packaged, /``\[inline\]\(\/also-not-a-page\)``/);
   assert.match(packaged, /```\w*\n\[example\]\(\/not-a-page\)\n```/);
@@ -326,6 +429,7 @@ test("packaged links preserve code examples and refresh removed pages", async (t
     await readFile(path.join(packageRoot, "docs", "learn", "lazy.md"), "utf8"),
     /\[Home\]\(\.\.\/ai\.md\)/,
   );
+  assert.ok((await assertLocalLinks(packageRoot)) > 0);
   await assert.rejects(stat(path.join(packageRoot, "docs", ".site", "hidden.md")), { code: "ENOENT" });
 
   await rm(path.join(docs, "learn", "obsolete.md"));
