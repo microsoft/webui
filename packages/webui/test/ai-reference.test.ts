@@ -8,7 +8,9 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
   rm,
+  stat,
   symlink,
   writeFile,
 } from "node:fs/promises";
@@ -30,10 +32,152 @@ async function createFixture(t: TestContext) {
     path.resolve("package.json"),
     path.join(packageRoot, "package.json"),
   );
+  await copyFile(path.resolve(".gitignore"), path.join(packageRoot, ".gitignore"));
   return { root, packageRoot, script, source };
 }
 
 const readReference = "require('node:fs').readFileSync(require.resolve('@microsoft/webui/ai.md'), 'utf8')";
+
+async function markdownFiles(root: string): Promise<string[]> {
+  const result: string[] = [];
+  const pending = [""];
+  while (pending.length) {
+    const directory = pending.pop()!;
+    for (const entry of await readdir(path.join(root, directory), { withFileTypes: true })) {
+      if (entry.name.startsWith(".") || ["node_modules", "dist"].includes(entry.name)) continue;
+      const relative = path.join(directory, entry.name);
+      if (entry.isDirectory()) pending.push(relative);
+      else if (entry.isFile() && entry.name.endsWith(".md")) result.push(relative);
+    }
+  }
+  return result.sort();
+}
+
+async function copySourceDocs(destination: string): Promise<string[]> {
+  const source = path.resolve("../../docs");
+  const pages = await markdownFiles(source);
+  for (const page of pages) {
+    const target = path.join(destination, page);
+    await mkdir(path.dirname(target), { recursive: true });
+    await copyFile(path.join(source, page), target);
+  }
+  return pages;
+}
+
+function withoutLinkTargets(markdown: string): string {
+  return markdown.replace(/\]\([^) \n]+(?:[ \t]+[^)\n]+)?\)/g, "](LINK)");
+}
+
+function proseLines(markdown: string): string[] {
+  const result: string[] = [];
+  let fence: string | undefined;
+  for (const line of markdown.split("\n")) {
+    const match = /^[ \t]*(`{3,}|~{3,})(.*)$/.exec(line);
+    if (fence) {
+      if (match && match[1][0] === fence[0] && match[1].length >= fence.length && !match[2].trim()) {
+        fence = undefined;
+      }
+    } else if (match) {
+      fence = match[1];
+    } else {
+      result.push(line);
+    }
+  }
+  assert.equal(fence, undefined, "unclosed Markdown fence");
+  return result;
+}
+
+function fencedBlocks(markdown: string): string[] {
+  const result: string[] = [];
+  let fence: string | undefined;
+  let block = "";
+  for (const line of markdown.split("\n")) {
+    const match = /^[ \t]*(`{3,}|~{3,})(.*)$/.exec(line);
+    if (fence) {
+      block += `${line}\n`;
+      if (match && match[1][0] === fence[0] && match[1].length >= fence.length && !match[2].trim()) {
+        result.push(block);
+        fence = undefined;
+      }
+    } else if (match) {
+      fence = match[1];
+      block = `${line}\n`;
+    }
+  }
+  assert.equal(fence, undefined, "unclosed Markdown fence");
+  return result;
+}
+
+function inlineCodeSpans(markdown: string): string[] {
+  return proseLines(markdown).flatMap((line) =>
+    Array.from(line.matchAll(/(`+)(.+?)\1/g), (match) => match[0])
+  );
+}
+
+function headingIds(markdown: string): Set<string> {
+  const ids = new Set<string>();
+  for (const line of proseLines(markdown)) {
+    for (const match of line.matchAll(/\bid=["']([^"']+)["']/g)) ids.add(match[1]);
+    const heading = /^#{1,6}\s+(.+)$/.exec(line);
+    if (!heading) continue;
+    const slug = heading[1]
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+      .replace(/<[^>]*>/g, "")
+      .replace(/[`*_~]/g, "")
+      .toLowerCase()
+      .replace(/[^a-z0-9 _-]/g, "")
+      .replace(/[ _-]+/g, "-")
+      .replace(/-$/, "");
+    ids.add(slug);
+  }
+  return ids;
+}
+
+async function assertLocalLinks(packageRoot: string): Promise<number> {
+  const docsRoot = path.join(packageRoot, "docs");
+  const files = [path.join(packageRoot, "ai.md"), ...(await markdownFiles(docsRoot)).map(
+    (page) => path.join(docsRoot, page),
+  )];
+  let checked = 0;
+  for (const file of files) {
+    const markdown = await readFile(file, "utf8");
+    for (const line of proseLines(markdown)) {
+      const text = line.replace(/(`+).*?\1/g, "");
+      for (const match of text.matchAll(/\]\(([^) \t]+)(?:[ \t]+[^)]*)?\)/g)) {
+        const target = match[1];
+        if (/^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(target)) continue;
+        assert.ok(!target.startsWith("/"), `${file}: nonlocal link ${target}`);
+        const [pathname, fragment] = target.split("#", 2);
+        const targetFile = pathname
+          ? path.resolve(path.dirname(file), decodeURIComponent(pathname.split("?")[0]))
+          : file;
+        const relative = path.relative(packageRoot, targetFile);
+        assert.ok(!relative.startsWith("..") && !path.isAbsolute(relative), `${file}: ${target}`);
+        assert.ok((await stat(targetFile)).isFile(), `${file}: ${target}`);
+        if (fragment) {
+          assert.ok(
+            headingIds(await readFile(targetFile, "utf8")).has(decodeURIComponent(fragment)),
+            `${file}: missing anchor ${target}`,
+          );
+        }
+        checked++;
+      }
+    }
+  }
+  return checked;
+}
+
+function runPnpm(args: string[], cwd: string): string {
+  const options = { cwd, encoding: "utf8" as const };
+  if (process.platform === "win32") {
+    return execFileSync(
+      process.env.ComSpec ?? "cmd.exe",
+      ["/d", "/s", "/c", `pnpm ${args.join(" ")}`],
+      options,
+    );
+  }
+  return execFileSync("pnpm", args, options);
+}
 
 test("dependency build hooks do not rewrite the package-only reference", async () => {
   const manifest = JSON.parse(await readFile(path.resolve("package.json"), "utf8"));
@@ -52,24 +196,40 @@ test("prepack refreshes the reference from the canonical document", async (t) =>
     await readFile(path.join(packageRoot, "package.json"), "utf8"),
   );
   assert.ok(manifest.files.includes("ai.md"));
+  assert.ok(manifest.files.includes("docs/"));
   assert.equal(manifest.scripts.prepack, "node scripts/prepare-ai.js");
-  const canonical = await readFile(path.resolve("../../docs/ai.md"));
-  await writeFile(source, canonical);
+  assert.equal(manifest.exports["./docs/*"], "./docs/*");
+  const sourcePages = await copySourceDocs(path.join(root, "docs"));
+  const canonical = await readFile(source, "utf8");
   execFileSync(process.execPath, [script], { cwd: root });
-  assert.deepEqual(await readFile(path.join(packageRoot, "ai.md")), canonical);
+  const packaged = await readFile(path.join(packageRoot, "ai.md"), "utf8");
+  assert.equal(withoutLinkTargets(packaged), withoutLinkTargets(canonical));
+  assert.deepEqual(fencedBlocks(packaged), fencedBlocks(canonical));
+  assert.deepEqual(inlineCodeSpans(packaged), inlineCodeSpans(canonical));
+  assert.match(packaged, /\[Lazy UI\]\(\.\/docs\/learn\/lazy\.md\)/);
+  assert.deepEqual(await markdownFiles(path.join(packageRoot, "docs")), sourcePages);
+  for (const page of sourcePages) {
+    const original = await readFile(path.join(root, "docs", page), "utf8");
+    const copy = await readFile(path.join(packageRoot, "docs", page), "utf8");
+    assert.equal(withoutLinkTargets(copy), withoutLinkTargets(original), page);
+    assert.deepEqual(fencedBlocks(copy), fencedBlocks(original), page);
+    assert.deepEqual(inlineCodeSpans(copy), inlineCodeSpans(original), page);
+  }
 
-  const updated = Buffer.concat([
-    canonical,
-    Buffer.from("\nUpdated release guidance.\n"),
-  ]);
+  const updated = `${canonical}\nUpdated release guidance.\n`;
   await writeFile(source, updated);
   execFileSync(process.execPath, [script], { cwd: packageRoot });
-  assert.deepEqual(await readFile(path.join(packageRoot, "ai.md")), updated);
+  assert.equal(
+    withoutLinkTargets(await readFile(path.join(packageRoot, "ai.md"), "utf8")),
+    withoutLinkTargets(updated),
+  );
 });
 
 test("the loader resolves hoisted and app-local versions without loading native code", async (t) => {
   const { root, packageRoot, script, source } = await createFixture(t);
   await writeFile(source, "Hoisted WebUI reference\n");
+  await mkdir(path.join(root, "docs", "learn"), { recursive: true });
+  await writeFile(path.join(root, "docs", "learn", "lazy.md"), "Hoisted lazy guide\n");
   execFileSync(process.execPath, [script]);
   const hoistedScope = path.join(root, "node_modules", "@microsoft");
   await mkdir(hoistedScope, { recursive: true });
@@ -83,6 +243,14 @@ test("the loader resolves hoisted and app-local versions without loading native 
     }),
     "Hoisted WebUI reference\n\n",
   );
+  assert.equal(
+    execFileSync(process.execPath, ["-p",
+      "require('node:fs').readFileSync(require.resolve('@microsoft/webui/docs/learn/lazy.md'), 'utf8')"], {
+      cwd: app,
+      encoding: "utf8",
+    }),
+    "Hoisted lazy guide\n\n",
+  );
 
   const localPackage = path.join(app, "node_modules", "@microsoft", "webui");
   await mkdir(localPackage, { recursive: true });
@@ -91,12 +259,22 @@ test("the loader resolves hoisted and app-local versions without loading native 
     path.join(localPackage, "package.json"),
   );
   await writeFile(path.join(localPackage, "ai.md"), "App-local WebUI reference\n");
+  await mkdir(path.join(localPackage, "docs", "learn"), { recursive: true });
+  await writeFile(path.join(localPackage, "docs", "learn", "lazy.md"), "App-local lazy guide\n");
   assert.equal(
     execFileSync(process.execPath, ["-p", readReference], {
       cwd: app,
       encoding: "utf8",
     }),
     "App-local WebUI reference\n\n",
+  );
+  assert.equal(
+    execFileSync(process.execPath, ["-p",
+      "require('node:fs').readFileSync(require.resolve('@microsoft/webui/docs/learn/lazy.md'), 'utf8')"], {
+      cwd: app,
+      encoding: "utf8",
+    }),
+    "App-local lazy guide\n\n",
   );
 });
 
@@ -110,4 +288,100 @@ test("preparing a reference fails when the canonical document is missing", async
   assert.equal(result.status, 1);
   assert.match(result.stderr, /ENOENT/);
   assert.match(result.stderr, /ai\.md/);
+});
+
+test("packaged links preserve code examples and refresh removed pages", async (t) => {
+  const { root, packageRoot, script, source } = await createFixture(t);
+  const docs = path.join(root, "docs");
+  await mkdir(path.join(docs, "learn"), { recursive: true });
+  const canonical = [
+    "# Reference",
+    "[Guide](/learn/lazy#opening)",
+    "[Titled](/learn/lazy#opening \"Open\")",
+    "`[inline](/not-a-page)`",
+    "``[inline](/also-not-a-page)``",
+    "```markdown",
+    "[example](/not-a-page)",
+    "```",
+    "~~~markdown",
+    "[example](/also-not-a-page)",
+    "~~~",
+    "",
+  ].join("\n");
+  await writeFile(source, canonical);
+  await writeFile(path.join(docs, "learn", "lazy.md"), "# Opening\n[Home](../ai.md)\n");
+  await writeFile(path.join(docs, "learn", "obsolete.md"), "# Obsolete\n");
+  await mkdir(path.join(docs, ".site"), { recursive: true });
+  await writeFile(path.join(docs, ".site", "hidden.md"), "# Site only\n");
+  execFileSync(process.execPath, [script]);
+
+  const packaged = await readFile(path.join(packageRoot, "ai.md"), "utf8");
+  assert.match(packaged, /\[Guide\]\(\.\/docs\/learn\/lazy\.md#opening\)/);
+  assert.match(packaged, /\[Titled\]\(\.\/docs\/learn\/lazy\.md#opening "Open"\)/);
+  assert.match(packaged, /`\[inline\]\(\/not-a-page\)`/);
+  assert.match(packaged, /``\[inline\]\(\/also-not-a-page\)``/);
+  assert.match(packaged, /```\w*\n\[example\]\(\/not-a-page\)\n```/);
+  assert.match(packaged, /~~~\w*\n\[example\]\(\/also-not-a-page\)\n~~~/);
+  assert.match(
+    await readFile(path.join(packageRoot, "docs", "learn", "lazy.md"), "utf8"),
+    /\[Home\]\(\.\.\/ai\.md\)/,
+  );
+  await assert.rejects(stat(path.join(packageRoot, "docs", ".site", "hidden.md")), { code: "ENOENT" });
+
+  await rm(path.join(docs, "learn", "obsolete.md"));
+  execFileSync(process.execPath, [script]);
+  await assert.rejects(stat(path.join(packageRoot, "docs", "learn", "obsolete.md")), { code: "ENOENT" });
+});
+
+test("an unresolved local guide fails prepack without replacing the prior bundle", async (t) => {
+  const { packageRoot, script, source } = await createFixture(t);
+  await writeFile(source, "Previous reference\n");
+  execFileSync(process.execPath, [script]);
+  await writeFile(source, "[Missing](/learn/missing)\n");
+  const result = spawnSync(process.execPath, [script], { encoding: "utf8" });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Cannot resolve documentation link/);
+  assert.match(result.stderr, /\/learn\/missing/);
+  assert.equal(await readFile(path.join(packageRoot, "ai.md"), "utf8"), "Previous reference\n");
+  assert.equal(
+    await readFile(path.join(packageRoot, "docs", "ai.md"), "utf8"),
+    "Previous reference\n",
+  );
+});
+
+test("a packed reference installs and all local documentation links resolve offline", async (t) => {
+  const { root, packageRoot } = await createFixture(t);
+  const sourcePages = await copySourceDocs(path.join(root, "docs"));
+  const manifestPath = path.join(packageRoot, "package.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  delete manifest.devDependencies;
+  delete manifest.optionalDependencies;
+  delete manifest.peerDependencies;
+  delete manifest.peerDependenciesMeta;
+  manifest.scripts = { prepack: manifest.scripts.prepack };
+  await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+  runPnpm(["pack"], packageRoot);
+  const archives = (await readdir(packageRoot)).filter((file) => file.endsWith(".tgz"));
+  assert.equal(archives.length, 1);
+
+  const app = path.join(root, "app");
+  await mkdir(app);
+  await writeFile(path.join(app, "package.json"), '{"name":"consumer","version":"1.0.0","private":true}\n');
+  await copyFile(path.join(packageRoot, archives[0]), path.join(app, "reference.tgz"));
+  runPnpm(["add", "--offline", "--ignore-scripts", "./reference.tgz"], app);
+
+  const reference = execFileSync(process.execPath, ["-p", "require.resolve('@microsoft/webui/ai.md')"], {
+    cwd: app, encoding: "utf8",
+  }).trim();
+  const installed = path.dirname(reference);
+  assert.deepEqual(await markdownFiles(path.join(installed, "docs")), sourcePages);
+  const guide = execFileSync(process.execPath, ["-p", "require.resolve('@microsoft/webui/docs/learn/lazy.md')"], {
+    cwd: app, encoding: "utf8",
+  }).trim();
+  assert.equal(await readFile(guide, "utf8"), await readFile(path.join(installed, "docs", "learn", "lazy.md"), "utf8"));
+  assert.ok((await assertLocalLinks(installed)) > 200);
+  assert.match(
+    await readFile(path.join(installed, "docs", "start", "index.md"), "utf8"),
+    /https:\/\/microsoft\.github\.io\/webui\/playground\//,
+  );
 });
