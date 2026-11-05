@@ -1391,6 +1391,14 @@ patching generated HTML, or duplicating appearance storage and listeners.
 Page state is client-facing: namespace application data to avoid reserved keys
 and never include secrets.
 
+Keep source-file links such as `[Install](guide/install.md#setup)` in Markdown.
+Press maps discovered Markdown destinations to their actual public page routes
+during build/serve, including index pages and `nav.source` overrides, without
+changing the source files. Relative links start from the Markdown source
+directory; root-relative links start at `contentDir`. Query strings, fragments,
+and `basePath` are preserved. See
+[Markdown page links](/reference/webui-press#markdown-page-links).
+
 ## Server integration
 
 Choose a supported [host binding](/build/integrations/), load `protocol.bin`

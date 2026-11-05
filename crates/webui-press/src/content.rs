@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value};
 
 use crate::error::{Error, Result};
-use crate::markdown::{render_markdown, Highlighter};
+use crate::markdown::{render_markdown_with_links, Highlighter, MarkdownLinks};
 use crate::metadata::{canonical_url, document_path, document_title, site_origin};
 use crate::state::{
     load_render_states, merge_page_state, parse_markdown_state, parse_markdown_state_file,
@@ -547,6 +547,7 @@ pub(crate) fn process_content_with_states(
 
     let mut registry =
         build_page_registry(content_dir, base_path, &nav_source_overrides(&config.nav));
+    let markdown_page_count = registry.len();
 
     // Register custom pages
     for page_link in config.custom_pages.keys() {
@@ -562,6 +563,24 @@ pub(crate) fn process_content_with_states(
             registry.push((url_path, full_path));
         }
     }
+
+    let source_routes = registry[..markdown_page_count]
+        .iter()
+        .map(|(route, source)| {
+            let relative = source.strip_prefix(content_dir).map_err(|error| {
+                Error::Build(format!(
+                    "Cannot make {} content-relative: {error}",
+                    source.display()
+                ))
+            })?;
+            let source_url = format!(
+                "{}{}",
+                base_path,
+                relative.to_string_lossy().replace('\\', "/")
+            );
+            Ok((source_url, route.as_str()))
+        })
+        .collect::<Result<HashMap<_, _>>>()?;
 
     use rayon::prelude::*;
 
@@ -628,12 +647,15 @@ pub(crate) fn process_content_with_states(
                                 };
                                 let link_base_url =
                                     markdown_link_base_url(full_path, content_dir, base_path);
-                                html = render_markdown(
+                                html = render_markdown_with_links(
                                     &body,
                                     highlighter,
                                     base_path,
                                     &page_url,
-                                    &link_base_url,
+                                    MarkdownLinks {
+                                        directory: &link_base_url,
+                                        pages: &source_routes,
+                                    },
                                 )?;
                             }
 
