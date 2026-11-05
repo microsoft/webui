@@ -923,12 +923,12 @@ application's error boundary and recheck focus intent after awaiting. See
 for the complete contract. Do not count microtasks or use timers to guess when
 rendering has finished.
 
-**WebUI 4.0 migration:** the next major release removes `$update(path?)`,
-`$flushUpdates()`, and lazy `$rendered()`; this is not compatible with a 3.x
-patch or minor update. Use reactive assignments to request rendering, replacing
-the observable root after an in-place object or array mutation. Await
-`$whenRendered()` before dependent DOM work; it is not a synchronous flush or
-an update request. See [migration guidance](/learn/interactivity#migrating-to-webui-40).
+**Render API migration:** `$update(path?)`, `$flushUpdates()`, and lazy
+`$rendered()` were intentionally removed. Use reactive assignments to request
+rendering; replace observable objects or arrays instead of mutating them in
+place. Await `$whenRendered()` before dependent DOM work; it is not a
+synchronous flush or an update request.
+See [migration guidance](/learn/interactivity#migrating-render-calls).
 
 ### Custom events
 

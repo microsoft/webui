@@ -367,13 +367,13 @@ application's error boundary:
 Stylesheet waits have no deadline. The DOM can change again before your code
 resumes; focus selection and avoiding focus theft remain application policy.
 
-### Migrating to WebUI 4.0
+### Migrating render calls
 
-The removal of `$update(path?)`, `$flushUpdates()`, and lazy `$rendered()` is a
-**breaking change for the next major release, WebUI 4.0**, not a compatible
-3.x patch or minor update. Migrate existing callers before upgrading.
+The removal of `$update(path?)`, `$flushUpdates()`, and lazy `$rendered()` is an
+**intentional breaking change**. Migrate existing callers to reactive
+assignments and asynchronous render completion.
 
-| Previous API | WebUI 4.0 migration |
+| Previous API | Migration |
 |---|---|
 | `$update(path?)` | Assign an `@observable` or `@attr` property to request rendering. For an in-place object or array mutation, replace the observable root instead; awaiting completion does not notify an unobserved mutation. |
 | `$flushUpdates()` | Make DOM-dependent code asynchronous and await `$whenRendered()` after changing state. There is no public synchronous-flush replacement. |
