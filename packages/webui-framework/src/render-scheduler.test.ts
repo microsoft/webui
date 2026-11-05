@@ -35,6 +35,8 @@ class Target extends HTMLElement {
   parent: Target | null = null;
   override get parentNode(): Target | null { return this.parent; }
   override get isConnected(): boolean { return true; }
+  override getRootNode(): Node { return this; }
+  override contains(other: Node | null): boolean { return other === this; }
   [RENDER_PENDING] = 0;
   run = (): void => {};
   [RENDER](): void {

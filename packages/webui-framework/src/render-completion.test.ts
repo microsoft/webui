@@ -12,6 +12,7 @@ import {
   finishRenderTask,
   finishRenderWork,
   invokeRenderCallback,
+  inScope,
   leaveRenderTask,
   MOUNT_WORK,
   observingRender,
@@ -46,6 +47,7 @@ class Host extends HTMLElement {
   override get localName(): string { return 'test-render'; }
   override get isConnected(): boolean { return this.connected; }
   override getRootNode(): Node { return this; }
+  override contains(other: Node | null): boolean { return other === this; }
 }
 
 function finish(host: Host, kind = UPDATE_WORK): void {
@@ -53,6 +55,26 @@ function finish(host: Host, kind = UPDATE_WORK): void {
   finishRenderWork(host, kind);
   leaveRenderWork(host, previous);
 }
+
+test('a native render-root containment proof avoids repeated parent reads', () => {
+  const root = new Host();
+  class Child extends Host {
+    override get parentNode(): ParentNode {
+      throw new Error('an already proven lineage should not be walked again');
+    }
+  }
+  const child = new Child();
+  let probes = 0;
+  const renderRoot = {
+    contains(node: Node | null): boolean {
+      probes++;
+      return node === child;
+    },
+  };
+  Object.defineProperty(root, 'shadowRoot', { value: renderRoot });
+  assert.equal(inScope(child, root), true);
+  assert.equal(probes, 1);
+});
 
 async function collectAfterTurn(): Promise<void> {
   const { setFlagsFromString } = await import('node:v8');
@@ -244,6 +266,28 @@ test('nested execution does not complete work while its outer render still runs'
   assert.equal(complete, false);
   leaveRenderWork(root, outer);
   await waiting;
+});
+
+test('deep synchronous reentrancy restores execution before settling overlapping scopes', async () => {
+  const root = new Host();
+  const hosts = Array.from({ length: 1024 }, () => {
+    const host = new Host();
+    host.parent = root;
+    return host;
+  });
+  queueRenderWork(root, UPDATE_WORK);
+  const outer = whenRendered(root);
+  const previous = hosts.map(host => enterRenderWork(host));
+  const inner = whenRendered(hosts[0]);
+  for (let i = hosts.length - 1; i >= 0; i--) {
+    finishRenderWork(hosts[i], UPDATE_WORK);
+    leaveRenderWork(hosts[i], previous[i]);
+  }
+  await inner;
+  finish(root);
+  await outer;
+  assert.equal(observingRender, false);
+  await whenRendered(root);
 });
 
 test('nested work remains active after the first boundary fails', async () => {
@@ -603,7 +647,7 @@ test('retired task groups do not retain their hosts', async () => {
   assert.equal(host.deref(), undefined);
 });
 
-test('idle observation indexes are collectible and later rendering creates fresh state', async () => {
+test('ordinary completion allocates only its collectible membership index', async () => {
   await collectAfterTurn();
   const original = globalThis.WeakMap;
   const indexes: WeakRef<object>[] = [];
@@ -619,7 +663,7 @@ test('idle observation indexes are collectible and later rendering creates fresh
     queueRenderWork(root, UPDATE_WORK);
     assert.equal(indexes.length, 0, 'ordinary work needs no observation indexes');
     const waiting = whenRendered(root);
-    assert.equal(indexes.length, 3);
+    assert.equal(indexes.length, 1, 'execution and absent expected removals need no per-element index');
     finish(root);
     await waiting;
   } finally {

@@ -29,7 +29,10 @@ const page = {
 const browser = Object.assign(new EventTarget(), {
   __webui: { inventory: '' } as NonNullable<Window['__webui']>,
 });
-setGlobal('HTMLElement', class extends EventTarget {});
+setGlobal('HTMLElement', class extends EventTarget {
+  contains(other: unknown): boolean { return other === this; }
+  getRootNode(): this { return this; }
+});
 setGlobal('window', browser);
 setGlobal('document', page);
 setGlobal('customElements', {

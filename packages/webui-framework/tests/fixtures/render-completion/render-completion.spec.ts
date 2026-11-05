@@ -173,6 +173,65 @@ test('slotted descendant updates are included', async ({ page }) => {
   expect(result).toEqual({ slotted: true, value: '31' });
 });
 
+test('nested light descendants and slot fallback retain rendered ownership', async ({ page }) => {
+  await page.goto('/render-completion/fixture.html');
+  const values = await page.evaluate(async () => {
+    const root = document.querySelector<RenderHost>('test-completion-root')!;
+    const wrapper = document.createElement('section');
+    const child = document.createElement('test-completion-child') as RenderHost;
+    wrapper.appendChild(child);
+    root.appendChild(wrapper);
+    if (!wrapper.assignedSlot || child.assignedSlot) throw new Error('Expected nested slotted light DOM');
+    child.value = '60';
+    await root.$whenRendered();
+    const slotted = child.shadowRoot!.querySelector('.action')!.textContent;
+    wrapper.remove();
+    root.shadowRoot!.querySelector('slot')!.appendChild(child);
+    child.value = '70';
+    await root.$whenRendered();
+    return [slotted, child.shadowRoot!.querySelector('.action')!.textContent];
+  });
+  expect(values).toEqual(['61', '71']);
+});
+
+test('slot redistribution rejects changed ownership without disconnection', async ({ page }) => {
+  await page.goto('/render-completion/fixture.html');
+  const rejected = await page.evaluate(async () => {
+    const root = document.querySelector<RenderHost>('test-completion-root')!;
+    const outer = document.createElement('section');
+    document.body.appendChild(outer);
+    outer.attachShadow({ mode: 'open' }).appendChild(root);
+    const slot = document.createElement('slot');
+    root.appendChild(slot);
+    const child = document.createElement('test-completion-child') as RenderHost;
+    outer.appendChild(child);
+    if (child.assignedSlot !== slot) throw new Error('Expected an outer-owned slot inside the scope');
+    child.value = '80';
+    const waiting = root.$whenRendered();
+    slot.name = 'elsewhere';
+    if (!child.isConnected || child.assignedSlot) throw new Error('Expected redistribution without removal');
+    try { await waiting; return false; } catch (error) {
+      return error instanceof DOMException && error.name === 'AbortError';
+    }
+  });
+  expect(rejected).toBe(true);
+});
+
+test('completion follows adopted components through an iframe document', async ({ page }) => {
+  await page.goto('/render-completion/fixture.html');
+  const value = await page.evaluate(async () => {
+    const root = document.querySelector<RenderHost>('test-completion-root')!;
+    const frame = document.createElement('iframe');
+    document.body.appendChild(frame);
+    frame.contentDocument!.body.appendChild(root);
+    root.value = '90';
+    await root.$whenRendered();
+    return root.shadowRoot!.querySelector('test-completion-child')!
+      .shadowRoot!.querySelector('.action')!.textContent;
+  });
+  expect(value).toBe('91');
+});
+
 test('list removal permits application-selected focus after descendant completion', async ({ page }) => {
   await page.goto('/render-completion/fixture.html');
   const result = await page.evaluate(async () => {

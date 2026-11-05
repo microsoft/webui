@@ -44,6 +44,10 @@ Object.defineProperty(globalThis, 'HTMLElement', {
     getRootNode(): Document {
       return this.ownerDocument;
     }
+
+    contains(other: unknown): boolean {
+      return other === this;
+    }
   },
   configurable: true,
 });

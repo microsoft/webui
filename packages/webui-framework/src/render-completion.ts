@@ -62,7 +62,15 @@ function retireRenderObserver(): void {
 }
 
 export function inScope(element: Element, root: Node): boolean {
+  // Native containment proves inclusion, not exclusion through assigned slots.
+  const renderRoot = (root as Element).shadowRoot ?? root;
   let node: Node | null = element;
+  while (node) {
+    if (node === root || renderRoot.contains(node)) return true;
+    const tree = node.getRootNode();
+    node = tree.nodeType === 11 ? (tree as ShadowRoot).host ?? null : null;
+  }
+  node = element;
   while (node) {
     if (node === root) return true;
     node = (node as Element).assignedSlot ?? node.parentNode ??
@@ -254,8 +262,9 @@ function createRenderObserver() {
   const completions = new Set<Completion>();
   const opening = new Set<Completion>();
   const observersByWork = new WeakMap<Work, Set<Completion>>();
-  const executing = new WeakMap<WorkElement, number>();
-  const expectedRemovals = new WeakMap<Work, Set<Completion>>();
+  // Execution is LIFO; destruction tombstones only the old generation's frames.
+  const executing: Array<WorkElement | undefined> = [];
+  let expectedRemovals: WeakMap<Work, Set<Completion>> | undefined;
   let removing: readonly Node[] | undefined;
 
   function release(completion: Completion, error?: { readonly value: unknown }): void {
@@ -263,6 +272,7 @@ function createRenderObserver() {
     observingRender = completions.size !== 0;
     if (!observingRender) {
       observeRender(undefined);
+      expectedRemovals = undefined;
       if (!retiring) {
         retiring = true;
         queueMicrotask(retireRenderObserver);
@@ -273,9 +283,9 @@ function createRenderObserver() {
       const waiters = observersByWork.get(work);
       if (waiters?.size === 1) observersByWork.delete(work);
       else waiters?.delete(completion);
-      const expected = expectedRemovals.get(work);
+      const expected = expectedRemovals?.get(work);
       if (expected?.delete(completion) && !expected.size) {
-        expectedRemovals.delete(work);
+        expectedRemovals?.delete(work);
       }
     }
     completion.jobs.clear();
@@ -353,8 +363,8 @@ function createRenderObserver() {
   function detach(element: WorkElement): void {
     if (!observingRender) return;
     const work = observersByWork.get(element);
-    const expected = expectedRemovals.get(element);
-    expectedRemovals.delete(element);
+    const expected = expectedRemovals?.get(element);
+    expectedRemovals?.delete(element);
     if (!work) return;
     observersByWork.delete(element);
     for (const completion of work) {
@@ -373,18 +383,14 @@ function createRenderObserver() {
     queued = false,
   ): Set<Completion> | undefined {
     const previous = active;
-    const depth = executing.get(element) ?? 0;
-    if (!observingRender) {
-      if (depth) executing.set(element, depth + 1);
-      return previous;
-    }
-    executing.set(element, depth + 1);
+    executing.push(element);
+    if (!observingRender) return previous;
     try {
       const work = observersByWork.get(element);
       if (work) {
         for (const completion of work) {
           if (!element.isConnected || !inScope(element, completion.root)) {
-            if (!expectedRemovals.get(element)?.has(completion)) {
+            if (!expectedRemovals?.get(element)?.has(completion)) {
               abortRenderScope(completion);
             }
           }
@@ -405,14 +411,7 @@ function createRenderObserver() {
   }
 
   function unwindRenderWork(element: WorkElement): boolean {
-    const depth = executing.get(element);
-    if (!depth) return false;
-    if (depth > 1) {
-      executing.set(element, depth - 1);
-      return false;
-    }
-    executing.delete(element);
-    return true;
+    return executing.pop() === element && !executing.includes(element);
   }
 
   function leaveRenderWork(
@@ -455,10 +454,11 @@ function createRenderObserver() {
       if (work) {
         for (const completion of work) {
           if (active.has(completion)) {
-            let expected = expectedRemovals.get(element);
+            const removals = expectedRemovals ??= new WeakMap();
+            let expected = removals.get(element);
             if (!expected) {
               expected = new Set();
-              expectedRemovals.set(element, expected);
+              removals.set(element, expected);
             }
             expected.add(completion);
           }
@@ -485,15 +485,18 @@ function createRenderObserver() {
     const work = observersByWork.get(element);
     if (work) {
       for (const completion of work) {
-        if (!expectedRemovals.get(element)?.has(completion)) {
+        if (!expectedRemovals?.get(element)?.has(completion)) {
           abortRenderScope(completion, 'Captured render work was destroyed before completion.');
         }
       }
     }
-    executing.delete(element);
+    // Destroyed frames cannot keep a replacement generation executing.
+    for (let i = 0; i < executing.length; i++) {
+      if (executing[i] === element) executing[i] = undefined;
+    }
     destroyUnobservedWork(element);
     detach(element);
-    expectedRemovals.delete(element);
+    expectedRemovals?.delete(element);
   }
 
   function expectRenderRemoval(
@@ -571,7 +574,7 @@ function createRenderObserver() {
 
   const renderObserver = {
     queued(target: Element, kind?: number): void {
-      if (observingRender && target.isConnected) expectedRemovals.delete(target);
+      if (expectedRemovals && observingRender && target.isConnected) expectedRemovals.delete(target);
       queueUnobservedWork(target, kind);
       if (observingRender) enroll(target);
     },
@@ -591,7 +594,7 @@ function createRenderObserver() {
       }
     },
     finished(target: WorkElement): void {
-      if (!executing.has(target) && !gated.has(target)) detach(target);
+      if (!executing.includes(target) && !gated.has(target)) detach(target);
     },
     enroll, include, release, settle, abort: abortRenderScope, observers: observersByWork,
     get active() { return active; },
