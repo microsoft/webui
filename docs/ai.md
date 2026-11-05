@@ -281,6 +281,9 @@ this.settingsDialog.showModal();
   `showModal()`. It rejects on a failed pack or script and retries on the next
   call. Failures also dispatch a cancelable, bubbling `lazyerror` event on the
   owner with `detail.error`; uncanceled errors go to `reportError()`.
+- Where `AbortSignal.timeout` is supported, pack fetches time out after
+  10 seconds. That deadline does not bound component script imports or
+  stylesheet readiness; stylesheet waits have no deadline.
 - Shown regions release their body templates at idle once closed; reopening
   reuses or refetches them. Do not cache pack contents yourself.
   This does not unload JavaScript or clear the browser's module cache.
@@ -919,6 +922,13 @@ application's error boundary and recheck focus intent after awaiting. See
 [affected rendering](/learn/interactivity#wait-for-affected-rendering)
 for the complete contract. Do not count microtasks or use timers to guess when
 rendering has finished.
+
+**WebUI 4.0 migration:** the next major release removes `$update(path?)`,
+`$flushUpdates()`, and lazy `$rendered()`; this is not compatible with a 3.x
+patch or minor update. Use reactive assignments to request rendering, replacing
+the observable root after an in-place object or array mutation. Await
+`$whenRendered()` before dependent DOM work; it is not a synchronous flush or
+an update request. See [migration guidance](/learn/interactivity#migrating-to-webui-40).
 
 ### Custom events
 

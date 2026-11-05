@@ -115,6 +115,13 @@ Handle rejected completion requests and recheck focus intent after a wait. See
 [Wait for affected rendering](https://microsoft.github.io/webui/learn/interactivity#wait-for-affected-rendering)
 for the full contract and template example.
 
+The next major release, **WebUI 4.0**, removes `$update(path?)`,
+`$flushUpdates()`, and lazy `$rendered()`. This is not a compatible 3.x update:
+reactive assignments request rendering, and `$whenRendered()` observes
+asynchronous completion rather than providing a synchronous-flush alias.
+See [Migrating to WebUI 4.0](https://microsoft.github.io/webui/learn/interactivity#migrating-to-webui-40)
+before upgrading an application that uses those methods.
+
 For `<if lazy>` regions, import the generated `lazy.webui.js` before
 `startRuntime()`. Use `$prefetch(path?)` to warm a region before activation.
 See [Lazy UI](https://microsoft.github.io/webui/learn/lazy).

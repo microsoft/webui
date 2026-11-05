@@ -253,6 +253,10 @@ be loaded. Calling it again, or setting the condition again, retries active
 regions. If the condition turns false before the pack arrives, the body is not
 rendered.
 
+Where `AbortSignal.timeout` is supported, a lazy pack fetch times out after
+10 seconds. This deadline does not bound component script imports or
+stylesheet readiness; stylesheet waits have no deadline.
+
 Refs inside a lazy body are valid while that view exists. Removing it clears
 refs that still point to its nodes, so the owner does not keep a detached UI tree
 alive. Deferring an inline body does not split its owner's JavaScript.

@@ -367,6 +367,31 @@ application's error boundary:
 Stylesheet waits have no deadline. The DOM can change again before your code
 resumes; focus selection and avoiding focus theft remain application policy.
 
+### Migrating to WebUI 4.0
+
+The removal of `$update(path?)`, `$flushUpdates()`, and lazy `$rendered()` is a
+**breaking change for the next major release, WebUI 4.0**, not a compatible
+3.x patch or minor update. Migrate existing callers before upgrading.
+
+| Previous API | WebUI 4.0 migration |
+|---|---|
+| `$update(path?)` | Assign an `@observable` or `@attr` property to request rendering. For an in-place object or array mutation, replace the observable root instead; awaiting completion does not notify an unobserved mutation. |
+| `$flushUpdates()` | Make DOM-dependent code asynchronous and await `$whenRendered()` after changing state. There is no public synchronous-flush replacement. |
+| Lazy `$rendered()` | Await `$whenRendered()` on the connected, mounted owner. It includes activated lazy regions and affected descendants, rather than preserving the old owner-only wait. |
+
+For example, replace mutating `settings.theme` followed by
+`$update('settings.theme')` with an assignment to the `@observable settings`
+property:
+
+```typescript
+this.settings = { ...this.settings, theme: 'dark' };
+await this.$whenRendered();
+```
+
+`$whenRendered()` is an asynchronous completion boundary, not a compatibility
+alias for requesting updates or flushing them synchronously. Callers that
+require synchronous DOM changes must be redesigned before upgrading.
+
 ### React to Property Changes
 
 Implement a `<property>Changed(oldValue, newValue)` method to synchronize
