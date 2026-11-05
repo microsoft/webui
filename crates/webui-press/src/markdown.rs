@@ -4,6 +4,8 @@
 //! Markdown → HTML conversion with syntax highlighting.
 //! Uses comrak for GFM markdown and syntect for dual-theme code highlighting.
 
+use std::collections::HashMap;
+
 use comrak::nodes::{NodeHtmlBlock, NodeValue};
 use comrak::{parse_document, Arena, Options};
 use syntect::parsing::SyntaxSet;
@@ -293,12 +295,37 @@ fn resolve_relative_link(base_path: &str, link_base_url: &str, target: &str) -> 
 ///
 /// `link_base_url` is the URL directory corresponding to the Markdown source
 /// file. It can differ from `page_url` when configuration overrides the route.
+#[allow(dead_code)] // Public library API; site builds also supply the discovered page routes.
 pub fn render_markdown(
     content: &str,
     highlighter: &Highlighter,
     base_path: &str,
     page_url: &str,
     link_base_url: &str,
+) -> Result<String> {
+    render_markdown_with_links(
+        content,
+        highlighter,
+        base_path,
+        page_url,
+        MarkdownLinks {
+            directory: link_base_url,
+            pages: &HashMap::new(),
+        },
+    )
+}
+
+pub(crate) struct MarkdownLinks<'a> {
+    pub directory: &'a str,
+    pub pages: &'a HashMap<String, &'a str>,
+}
+
+pub(crate) fn render_markdown_with_links(
+    content: &str,
+    highlighter: &Highlighter,
+    base_path: &str,
+    page_url: &str,
+    links: MarkdownLinks<'_>,
 ) -> Result<String> {
     let arena = Arena::new();
     let mut options = Options::default();
@@ -318,6 +345,7 @@ pub fn render_markdown(
     // Pass 1: Rewrite internal links and images before custom heading rendering.
     for node in root.descendants() {
         let mut data = node.data.borrow_mut();
+        let is_page_link = matches!(data.value, NodeValue::Link(_));
         if let NodeValue::Link(ref mut link) | NodeValue::Image(ref mut link) = data.value {
             if link.url.is_empty() {
                 link.url = page_url.to_string();
@@ -335,11 +363,21 @@ pub fn render_markdown(
                 // Prepend base_path to absolute internal links
                 link.url = format!("{base_prefix}{}", link.url);
             } else if let Some(resolved) =
-                resolve_relative_link(base_path, link_base_url, &link.url)
+                resolve_relative_link(base_path, links.directory, &link.url)
             {
                 // The document-level `<base href>` points at the site root, so
                 // relative Markdown links must be resolved during the build.
                 link.url = resolved;
+            }
+            if is_page_link {
+                let suffix = link.url.find(['?', '#']).unwrap_or(link.url.len());
+                if let Some(route) = links.pages.get(&link.url[..suffix]) {
+                    let mut destination =
+                        String::with_capacity(route.len() + link.url.len() - suffix);
+                    destination.push_str(route);
+                    destination.push_str(&link.url[suffix..]);
+                    link.url = destination;
+                }
             }
         }
     }
