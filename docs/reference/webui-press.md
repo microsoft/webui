@@ -65,6 +65,33 @@ second-stop behavior, stdin restrictions, and platform limits.
 watched inputs change. Reading source files, including test discovery and
 component imports, does not trigger a rebuild or browser reload.
 
+## Markdown page links
+
+Keep ordinary source-file links in Markdown so they also work in your
+source-control viewer:
+
+```markdown
+[Install](guide/install.md#setup)
+[Sibling](./sibling.md)
+[Home](../index.md)
+```
+
+During `build` and `serve`, Press resolves relative links from the directory of
+the Markdown source, then maps discovered `.md` destinations to their public
+page routes. For example, `guide/install.md#setup` becomes
+`/guide/install#setup`, and `guide/index.md` becomes `/guide`. A `nav` entry's
+`source` mapping is respected, including when linking from a page whose own
+route differs from its source directory.
+
+Root-relative links such as `/guide/install.md` start at `contentDir`.
+Generated destinations include `basePath` exactly once and preserve query
+strings and fragments. Markdown source files are not changed.
+
+Only Markdown links to discovered pages are converted, including reference-style
+links. External URLs, image destinations, and paths that are not discovered
+pages retain their normal link/asset resolution. Raw HTML `href` attributes
+and configuration links should continue to use public routes.
+
 ## Tabbed content
 
 Use the built-in tab controls around Markdown or HTML content. Mark the initial
