@@ -1,0 +1,10 @@
+:host { display: block; position: relative; min-height: 100vh; color: #fff; font: 14px/1.4 "Segoe UI", system-ui, sans-serif; }
+ntp-background { position: fixed; inset: 0; z-index: 0; }
+.bar { position: relative; z-index: 2; display: flex; align-items: center; gap: 8px; height: 56px; padding: 0 16px; }
+.brand { color: #fff; font-size: 16px; font-weight: 600; text-decoration: none; text-shadow: 0 1px 3px rgb(0 0 0 / 0.45); }
+.spacer { flex: 1; }
+.weather { display: flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border-radius: 16px; background: rgb(0 0 0 / 0.22); color: #fff; text-decoration: none; }
+.weather svg { width: 18px; height: 18px; fill: none; stroke: #ffd35c; stroke-width: 1.8; stroke-linecap: round; }
+.center { position: relative; z-index: 1; display: grid; justify-items: center; gap: 36px; padding: 104px 16px 0; }
+.peek { position: fixed; left: 50%; bottom: 20px; z-index: 1; transform: translateX(-50%); }
+.peek-link { display: block; padding: 8px 16px; border-radius: 18px; background: rgb(255 255 255 / 0.9); color: #242424; font-weight: 600; text-decoration: none; }

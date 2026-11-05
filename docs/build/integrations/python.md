@@ -30,6 +30,12 @@ Linux (manylinux), each for x86_64 and ARM64, plus one source distribution.
 See [Wheel matrix and scope](#wheel-matrix-and-scope) for what isn't covered
 and why.
 
+## Lazy template packs
+
+[Lazy bodies](/learn/lazy) need no Python API. `webui build` writes their
+template packs to `<out>/_webui/packs/`; serve that directory as immutable
+static files beside the page, and render pages with the same `Renderer`.
+
 ## Buffered rendering
 
 Load `protocol.bin` once and reuse the `Renderer` for the process lifetime:
@@ -121,7 +127,7 @@ templates = renderer.render_component_templates(
 ```
 
 Both return `bytes`; write them directly as the response body for
-`Router.ensureLoaded()` / partial-navigation requests from the client.
+`router.ensureLoaded()` / partial-navigation requests from the client.
 
 ## Progressive (host-driven) streaming
 
@@ -278,7 +284,10 @@ renderer.render(b'{"title":"Home"}')              # bytes fast path
 
 `head_inject`, `body_inject`, and the reserved `$webui` state channel's
 `headEnd` / `bodyStart` / `bodyEnd` members are written **verbatim** at their
-structural boundary, exactly like every other host binding.
+structural boundary, exactly like every other host binding. The channel's
+`assetBase` member overrides the build's asset base for one response (see the
+[CLI reference](/reference/cli/)); an invalid value raises the binding's state
+error before any output is produced.
 
 <webui-blockquote appearance="warning" title="Trusted HTML, not escaped input" icon="⚠️">
 

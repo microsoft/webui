@@ -46,7 +46,7 @@ COPY . .
 RUN pnpm install --frozen-lockfile
 
 # Build framework libraries first (needed by apps with build:deps)
-RUN pnpm --filter @microsoft/webui-framework --filter @microsoft/webui-router run build
+RUN pnpm --filter @microsoft/webui-framework --filter @microsoft/webui-delivery run build
 
 # Build each app's client assets
 RUN cd examples/app/hello-world && \
@@ -61,6 +61,7 @@ RUN cd examples/app/calculator && \
 RUN cd examples/app/todo-webui && pnpm build
 RUN cd examples/app/contact-book-manager && pnpm build
 RUN cd examples/app/component-assets && pnpm build
+RUN cd examples/app/lazy-ui && pnpm build
 RUN cd examples/app/routes && pnpm build
 RUN cd examples/app/commerce && pnpm build
 RUN cd examples/app/streaming && pnpm build
@@ -153,6 +154,13 @@ COPY --from=builder --chown=app:app /build/examples/app/component-assets/src/ ./
 COPY --from=builder --chown=app:app /build/examples/app/component-assets/dist/ ./apps/component-assets/dist/
 COPY --from=builder --chown=app:app /build/examples/app/component-assets/data/ ./apps/component-assets/data/
 COPY --from=builder --chown=app:app /build/examples/app/component-assets/demo.toml ./apps/component-assets/demo.toml
+
+# lazy-ui (Node state only; WebUI owns lazy resource/state delivery)
+COPY --from=builder --chown=app:app /build/examples/app/lazy-ui/src/ ./apps/lazy-ui/src/
+COPY --from=builder --chown=app:app /build/examples/app/lazy-ui/dist/ ./apps/lazy-ui/dist/
+COPY --from=builder --chown=app:app /build/examples/app/lazy-ui/data/ ./apps/lazy-ui/data/
+COPY --from=builder --chown=app:app /build/examples/app/lazy-ui/server/api.mjs /build/examples/app/lazy-ui/server/index.mjs ./apps/lazy-ui/server/
+COPY --from=builder --chown=app:app /build/examples/app/lazy-ui/demo.toml ./apps/lazy-ui/demo.toml
 
 # routes (has Node API)
 COPY --from=builder --chown=app:app /build/examples/app/routes/src/ ./apps/routes/src/

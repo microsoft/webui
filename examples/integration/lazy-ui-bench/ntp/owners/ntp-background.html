@@ -1,0 +1,20 @@
+<template shadowrootmode="open">
+  <div class="layer">
+    <div class="credit">
+      <div class="credit-text">
+        <p class="image-title">{{imageTitle}}</p>
+        <p class="image-credit">{{imageCredit}}</p>
+      </div>
+      <button type="button" class="icon" data-trigger="bgmenu" aria-label="Background options" aria-haspopup="menu" @click="{toggleBgmenu()}" data-prefetch="bgmenu">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h.01 M12 12h.01 M18 12h.01" /></svg>
+      </button>
+      <button type="button" class="pill" data-trigger="gallery" @click="{openGallery()}" data-prefetch="gallery">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18v14H3z M3 16l5-5 4 4 3-3 6 6" /></svg>Change background
+      </button>
+    </div>
+  </div>
+  <!--ui:bgmenu-->
+  <dialog class="modal" w-ref="{galleryDialog}" aria-label="Choose a background" @close="{onGalleryClosed()}">
+    <!--ui:gallery-->
+  </dialog>
+</template>

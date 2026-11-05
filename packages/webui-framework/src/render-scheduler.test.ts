@@ -4,6 +4,8 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import {
+  destroyRenderWork,
+  disconnectRenderWork,
   enterRenderWork,
   finishRenderWork,
   leaveRenderWork,
@@ -176,6 +178,63 @@ test('queued membership still rejects a target moved outside the captured scope'
   const rejected = assert.rejects(waiting, { name: 'AbortError' });
   child.parent = null;
   await rejected;
+});
+
+test('moving queued work rejects only the boundary it leaves', async () => {
+  const root = new Target();
+  const elsewhere = new Target();
+  const child = new Target();
+  const leaf = new Target();
+  child.parent = root;
+  leaf.parent = child;
+  child.run = () => { queueRenderWork(leaf, MOUNT_WORK); };
+  enqueueRender(child);
+  const outside = assert.rejects(whenRendered(root), { name: 'AbortError' });
+  let innerFinished = false;
+  const inside = whenRendered(child).then(() => { innerFinished = true; });
+  child.parent = elsewhere;
+  await outside;
+  await Promise.resolve();
+  assert.equal(innerFinished, false);
+  finishRenderWork(leaf, MOUNT_WORK);
+  await inside;
+});
+
+test('a failed scope check retries unattempted work and reports the error', async () => {
+  const error = new Error('scope check failed');
+  let first: Promise<void> | undefined;
+  withQueue(queued => {
+    const root = new Target();
+    class ThrowsOnCheck extends Target {
+      private throwOnRead = true;
+      override get isConnected(): boolean {
+        if (this.throwOnRead) {
+          this.throwOnRead = false;
+          throw error;
+        }
+        return true;
+      }
+    }
+    const child = new ThrowsOnCheck();
+    child.parent = root;
+    let runs = 0;
+    child.run = () => { runs++; };
+    try {
+      enqueueRender(child);
+      first = whenRendered(root);
+      void first.catch(() => {});
+      assert.throws(() => queued.shift()?.(), value => value === error);
+      assert.notEqual(child[RENDER_PENDING], 0);
+      while (queued.length) queued.shift()?.();
+      assert.equal(runs, 1);
+      assert.equal(child[RENDER_PENDING], 0);
+    } finally {
+      disconnectRenderWork(root);
+      destroyRenderWork(child);
+    }
+  });
+  assert.ok(first);
+  await assert.rejects(first, value => value === error);
 });
 
 test('a boundary opened within a render captures subsequent coalesced child work', async () => {

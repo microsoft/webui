@@ -1,0 +1,75 @@
+:host { display: block; }
+*, *::before, *::after { box-sizing: border-box; }
+h2, p { margin: 0; }
+button, input, select { font: inherit; }
+button { cursor: pointer; }
+button:focus-visible, input:focus-visible, select:focus-visible {
+  outline: 2px solid var(--color-brand-primary);
+  outline-offset: 3px;
+}
+
+.button, .icon-button {
+  min-height: 42px;
+  border: 1px solid var(--color-neutral-300);
+  border-radius: var(--border-radius-m);
+  background: var(--color-white);
+  color: var(--color-neutral-800);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-s);
+  padding: var(--spacing-s) var(--spacing-l);
+  font-size: var(--font-size-m);
+  font-weight: 600;
+}
+
+.button:hover, .icon-button:hover { background: var(--color-neutral-150); }
+.primary { background: var(--color-brand-primary); color: var(--color-white); border-color: transparent; }
+.primary:hover { background: var(--color-brand-primary-hover); }
+svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.settings-trigger { width: 100%; }
+
+.settings-dialog {
+  width: min(480px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  padding: 0;
+  border: 1px solid var(--color-neutral-300);
+  border-radius: var(--border-radius-xl);
+  background: var(--color-white);
+  color: var(--color-neutral-800);
+  box-shadow: 0 12px 36px rgb(0 0 0 / 16%);
+}
+
+.settings-dialog::backdrop { background: rgb(0 0 0 / 38%); }
+.overlay-header { display: flex; align-items: center; justify-content: space-between; gap: var(--spacing-l); padding: var(--spacing-l) var(--spacing-xl); border-bottom: 1px solid var(--color-neutral-200); }
+.overlay-header h2 { font-size: var(--font-size-xl); font-weight: 600; }
+.icon-button { padding: var(--spacing-s); min-width: 36px; min-height: 36px; border: 0; background: transparent; }
+.dialog-intro { padding: var(--spacing-xl) var(--spacing-xxl) 0; color: var(--color-neutral-700); font-size: var(--font-size-m); }
+.settings-body { padding: var(--spacing-xxl); }
+fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
+legend { margin-bottom: var(--spacing-xl); padding: 0; font-size: var(--font-size-l); font-weight: 600; }
+.field-label { display: block; margin-bottom: var(--spacing-s); font-size: var(--font-size-m); font-weight: 600; }
+select { width: 100%; min-height: 44px; border: 1px solid var(--color-neutral-300); border-radius: var(--border-radius-m); padding: var(--spacing-s) var(--spacing-m); background: var(--color-white); color: var(--color-neutral-800); }
+.field-description { margin-top: var(--spacing-s); font-size: var(--font-size-s); color: var(--color-neutral-700); }
+.check-control { display: flex; align-items: center; gap: var(--spacing-m); min-height: 44px; font-size: var(--font-size-m); cursor: pointer; }
+.check-control input { width: 17px; height: 17px; margin: 0; accent-color: var(--color-brand-primary); }
+.preference { align-items: flex-start; margin-top: var(--spacing-xxl); padding-block: var(--spacing-s); }
+.preference input { margin-top: var(--spacing-xs); }
+.preference strong { display: block; font-weight: 600; }
+.preference small { display: block; margin: var(--spacing-xs) 0 0; font-size: var(--font-size-s); color: var(--color-neutral-700); }
+.settings-note { margin-top: var(--spacing-xxl); font-size: var(--font-size-s); color: var(--color-neutral-700); }
+.dialog-actions { display: flex; justify-content: flex-end; gap: var(--spacing-s); margin-top: var(--spacing-xxl); padding-top: var(--spacing-xl); border-top: 1px solid var(--color-neutral-200); }
+.response-stamp { margin-top: var(--spacing-l); color: var(--color-neutral-500); font-size: var(--font-size-xs); }
+
+.loading-state { display: flex; align-items: center; gap: var(--spacing-s); margin-top: var(--spacing-s); color: var(--color-neutral-700); font-size: var(--font-size-s); }
+.loading-dot { width: 8px; height: 8px; border-radius: var(--border-radius-round); background: var(--color-brand-primary); animation: waiting 1s ease-in-out infinite alternate; }
+.error-state { max-width: 26ch; margin-top: var(--spacing-m); }
+.error-state p { margin-bottom: var(--spacing-s); color: var(--color-danger-hover); font-size: var(--font-size-s); }
+
+@keyframes waiting { to { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) {
+  .loading-dot { animation: none; }
+}
+@media (max-width: 380px) {
+  .dialog-actions { flex-direction: column-reverse; }
+}

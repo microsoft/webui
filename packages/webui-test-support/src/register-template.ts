@@ -17,13 +17,15 @@ import type {
 
 export type { CompiledConditionFn, TemplateMeta };
 
+type TemplateFixture = Omit<TemplateMeta, 'v'> & { v?: 3 };
+
 /**
  * Register a compiled template so the framework can hydrate or mount
  * a custom element with the given tag name.
  */
 export function registerCompiledTemplate(
   name: string,
-  meta: TemplateMeta,
+  meta: TemplateFixture,
   fns?: CompiledConditionFn[],
 ): void {
   const w = window as unknown as {
@@ -35,7 +37,7 @@ export function registerCompiledTemplate(
   };
   if (!w.__webui) w.__webui = {};
   if (!w.__webui.templates) w.__webui.templates = {};
-  w.__webui.templates[name] = meta;
+  w.__webui.templates[name] = { ...meta, v: 3 };
   if (fns) {
     if (!w.__webui.templateFns) w.__webui.templateFns = {};
     w.__webui.templateFns[name] = fns;
@@ -43,6 +45,6 @@ export function registerCompiledTemplate(
 }
 
 /** Render a static template registration as an inline `<script>` tag. */
-export function renderTemplateScript(name: string, meta: TemplateMeta): string {
-  return `<script>window.__webui=window.__webui||{};window.__webui.templates=window.__webui.templates||{};window.__webui.templates[${JSON.stringify(name)}]=${JSON.stringify(meta)};</script>`;
+export function renderTemplateScript(name: string, meta: TemplateFixture): string {
+  return `<script>window.__webui=window.__webui||{};window.__webui.templates=window.__webui.templates||{};window.__webui.templates[${JSON.stringify(name)}]=${JSON.stringify({ ...meta, v: 3 })};</script>`;
 }

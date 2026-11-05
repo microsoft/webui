@@ -4,18 +4,26 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import {
+  associateRenderTask,
   blockRenderWork,
+  cancelRenderTask,
   destroyRenderWork,
   disconnectRenderWork,
+  enterRenderTask,
   enterRenderWork,
   expectRenderRemoval,
   failRenderWork,
+  finishRenderTask,
   finishRenderWork,
   finishRenderRemoval,
   invokeRenderCallback,
+  leaveRenderTask,
   leaveRenderWork,
   MOUNT_WORK,
+  observingRender,
+  queueRenderTask,
   queueRenderWork,
+  startRenderTask,
   unblockRenderWork,
   UPDATE_WORK,
   whenRendered,
@@ -226,6 +234,150 @@ test('nested execution does not complete work while its outer render still runs'
   await waiting;
 });
 
+test('nested work remains active after the first boundary fails', async () => {
+  const root = new Host();
+  queueRenderWork(root, UPDATE_WORK);
+  const first = whenRendered(root);
+  const error = new Error('render failed');
+  const rejected = assert.rejects(first, value => value === error);
+  await Promise.resolve();
+  const outer = enterRenderWork(root);
+  failRenderWork(root, error);
+  const inner = enterRenderWork(root);
+  let completed = false;
+  const second = whenRendered(root).then(() => { completed = true; });
+  finishRenderWork(root, UPDATE_WORK);
+  leaveRenderWork(root, inner);
+  await rejected;
+  await Promise.resolve();
+  assert.equal(completed, false);
+  leaveRenderWork(root, outer);
+  await second;
+});
+
+test('destroying executing work does not retain its replacement generation', async () => {
+  const root = new Host();
+  queueRenderWork(root, UPDATE_WORK);
+  const first = whenRendered(root);
+  const rejected = assert.rejects(first, { name: 'AbortError' });
+  await Promise.resolve();
+  const outer = enterRenderWork(root);
+  destroyRenderWork(root);
+  queueRenderWork(root, UPDATE_WORK);
+  const second = whenRendered(root);
+  const inner = enterRenderWork(root);
+  finishRenderWork(root, UPDATE_WORK);
+  leaveRenderWork(root, inner);
+  await rejected;
+  await second;
+  leaveRenderWork(root, outer);
+});
+
+test('destruction during scope validation does not revive retired work', async () => {
+  const root = new Host();
+  class RemovedOnCheck extends Host {
+    private removeOnRead = true;
+    override get isConnected(): boolean {
+      if (this.removeOnRead) {
+        this.removeOnRead = false;
+        destroyRenderWork(this);
+      }
+      return true;
+    }
+  }
+  const child = new RemovedOnCheck();
+  child.parent = root;
+  queueRenderWork(child, UPDATE_WORK);
+  const rejected = assert.rejects(whenRendered(root), { name: 'AbortError' });
+  const previous = enterRenderWork(child);
+  leaveRenderWork(child, previous);
+  await rejected;
+  const next = whenRendered(root);
+  const settled = await Promise.race([
+    next.then(() => true, () => false),
+    new Promise<boolean>(resolve => { setTimeout(() => { resolve(false); }, 0); }),
+  ]);
+  if (!settled) destroyRenderWork(child);
+  assert.equal(settled, true);
+});
+
+test('a throwing scope check releases its execution state', async () => {
+  const root = new Host();
+  const error = new Error('scope check failed');
+  class ThrowsOnCheck extends Host {
+    private throwOnRead = true;
+    override get isConnected(): boolean {
+      if (this.throwOnRead) {
+        this.throwOnRead = false;
+        throw error;
+      }
+      return true;
+    }
+  }
+  const child = new ThrowsOnCheck();
+  child.parent = root;
+  queueRenderWork(child, UPDATE_WORK);
+  let outcome: unknown;
+  const first = whenRendered(root);
+  void first.then(() => { outcome = 'resolved'; }, value => { outcome = value; });
+  try {
+    assert.throws(() => enterRenderWork(child), value => value === error);
+    await Promise.resolve();
+    assert.equal(outcome, error);
+    finishRenderWork(child, UPDATE_WORK);
+    queueRenderWork(child, UPDATE_WORK);
+    const next = whenRendered(root);
+    finish(child);
+    const settled = await Promise.race([
+      next.then(() => true, () => false),
+      new Promise<boolean>(resolve => { setTimeout(() => { resolve(false); }, 0); }),
+    ]);
+    assert.equal(settled, true);
+  } finally {
+    disconnectRenderWork(root);
+    destroyRenderWork(child);
+  }
+});
+
+test('a throwing discovery releases the completion observer', async () => {
+  const root = new Host();
+  const error = new Error('discovery failed');
+  class ThrowsOnParent extends Host {
+    private throwOnRead = true;
+    override get parentNode(): ParentNode | null {
+      if (this.throwOnRead) {
+        this.throwOnRead = false;
+        throw error;
+      }
+      return this.parent;
+    }
+  }
+  const child = new ThrowsOnParent();
+  child.parent = root;
+  queueRenderWork(child, UPDATE_WORK);
+  try {
+    await assert.rejects(whenRendered(root), value => value === error);
+    assert.equal(observingRender, false);
+  } finally {
+    disconnectRenderWork(root);
+    destroyRenderWork(child);
+  }
+});
+
+test('completed work leaves no per-element tracking properties', async () => {
+  const root = new Host();
+  const child = new Host();
+  child.parent = root;
+  const symbols = Object.getOwnPropertySymbols(child);
+  queueRenderWork(child, UPDATE_WORK);
+  const waiting = whenRendered(root);
+  const previous = enterRenderWork(child);
+  finishRenderWork(child, UPDATE_WORK);
+  leaveRenderWork(child, previous);
+  await waiting;
+  assert.deepEqual(Object.getOwnPropertySymbols(child), symbols);
+});
+
 test('blocked staged targets are checked after a captured render inserts them', async () => {
   const root = new Host();
   const child = new Host();
@@ -381,4 +533,286 @@ test('an update cannot retire a still-pending mount on the same component', asyn
   assert.equal(completed, false);
   finish(root, MOUNT_WORK);
   await waiting;
+});
+
+test('independent lazy work on one descendant is tracked per activation', async () => {
+  const root = new Host();
+  const child = new Host();
+  child.parent = root;
+  const first = startRenderTask(child);
+  const second = startRenderTask(child);
+  let completed = false;
+  const waiting = whenRendered(root).then(() => { completed = true; });
+  finishRenderTask(first);
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(completed, false);
+  finishRenderTask(second);
+  await waiting;
+});
+
+test('retiring one host task group does not capture its later independent work', async () => {
+  const root = new Host();
+  const firstHost = new Host();
+  const secondHost = new Host();
+  firstHost.parent = root;
+  secondHost.parent = root;
+  const first = startRenderTask(firstHost);
+  const other = startRenderTask(secondHost);
+  const sibling = startRenderTask(firstHost);
+  const waiting = whenRendered(root);
+  await Promise.resolve();
+  finishRenderTask(first);
+  finishRenderTask(sibling);
+  queueRenderTask(first);
+  finishRenderTask(other);
+  await waiting;
+
+  let completed = false;
+  const later = whenRendered(root).then(() => { completed = true; });
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(completed, false);
+  finishRenderTask(first);
+  await later;
+});
+
+test('retired task groups do not retain their hosts', async () => {
+  const { setFlagsFromString } = await import('node:v8');
+  const { runInNewContext } = await import('node:vm');
+  setFlagsFromString('--expose-gc');
+  const gc = runInNewContext('gc') as () => void;
+  function retiredHost(): WeakRef<Host> {
+    const host = new Host();
+    const first = startRenderTask(host);
+    const second = startRenderTask(host);
+    finishRenderTask(first);
+    finishRenderTask(second);
+    return new WeakRef(host);
+  }
+  const host = retiredHost();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  gc();
+  assert.equal(host.deref(), undefined);
+});
+
+test('a completed task can be queued again for a later boundary', async () => {
+  const root = new Host();
+  const task = startRenderTask(root);
+  const first = whenRendered(root);
+  finishRenderTask(task);
+  await first;
+  queueRenderTask(task);
+  let completed = false;
+  const second = whenRendered(root).then(() => { completed = true; });
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(completed, false);
+  finishRenderTask(task);
+  await second;
+});
+
+test('a mount and a lazy activation on the same host complete independently', async () => {
+  const root = new Host();
+  queueRenderWork(root, MOUNT_WORK);
+  const task = startRenderTask(root);
+  let completed = false;
+  const waiting = whenRendered(root).then(() => { completed = true; });
+  finishRenderTask(task);
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(completed, false);
+  finish(root, MOUNT_WORK);
+  await waiting;
+});
+
+test('a later independent activation does not extend an existing completion', async () => {
+  const root = new Host();
+  const first = startRenderTask(root);
+  const waiting = whenRendered(root);
+  await Promise.resolve();
+  const later = startRenderTask(root);
+  finishRenderTask(first);
+  await waiting;
+  finishRenderTask(later);
+});
+
+test('a captured activation carries its boundary to nested asynchronous work', async () => {
+  const root = new Host();
+  const child = new Host();
+  child.parent = root;
+  const first = startRenderTask(root);
+  let completed = false;
+  const waiting = whenRendered(root).then(() => { completed = true; });
+  await Promise.resolve();
+  const previous = enterRenderTask(first);
+  const nested = startRenderTask(child);
+  leaveRenderTask(previous);
+  finishRenderTask(first);
+  await Promise.resolve();
+  assert.equal(completed, false);
+  finishRenderTask(nested);
+  await waiting;
+});
+
+test('a lazy task can associate an asynchronously mounted descendant', async () => {
+  const root = new Host();
+  const child = new Host();
+  child.parent = root;
+  const task = startRenderTask(root);
+  let completed = false;
+  const waiting = whenRendered(root).then(() => { completed = true; });
+  await Promise.resolve();
+  assert.equal(associateRenderTask(task, child), true);
+  const previous = enterRenderWork(child);
+  queueRenderWork(child, MOUNT_WORK);
+  leaveRenderWork(child, previous);
+  finishRenderTask(task);
+  await Promise.resolve();
+  assert.equal(completed, false);
+  finish(child, MOUNT_WORK);
+  await waiting;
+});
+
+test('lazy work defers readiness errors only until that work finishes', async () => {
+  const root = new Host();
+  const child = new Host();
+  child.parent = root;
+  const first = startRenderTask(root);
+  blockRenderWork(child, 'the component definition has not loaded');
+  const waiting = whenRendered(root);
+  unblockRenderWork(child);
+  finishRenderTask(first);
+  await waiting;
+
+  const second = startRenderTask(root);
+  blockRenderWork(child, 'the component definition has not loaded');
+  const rejected = assert.rejects(whenRendered(root), { name: 'InvalidStateError' });
+  finishRenderTask(second);
+  await rejected;
+  unblockRenderWork(child);
+});
+
+test('lazy task failures reject overlapping boundaries with their original error', async () => {
+  const root = new Host();
+  const child = new Host();
+  child.parent = root;
+  const task = startRenderTask(child);
+  const first = whenRendered(root);
+  const second = whenRendered(child);
+  const error = new Error('lazy load failed');
+  const rejectedFirst = assert.rejects(first, value => value === error);
+  const rejectedSecond = assert.rejects(second, value => value === error);
+  finishRenderTask(task, { value: error });
+  await Promise.all([rejectedFirst, rejectedSecond]);
+});
+
+test('expected removal retires lazy work and a late old task cannot finish its replacement', async () => {
+  const root = new Host();
+  const child = new Host();
+  child.parent = root;
+  queueRenderWork(root, UPDATE_WORK);
+  const old = startRenderTask(child);
+  const waiting = whenRendered(root);
+  await Promise.resolve();
+  const previous = enterRenderWork(root);
+  const previousRemoval = expectRenderRemoval(child);
+  child.connected = false;
+  disconnectRenderWork(child);
+  destroyRenderWork(child);
+  finishRenderRemoval(previousRemoval);
+  finishRenderWork(root, UPDATE_WORK);
+  leaveRenderWork(root, previous);
+  await waiting;
+
+  child.connected = true;
+  const replacement = startRenderTask(child);
+  let completed = false;
+  const next = whenRendered(root).then(() => { completed = true; });
+  finishRenderTask(old);
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(completed, false);
+  finishRenderTask(replacement);
+  await next;
+});
+
+test('expected removal preserves other work sharing its completion observer', async () => {
+  const root = new Host();
+  const removed = new Host();
+  const retained = new Host();
+  const descendant = new Host();
+  removed.parent = root;
+  retained.parent = root;
+  descendant.parent = retained;
+  queueRenderWork(root, UPDATE_WORK);
+  queueRenderWork(retained, UPDATE_WORK);
+  const old = startRenderTask(removed);
+  const active = startRenderTask(retained);
+  const waiting = whenRendered(root);
+  await Promise.resolve();
+  const previous = enterRenderWork(root);
+  const previousRemoval = expectRenderRemoval(removed);
+  removed.connected = false;
+  disconnectRenderWork(removed);
+  destroyRenderWork(removed);
+  finishRenderRemoval(previousRemoval);
+  assert.equal(associateRenderTask(active, descendant), true);
+  finishRenderWork(root, UPDATE_WORK);
+  leaveRenderWork(root, previous);
+  finish(retained);
+  finish(descendant);
+  let completed = false;
+  void waiting.then(() => { completed = true; });
+  await Promise.resolve();
+  assert.equal(completed, false);
+  finishRenderTask(active);
+  finishRenderTask(old);
+  await waiting;
+});
+
+test('expected removal retires only the boundary that caused it', async () => {
+  const root = new Host();
+  const inner = new Host();
+  const removed = new Host();
+  inner.parent = root;
+  removed.parent = inner;
+  queueRenderWork(root, UPDATE_WORK);
+  const task = startRenderTask(removed);
+  const outer = whenRendered(root);
+  const innerRejected = assert.rejects(whenRendered(inner), { name: 'AbortError' });
+  await Promise.resolve();
+  const previous = enterRenderWork(root);
+  const previousRemoval = expectRenderRemoval(removed);
+  removed.connected = false;
+  disconnectRenderWork(removed);
+  destroyRenderWork(removed);
+  finishRenderRemoval(previousRemoval);
+  finishRenderWork(root, UPDATE_WORK);
+  leaveRenderWork(root, previous);
+  await Promise.all([outer, innerRejected]);
+  finishRenderTask(task);
+});
+
+test('unexpected lazy task removal or movement rejects the captured completion', async () => {
+  const root = new Host();
+  const child = new Host();
+  child.parent = root;
+  const first = startRenderTask(child);
+  const removed = assert.rejects(whenRendered(root), { name: 'AbortError' });
+  child.connected = false;
+  disconnectRenderWork(child);
+  destroyRenderWork(child);
+  await removed;
+  finishRenderTask(first);
+
+  child.connected = true;
+  const second = startRenderTask(child);
+  const moved = assert.rejects(whenRendered(root), { name: 'AbortError' });
+  child.parent = null;
+  const previous = enterRenderTask(second);
+  leaveRenderTask(previous);
+  finishRenderTask(second);
+  await moved;
+  cancelRenderTask(second);
 });

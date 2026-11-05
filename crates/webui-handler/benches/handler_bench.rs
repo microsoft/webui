@@ -601,6 +601,48 @@ fn handler_protocol_construction_bench(c: &mut Criterion) {
         });
     }
 
+    for (component_count, fragment_count) in [(1usize, 64usize), (64, 0), (64, 64), (256, 64)] {
+        let mut document = build_construction_document(component_count, 0);
+        for component in 0..component_count {
+            document.components.insert(
+                format!("card-{component}"),
+                webui_protocol::ComponentData {
+                    template_json: r#"{"v":3,"h":"<main></main>","l":[3,1]}"#.into(),
+                    ..Default::default()
+                },
+            );
+        }
+        for fragment in 0..fragment_count {
+            document.client_fragments.insert(
+                format!("card-0::lazy:@{fragment}"),
+                webui_protocol::ClientFragmentData {
+                    owner: "card-0".into(),
+                    entry: true,
+                    template_json:
+                        r#"{"v":3,"h":"<section><h2>Settings</h2><input></section>","l":[3,5,1,1]}"#
+                            .into(),
+                    ..Default::default()
+                },
+            );
+        }
+        group.throughput(Throughput::Elements(
+            u64::try_from(component_count + fragment_count).unwrap_or(u64::MAX),
+        ));
+        group.bench_function(
+            BenchmarkId::new(
+                "client_templates",
+                format!("{component_count}c_{fragment_count}f"),
+            ),
+            |b| {
+                b.iter_batched(
+                    || document.clone(),
+                    |document| Protocol::new(black_box(document)),
+                    criterion::BatchSize::SmallInput,
+                );
+            },
+        );
+    }
+
     group.finish();
 }
 

@@ -35,12 +35,38 @@ export interface BuildOptions {
   components?: string[];
   /** Root component tags emitted as static `.webui.js` ESM assets. */
   componentAssetRoots?: string[];
-  /** Generate and return an esbuild-compatible component asset metafile. */
+  /**
+   * Return the build metafile: the component asset graph in esbuild's
+   * `inputs`/`outputs` format and a `lazyPacks` cost report. Returned only
+   * when the build emits component assets or lazy packs. Also measures each
+   * lazy pack's `brotliBytes`.
+   */
   metafile?: boolean;
   /** Emitted Link-mode CSS filename template. Tokens: [name], [hash], [ext]. */
   cssFileNameTemplate?: string;
-  /** Optional base URL/path prefix for Link-mode CSS hrefs. */
-  cssPublicBase?: string;
+  /**
+   * Public URL or path ending in "/" that maps to the output directory, such
+   * as `"https://cdn.example.com/app/"` or `"/static/"`.
+   *
+   * Build output keeps base-relative paths. The base is stored in the
+   * protocol: rendering prefixes stylesheet links with it and passes it to the
+   * browser, including as `<meta name="webui-asset-base">` in the document
+   * head. Module preload hints keep their paths. Override it per request with
+   * the reserved `{ $webui: { assetBase } }` state member.
+   */
+  assetBase?: string;
+  /**
+   * Module specifiers for custom elements, keyed by tag, for components
+   * without a usable `.ts` or `.js` sibling. `lazy.webui.js` imports each
+   * specifier verbatim, overriding a discovered sibling module.
+   */
+  componentModules?: Record<string, string>;
+  /**
+   * Directory you will write generated modules to, such as
+   * `lazyScriptsModule`. Relative module specifiers start here; without it
+   * they are relative to `appDir`.
+   */
+  modulesOut?: string;
   /** Design token theme: a JSON file path or npm package name. */
   theme?: string;
   /** Projection manifest file paths, merged in order. */
@@ -68,6 +94,59 @@ export interface BuildStats {
   tokenCount: number;
 }
 
+/** One lazy-region template pack and its cost report. */
+export interface LazyPackFile {
+  /** Content-addressed file name; publish it under `_webui/packs/`. */
+  fileName: string;
+  /** JSON pack content. */
+  content: string;
+  /** Path relative to the asset base: `_webui/packs/<fileName>`. */
+  path: string;
+  /** Region identity, `<owner>::lazy:@<n>`. */
+  region: string;
+  /** Component whose template declares the region. */
+  owner: string;
+  /** When the pack may be fetched before the region opens. */
+  trigger: "intent" | "idle" | "eager" | "demand";
+  /** Content hash from the file name. */
+  hash: string;
+  /** Size of `content` in bytes. */
+  bytes: number;
+  /** Brotli size at quality 11, present when `metafile` is requested. */
+  brotliBytes?: number;
+  /** Module specifiers of the scripted components the region introduces. */
+  scripts: string[];
+  /**
+   * Stylesheet paths, relative to the asset base, that the pack registers in a
+   * `css: "link"` build: the files the region fetches besides its pack and
+   * scripts. Always present; empty for `"style"` and `"module"` builds, whose
+   * packs carry CSS text.
+   */
+  stylesheets: string[];
+}
+
+/** A generated ES module for the application bundler. */
+export interface GeneratedModule {
+  /** File name to write in the generated-modules directory. */
+  fileName: string;
+  /** JavaScript module source. */
+  content: string;
+  /**
+   * TypeScript declarations to write next to the module, such as
+   * `lazy.webui.d.ts`, so TypeScript entries can import the module without
+   * `allowJs`.
+   */
+  declaration: GeneratedDeclaration;
+}
+
+/** TypeScript declarations for a generated module. */
+export interface GeneratedDeclaration {
+  /** File name to write in the generated-modules directory. */
+  fileName: string;
+  /** TypeScript declaration source. */
+  content: string;
+}
+
 /** Result of a successful build operation. */
 export interface BuildResult {
   /** Serialized protocol (protobuf binary). */
@@ -76,12 +155,43 @@ export interface BuildResult {
   cssFiles: string[];
   /** Static component asset files as alternating [filename, content, ...]. */
   componentAssetFiles: string[];
-  /** Esbuild-compatible component asset metafile JSON when requested. */
+  /** Lazy-region template packs. Publish each under `_webui/packs/`. */
+  lazyPackFiles: LazyPackFile[];
+  /**
+   * Generated `lazy.webui.js`, present when the build has lazy regions. Write
+   * it and its `declaration` to `modulesOut`, then
+   * import the module from your entry module.
+   */
+  lazyScriptsModule?: GeneratedModule;
+  /** Build metafile JSON when requested; see `BuildOptions.metafile`. */
   metafile?: string;
   /** Non-fatal build advisories as plain diagnostic strings. */
   warnings: string[];
   /** Build statistics. */
   stats: BuildStats;
+}
+
+/** Completed client manifests for finalizing a retained compilation. */
+export type FinishBuildOptions = Pick<
+  BuildOptions,
+  "projectionManifests" | "projectionManifestObjects"
+>;
+
+/**
+ * Single-use compilation retained while its generated modules are bundled.
+ * A finish attempt consumes it, including when manifest validation fails.
+ */
+export interface PreparedBuild {
+  /** Projection-independent generated lazy behavior imports. */
+  readonly lazyScriptsModule?: GeneratedModule;
+  /** Projection-independent component modules, as [filename, content, ...]. */
+  readonly componentAssetFiles: string[];
+  /** Projection-independent template packs and region metadata. */
+  readonly lazyPackFiles: LazyPackFile[];
+  /** Atomically publish bundler inputs to modulesOut (or appDir). */
+  writeModules(): void;
+  /** Validate completed client manifests and serialize this compilation. */
+  finish(options?: FinishBuildOptions): BuildResult;
 }
 
 /** Options for rendering a protocol. */
@@ -163,6 +273,8 @@ export interface StreamOptions {
 
 /** Response from `renderComponentTemplates()` for on-demand component loading. */
 export interface ComponentTemplatesResponse {
+  buildId?: string;
+  styleInventory?: string;
   /** Versioned component style definitions and ordered closures. */
   componentStyles: ComponentStyles;
   /** JSON-safe component template metadata keyed by tag name. */
@@ -175,6 +287,8 @@ export interface ComponentTemplatesResponse {
 
 /** Complete JSON partial response from the server for client-side navigation. */
 export interface PartialResponse {
+  buildId?: string;
+  styleInventory?: string;
   /** Application state for the matched route. */
   state: Record<string, unknown>;
   /** JSON-safe component template metadata keyed by tag name. */
@@ -200,25 +314,24 @@ export interface PartialResponse {
 
 interface NativeAddon {
   Protocol?: new (protocol: Buffer, plugin?: string) => NativeProtocol;
-  build(options: {
-    appDir: string;
-    entry?: string;
-    css?: string;
-    dom?: string;
-    cssBundle?: boolean;
-    plugin?: string;
-    components?: string[];
-    componentAssetRoots?: string[];
-    metafile?: boolean;
-    cssFileNameTemplate?: string;
-    cssPublicBase?: string;
-    projectionManifests?: string[];
-    projectionManifestObjects?: Array<{
-      path: string;
-      json: string;
-    }>;
-  }): BuildResult;
+  prepareBuild(options: NativeBuildOptions): NativePreparedBuild;
+  build(options: NativeBuildOptions): BuildResult;
   inspect(protocolData: Buffer): string;
+}
+
+type NativeBuildOptions = Omit<BuildOptions, "projectionManifestObjects"> & {
+  projectionManifestObjects?: Array<{ path: string; json: string }>;
+};
+
+interface NativePreparedBuild {
+  readonly lazyScriptsModule: GeneratedModule | null;
+  readonly componentAssetFiles: string[];
+  readonly lazyPackFiles: LazyPackFile[];
+  writeModules(): void;
+  finish(options: Pick<
+    NativeBuildOptions,
+    "projectionManifests" | "projectionManifestObjects"
+  >): BuildResult;
 }
 
 interface NativeProtocol {
@@ -320,6 +433,17 @@ function addonInstallHelp(): string {
 
 // ── Build API ────────────────────────────────────────────────────────
 
+function nativeBuildOptions<T extends FinishBuildOptions>(options: T) {
+  const { projectionManifestObjects, ...nativeOptions } = options;
+  return {
+    ...nativeOptions,
+    projectionManifestObjects: projectionManifestObjects?.map(({ path, manifest }) => ({
+      path,
+      json: JSON.stringify(manifest),
+    })),
+  };
+}
+
 /** Build a WebUI application from an app directory. */
 export function build(options: BuildOptions): BuildResult {
   const native = loadAddon();
@@ -328,16 +452,30 @@ export function build(options: BuildOptions): BuildResult {
       `[webui] Native addon is incompatible: build() is required. ${addonInstallHelp()}`,
     );
   }
-  const { projectionManifestObjects, ...nativeOptions } = options;
-  return native.build({
-    ...nativeOptions,
-    projectionManifestObjects: projectionManifestObjects?.map(
-      ({ path, manifest }) => ({
-        path,
-        json: JSON.stringify(manifest),
-      })
-    ),
-  });
+  return native.build(nativeBuildOptions(options));
+}
+
+/**
+ * Compile templates/CSS once, exposing generated inputs before client bundling.
+ * Write these inputs, bundle the client, then finish with its projection manifest.
+ */
+export function prepareBuild(options: BuildOptions): PreparedBuild {
+  const native = loadAddon();
+  if (typeof native.prepareBuild !== "function") {
+    throw new Error(
+      `[webui] Native addon is incompatible: prepareBuild() is required. ${addonInstallHelp()}`,
+    );
+  }
+  const prepared = native.prepareBuild(nativeBuildOptions(options));
+  return {
+    get lazyScriptsModule() { return prepared.lazyScriptsModule ?? undefined; },
+    get componentAssetFiles() { return prepared.componentAssetFiles; },
+    get lazyPackFiles() { return prepared.lazyPackFiles; },
+    writeModules() { prepared.writeModules(); },
+    finish(options = {}) {
+      return prepared.finish(nativeBuildOptions(options));
+    },
+  };
 }
 
 // ── Runtime protocol API ─────────────────────────────────────────────

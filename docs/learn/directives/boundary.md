@@ -50,9 +50,12 @@ content.
 Load the coordinator before component registrations:
 
 ```typescript
+import { startRuntime } from '@microsoft/webui-framework/runtime.js';
 import '@microsoft/webui-framework/streaming.js';
 import './ntp-page.js';
 import './search-box.js';
+
+startRuntime();
 ```
 
 The coordinator must load early with `async`, or an equivalent non-blocking

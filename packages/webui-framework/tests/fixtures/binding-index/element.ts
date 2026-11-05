@@ -1,8 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+import { startRuntime } from '../../../src/runtime.js';
+import '../../../src/styles-entry.js';
 import { WebUIElement, observable } from '../../../src/index.js';
 import type { ScopeFrame } from '../../../src/element/types.js';
+
+startRuntime();
 
 export class TestBindingIndex extends WebUIElement {
   @observable record = { first: 'Ada', last: 'Lovelace', active: true, allowed: true };

@@ -5,7 +5,7 @@
  * Run one application-owned esbuild invocation with WebUI projection enabled.
  */
 import { createRequire } from "node:module";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { minifyClient } from "./minify-client.mjs";
@@ -41,8 +41,54 @@ async function loadBuildTools() {
     "./projection.js",
   );
   const { esbuildProjection } = await import(projectionEntry);
-  buildTools = { esbuild, esbuildProjection };
+  const { prepareBuild } = await import(resolveImportEntry(require, "@microsoft/webui", "."));
+  buildTools = { esbuild, esbuildProjection, prepareBuild };
   return buildTools;
+}
+
+/** Compile templates once, bundle their generated inputs, then finalize projection. */
+export async function runWebUIBuild({
+  outdir = "dist",
+  metafilePath,
+  clientOptions = {},
+  ...options
+} = {}) {
+  if (process.argv.includes("--watch")) {
+    throw new Error("runWebUIBuild is a production build; use the existing client/server watchers for development.");
+  }
+  const { prepareBuild } = await loadBuildTools();
+  const prepared = prepareBuild({
+    appDir: "src",
+    modulesOut: ".webui",
+    ...options,
+    metafile: Boolean(metafilePath),
+  });
+  prepared.writeModules();
+  const manifest = path.join(outdir, "webui-projection.json");
+  const client = await runWebUIClientBuild({
+    outdir,
+    ...clientOptions,
+    projectionManifest: manifest,
+  });
+  const result = prepared.finish({ projectionManifests: [manifest] });
+  mkdirSync(outdir, { recursive: true });
+  for (let i = 0; i < result.cssFiles.length; i += 2) {
+    writeFileSync(path.join(outdir, result.cssFiles[i]), result.cssFiles[i + 1]);
+  }
+  for (const pack of result.lazyPackFiles) {
+    const file = path.join(outdir, pack.path);
+    mkdirSync(path.dirname(file), { recursive: true });
+    if (!existsSync(file) || readFileSync(file, "utf8") !== pack.content) {
+      writeFileSync(file, pack.content);
+    }
+  }
+  if (metafilePath) writeFileSync(metafilePath, result.metafile);
+  for (const warning of result.warnings) console.warn(warning);
+  const protocol = path.join(outdir, "protocol.bin");
+  const staged = `${protocol}.${process.pid}.tmp`;
+  writeFileSync(staged, result.protocol);
+  renameSync(staged, protocol);
+  return { result, client };
 }
 
 export async function runWebUIClientBuild(options = {}) {

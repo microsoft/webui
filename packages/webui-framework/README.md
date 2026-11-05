@@ -54,6 +54,15 @@ CounterCard.define('counter-card');
 <button @click="{increment()}">Increment</button>
 ```
 
+Start the runtime once in your application entry:
+
+```typescript
+import { startRuntime } from '@microsoft/webui-framework/runtime.js';
+import './counter-card.js';
+
+startRuntime();
+```
+
 Use the component in a page:
 
 ```html
@@ -101,10 +110,14 @@ this.actionButton.focus(); // w-ref="{actionButton}" on the conditional button
 ```
 
 Call it on a connected, mounted component. It includes affected WebUI
-descendants, not unrelated future work or paint. Handle rejected completion
-requests and recheck focus intent after a wait. See
+descendants and activated lazy regions, not unrelated future work or paint.
+Handle rejected completion requests and recheck focus intent after a wait. See
 [Wait for affected rendering](https://microsoft.github.io/webui/learn/interactivity#wait-for-affected-rendering)
 for the full contract and template example.
+
+For `<if lazy>` regions, import the generated `lazy.webui.js` before
+`startRuntime()`. Use `$prefetch(path?)` to warm a region before activation.
+See [Lazy UI](https://microsoft.github.io/webui/learn/lazy).
 
 ## Application guides
 

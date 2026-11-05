@@ -3,6 +3,9 @@
 
 import { FLUSH_UPDATES } from '../../../src/render-scheduler.js';
 import { observable, WebUIElement } from '../../../src/index.js';
+import { startRuntime } from '../../../src/runtime.js';
+
+startRuntime();
 
 export interface WhitespaceItem {
   id: string;

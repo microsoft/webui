@@ -6,6 +6,8 @@ import type { ComponentStyles } from './element/styles.js';
 
 /** Boundary-local data carried by one streamed hydration checkpoint. */
 export interface BoundaryBootstrap {
+  buildId?: string;
+  styleInventory?: string;
   /** Compiler declaration that produced this runtime boundary occurrence. */
   declarationId: number;
   /**
@@ -56,6 +58,8 @@ export type BoundaryRecordKind =
  * the record target is a runtime SpanInstanceId in a separate kind namespace.
  */
 export interface SpanCompletionPayload {
+  buildId?: string;
+  styleInventory?: string;
   state?: Record<string, unknown>;
   /** Exact prior range-record sequence whose resolved state is the delta base. */
   stateRef?: number;

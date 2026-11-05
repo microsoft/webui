@@ -1,0 +1,24 @@
+<div class="suggest" data-ui="suggest" role="listbox" aria-label="Search suggestions">
+  <p class="suggest-head" data-ready>Suggestions for &#8220;{{query}}&#8221;</p>
+  <ul class="suggest-list">
+    <for each="item in suggestions">
+      <li role="option" class="suggestion" data-text="{{item.text}}" @click="{pickSuggestion(e)}">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5" /><path d="m13 13 4 4" /></svg>
+        <span><strong>{{item.prefix}}</strong>{{item.rest}}</span>
+      </li>
+    </for>
+  </ul>
+  <p class="suggest-head">Trending now</p>
+  <ul class="trending">
+    <li role="option"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17l6-6 4 4 8-8 M15 7h6v6" /></svg><span>Northern lights forecast this weekend</span></li>
+    <li role="option"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17l6-6 4 4 8-8 M15 7h6v6" /></svg><span>World Series game 5 highlights</span></li>
+    <li role="option"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17l6-6 4 4 8-8 M15 7h6v6" /></svg><span>Daylight saving time ends</span></li>
+    <li role="option"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17l6-6 4 4 8-8 M15 7h6v6" /></svg><span>Best pumpkin soup recipes</span></li>
+    <li role="option"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17l6-6 4 4 8-8 M15 7h6v6" /></svg><span>Mortgage rates today</span></li>
+    <li role="option"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17l6-6 4 4 8-8 M15 7h6v6" /></svg><span>Seattle weather radar</span></li>
+  </ul>
+  <footer class="suggest-foot">
+    <a href="https://www.bing.com/profile/history">Manage search history</a>
+    <button type="button" class="text-button" @click="{closeSuggest()}">Turn off suggestions</button>
+  </footer>
+</div>

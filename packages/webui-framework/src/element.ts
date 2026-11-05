@@ -48,10 +48,29 @@ import type {
 } from './template.js';
 import type {
   ScopeFrame,
+  TemplateEventListener,
   TemplateInstance,
 } from './element/types.js';
 
 type EventHandler = (...args: unknown[]) => unknown;
+
+interface BoundTemplateEvent extends TemplateEventListener {
+  readonly owner: WebUIElement;
+  readonly method: EventHandler;
+  readonly args: CompiledEventArgs;
+  readonly scope: ScopeFrame | undefined;
+}
+
+function resolveEventArg(owner: TemplateElement, arg: CompiledEventArg, event: Event, scope?: ScopeFrame): unknown {
+  switch (arg[0]) {
+    case 'e': return event;
+    case 'p': return owner.$resolveValue(arg[1], scope);
+    case 's': return arg[1];
+    case 'n': return arg[1];
+    case 'b': return !!arg[1];
+    case 'z': return null;
+  }
+}
 
 /**
  * Per-instance escape hatches. `w-render="eager"` disables the complete
@@ -68,13 +87,8 @@ const AUTHORED_PENDING = 2;
 const AUTHORED_FLUSHING = 4;
 
 // ── Development build flag ──────────────────────────────────────
-// See the identical `__WEBUI_DEV__` note in `template-element.ts`: a
-// bundler-folded compile-time constant, declared and consumed module-locally
-// so a production build (`--define:__WEBUI_DEV__=false`) can constant-fold
-// `DEV` to `false` and dead-code-eliminate `warnMissingLazyHydrationEntry`'s
-// body, while `tsc`, unit tests, and `webui-press serve` keep it active.
+// Guard the warning at its call site so production bundlers can remove it.
 declare const __WEBUI_DEV__: boolean;
-const DEV: boolean = typeof __WEBUI_DEV__ === 'undefined' || __WEBUI_DEV__;
 
 let warnedMissingLazyHydrationEntry = false;
 
@@ -86,7 +100,7 @@ let warnedMissingLazyHydrationEntry = false;
  * documented, expected behavior on older browsers, not a misconfiguration.
  */
 function warnMissingLazyHydrationEntry(tag: string, policy: 1 | 2): void {
-  if (!DEV || warnedMissingLazyHydrationEntry) return;
+  if (warnedMissingLazyHydrationEntry) return;
   warnedMissingLazyHydrationEntry = true;
   const directive = policy === LAZY_HYDRATION_CONTENT_VISIBILITY
     ? 'w-render="lazy"'
@@ -300,7 +314,9 @@ export class WebUIElement extends TemplateElement {
     ) return undefined;
     if (this.getAttribute(HYDRATE_ATTR) === HYDRATE_EAGER) return undefined;
     if (!isLazyHydrationCoordinatorInstalled()) {
-      warnMissingLazyHydrationEntry(this.tagName, policy);
+      if (typeof __WEBUI_DEV__ === 'undefined' || __WEBUI_DEV__) {
+        warnMissingLazyHydrationEntry(this.tagName, policy);
+      }
       return undefined;
     }
     if (!supportsLazyHydration()) return undefined;
@@ -361,145 +377,113 @@ export class WebUIElement extends TemplateElement {
     resolver: (root: Node | null, path: TemplateNodeIndex) => Node | null,
     scope?: ScopeFrame,
   ): void {
-    this.$wireEvents(instance, root, meta, resolver, scope);
-    if ((meta as TemplateMeta).re) this.$wireRoot(instance, (meta as TemplateMeta).re!);
-    if (root) this.$wireRefs(root);
-  }
-
-  /**
-   * Wire element events.
-   *
-   * Listeners attach to the bound element, never the render root.
-   * `$wireEvents` runs once per block instance, so delegating would stack one
-   * listener per block on the same node and fire all of them per dispatch — and
-   * would never see non-bubbling events such as `focus`.
-   */
-  private $wireEvents(
-    instance: TemplateInstance,
-    root: Node | null,
-    meta: TemplateBlockMeta,
-    resolver: (root: Node | null, path: TemplateNodeIndex) => Node | null,
-    scope?: ScopeFrame,
-  ): void {
     const groups = meta.eg;
-    if (!groups) return;
-    for (let i = 0; i < groups.length; i++) {
-      const [eventName, bindings] = groups[i];
-      for (let j = 0; j < bindings.length; j++) {
-        const [handlerName, args, target] = bindings[j];
-        const el = resolver(root, target);
-        if (el && el.nodeType === 1) {
-          this.$addEvent(instance, el, eventName, handlerName, args, scope);
+    const rootEvents = (meta as TemplateMeta).re;
+    let capacity = rootEvents?.length ?? 0;
+    if (groups) {
+      for (let i = 0; i < groups.length; i++) capacity += groups[i][1].length;
+    }
+    if (capacity > 0) {
+      const listeners = new Array<TemplateEventListener>(capacity);
+      let count = 0;
+      if (groups) {
+        for (let i = 0; i < groups.length; i++) {
+          const [eventName, bindings] = groups[i];
+          for (let j = 0; j < bindings.length; j++) {
+            const [handlerName, args, target] = bindings[j];
+            const el = resolver(root, target);
+            if (el && el.nodeType === 1) {
+              const listener = this.$addEvent(el, eventName, handlerName, args, scope);
+              if (listener) listeners[count++] = listener;
+            }
+          }
         }
       }
+      // Only composed inner events reach these host listeners.
+      if (rootEvents) {
+        for (let i = 0; i < rootEvents.length; i++) {
+          const listener = this.$addEvent(this, rootEvents[i][0], rootEvents[i][1], rootEvents[i][2]);
+          if (listener) listeners[count++] = listener;
+        }
+      }
+      listeners.length = count;
+      instance.listeners = listeners;
     }
-  }
-
-  /**
-   * Wire root-level events from the `<template>` wrapper onto the host element.
-   *
-   * The host observes events dispatched on the host itself (which never enter
-   * the shadow tree) plus every `composed` event on its way out of it.
-   * Non-composed events (`change`, `submit`, `select`, media) stop at the
-   * shadow root by design and are bound per element instead. `event.target` is
-   * retargeted to the host for inner events; use `event.composedPath()[0]`.
-   */
-  private $wireRoot(instance: TemplateInstance, re: [string, string, CompiledEventArgs][]): void {
-    for (let i = 0; i < re.length; i++) {
-      this.$addEvent(instance, this, re[i][0], re[i][1], re[i][2], undefined);
+    const refs = meta.rf;
+    if (!refs) return;
+    const owner = this as Record<string, unknown>;
+    for (let i = 0; i < refs.length; i++) {
+      const [name, target] = refs[i];
+      const node = resolver(root, target);
+      if (!node || node.nodeType !== 1) continue;
+      owner[name] = node;
+      // Component roots retain their DOM; only removable views release refs.
+      if (!(meta as TemplateMeta).v || meta.f) {
+        (instance.cleanups ??= []).push(removeNodes => {
+          if (removeNodes && owner[name] === node) owner[name] = undefined;
+        });
+      }
     }
   }
 
   /** Attach a direct listener for an event binding. */
   private $addEvent(
-    instance: TemplateInstance,
     target: EventTarget,
     eventName: string,
     handlerName: string,
     args: CompiledEventArgs,
     scope?: ScopeFrame,
-  ): void {
+  ): BoundTemplateEvent | undefined {
     const method = (this as Record<string, unknown>)[handlerName];
     if (typeof method !== 'function') return;
-    const listener = (event: Event): void => this.$callEventHandler(method as EventHandler, args, event, scope);
+    const listener: BoundTemplateEvent = {
+      owner: this, target, eventName, method: method as EventHandler, args, scope,
+      handleEvent: handleTemplateEvent,
+    };
     target.addEventListener(eventName, listener);
-    addCleanup(instance, () => target.removeEventListener(eventName, listener));
-  }
-
-  private $callEventHandler(
-    method: EventHandler,
-    args: CompiledEventArgs,
-    event: Event,
-    scope?: ScopeFrame,
-  ): void {
-    switch (args.length) {
-      case 0:
-        method.call(this);
-        return;
-      case 1:
-        method.call(this, this.$resolveEventArg(args[0], event, scope));
-        return;
-      case 2:
-        method.call(
-          this,
-          this.$resolveEventArg(args[0], event, scope),
-          this.$resolveEventArg(args[1], event, scope),
-        );
-        return;
-      case 3:
-        method.call(
-          this,
-          this.$resolveEventArg(args[0], event, scope),
-          this.$resolveEventArg(args[1], event, scope),
-          this.$resolveEventArg(args[2], event, scope),
-        );
-        return;
-      case 4:
-        method.call(
-          this,
-          this.$resolveEventArg(args[0], event, scope),
-          this.$resolveEventArg(args[1], event, scope),
-          this.$resolveEventArg(args[2], event, scope),
-          this.$resolveEventArg(args[3], event, scope),
-        );
-        return;
-      default:
-        method.apply(this, this.$resolveEventArgs(args, event, scope));
-    }
-  }
-
-  private $resolveEventArgs(args: CompiledEventArgs, event: Event, scope?: ScopeFrame): unknown[] {
-    const resolved: unknown[] = [];
-    for (let i = 0; i < args.length; i++) {
-      resolved.push(this.$resolveEventArg(args[i], event, scope));
-    }
-    return resolved;
-  }
-
-  private $resolveEventArg(arg: CompiledEventArg, event: Event, scope?: ScopeFrame): unknown {
-    switch (arg[0]) {
-      case 'e': return event;
-      case 'p': return this.$resolveValue(arg[1], scope);
-      case 's': return arg[1];
-      case 'n': return arg[1];
-      case 'b': return !!arg[1];
-      case 'z': return null;
-    }
-  }
-
-  /** Find w-ref attributes and assign to component properties. */
-  private $wireRefs(root: Node): void {
-    if (root.nodeType !== 1 && root.nodeType !== 11) return;
-    const refs = (root as Element).querySelectorAll('[w-ref]');
-    for (let i = 0; i < refs.length; i++) {
-      const raw = refs[i].getAttribute('w-ref');
-      if (!raw || raw.charCodeAt(0) !== 123) continue;
-      const name = raw.slice(1, -1);
-      if (name) (this as Record<string, unknown>)[name] = refs[i];
-    }
+    return listener;
   }
 }
 
-function addCleanup(instance: TemplateInstance, cleanup: () => void): void {
-  (instance.cleanups ??= []).push(cleanup);
+function handleTemplateEvent(this: BoundTemplateEvent, event: Event): void {
+  const { owner, method, args, scope } = this;
+  switch (args.length) {
+    case 0:
+      method.call(owner);
+      return;
+    case 1:
+      method.call(owner, resolveEventArg(owner, args[0], event, scope));
+      return;
+    case 2:
+      method.call(
+        owner,
+        resolveEventArg(owner, args[0], event, scope),
+        resolveEventArg(owner, args[1], event, scope),
+      );
+      return;
+    case 3:
+      method.call(
+        owner,
+        resolveEventArg(owner, args[0], event, scope),
+        resolveEventArg(owner, args[1], event, scope),
+        resolveEventArg(owner, args[2], event, scope),
+      );
+      return;
+    case 4:
+      method.call(
+        owner,
+        resolveEventArg(owner, args[0], event, scope),
+        resolveEventArg(owner, args[1], event, scope),
+        resolveEventArg(owner, args[2], event, scope),
+        resolveEventArg(owner, args[3], event, scope),
+      );
+      return;
+    default: {
+      const values = new Array<unknown>(args.length);
+      for (let i = 0; i < args.length; i++) {
+        values[i] = resolveEventArg(owner, args[i], event, scope);
+      }
+      method.apply(owner, values);
+    }
+  }
 }

@@ -2,28 +2,34 @@
 // Licensed under the MIT license.
 
 import {
+  enqueueRender,
   finishRender,
   observeRender,
   pendingRenders,
   RENDER,
   RENDER_PENDING,
+  type RenderTarget,
 } from './render-scheduler.js';
 
-const DEPTH = Symbol('render.depth');
-
 interface WorkElement extends Element {
-  [DEPTH]?: number;
   [RENDER_PENDING]?: number;
 }
 
+type Work = WorkElement | RenderTask;
+
 interface Completion {
   readonly root: Element;
-  readonly pending: Set<WorkElement>;
+  readonly pending: Set<Work>;
   readonly observers: Set<Completion>;
   readonly resolve: () => void;
   readonly reject: (error: unknown) => void;
+  pendingTasks: number;
   stagedBlocked?: Set<BlockedTarget>;
   open: boolean;
+}
+
+export interface RenderTask {
+  readonly element: Element;
 }
 
 class BlockedTarget extends WeakRef<Element> {
@@ -40,16 +46,19 @@ const gated = new Map<WorkElement, number>();
 let active: Set<Completion> | undefined;
 const completions = new Set<Completion>();
 const opening = new Set<Completion>();
-const workByElement = new WeakMap<Element, Set<Completion>>();
-const expectedRemovals = new WeakMap<Element, Set<Completion>>();
+const observersByWork = new WeakMap<Work, Set<Completion>>();
+const executing = new WeakMap<WorkElement, number>();
+const expectedRemovals = new WeakMap<Work, Set<Completion>>();
 let removing: readonly Node[] | undefined;
 const blockedByElement = new WeakMap<Element, BlockedTarget>();
 const blocked = new Set<BlockedTarget>();
+let pendingTasks: Map<Element, Set<RenderTask>> | undefined;
+let retryTasks: ((root: Element) => void) | undefined;
 const finalizedBlocked = new FinalizationRegistry<BlockedTarget>(
   reference => { blocked.delete(reference); },
 );
 
-function inScope(element: Element, root: Node): boolean {
+export function inScope(element: Element, root: Node): boolean {
   let node: Node | null = element;
   while (node) {
     if (node === root) return true;
@@ -72,13 +81,13 @@ function release(completion: Completion, error?: { readonly value: unknown }): v
   observingRender = completions.size !== 0;
   if (!observingRender) observeRender(undefined);
   opening.delete(completion);
-  for (const element of completion.pending) {
-    const waiters = workByElement.get(element);
-    if (waiters?.size === 1) workByElement.delete(element);
+  for (const work of completion.pending) {
+    const waiters = observersByWork.get(work);
+    if (waiters?.size === 1) observersByWork.delete(work);
     else waiters?.delete(completion);
-    const expected = expectedRemovals.get(element);
+    const expected = expectedRemovals.get(work);
     if (expected?.delete(completion) && !expected.size) {
-      expectedRemovals.delete(element);
+      expectedRemovals.delete(work);
     }
   }
   completion.pending.clear();
@@ -102,29 +111,115 @@ function settle(completion: Completion): void {
   release(completion);
 }
 
-function include(element: WorkElement, completion: Completion): void {
-  if (completion.pending.has(element) ||
+function include(element: WorkElement, completion: Completion, work: Work = element): void {
+  if (completion.pending.has(work) ||
       !completions.has(completion) || !inScope(element, completion.root)) return;
-  let work = workByElement.get(element);
-  if (!work) {
-    work = completion.observers;
-    workByElement.set(element, work);
-  } else if (!work.has(completion)) {
+  let observers = observersByWork.get(work);
+  if (!observers) {
+    observers = completion.observers;
+    observersByWork.set(work, observers);
+  } else if (!observers.has(completion)) {
     // A single observer is shared across its jobs; only overlaps need a copy.
-    if (work.size === 1) {
-      work = new Set(work);
-      workByElement.set(element, work);
+    if (observers.size === 1) {
+      observers = new Set(observers);
+      observersByWork.set(work, observers);
     }
-    work.add(completion);
+    observers.add(completion);
   }
-  completion.pending.add(element);
+  completion.pending.add(work);
+  if (work !== element) completion.pendingTasks++;
 }
 
-function enroll(element: WorkElement): void {
-  if (active) {
-    for (const completion of active) include(element, completion);
+function enroll(element: WorkElement, work?: Work): void {
+  const current = active;
+  if (current) {
+    for (const completion of current) include(element, completion, work);
   }
-  for (const completion of opening) include(element, completion);
+  for (const completion of opening) {
+    if (!current?.has(completion)) include(element, completion, work);
+  }
+}
+
+export function queueRenderTask(task: RenderTask): void {
+  const pending = pendingTasks ??= new Map();
+  let tasks = pending.get(task.element);
+  if (!tasks) pending.set(task.element, tasks = new Set());
+  tasks.add(task);
+  if (!observingRender) return;
+  enroll(task.element, task);
+}
+
+export function startRenderTask(element: Element): RenderTask {
+  const task: RenderTask = { element };
+  queueRenderTask(task);
+  return task;
+}
+
+function unqueueTask(task: RenderTask): void {
+  const tasks = pendingTasks?.get(task.element);
+  if (!tasks?.delete(task)) return;
+  if (!tasks.size) pendingTasks?.delete(task.element);
+}
+
+export function enterRenderTask(task: RenderTask): Set<Completion> | undefined {
+  const previous = active;
+  if (!observingRender || !pendingTasks?.get(task.element)?.has(task)) return previous;
+  const observers = observersByWork.get(task);
+  if (observers) {
+    for (const completion of observers) {
+      if (!task.element.isConnected || !inScope(task.element, completion.root)) {
+        abortRenderScope(completion);
+      }
+    }
+  }
+  active = observersByWork.get(task);
+  return previous;
+}
+
+export function leaveRenderTask(previous: Set<Completion> | undefined): void {
+  active = previous;
+}
+
+export function associateRenderTask(task: RenderTask, element: WorkElement): boolean {
+  if (!observingRender) return false;
+  const observers = observersByWork.get(task);
+  if (!observers) return false;
+  let associated = false;
+  for (const completion of observers) {
+    include(element, completion);
+    if (completion.pending.has(element)) associated = true;
+  }
+  return associated;
+}
+
+export function finishRenderTask(task: RenderTask, error?: { readonly value: unknown }): void {
+  unqueueTask(task);
+  const observers = observersByWork.get(task);
+  if (!observers) return;
+  observersByWork.delete(task);
+  for (const completion of observers) {
+    completion.pending.delete(task);
+    completion.pendingTasks--;
+    if (error) release(completion, error);
+    else settle(completion);
+  }
+}
+
+export function cancelRenderTask(task: RenderTask): void {
+  unqueueTask(task);
+  const observers = observersByWork.get(task);
+  if (!observers) return;
+  observersByWork.delete(task);
+  for (const completion of observers) {
+    completion.pending.delete(task);
+    completion.pendingTasks--;
+    if (active?.has(completion)) settle(completion);
+    else abortRenderScope(completion);
+  }
+}
+
+export function installRenderTaskRetry(retry: (root: Element) => void): void {
+  retryTasks = retry;
 }
 
 export function queueRenderWork(
@@ -146,13 +241,25 @@ function abortRenderScope(completion: Completion): void {
   ) });
 }
 
+function blockCompletion(
+  completion: Completion,
+  state: BlockedTarget,
+  element: Element,
+): void {
+  if (completion.pendingTasks) {
+    (completion.stagedBlocked ??= new Set()).add(state);
+  } else {
+    release(completion, { value: invalidState(element, state.reason) });
+  }
+}
+
 function detach(element: WorkElement): void {
   if (!observingRender) return;
-  const work = workByElement.get(element);
+  const work = observersByWork.get(element);
   const expected = expectedRemovals.get(element);
   expectedRemovals.delete(element);
   if (!work) return;
-  workByElement.delete(element);
+  observersByWork.delete(element);
   for (const completion of work) {
     completion.pending.delete(element);
     if ((!element.isConnected || !inScope(element, completion.root)) &&
@@ -168,7 +275,7 @@ export function finishRenderWork(element: WorkElement, kind: number): void {
   const remaining = (gated.get(element) ?? 0) & ~kind;
   if (remaining) gated.set(element, remaining);
   else gated.delete(element);
-  if (!remaining && !element[RENDER_PENDING] && !element[DEPTH]) detach(element);
+  if (!remaining && !element[RENDER_PENDING] && !executing.has(element)) detach(element);
 }
 
 export function enterRenderWork(
@@ -176,25 +283,46 @@ export function enterRenderWork(
   queued = false,
 ): Set<Completion> | undefined {
   const previous = active;
+  const depth = executing.get(element) ?? 0;
   if (!observingRender) {
-    if (element[DEPTH]) element[DEPTH]++;
+    if (depth) executing.set(element, depth + 1);
     return previous;
   }
-  element[DEPTH] = (element[DEPTH] ?? 0) + 1;
-  // Queued jobs enrolled on writes and initial boundary discovery already.
-  if (!queued) enroll(element);
-  const work = workByElement.get(element);
-  active = work;
-  if (work) {
-    for (const completion of work) {
-      if (!element.isConnected || !inScope(element, completion.root)) {
-        if (!expectedRemovals.get(element)?.has(completion)) {
-          abortRenderScope(completion);
+  executing.set(element, depth + 1);
+  try {
+    const work = observersByWork.get(element);
+    if (work) {
+      for (const completion of work) {
+        if (!element.isConnected || !inScope(element, completion.root)) {
+          if (!expectedRemovals.get(element)?.has(completion)) {
+            abortRenderScope(completion);
+          }
         }
       }
     }
+    // Queued jobs enrolled on writes and initial boundary discovery already.
+    if (!queued) enroll(element);
+    active = observersByWork.get(element);
+    return previous;
+  } catch (error) {
+    unwindRenderWork(element);
+    const work = observersByWork.get(element);
+    if (work) {
+      for (const completion of work) release(completion, { value: error });
+    }
+    throw error;
   }
-  return previous;
+}
+
+function unwindRenderWork(element: WorkElement): boolean {
+  const depth = executing.get(element);
+  if (!depth) return false;
+  if (depth > 1) {
+    executing.set(element, depth - 1);
+    return false;
+  }
+  executing.delete(element);
+  return true;
 }
 
 export function leaveRenderWork(
@@ -202,10 +330,9 @@ export function leaveRenderWork(
   previous: Set<Completion> | undefined,
 ): void {
   active = previous;
-  const depth = element[DEPTH];
-  if (!depth) return;
-  element[DEPTH] = depth - 1;
-  if (depth === 1 && !element[RENDER_PENDING] && !gated.has(element)) detach(element);
+  if (unwindRenderWork(element) && !element[RENDER_PENDING] && !gated.has(element)) {
+    detach(element);
+  }
 }
 
 export function invokeRenderCallback(
@@ -227,7 +354,7 @@ export function invokeRenderCallback(
 }
 
 export function failRenderWork(element: Element, error: unknown): void {
-  const work = workByElement.get(element);
+  const work = observersByWork.get(element);
   if (work) {
     for (const completion of work) release(completion, { value: error });
   }
@@ -249,13 +376,13 @@ export function blockRenderWork(element: Element, reason: string): void {
   if (!observingRender) return;
   for (const completion of opening) {
     if (inScope(element, completion.root)) {
-      release(completion, { value: invalidState(element, reason) });
+      blockCompletion(completion, state, element);
     }
   }
   if (active) {
     for (const completion of active) {
       if (inScope(element, completion.root)) {
-        release(completion, { value: invalidState(element, reason) });
+        blockCompletion(completion, state, element);
       } else {
         (completion.stagedBlocked ??= new Set()).add(state);
       }
@@ -280,8 +407,9 @@ export function disconnectRenderWork(element: Element): void {
       ) });
     }
   }
-  const work = workByElement.get(element);
-  if (work && active && removing) {
+  const work = observersByWork.get(element);
+  const tasks = pendingTasks?.get(element);
+  if ((work || tasks) && active && removing) {
     let expectedTarget = false;
     for (const root of removing) {
       if (inScope(element, root)) {
@@ -290,14 +418,30 @@ export function disconnectRenderWork(element: Element): void {
       }
     }
     if (!expectedTarget) return;
-    for (const completion of work) {
-      if (active.has(completion)) {
-        let expected = expectedRemovals.get(element);
-        if (!expected) {
-          expected = new Set();
-          expectedRemovals.set(element, expected);
+    if (work) {
+      for (const completion of work) {
+        if (active.has(completion)) {
+          let expected = expectedRemovals.get(element);
+          if (!expected) {
+            expected = new Set();
+            expectedRemovals.set(element, expected);
+          }
+          expected.add(completion);
         }
-        expected.add(completion);
+      }
+    }
+    if (tasks) {
+      for (const task of tasks) {
+        const observers = observersByWork.get(task);
+        if (!observers) continue;
+        for (const completion of observers) {
+          if (!active.has(completion)) continue;
+          if (observers.size === 1) observersByWork.delete(task);
+          else observers.delete(completion);
+          completion.pending.delete(task);
+          completion.pendingTasks--;
+          settle(completion);
+        }
       }
     }
   }
@@ -305,7 +449,11 @@ export function disconnectRenderWork(element: Element): void {
 
 export function destroyRenderWork(element: WorkElement): void {
   unblockRenderWork(element);
-  const work = workByElement.get(element);
+  const tasks = pendingTasks?.get(element);
+  if (tasks) {
+    for (const task of tasks) cancelRenderTask(task);
+  }
+  const work = observersByWork.get(element);
   if (work) {
     for (const completion of work) {
       if (!expectedRemovals.get(element)?.has(completion)) {
@@ -316,7 +464,7 @@ export function destroyRenderWork(element: WorkElement): void {
       }
     }
   }
-  element[DEPTH] = 0;
+  executing.delete(element);
   gated.delete(element);
   finishRender(element);
   detach(element);
@@ -350,8 +498,15 @@ const renderObserver = {
     if (target.isConnected) expectedRemovals.delete(target);
     enroll(target);
   },
-  render(target: Element & { [RENDER](): void }): void {
-    const previous = enterRenderWork(target, true);
+  render(target: RenderTarget): void {
+    let previous: Set<Completion> | undefined;
+    try {
+      previous = enterRenderWork(target, true);
+    } catch (error) {
+      finishRender(target);
+      enqueueRender(target);
+      throw error;
+    }
     try {
       target[RENDER]();
     } finally {
@@ -359,7 +514,7 @@ const renderObserver = {
     }
   },
   finished(target: WorkElement): void {
-    if (!target[DEPTH] && !gated.has(target)) detach(target);
+    if (!executing.has(target) && !gated.has(target)) detach(target);
   },
 };
 
@@ -372,6 +527,7 @@ export function whenRendered(element: Element, unavailable?: string): Promise<vo
       observers: new Set(),
       resolve,
       reject,
+      pendingTasks: 0,
       open: true,
     };
     completion.observers.add(completion);
@@ -379,25 +535,35 @@ export function whenRendered(element: Element, unavailable?: string): Promise<vo
     observingRender = true;
     observeRender(renderObserver);
     opening.add(completion);
-    for (const node of pendingRenders) {
-      if (node) include(node, completion);
-    }
-    for (const node of gated.keys()) include(node, completion);
-    for (const reference of blocked) {
-      const target = reference.deref();
-      if (!target) {
-        blocked.delete(reference);
-        continue;
+    try {
+      retryTasks?.(element);
+      for (const node of pendingRenders) {
+        if (node) include(node, completion);
       }
-      if (inScope(target, element)) {
-        release(completion, { value: invalidState(target, reference.reason) });
-        return;
+      for (const node of gated.keys()) include(node, completion);
+      if (pendingTasks) {
+        for (const tasks of pendingTasks.values()) {
+          for (const task of tasks) include(task.element, completion, task);
+        }
       }
+      for (const reference of blocked) {
+        const target = reference.deref();
+        if (!target) {
+          blocked.delete(reference);
+          continue;
+        }
+        if (inScope(target, element)) {
+          blockCompletion(completion, reference, target);
+          if (!completions.has(completion)) return;
+        }
+      }
+      queueMicrotask(() => {
+        completion.open = false;
+        opening.delete(completion);
+        settle(completion);
+      });
+    } catch (error) {
+      release(completion, { value: error });
     }
-    queueMicrotask(() => {
-      completion.open = false;
-      opening.delete(completion);
-      settle(completion);
-    });
   });
 }

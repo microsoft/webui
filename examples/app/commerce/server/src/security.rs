@@ -40,6 +40,8 @@ pub(crate) fn csp_header(nonce: &str) -> String {
     // `style-src`/`style-src-elem`. Keep `'unsafe-inline'` for the
     // small number of legitimate inline `<style>` tags emitted by the
     // renderer; tighten with hashes if/when those are eliminated.
+    // The application script and all modulepreloads carry this nonce so their
+    // imported module graph retains authorization without allowing data: scripts.
     format!(
         "default-src 'self'; \
          script-src 'self' 'nonce-{nonce}'; \

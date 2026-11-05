@@ -3,6 +3,7 @@
 
 import '../../../src/lazy-hydration-entry.js';
 import { WebUIElement, attr, observable } from '../../../src/index.js';
+import { startRuntime } from '../../../src/runtime.js';
 
 class CompletionRoot extends WebUIElement {
   @observable value = '0';
@@ -66,3 +67,4 @@ CompletionRoot.define('test-completion-root');
 CompletionChild.define('test-completion-child');
 CompletionLeaf.define('test-completion-leaf');
 CompletionLazy.define('test-completion-lazy');
+startRuntime();

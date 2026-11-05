@@ -35,5 +35,5 @@ export function templateRootForAttribute(meta: TemplateMeta, attrName: string): 
 
 /** Return true when the compiler owns a dormant TemplateElement host. */
 export function templateNeedsStaticHost(meta: TemplateMeta): boolean {
-  return !!meta.th;
+  return !meta.f && !!meta.th;
 }

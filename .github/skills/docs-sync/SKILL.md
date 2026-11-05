@@ -25,7 +25,7 @@ Use this skill whenever a change touches user-visible behavior, APIs, or contrac
 | Public API (Rust crate, npm package) | Relevant handler/integration docs; `DESIGN.md` only if an architectural boundary changes |
 | Error variants or error messages | Defining source/tests and relevant public troubleshooting docs; `DESIGN.md` only if error-handling architecture changes |
 | `@microsoft/webui-framework` decorators or API | `docs/learn/interactivity.md` + `docs/ai.md` + `packages/webui-framework/README.md` |
-| `@microsoft/webui-router` behavior | `docs/build/routing.md` + `packages/webui-router/README.md` |
+| `@microsoft/webui-delivery` behavior | `docs/build/routing.md` + `packages/webui-delivery/README.md` |
 
 ## DESIGN.md rules
 

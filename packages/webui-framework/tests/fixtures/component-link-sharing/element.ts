@@ -1,12 +1,14 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+import { startRuntime } from '../../../src/runtime.js';
 import {
   registerComponentStyles,
-  registerTemplateData,
-  WebUIElement,
   type ComponentStyles,
-} from '../../../src/index.js';
+} from '../../../src/styles-entry.js';
+import { registerTemplateData, WebUIElement } from '../../../src/index.js';
+
+startRuntime();
 
 const STYLESHEETS: Record<string, string> = {
   'test-shared-link-card': '/component-link-sharing/shared.css',
@@ -43,10 +45,11 @@ class TestImportLinkCard extends WebUIElement {}
 class TestStyledLinkCard extends WebUIElement {}
 
 registerTemplateData({
-  'test-shared-link-card': { h: '<p class="label">Shared</p>', sd: 1 },
-  'test-cold-link-card': { h: '<p class="label">Cold</p>', sd: 1 },
-  'test-import-link-card': { h: '<p class="label">Import</p>', sd: 1 },
+  'test-shared-link-card': { v: 3, h: '<p class="label">Shared</p>', sd: 1 },
+  'test-cold-link-card': { v: 3, h: '<p class="label">Cold</p>', sd: 1 },
+  'test-import-link-card': { v: 3, h: '<p class="label">Import</p>', sd: 1 },
   'test-styled-link-card': {
+    v: 3,
     h: '<style>.label { font-weight: 700; }</style><p class="label">Styled</p>',
     sd: 1,
   },

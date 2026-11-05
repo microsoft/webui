@@ -6,6 +6,7 @@
 //! This module handles parsing WebUI-specific directives like <for>, <if>, etc.
 mod asset_filename;
 mod comment_policy;
+pub mod component_modules;
 mod component_policy;
 mod component_registry;
 mod condition_parser;
@@ -17,6 +18,7 @@ mod diagnostic;
 mod error;
 mod handlebars_parser;
 mod html_parser;
+mod lazy;
 mod outlet_warnings;
 pub mod plugin;
 mod route_parser;
@@ -322,14 +324,10 @@ impl ParserOptions {
         css_strategy: CssStrategy,
         dom_strategy: DomStrategy,
         css_file_name_template: &str,
-        css_public_base: Option<&str>,
         legal_comments: LegalComments,
     ) -> Result<Self> {
         let css_link_options = if css_strategy == CssStrategy::Link {
-            CssLinkOptions::try_new(
-                css_file_name_template.to_string(),
-                css_public_base.map(std::string::ToString::to_string),
-            )?
+            CssLinkOptions::try_new(css_file_name_template.to_string())?
         } else {
             CssLinkOptions::default()
         };
@@ -768,6 +766,7 @@ enum ParseOp<'a> {
         parent: ParseContext,
         condition: ConditionExpr,
         fragment_id: String,
+        lazy: bool,
     },
 }
 
@@ -845,6 +844,7 @@ pub struct HtmlParser {
 
     /// Next protocol-wide compile-time boundary declaration identity.
     next_boundary_declaration_id: u32,
+    lazy_ordinal: usize,
 
     /// Authored boundary names keyed by their owning entry/component template.
     boundary_names_by_owner: HashMap<String, HashSet<String>>,
@@ -1562,6 +1562,7 @@ impl HtmlParser {
             named_for_loops: NamedForLoops::default(),
             named_for_fragment_ids: HashSet::new(),
             next_boundary_declaration_id: 0,
+            lazy_ordinal: 0,
             boundary_names_by_owner: HashMap::new(),
             in_boundary: false,
             boundary_ancestor_depth: 0,
@@ -2227,7 +2228,9 @@ impl HtmlParser {
     pub fn take_plugin_artifacts(&mut self) -> Result<ParserPluginArtifacts> {
         self.plugin
             .take()
-            .map_or(Ok(ParserPluginArtifacts::None), |plugin| plugin.finish())
+            .map_or(Ok(ParserPluginArtifacts::None), |plugin| {
+                plugin.finish_with_fragments(&self.fragment_records)
+            })
     }
 
     /// Take the accumulated CSS tokens as a sorted, deduplicated `Vec`.
@@ -2487,7 +2490,9 @@ impl HtmlParser {
             .entry(fragment_key.clone())
             .or_insert(owner_index);
 
+        let previous_lazy_ordinal = std::mem::replace(&mut self.lazy_ordinal, 0);
         let mut result = self.parse_inner(fragment_id, html_content);
+        self.lazy_ordinal = previous_lazy_ordinal;
         if is_token_root && result.is_ok() {
             result = self.finalize_boundary_metadata();
             if result.is_ok() {
@@ -2564,9 +2569,14 @@ impl HtmlParser {
         condition: ConditionExpr,
         fragment_id: String,
         fragments: &mut Vec<WebUIFragment>,
+        lazy: bool,
     ) {
         self.flush_raw_buffer(fragments);
-        fragments.push(WebUIFragment::if_cond(condition, fragment_id));
+        fragments.push(if lazy {
+            WebUIFragment::lazy_if(condition, fragment_id)
+        } else {
+            WebUIFragment::if_cond(condition, fragment_id)
+        });
     }
 
     /// Add a non-raw fragment, flushing the raw buffer first if needed
@@ -2856,6 +2866,7 @@ impl HtmlParser {
                     parent,
                     condition,
                     fragment_id,
+                    lazy,
                 } => {
                     self.flush_raw_buffer(fragments);
                     let if_fragment = std::mem::take(fragments);
@@ -2869,7 +2880,7 @@ impl HtmlParser {
                             contains_boundary: false,
                         },
                     );
-                    self.add_if_fragment(condition, fragment_id, fragments);
+                    self.add_if_fragment(condition, fragment_id, fragments, lazy);
                 }
             }
         }
@@ -3353,6 +3364,12 @@ impl HtmlParser {
         depth: usize,
         ops: &mut Vec<ParseOp<'a>>,
     ) -> Result<()> {
+        if let Some(error) = lazy::if_attribute_error(&element.tag) {
+            return Err(error
+                .component(&self.current_fragment_id)
+                .at_offset(element.source(), element.start)
+                .into());
+        }
         let condition_str = element
             .attr("condition")
             .ok_or_else(|| self.if_condition_missing_error(element))?;
@@ -3362,22 +3379,61 @@ impl HtmlParser {
             .parse(strip_condition_braces(condition_str))
             .map_err(|_| self.if_condition_invalid_error(element, condition_str))?;
 
+        let lazy = element.has_attr("lazy");
+        if lazy {
+            self.validate_lazy_condition(element)?;
+        }
         self.flush_raw_buffer(fragments);
         let parent = ParseContext {
             fragments: std::mem::take(fragments),
             raw_buffer: std::mem::take(&mut self.raw_buffer),
         };
-        let fragment_id = self.next_fragment_id("if");
+        let fragment_id = if lazy {
+            let id = lazy::fragment_id(&self.current_fragment_id, self.lazy_ordinal);
+            self.lazy_ordinal += 1;
+            id
+        } else {
+            self.next_fragment_id("if")
+        };
 
         ops.push(ParseOp::CompleteIf {
             parent,
             condition,
             fragment_id,
+            lazy,
         });
         ops.push(ParseOp::Parse {
             range: element.inner(),
             depth: depth + 1,
         });
+        Ok(())
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn validate_lazy_condition(&mut self, element: &Element<'_>) -> Result<()> {
+        let trigger = element.attr("lazy");
+        if lazy::Trigger::parse(trigger).is_none() {
+            return Err(lazy::invalid_trigger(trigger.unwrap_or_default())
+                .component(&self.current_fragment_id)
+                .at_offset(element.source(), element.start)
+                .into());
+        }
+        if self
+            .plugin
+            .as_ref()
+            .is_some_and(|plugin| !plugin.supports_lazy_fragments())
+        {
+            return Err(self
+                .authoring_error_at(
+                    codes::UNSUPPORTED_LAZY_PLUGIN,
+                    "the selected client plugin does not support lazy template bodies",
+                    element,
+                )
+                .element("if")
+                .help("select a client plugin with lazy fragment support, or remove lazy")
+                .into());
+        }
         Ok(())
     }
 
@@ -4973,9 +5029,12 @@ impl HtmlParser {
     ) -> Option<OwnedComponentStyle> {
         let css = css_content?;
         Some(match self.options.css_strategy {
-            CssStrategy::Link => {
-                OwnedComponentStyle::Link(self.options.css_link_options.resolve(tag_name, css).href)
-            }
+            CssStrategy::Link => OwnedComponentStyle::Link(
+                self.options
+                    .css_link_options
+                    .resolve(tag_name, css)
+                    .filename,
+            ),
             CssStrategy::Style => OwnedComponentStyle::Inline(css.trim().to_string()),
             CssStrategy::Module => OwnedComponentStyle::Adopted(tag_name.to_string()),
         })
@@ -9463,7 +9522,7 @@ mod tests {
             r#"<script type="module" src="/{{bundle}}.js"></script>"#,
             "</head>",
             "<body>",
-            // Skipped: an island loader is deferred on purpose.
+            // Skipped: an island loader is lazy on purpose.
             r#"<boundary name="weather">"#,
             r#"<script type="module" async src="/weather-panel.js"></script>"#,
             "<weather-island></weather-island>",

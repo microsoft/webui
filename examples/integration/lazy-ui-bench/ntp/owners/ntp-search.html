@@ -1,0 +1,14 @@
+<template shadowrootmode="open">
+  <form class="search" role="search" action="https://www.bing.com/search" @submit="{submit(e)}">
+    <svg class="glyph" viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5" /><path d="m13 13 4 4" /></svg>
+    <input class="query" name="q" type="search" autocomplete="off" placeholder="Search the web" aria-label="Search the web"
+      value="{{query}}" autofocus data-trigger="suggest" @input="{onInput(e)}" @keydown="{onKeydown(e)}">
+    <button type="button" class="icon" aria-label="Search by voice">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z M5 11a7 7 0 0 0 14 0 M12 18v3" /></svg>
+    </button>
+    <button type="button" class="icon" aria-label="Search with an image">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z M12 16a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z" /></svg>
+    </button>
+  </form>
+  <!--ui:suggest-->
+</template>

@@ -217,6 +217,86 @@ test.describe('component link sharing', () => {
     });
   });
 
+  test('uses one listener per pending link and removes it on load or error', async ({ page }) => {
+    const stylesheetGate = Promise.withResolvers<void>();
+    await page.route('**/component-link-sharing/cold.css', async route => {
+      await stylesheetGate.promise;
+      await route.continue();
+    });
+    await openFixture(page);
+    await register(page, 'test-cold-link-card', false);
+
+    try {
+      const observed = await page.evaluate(async () => {
+        const prototype = HTMLLinkElement.prototype;
+        const add = prototype.addEventListener;
+        const remove = prototype.removeEventListener;
+        const ownAdd = Object.getOwnPropertyDescriptor(prototype, 'addEventListener');
+        const ownRemove = Object.getOwnPropertyDescriptor(prototype, 'removeEventListener');
+        const listeners = new Map<HTMLLinkElement, {
+          added: Map<string, EventListenerOrEventListenerObject>;
+          removed: Set<string>;
+        }>();
+        Object.defineProperty(prototype, 'addEventListener', {
+          configurable: true,
+          value(this: HTMLLinkElement, type: string, listener: EventListenerOrEventListenerObject | null,
+            options?: boolean | AddEventListenerOptions): void {
+            if (!listener) return;
+            if (type === 'load' || type === 'error') {
+              let record = listeners.get(this);
+              if (!record) {
+                record = { added: new Map(), removed: new Set() };
+                listeners.set(this, record);
+              }
+              record.added.set(type, listener);
+            }
+            add.call(this, type, listener, options);
+          },
+        });
+        Object.defineProperty(prototype, 'removeEventListener', {
+          configurable: true,
+          value(this: HTMLLinkElement, type: string, listener: EventListenerOrEventListenerObject | null,
+            options?: boolean | EventListenerOptions): void {
+            if (!listener) return;
+            listeners.get(this)?.removed.add(type);
+            remove.call(this, type, listener, options);
+          },
+        });
+        try {
+          window.__mountLinkCards?.('test-cold-link-card', 2);
+          const cards = [...document.querySelectorAll('test-cold-link-card')];
+          const links = cards.map(card => card.shadowRoot?.querySelector('link'));
+          if (links.length !== 2 || !links[0] || !links[1]) {
+            throw new Error('Expected two pending stylesheet links');
+          }
+          links[0].dispatchEvent(new Event('load'));
+          links[1].dispatchEvent(new Event('error'));
+          await Promise.resolve();
+          return links.map((link, index) => {
+            const record = link && listeners.get(link);
+            return {
+              shared: !!record?.added.get('load') &&
+                record.added.get('load') === record.added.get('error'),
+              removed: [...(record?.removed ?? [])].sort(),
+              guarded: cards[index].shadowRoot?.querySelector('style') !== null,
+            };
+          });
+        } finally {
+          if (ownAdd) Object.defineProperty(prototype, 'addEventListener', ownAdd);
+          else Reflect.deleteProperty(prototype, 'addEventListener');
+          if (ownRemove) Object.defineProperty(prototype, 'removeEventListener', ownRemove);
+          else Reflect.deleteProperty(prototype, 'removeEventListener');
+        }
+      });
+      expect(observed).toEqual([
+        { shared: true, removed: ['error', 'load'], guarded: false },
+        { shared: true, removed: ['error', 'load'], guarded: false },
+      ]);
+    } finally {
+      stylesheetGate.resolve();
+    }
+  });
+
   test('keeps native links when the stylesheet cannot be promoted', async ({ page }) => {
     await openFixture(page);
     await register(page, 'test-import-link-card', true);

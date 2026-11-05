@@ -278,12 +278,25 @@ tuples once before hydration.
 | `l` | Pre-order static element shapes, starting with the section root. |
 | `tx` | Text-binding runs, ordered slot + parts, optional raw flag and static successor. |
 | `a` / `ag` | Attribute bindings and the elements they target. |
-| `c` | Conditional blocks with `[conditionRef, blockIndex, slot]`. |
-| `r` | Repeat blocks with `[collection, itemVar, blockIndex, slot]`. |
+| `c` | Conditional blocks with `[conditionRef, blockRef, slot, trigger?]`; a lazy region's trigger is `1` intent, `2` idle, `3` eager, or `4` demand. |
+| `r` | Repeat blocks with `[collection, itemVar, blockRef, slot]`. |
 | `eg` | Event bindings grouped by event name, with handler argument specs and target paths. |
 | `b` | Nested block table (sub-templates for conditional/repeat bodies). |
 | `sd` | Truthy when client-created instances should attach a shadow root. |
 | `re` | Root-level host events (attached to the host element; observe events targeted at the host itself plus anything bubbling to it - `composed` is required only to cross a shadow boundary). |
+| `v` | Required current format `3`, shared by ordinary components and hostless sections. Missing or different versions are rejected. |
+| `d` | Sorted direct ordinary resource dependencies. Absence is empty. Route activation and nested lazy edges are excluded. |
+| `f`, `o` | External section resource identity and owning template. These sections have no component host or DOM mode of their own. |
+| `e` | `1` for a lazy region's root section; absent on internal shared sections. |
+| `lp` | Pack paths, relative to the asset base, for the lazy regions whose conditions this template contains, keyed by region identity. |
+| `lc` | Link builds only: for the same regions, the stylesheet paths, relative to the asset base, that each region's pack registers, in closure order without duplicates. Regions without any are left out, and the field is absent when none remain. The lazy runtime preloads them in parallel with the pack. |
+| `rf` | Compiler-owned refs `[name, elementIndex]`. Absence is proven empty; the renderer never scans attributes to reconstruct refs. |
+
+Ref source attributes are compiler-only. Both SSR HTML and compiled template
+HTML omit `w-ref`; `rf` is the sole delivered ref-binding representation.
+Only removable views retain ref-release callbacks: ordinary component roots
+retain their DOM on destruction, while local blocks and hostless lazy fragment
+roots clear a ref only if it still points at their own node.
 
 The same metadata serves both paths:
 
@@ -323,6 +336,43 @@ there is no template-parsing compatibility path. Rebuild the protocol and
 browser bundle together with matching compiler and framework versions.
 Stylesheet preparation can still materialize a template containing authored
 links to preserve its existing browser-based stylesheet discovery semantics.
+
+### Template ownership
+
+The WebUI parser finalizes ownership metadata against typed fragment records,
+not HTML text. It follows if/for and attribute-template records and stops at
+known component roots, retaining sparse direct edges rather than materializing
+every root's transitive closure. Named fragment cycles are traversed iteratively.
+Plugins that do not need the graph retain their existing finalization behavior.
+
+Identical immutable leaf sections within one delivery owner may share a local
+block index. Sharing compares their complete compiled bindings, layout, events and
+refs, not just HTML, and never crosses independently addressable lazy regions.
+Each mounted view still creates its own DOM, bindings, scope and cleanup records.
+Local block positions are compiled references, not source-order identities.
+
+Native constructors keep observed-attribute names, not a complete template
+object. Instances use native `localName` for tag identity rather than a second
+constructor registry, and look up current metadata at mount time. The optional template
+cache adapter must be installed before metadata is consumed; otherwise it cannot
+reconstruct the ownership of existing consumers and fails explicitly.
+
+While the adapter is active, each live metadata object owns its direct
+dependency records. The tag index holds weak references to those records.
+Registry collection drops cache ownership; mounted metadata and DOM-keyed SSR
+pins retain only what their consumers may still need. Collection scans the
+current Document and open Shadow roots on explicit request, not on updates.
+Retained parents keep conditional/repeat descendants available even when those
+descendants have no live DOM or native definition yet.
+
+Equivalent responses reuse canonical metadata; conflicting live templates fail
+rather than replacing an artifact still in use. Compiled condition closures are
+resolver/scope-only code, allowing equivalent closure source to participate in
+that comparison. Browser-native ESM/custom-element lifetimes and CSS ownership
+remain independent and are not reclaimed by this adapter.
+
+See [Client delivery](client-delivery.md) for inventory acknowledgement,
+capability boundaries, and partial-stream ownership.
 
 ### Condition references
 
@@ -410,12 +460,15 @@ boundary. The text-to-marker relation is encoded once into an `Int32Array`
 cached by template metadata, so every instance resolves a structural boundary
 in O(1) without retaining a `Map`. This avoids rescanning sibling ranges and
 prevents adjacent dynamic slots from claiming the same text node.
+Sections without text, without structural/raw markers, or without any
+co-located text-to-marker relation use the shared empty index; they do not
+allocate or retain a per-template boundary array.
 
 ---
 
 ## State seeding
 
-When the server renders `<span>42</span>` for `@observable count = 0`, the JS class default is still `0`. If the framework called `$update()` immediately, it would overwrite `42` with `0`.
+When the server renders `<span>42</span>` for `@observable count = 0`, the JS class default is still `0`. An immediate update would overwrite `42` with `0`.
 
 `$applySSRState` runs **before** any binding is wired:
 
@@ -440,7 +493,7 @@ After hydration, every dynamic value is connected to a direct DOM-node reference
 
 ### Path index
 
-`$buildPathIndex` (called lazily on the first `$update`) walks every binding in the component and groups them by the observable property names they depend on:
+`$buildPathIndex` (called lazily on the first update) walks every binding in the component and groups them by the observable property names they depend on:
 
 ```text
 'count'  → { texts: [t1, t2], attrs: [], conds: [c1], repeats: [] }
@@ -460,9 +513,9 @@ conditional updates.
 
 ```
 this.count = 5
-  → @observable setter writes _count, calls $update('count')
-  → $update queues 'count' on $dirtyPaths, schedules a microtask
-  → $flush walks $dirtyPaths once, looking each path up in $pathIndex
+  → @observable setter writes _count, requests an update for 'count'
+  → the scheduler queues 'count' on $dirtyPaths and schedules a microtask
+  → rendering walks $dirtyPaths once, looking each path up in $pathIndex
   → for each entry, walks only that subset of bindings
   → wildcard bindings run once per flush (not per dirty path)
   → DOM is patched via direct .textContent / setAttribute / etc.
@@ -470,9 +523,9 @@ this.count = 5
 
 Updates are coalesced via `queueMicrotask`. Multiple synchronous setter calls inside a single tick produce one DOM pass.
 
-### `$flushUpdates()`
-
-Synchronous escape hatch. Call it when you need the DOM to reflect pending writes immediately (test code, measurement before paint, etc.).
+The public `$whenRendered()` completion boundary waits for the finite affected
+rendering batch, including activated lazy regions and affected descendants.
+Internal synchronous flushing remains private to framework coordination.
 
 ### Why this is fast
 
@@ -560,12 +613,17 @@ On reactive flip:
 
 Two flavours:
 
-- **Element events** (`@click="{handler(item.id, e)}"`): wired via `$wireEvents`. The compiled metadata emits `eg` groups shaped as `[event, [[handler, argSpecs, targetPath, usesEvent?]]]`. Hydration resolves `targetPath` to the real element and captures the active scope frame so `argSpecs` resolve against the same repeat item or component state at dispatch time. Listeners attach to the bound element, so `event.currentTarget` is correct and `stopPropagation()` behaves as authored.
+- **Element events** (`@click="{handler(item.id, e)}"`): wired during view finalization. The compiled metadata emits `eg` groups shaped as `[event, [[handler, argSpecs, targetPath, usesEvent?]]]`. Hydration resolves `targetPath` to the real element and retains the active scope frame so `argSpecs` resolve against the same repeat item or component state at dispatch time. Listeners attach to the bound element, so `event.currentTarget` is correct and `stopPropagation()` behaves as authored.
 
-  Bindings are never delegated to the render root. `$wireEvents` runs once per block instance and the render root is shared across instances, so delegating would stack one listener per block on the same node and fire all of them per dispatch — O(N) for no reduction in listener count. It would also miss non-bubbling events (`focus`, `blur`, `mouseenter`, `load`, `error`, `toggle`, media) and app-defined events dispatched without `bubbles: true`, which no shipped event-name table can cover.
+  Bindings are never delegated to the render root. Finalization runs once per block instance and the render root is shared across instances, so delegating would stack one listener per block on the same node and fire all of them per dispatch — O(N) for no reduction in listener count. It would also miss non-bubbling events (`focus`, `blur`, `mouseenter`, `load`, `error`, `toggle`, media) and app-defined events dispatched without `bubbles: true`, which no shipped event-name table can cover.
 - **Root events** (`re` field): used for `@custom-event` on the component's `<template>` root. Attached to the **host element**, the only node that observes both events dispatched on the host itself (which never enter the shadow tree) and `composed` events on their way out of it. Non-composed events (`change`, `submit`, `select`, media) stop at the shadow root by design and are bound per element instead. Because the listener is on the host, `event.target` is retargeted to the host for inner events — use `event.composedPath()[0]` to recover the originating element.
 
-Listener cleanup is automatic. `$destroy` (called from `disconnectedCallback` via a microtask, so repeat reconciliation moves don't trigger teardown) removes everything wired during `$mount`.
+Each direct listener is also its removal record and shares dispatch code;
+listeners do not allocate separate dispatch and removal closures. The view sizes
+its listener storage from compiled binding counts. Listener cleanup is automatic.
+`$destroy` (called from `disconnectedCallback` via a microtask, so repeat
+reconciliation moves don't trigger teardown) removes everything wired during
+`$mount`, including listeners on retained root DOM.
 
 ---
 
@@ -584,6 +642,10 @@ Partial navigation, progressive streaming, and component assets share the same
 required `componentStyles` catalog. Module resources carry their CSS directly;
 the catalog installs each specifier's import map once per owning Document
 before importing it, then reuses the cached parsed sheet for every target.
+Once bootstrap state is released with the style bridge installed, the
+Document-owned validated catalog remains available for future mounts and the
+serialized bootstrap catalog is discarded. Resource-only consumers without
+that bridge retain their fallback catalog.
 
 Client Shadow roots share Link resources per owning Document and resolved URL.
 The first newly attached root to mount a stylesheet keeps its native link and
@@ -670,38 +732,37 @@ per-instance readiness.
 
 ## Module map
 
-The paths below are relative to `packages/webui-framework/`.
+The public API entry exports component classes, decorators, and template data
+operations without registering DOM listeners or scheduling work.
+`startRuntime()` from the pure `runtime.js` entry installs the template registry
+bridge and document readiness tracking, enables authored definitions, and
+schedules scriptless host registration.
+`styles.js` separately installs the chosen managed-style implementation.
+Streaming and visibility coordinators initialize lifecycle tracking when
+selected, without making those coordinators dependencies of ordinary rendering.
 
-```
-src/
-├── element.ts                  Orchestrator: $mount, $hydrate, $wire,
-│                               $wire, $hydrate, $update, events,
-│                               teardown, path index
-├── element/
-│   ├── markers.ts              Marker constants, collectItemMarkers,
-│   │                           buildSSRIndex (block-skipping pre-order walk)
-│   ├── diff.ts                 syncRepeat: positional + explicit-key reconciliation
-│   ├── styles.ts               componentStyles catalog, installComponentStyles
-│   │                           (Link/Style/Module resources, import maps)
-│   └── types.ts                AttrBinding, CondBinding, RepeatBinding,
-│                               TextBinding, ScopeFrame, TemplateInstance
-├── decorators.ts               @observable, @attr, attribute name registry,
-│                               toKebabCase fast path
-├── template.ts                 TemplateMeta types + getTemplate registry
-├── lifecycle.ts                Hydration timing, hydration-complete event
-└── index.ts                    Public surface
-```
+Declarations evaluated before startup wait without reading metadata or calling
+native custom-element registration, even when resources arrive meanwhile.
+Startup runs after the application's static imports, including selected
+installers and shared component chunks. Available declarations then register
+synchronously in one completion cohort, so an early root cannot release shared
+SSR state before the remaining roots consume it. Empty batches do not start
+hydration timing. Missing metadata keeps a declaration pending. Authored pending
+definitions run before fallback scriptless hosts, including when streaming
+demands the host runtime. After startup, metadata acceptance can complete pending
+definitions and later declarations with metadata register immediately.
 
-Public exports:
+In `packages/webui-framework/src`, `template-element.ts` owns compiled rendering
+and `element.ts` adds authored events, refs, and reactive effects.
+`template-registry.ts` owns metadata and its explicitly installed bridge;
+`lifecycle.ts` owns timing and completion. The `element/` modules own marker
+traversal, repeat reconciliation, styles, and binding types.
 
-```typescript
-export { WebUIElement } from './element.js';
-export { observable, attr } from './decorators.js';
-export { getTemplate, type TemplateMeta } from './template.js';
-export { hydrationStart, hydrationEnd } from './lifecycle.js';
-```
-
-Everything else is internal and may change without notice.
+Installation is idempotent. A pure API import cannot seal parser startup or
+consume the one-shot SSR state. Package side-effect declarations must retain
+the selected installer graph, while helper-only bundles omit renderer code.
+The public entrypoint map is defined in the package manifest and documented
+in the interactivity guide.
 
 ---
 

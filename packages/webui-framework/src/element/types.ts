@@ -23,6 +23,9 @@
 import type {
   CompiledAttrPart,
   CompiledCondition,
+  TemplateBlockMeta,
+  TemplateBlockReference,
+  TemplateMeta,
 } from '../template.js';
 
 /** Direct reference to character data bound to a property path. */
@@ -78,6 +81,8 @@ export interface ScopeFrame {
 }
 
 export interface TemplateInstance {
+  /** Keeps an active hostless body's ordinary resource closure alive. */
+  fragment?: TemplateMeta;
   scope?: ScopeFrame;
   parent?: TemplateInstance;
   container: (ParentNode & Node) | null;
@@ -86,18 +91,22 @@ export interface TemplateInstance {
   attrs: AttrBinding[];
   conds: CondBinding[];
   repeats: RepeatBinding[];
-  /**
-   * Per-instance listener cleanup. Event listeners attach to the elements a
-   * block owns, so nested conditional/repeat instances must explicitly
-   * unregister when their block leaves the DOM.
-   */
-  cleanups?: Array<() => void>;
+  /** View-owned cleanup, including refs of removable blocks. */
+  cleanups?: Array<(removeNodes: boolean) => void>;
+  /** Direct listeners owned by this view, with shared dispatch code. */
+  listeners?: TemplateEventListener[];
+}
+
+/** A removable direct listener; the listener record is also its DOM callback. */
+export interface TemplateEventListener extends EventListenerObject {
+  readonly target: EventTarget;
+  readonly eventName: string;
 }
 
 /** Conditional block state. Visible blocks need no live DOM anchor. */
 export interface CondBinding {
   condition: CompiledCondition;
-  blockIndex: number;
+  blockIndex: TemplateBlockReference;
   anchor: Comment | null;
   scope?: ScopeFrame;
   owner: TemplateInstance;
@@ -119,7 +128,7 @@ export interface RepeatBinding {
   markerId: number;
   collection: string;
   itemVar: string;
-  blockIndex: number;
+  blockIndex: TemplateBlockReference;
   container: (ParentNode & Node) | null;
   start: Comment | null;
   end: Comment | null;
@@ -143,7 +152,7 @@ export interface RepeatHost {
   $hasStateRoot(path: string, scope?: ScopeFrame): boolean;
   /** Create, wire, and perform the first binding pass while detached. */
   $createBlockInstance(
-    blockIndex: number,
+    blockIndex: TemplateBlockReference,
     scope?: ScopeFrame,
     parent?: TemplateInstance,
     container?: ParentNode & Node,

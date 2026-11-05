@@ -4,21 +4,23 @@
 use anyhow::Result;
 use std::fs;
 use std::path::{Path, PathBuf};
-use webui::{ComponentAssetFile, WebUIError};
+use webui::{ComponentAssetFile, GeneratedModule, WebUIError};
 
 use super::build::output_paths;
 
+/// Publish component asset inputs and generated modules, then finalize.
 pub(super) fn publish_with<F>(
     output_dir: &Path,
     files: &[ComponentAssetFile],
+    modules: &[GeneratedModule],
     finish: F,
 ) -> Result<()>
 where
     F: FnOnce() -> Result<()>,
 {
-    webui::component_asset_output::publish_with(output_dir, files, || {
+    webui::component_asset_output::publish_modules_with(output_dir, files, modules, || {
         finish().map_err(|source| WebUIError::ComponentAssetPublication {
-            context: "Failed to finalize component asset outputs".to_string(),
+            context: "Failed to finalize generated module outputs".to_string(),
             source: source.into_boxed_dyn_error(),
         })
     })?;

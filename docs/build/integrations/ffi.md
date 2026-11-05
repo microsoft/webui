@@ -69,6 +69,12 @@ Loaded protocol handles are thread-safe. Handler instances are safe for
 concurrent renders as long as configuration such as the nonce is not mutated
 concurrently.
 
+## Lazy template packs
+
+[Lazy bodies](/learn/lazy) need no C API. `webui build` writes their
+template packs to `<out>/_webui/packs/`; serve that directory as immutable
+static files beside the page and render pages with the same protocol handle.
+
 ## C API Reference
 
 The generated C header is at `crates/webui-ffi/include/webui_ffi.h`.
@@ -156,7 +162,10 @@ at the matching structural boundary (before `</head>`, after `<body>`, before
 {"$webui": {"headEnd": "<meta name=\"x\">", "bodyEnd": "<script src=\"/a.js\"></script>"}}
 ```
 
-Members that are missing, `null`, empty, or not strings are ignored.
+HTML members that are missing, `null`, empty, or not strings are ignored.
+An `assetBase` string overrides the protocol's build-time asset base for that
+response (see the [CLI reference](/reference/cli/)); an invalid value fails the
+render, and `webui_last_error()` explains why.
 The `$webui` object is excluded from client state, but its HTML is emitted
 into the document. No extra API call is needed.
 

@@ -29,7 +29,8 @@ export function loadComponentAsset(
   }
   const assetUrl = new URL(source, document.baseURI);
   const href = assetUrl.href;
-  return loadAssetModule(href, () => import(assetUrl.href))
+  // A deployed asset URL, which application bundlers must leave to the browser.
+  return loadAssetModule(href, () => import(/* webpackIgnore: true */ /* @vite-ignore */ href))
     .then(imported => registerRootAsset(tag, href, imported));
 }
 

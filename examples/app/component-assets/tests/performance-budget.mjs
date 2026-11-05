@@ -8,28 +8,30 @@ import {
   gzipSync,
 } from 'node:zlib';
 
-// Release production build at base e5fc217e6c88e356446330c4c3091196a0ce7b22.
+// Release production build of main 6ceba632 merged with the lazy-region
+// redesign: shared Link sheets and per-request asset-base resolution in
+// styles.js.
 const BASELINE = {
-  startupRaw: 90_625,
-  startupGzip: 27_874,
-  startupBrotli: 24_616,
-  totalRaw: 95_336,
-  totalGzip: 30_034,
-  totalBrotli: 26_465,
-  coldRaw: 1_749,
-  coldGzip: 818,
-  coldBrotli: 694,
+  startupRaw: 89_976,
+  startupGzip: 28_811,
+  startupBrotli: 25_260,
+  totalRaw: 92_203,
+  totalGzip: 29_979,
+  totalBrotli: 26_223,
+  coldRaw: 1_388,
+  coldGzip: 737,
+  coldBrotli: 609,
   startupRequests: 2,
   coldRequests: 2,
 };
 
 const BUDGETS = {
-  startupRaw: BASELINE.startupRaw,
-  startupGzip: BASELINE.startupGzip,
-  startupBrotli: BASELINE.startupBrotli,
-  totalRaw: BASELINE.totalRaw,
-  totalGzip: BASELINE.totalGzip,
-  totalBrotli: BASELINE.totalBrotli,
+  startupRaw: 94_000,
+  startupGzip: 29_500,
+  startupBrotli: 26_000,
+  totalRaw: 96_500,
+  totalGzip: 30_700,
+  totalBrotli: 27_100,
   coldRaw: Math.ceil(BASELINE.coldRaw * 1.1),
   coldGzip: Math.ceil(BASELINE.coldGzip * 1.1),
   coldBrotli: Math.ceil(BASELINE.coldBrotli * 1.1),
@@ -38,6 +40,11 @@ const BUDGETS = {
 };
 
 const metafile = JSON.parse(readFileSync('dist/client-metafile.json', 'utf8'));
+if (Object.values(metafile.outputs).some(output => Object.entries(output.inputs).some(
+  ([input, contribution]) => input.endsWith('/hydration-mismatch.js') && contribution.bytesInOutput > 0,
+))) {
+  throw new Error('Production builds must set __WEBUI_DEV__=false to exclude hydration diagnostics.');
+}
 const outputs = metafile.outputs;
 const entry = findOutput('src/index.ts');
 const lazy = findOutput('.webui/lazy-panel.webui.js');

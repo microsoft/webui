@@ -1,0 +1,17 @@
+<div class="menu bgmenu" data-ui="bgmenu" role="menu" aria-label="Background options">
+  <header class="menu-head">
+    <p class="menu-title" data-ready>{{imageTitle}}</p>
+    <small class="menu-sub">{{imageCredit}}</small>
+  </header>
+  <button type="button" role="menuitem" @click="{openGallery()}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18v14H3z M3 16l5-5 4 4 3-3 6 6 M15.5 9.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3z" /></svg>Change background</button>
+  <a role="menuitem" href="https://www.bing.com/images/search?q=image+of+the+day"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z M12 11v6 M12 7.5v.01" /></svg>Learn about this image</a>
+  <a role="menuitem" href="https://www.bing.com/images/download"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11 M7 10l5 5 5-5 M5 20h14" /></svg>Download</a>
+  <hr>
+  <button type="button" role="menuitem" @click="{rateImage()}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10v10H4V10z M7 10l4-7a2 2 0 0 1 3 2l-1 5h6a2 2 0 0 1 2 2.3l-1.4 6A2 2 0 0 1 17.6 20H7" /></svg>I like this image</button>
+  <button type="button" role="menuitem" @click="{rateImage()}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 14V4H4v10z M7 14l4 7a2 2 0 0 0 3-2l-1-5h6a2 2 0 0 0 2-2.3l-1.4-6A2 2 0 0 0 17.6 4H7" /></svg>Show fewer like this</button>
+  <button type="button" role="menuitem" @click="{hideBackground()}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3l18 18 M10.6 6.1A9.7 9.7 0 0 1 12 6c6 0 9 6 9 6a15 15 0 0 1-2.4 3.2 M6.6 6.6C4.3 8.2 3 12 3 12s3 6 9 6a9 9 0 0 0 5.4-1.6" /></svg>Hide background image</button>
+  <hr>
+  <label class="menu-toggle"><span>Daily image</span><input type="checkbox" role="switch" checked @change="{toggleDailyImage(e)}"></label>
+  <label class="menu-toggle"><span>Video backgrounds</span><input type="checkbox" role="switch" @change="{toggleVideo(e)}"></label>
+  <footer class="menu-foot"><a href="https://www.msn.com/feedback" role="menuitem">Send feedback</a></footer>
+</div>

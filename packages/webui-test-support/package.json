@@ -11,6 +11,10 @@
     "esbuild": "catalog:"
   },
   "exports": {
+    "./fixture-fast-assets": {
+      "types": "./src/fixture-fast-assets.ts",
+      "default": "./src/fixture-fast-assets.ts"
+    },
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
@@ -26,6 +30,10 @@
     "./fixture-server": {
       "types": "./src/fixture-server.ts",
       "default": "./src/fixture-server.ts"
+    },
+    "./fixture-lazy-pages": {
+      "types": "./src/fixture-lazy-pages.ts",
+      "default": "./src/fixture-lazy-pages.ts"
     },
     "./fixture-streaming": {
       "types": "./src/fixture-streaming.ts",

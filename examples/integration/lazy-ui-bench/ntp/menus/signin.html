@@ -1,0 +1,27 @@
+<div class="menu signin" data-ui="signin" role="menu" aria-label="Account">
+  <header class="account">
+    <span class="avatar large" aria-hidden="true">{{initials}}</span>
+    <span class="account-text">
+      <strong data-ready>{{userName}}</strong>
+      <small>{{userEmail}}</small>
+      <a href="https://account.microsoft.com/profile" role="menuitem">My Microsoft account</a>
+    </span>
+  </header>
+  <div class="rewards">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4h8v5a4 4 0 0 1-8 0z M12 13v4 M8 21h8" /></svg>
+    <span><strong>Microsoft Rewards</strong><small>{{rewardsPoints}} points &#183; 3 daily activities left</small></span>
+    <a class="pill" href="https://rewards.bing.com/" role="menuitem">Open</a>
+  </div>
+  <ul class="menu-list">
+    <li><a role="menuitem" href="https://account.microsoft.com/privacy"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z" /></svg>Privacy dashboard</a></li>
+    <li><a role="menuitem" href="https://account.microsoft.com/services"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 8h14l-1 13H6z M9 8V6a3 3 0 0 1 6 0v2" /></svg>Subscriptions and orders</a></li>
+    <li><a role="menuitem" href="https://www.msn.com/interests"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20s-8-4.5-8-11a4.5 4.5 0 0 1 8-3 4.5 4.5 0 0 1 8 3c0 6.5-8 11-8 11z" /></svg>Manage interests</a></li>
+    <li><a role="menuitem" href="https://www.msn.com/saved"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h12v18l-6-4-6 4z" /></svg>Saved stories</a></li>
+    <li><a role="menuitem" href="https://account.microsoft.com/devices"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18v11H3z M8 20h8 M12 16v4" /></svg>Devices</a></li>
+  </ul>
+  <p class="sync"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 0 1 14-5.3 M20 4v4h-4 M20 12a8 8 0 0 1-14 5.3 M4 20v-4h4" /></svg>Sync is on for favorites, history, and settings</p>
+  <footer class="menu-foot">
+    <button type="button" role="menuitem" class="text-button" @click="{switchAccount()}">Switch account</button>
+    <button type="button" role="menuitem" class="text-button" @click="{signOut()}">Sign out</button>
+  </footer>
+</div>

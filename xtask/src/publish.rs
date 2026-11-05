@@ -1305,7 +1305,12 @@ fn pack_npm_tarballs(root: &Path) -> Result<(), String> {
     let npm_out = root.join("publish").join("npm");
 
     // Build packages that have build scripts first
-    for pkg_name in &["webui", "webui-framework", "webui-router", "webui-desktop"] {
+    for pkg_name in &[
+        "webui",
+        "webui-framework",
+        "webui-delivery",
+        "webui-desktop",
+    ] {
         let pkg_dir = packages_dir.join(pkg_name);
         if !pkg_dir.join("package.json").exists() {
             continue;

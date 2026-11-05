@@ -372,10 +372,25 @@ impl WebUIHandler {
                 },
             },
         };
+        let style_inventory = if context.protocol.build_id.is_empty() {
+            String::new()
+        } else {
+            crate::route_handler::borrowed_style_inventory(
+                &component_styles,
+                context.style_resource_index,
+            )?
+        };
         write_webui_bootstrap(
             context.writer,
             &mut context.json_scratch,
             WebUiBootstrap {
+                build_id: &context.protocol.build_id,
+                style_inventory: &style_inventory,
+                // Response-wide, like the route chain: the first record
+                // carries it to the browser before any range activates.
+                asset_base: first_checkpoint
+                    .then(|| context.state_inject.effective_asset_base(context.protocol))
+                    .flatten(),
                 declaration_id,
                 enclosing_span_instance_id,
                 state: bootstrap_state,
@@ -397,11 +412,15 @@ impl WebUIHandler {
         }
         if template_payloads.is_none() {
             if let Some(plugin) = context.plugin.as_ref() {
+                let mut writer = crate::template_assets::TemplateAssetWriter {
+                    base: context.state_inject.effective_asset_base(context.protocol),
+                    writer: context.writer,
+                };
                 plugin.emit_templates_slice(
                     context.protocol,
                     &new_template_tags,
                     context.nonce,
-                    context.writer,
+                    &mut writer,
                 )?;
             }
         }

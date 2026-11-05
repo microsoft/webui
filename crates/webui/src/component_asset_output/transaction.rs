@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-use super::{is_root_file, ComponentAssetFile, Context, Result, WebUIError};
+use super::{is_root_file, Context, OutputFile, Result, WebUIError};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -28,17 +28,13 @@ impl<'a> Publication<'a> {
         }
     }
 
-    pub(super) fn publish_group(
-        &mut self,
-        files: &[&ComponentAssetFile],
-        roots: bool,
-    ) -> Result<()> {
+    pub(super) fn publish_group(&mut self, files: &[&OutputFile<'_>], roots: bool) -> Result<()> {
         for file in files {
             if is_root_file(file) == roots {
                 if roots {
-                    self.replace_root(&file.name)?;
+                    self.replace_root(file.name)?;
                 } else {
-                    self.publish_payload(&file.name)?;
+                    self.publish_payload(file.name)?;
                 }
             }
         }

@@ -21,6 +21,8 @@ for (const trustedTypes of [false, true]) {
     page, request,
   }) => {
     const assets: StreamingFixtureAssets = await (await request.get('/streaming-bootstrap/assets')).json();
+    expect(assets.coordinator.inputs.some(input =>
+      /\/(?:hydration-batch|template-element|element)\.[jt]s$/.test(input))).toBe(false);
     const appGate = Promise.withResolvers<void>();
     await page.route(`**${assets.application}`, async (route) => {
       await appGate.promise;
@@ -53,8 +55,11 @@ for (const trustedTypes of [false, true]) {
         expect(response.ok()).toBe(true);
         return response.body();
       }));
-      expect(payloads.reduce((sum, body) => sum + body.length, 0)).toBeLessThanOrEqual(32 * 1024);
-      expect(payloads.reduce((sum, body) => sum + gzipSync(body).length, 0)).toBeLessThanOrEqual(11 * 1024);
+      const rawBytes = payloads.reduce((sum, body) => sum + body.length, 0);
+      const gzipBytes = payloads.reduce((sum, body) => sum + gzipSync(body).length, 0);
+      console.log(JSON.stringify({ earlyStreaming: { trustedTypes, rawBytes, gzipBytes, scripts } }));
+      expect(rawBytes).toBeLessThanOrEqual(32 * 1024);
+      expect(gzipBytes).toBeLessThanOrEqual(11 * 1024);
       await expect(page.locator('script[data-webui-boundary], webui-hydrate')).toHaveCount(0);
 
       await request.post(`/streaming-bootstrap/release?id=${id}`);

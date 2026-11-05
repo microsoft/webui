@@ -1,7 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+import { startRuntime } from '../../../src/runtime.js';
+import '../../../src/styles-entry.js';
 import { WebUIElement, attr, observable } from '../../../src/index.js';
+
+startRuntime();
 
 export class TestListItem extends WebUIElement {
   @attr({ attribute: 'item-id' }) itemId = '';
