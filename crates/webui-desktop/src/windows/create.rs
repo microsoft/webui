@@ -255,6 +255,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "opens native windows; opt in with --ignored"]
     fn showing_a_visible_startup_frame_does_not_recalculate_its_native_caption() {
         let frame = FrameWindow::new(
             &WindowOptions {
@@ -285,6 +286,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "opens native windows; opt in with --ignored"]
     fn a_deferred_startup_close_is_not_undone_by_later_show_calls() {
         let frame = FrameWindow::new(
             &WindowOptions {
@@ -325,6 +327,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "creates native windows; opt in with --ignored"]
     fn startup_custom_frame_reserves_only_native_resize_borders() {
         {
             let titlebar = TitlebarStyle::None;
@@ -368,6 +371,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "creates native windows; opt in with --ignored"]
     fn startup_native_frame_retains_system_chrome() {
         let frame = TestFrame(
             FrameWindow::new(
@@ -385,6 +389,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "opens native windows; opt in with --ignored"]
     fn finishing_startup_does_not_replace_focus_already_inside_the_window() {
         use windows::Win32::UI::Input::KeyboardAndMouse;
         let frame = TestFrame(
@@ -429,6 +434,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "creates native windows; opt in with --ignored"]
     fn startup_custom_frame_handles_both_non_client_geometry_messages() {
         let frame = TestFrame(
             FrameWindow::new(
@@ -474,6 +480,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "opens native windows; opt in with --ignored"]
     fn startup_maximized_frame_stays_hidden_until_ready() {
         let saved = WindowState {
             x: 30,

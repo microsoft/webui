@@ -8,6 +8,7 @@ use crate::windows::create::FrameWindow;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 
 #[test]
+#[ignore = "opens native windows; opt in with --ignored"]
 fn prepared_overlay_geometry_matches_native_caption_client_after_attachment() {
     let _bootstrap_lock = super::BOOTSTRAP_TEST_LOCK.lock().unwrap();
     let _com = crate::windows::initialize_com().unwrap();
@@ -66,6 +67,7 @@ fn caption_button_size_selects_supported_native_sizes() {
 }
 
 #[test]
+#[ignore = "creates native windows; opt in with --ignored"]
 fn native_sdk_attaches_hidden_tall_caption_and_restores_fullscreen() {
     let _bootstrap_lock = super::BOOTSTRAP_TEST_LOCK.lock().unwrap();
     let _com = crate::windows::initialize_com().unwrap();
@@ -113,6 +115,7 @@ fn native_sdk_attaches_hidden_tall_caption_and_restores_fullscreen() {
 }
 
 #[test]
+#[ignore = "creates native windows; opt in with --ignored"]
 fn standard_buttons_keep_a_taller_application_bar() {
     let _bootstrap_lock = super::BOOTSTRAP_TEST_LOCK.lock().unwrap();
     let _com = crate::windows::initialize_com().unwrap();
@@ -139,6 +142,7 @@ fn standard_buttons_keep_a_taller_application_bar() {
 }
 
 #[test]
+#[ignore = "creates native windows; opt in with --ignored"]
 fn sdk_native_controls_preserve_frame_capabilities_and_input_safe_areas() {
     use windows::Win32::Foundation::{LPARAM, WPARAM};
     let _bootstrap_lock = super::BOOTSTRAP_TEST_LOCK.lock().unwrap();
@@ -216,6 +220,7 @@ fn sdk_native_controls_preserve_frame_capabilities_and_input_safe_areas() {
 }
 
 #[test]
+#[ignore = "creates native windows; opt in with --ignored"]
 fn overlay_keeps_all_eight_resize_hit_targets() {
     use windows::Win32::Foundation::{LPARAM, WPARAM};
 

@@ -239,6 +239,7 @@ mod tests {
     use windows::Win32::Foundation::{LPARAM, WPARAM};
 
     #[test]
+    #[ignore = "opens native windows; opt in with --ignored"]
     fn native_caption_glass_is_erased_without_an_application_background() {
         let _com = super::super::initialize_com().unwrap();
         let options = WindowOptions {
@@ -290,6 +291,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "opens native windows; opt in with --ignored"]
     fn native_caption_hit_targets_are_excluded_from_the_browser_container() {
         let _com = super::super::initialize_com().unwrap();
         let options = WindowOptions {
