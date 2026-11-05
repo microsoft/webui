@@ -58,11 +58,13 @@ export function minifyClient() {
             { [path.basename(file.path)]: file.text },
             {
               module: options.format === 'esm',
-              compress: options.minifySyntax === false ? false : { passes: 2 },
+              compress: options.minifySyntax === false ? false : { passes: 3 },
               mangle: options.minifyIdentifiers !== false,
               keep_classnames: options.keepNames,
               keep_fnames: options.keepNames,
               format: {
+                // One diagnostic character must not double retained script-source storage.
+                ascii_only: true,
                 beautify: options.minifyWhitespace === false,
                 comments: 'some',
               },

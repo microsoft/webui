@@ -18,6 +18,7 @@ interface RenderObserver {
 }
 
 export const pendingRenders: Array<RenderTarget | undefined> = [];
+export let batchingRender = false;
 let observer: RenderObserver | undefined;
 let scheduled = false;
 let cursor = 0;
@@ -48,19 +49,32 @@ export function finishRender(element: Element & { [RENDER_PENDING]?: number }): 
 }
 
 export function flushRender(element: RenderTarget): void {
+  const previous = batchingRender;
+  batchingRender = false;
+  try {
+    render(element);
+  } finally {
+    batchingRender = previous;
+  }
+}
+
+function render(element: RenderTarget): void {
   if (observer) observer.render(element);
   else element[RENDER]();
 }
 
 function drain(): void {
+  const previous = batchingRender;
+  batchingRender = true;
   try {
     while (cursor < pendingRenders.length) {
       const element = pendingRenders[cursor];
       pendingRenders[cursor++] = undefined;
       if (!element) continue;
-      flushRender(element);
+      render(element);
     }
   } finally {
+    batchingRender = previous;
     scheduled = false;
     if (cursor === pendingRenders.length) {
       pendingRenders.length = 0;

@@ -90,22 +90,13 @@ Object.defineProperty(globalThis, 'window', {
 const { installTemplateElementRuntime } = await import('./static-host.js');
 await import('./styles-entry.js');
 const { deferTemplateDefinition } = await import('./template.js');
-const { TemplateElement } = await import('./template-element.js');
+const { TemplateElement, writeComplexProperty } = await import('./template-element.js');
 const {
   ACTIVATION_STATIC_HOST_OPT_OUT,
   resetStreamingModeForTests,
   STREAMING_BOUNDARY_ACTIVATE,
 } = await import('./streaming-mode.js');
 const { registerComponentStyles } = await import('./element/styles.js');
-
-interface ComplexPropertyWriter {
-  $writeComplexProperty(
-    element: Element,
-    name: string,
-    value: unknown,
-    replayAfterHydration: boolean,
-  ): void;
-}
 
 function registerTemplate(tag: string, meta: TemplateMeta): TemplateMeta {
   const webui = window.__webui ?? (window.__webui = {});
@@ -199,7 +190,6 @@ describe('dormant template host runtime', () => {
   test('preserves parent properties queued before an empty host upgrades', () => {
     const tag = `empty-pending-property-${Date.now()}`;
     registerTemplate(tag, { v: 3, h: '', th: 1 });
-    const parent = new TemplateElement();
     const child = new HTMLElement() as HTMLElement & {
       later?: { answer: number };
       payload?: { answer: number };
@@ -208,8 +198,7 @@ describe('dormant template host runtime', () => {
     const ownKeysBefore = Object.keys(child);
     const payload = { answer: 42 };
 
-    const writer = parent as unknown as ComplexPropertyWriter;
-    writer.$writeComplexProperty(child, 'payload', payload, false);
+    writeComplexProperty(child, 'payload', payload, false);
     assert.equal(Object.hasOwn(child, 'payload'), false);
 
     installTemplateElementRuntime();
@@ -225,18 +214,17 @@ describe('dormant template host runtime', () => {
       'only the queued key becomes instance state',
     );
 
-    writer.$writeComplexProperty(child, 'later', { answer: 43 }, false);
+    writeComplexProperty(child, 'later', { answer: 43 }, false);
     assert.deepEqual(child.later, { answer: 43 });
   });
 
   test('defers queued properties with a streamed empty host', () => {
     const tag = `empty-pending-streamed-${Date.now()}`;
     registerTemplate(tag, { v: 3, h: '', th: 1 });
-    const parent = new TemplateElement();
     const child = new HTMLElement();
     (child as unknown as { localName: string }).localName = tag;
     child.setAttribute('data-ws', '');
-    (parent as unknown as ComplexPropertyWriter).$writeComplexProperty(
+    writeComplexProperty(
       child,
       'hasAttribute',
       'queued',
@@ -257,7 +245,7 @@ describe('dormant template host runtime', () => {
 
       streamed.connectedCallback();
       assert.equal(Object.hasOwn(child, 'hasAttribute'), false);
-      (parent as unknown as ComplexPropertyWriter).$writeComplexProperty(
+      writeComplexProperty(
         child,
         'hasAttribute',
         'newer',

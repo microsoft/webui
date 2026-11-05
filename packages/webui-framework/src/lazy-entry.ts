@@ -29,7 +29,7 @@ import {
   watch,
   type LazyHost,
 } from './lazy-runtime.js';
-import { enterRenderWork, installRenderTaskRetry, leaveRenderWork } from './render-completion.js';
+import { installRenderTaskRetry, renderWork } from './render-completion.js';
 import { isConditionTruthy } from './template-conditions.js';
 import { TemplateElement } from './template-element.js';
 import type { CondBinding, TemplateInstance } from './element/types.js';
@@ -104,13 +104,13 @@ element.$toggleCond = function (this: Host, c: CondBinding): void {
 element.$mount = function (this: Host, ...args: unknown[]): void {
   const previous = mounting;
   const associated = joinHydratedMount(this);
-  const previousRender = associated ? enterRenderWork(this) : undefined;
+  const previousRender = associated ? renderWork?.enter(this) : undefined;
   mounting = this;
   try {
     mount.apply(this, args);
   } finally {
     mounting = previous;
-    if (associated) leaveRenderWork(this, previousRender);
+    if (associated) renderWork?.leave(this, previousRender);
   }
   watch(this);
 };

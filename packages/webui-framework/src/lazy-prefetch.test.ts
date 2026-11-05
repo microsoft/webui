@@ -193,15 +193,15 @@ test('a compiled event binding passes its string literal to $prefetch', () => {
   };
   const instance: TemplateInstance = { container: null, nodes: [], texts: [], attrs: [], conds: [], repeats: [] };
   (host as unknown as {
-    $finalize(instance: TemplateInstance, root: null, meta: TemplateMeta, resolve: () => unknown): void;
-  }).$finalize(instance, null, {
+    $finalize(instance: TemplateInstance, meta: TemplateMeta, elements: readonly unknown[]): void;
+  }).$finalize(instance, {
     v: 3,
     h: '<button></button>',
     eg: [
       ['pointerenter', [['$prefetch', [['s', 'settingsOpen']], 1]]],
       ['focus', [['$prefetch', [['s', 'settingsOpen']], 1]]],
     ],
-  }, () => button);
+  }, [undefined, button]);
   button.dispatchEvent(new Event('pointerenter'));
   assert.deepEqual(requests, [{ url: pack('prefetch-event', 0), priority: 'high' }]);
   const listeners = instance.listeners!;
@@ -228,15 +228,15 @@ test('shared direct dispatch preserves its owner and zero through five arguments
   });
   const button = new class extends EventTarget { nodeType = 1; };
   const interactive = host as unknown as {
-    $finalize(instance: TemplateInstance, root: null, meta: TemplateMeta, resolve: () => unknown): void;
+    $finalize(instance: TemplateInstance, meta: TemplateMeta, elements: readonly unknown[]): void;
     $disposeInstance(instance: TemplateInstance, removeNodes: boolean): void;
   };
   for (let count = 0; count <= 5; count++) {
     const args: CompiledEventArgs = Array.from({ length: count }, (_, index) => ['n', index]);
     const instance: TemplateInstance = { container: null, nodes: [], texts: [], attrs: [], conds: [], repeats: [] };
-    interactive.$finalize(instance, null, {
+    interactive.$finalize(instance, {
       v: 3, h: '', eg: [['click', [['capture', args, 1]]]],
-    }, () => button);
+    }, [undefined, button]);
     button.dispatchEvent(new Event('click'));
     assert.equal(receivers[count], host);
     assert.deepEqual(calls[count], Array.from({ length: count }, (_, index) => index));
@@ -250,11 +250,11 @@ test('only removable views retain ref cleanup, including hostless fragment roots
   const node = { nodeType: 1 } as unknown as Node;
   const interactive = host as unknown as {
     ref?: Node;
-    $finalize(instance: TemplateInstance, root: null, meta: TemplateBlockMeta, resolve: () => Node): void;
+    $finalize(instance: TemplateInstance, meta: TemplateBlockMeta, elements: readonly Node[]): void;
   };
   const wire = (meta: TemplateBlockMeta): TemplateInstance => {
     const instance = { texts: [], attrs: [], conds: [], repeats: [] } as unknown as TemplateInstance;
-    interactive.$finalize(instance, null, meta, () => node);
+    interactive.$finalize(instance, meta, [node, node]);
     assert.equal(interactive.ref, node);
     return instance;
   };
