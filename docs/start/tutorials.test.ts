@@ -217,6 +217,7 @@ test('installation keeps first-page setup separate from deep integrations', asyn
   await expect(content.getByRole('heading', { level: 2 })).toHaveText([
     'Install the CLI #', 'Verify the CLI #', 'Create your first page #',
     'Installation policies #', 'Deep integrations #', 'Add what your app needs #',
+    'AI coding agents #',
   ]);
   for (const host of ['rust', 'node', 'dotnet', 'python', 'ffi', 'wasm']) {
     await expect(content.locator(`a[href="/webui/build/integrations/${host}"]`)).toHaveCount(1);

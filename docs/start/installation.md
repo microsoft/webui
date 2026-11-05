@@ -285,9 +285,28 @@ Each guide covers installation, protocol lifetime, and server integration.
 
 ## Add what your app needs
 
-<span id="ai-coding-agents"></span>
-
 - [Browser interaction](/start/add-interactivity) adds the optional component runtime.
 - [Routing](/build/routing) adds client-side navigation.
 - [Desktop apps](/build/desktop) adds a native system-webview host.
 - [AI authoring reference](/ai) explains the version-matched reference and agent skill.
+
+## AI coding agents
+
+Install the reference skill in your project:
+
+```bash
+npx skills add microsoft/webui --skill webui-reference
+```
+
+Add `--global` to install the loader for your user account across projects.
+In an application, the skill reads `@microsoft/webui/ai.md` and relevant
+Markdown guides bundled with that installed package, including in hoisted
+workspaces. These guides work offline and match the package release. Install
+`@microsoft/webui` even if you only imported the browser framework, and keep
+their versions aligned.
+
+Upgrading the package updates its reference without reinstalling the skill.
+If you installed an older loader before local guide support, reinstall the
+skill once in the same scope. If a guide is missing, the agent should report it
+rather than substitute the latest online documentation. The website's
+interactive tools and external links still require network access.

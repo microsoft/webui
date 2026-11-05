@@ -18,18 +18,26 @@ builds.
 
 ## AI coding agents
 
-The package includes `ai.md`, a framework reference matching the installed
-version. Install the loader skill once:
+The package includes `ai.md` and the developer-facing Markdown guides under
+`docs/`, all matching the installed version. Install the loader in your project:
 
 ```bash
 npx skills add microsoft/webui --skill webui-reference
 ```
 
-The loader reads `node_modules/@microsoft/webui/ai.md` from your application.
-Package upgrades update the reference without reinstalling the skill. The
-`@microsoft/webui/ai.md` subpath also supports package resolution for hoisted
-dependencies. See [AI Coding Agents](https://microsoft.github.io/webui/start/installation#ai-coding-agents)
-for migration and setup details.
+Add `--global` to install the loader for your user account across projects.
+The loader resolves `@microsoft/webui/ai.md` from your application, including
+hoisted installations, then reads only the relevant local guides. Reference
+navigation works offline; interactive site features and external links remain
+online. Keep `@microsoft/webui` and `@microsoft/webui-framework` at matching
+versions. Package upgrades update the reference without reinstalling the skill.
+If you installed an older loader before local guide support, reinstall it once
+in the same scope.
+
+If `@microsoft/webui` or a requested guide is missing, install the matching
+release instead of substituting documentation from the latest website. See
+[AI Coding Agents](https://microsoft.github.io/webui/start/installation#ai-coding-agents)
+for setup details.
 
 ## Quick start
 

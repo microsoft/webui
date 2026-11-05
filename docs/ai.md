@@ -1,7 +1,7 @@
 ---
 layout: page
 title: "WebUI authoring reference"
-description: "Canonical application-authoring rules for coding agents: templates, CSS, browser behavior, routing, state, builds, and supported host APIs."
+description: "Core application-authoring rules for coding agents: composition, templates, CSS, state, browser behavior, and task-specific guides."
 ---
 
 # WebUI Framework - AI Reference
@@ -10,16 +10,40 @@ description: "Canonical application-authoring rules for coding agents: templates
 > WebUI application code. Use the linked guides for detailed API options and
 > platform-specific constraints.
 >
-> Install the loader skill **once** with
-> `npx skills add microsoft/webui --skill webui-reference` - see
+> Install the loader skill in your project with
+> `npx skills add microsoft/webui --skill webui-reference`, or add `--global`
+> to use it across projects. See
 > [AI Coding Agents](/start/installation#ai-coding-agents).
-> In a consuming app it reads the installed `@microsoft/webui/ai.md`, so a
-> package upgrade also updates the reference. In the framework source checkout,
-> it reads `docs/ai.md`. The loader itself does not need reinstalling.
+> In a consuming app it reads the installed `@microsoft/webui/ai.md` and the
+> relevant guides bundled alongside it. Upgrading `@microsoft/webui` updates
+> both. In the framework source checkout, it reads `docs/ai.md` and the
+> corresponding source guides.
 >
-> Links starting with `/start/`, `/learn/`, `/build/`, or `/reference/` refer to the
-> [documentation site](https://microsoft.github.io/webui/), which tracks the
-> current release rather than your installed version.
+> In source Markdown, links starting with `/start/`, `/learn/`, `/build/`, or
+> `/reference/` are relative to the `docs/` root. The installed package uses
+> relative links to its local Markdown files. The
+> [documentation site](https://microsoft.github.io/webui/) tracks the current
+> release and may differ from an older installed version.
+
+## How to use this reference
+
+Use this page for everyday UI authoring and composition. Specialized features
+are opt-in, not prerequisites for a WebUI application. Before implementing one,
+read its guide rather than inferring setup or API details from this summary.
+In the framework source checkout, use the corresponding file under `docs/`.
+In a consuming app, follow the local links from this file to guides in the same
+installed package. Keep `@microsoft/webui` and `@microsoft/webui-framework` at
+matching versions; do not substitute the latest website for a missing guide.
+
+| When the task involves | Read before implementing |
+|---|---|
+| On-demand UI and lazy conditional bodies | [Lazy UI](/learn/lazy) |
+| Deferred rendering or hydration | [Policy selection](/learn/directives/lazy) and [hydration setup](/build/hydration) |
+| Progressive streaming | [Boundary rules](/learn/directives/boundary) and [streaming integration](/build/hydration#progressive-streaming-hydration) |
+| Routing or separately loaded component assets | [Routing](/build/routing) or [static component assets](/learn/interactivity#loading-static-component-assets) |
+| Desktop apps, native capabilities, or IPC | [Desktop guide](/build/desktop) |
+| Markdown sites built with WebUI Press | [Press reference](/reference/webui-press) |
+| Server bindings or custom build pipelines | [Integrations](/build/integrations/) and the [CLI reference](/reference/cli/) |
 
 ## Rules
 
@@ -36,8 +60,9 @@ create UI.
 - Show and hide with `<if>`. Repeat with `<for>`. Swap regions with `<outlet>`.
 - If the markup you need does not exist yet, add it to the template and gate it
   with `<if>` - do not build it from JavaScript.
-- **The single exception** is mounting a lazily loaded component, which has no
-  template representation until it is fetched. See
+- **The single exception** is mounting a lazily loaded component through the
+  component-asset API into an explicit `w-ref` slot. Prefer template-driven
+  mounting where available. See
   [Lazy component mounting](#lazy-component-mounting).
 
 ### 2. CSS owns all styling and animation
@@ -238,60 +263,31 @@ this.settingsDialog.showModal();
 
 - The body is an ordinary template fragment, not a component. It keeps owner
   state, event methods, refs, and loop scope. Shadow/Light behavior is unchanged.
-- The build emits each body as a static, content-addressed template pack under
-  `_webui/packs/`. Initially false omits the body and references its pack;
-  initially true renders normally, inlines its templates, and hydrates.
+- An initially false body is omitted until needed; an initially true body
+  renders on the server and hydrates normally.
 - Before `startRuntime()`, import the generated `lazy.webui.js` for the
   integration. Generation writes it and `lazy.webui.d.ts` to `--modules-out`
   (default `--out`).
-  The import installs `lazy.js`, adds `$rendered()` and `$prefetch()`, and
-  registers loaders without starting any component loads.
-- The default module supplies dynamic imports for components not already
-  needed at startup outside lazy regions/routes. Your bundler owns splitting
-  and public paths. Map modules without a sibling with
-  `--component-module tag=specifier`; relative mappings start at `--modules-out`.
-  Never edit generated files or register custom loaders.
-  A region loads its pack and scripts in parallel and renders after both.
-  Without lazy regions, skip the integration and ship no lazy code.
-- Bare `lazy`, `lazy=""`, and `lazy="demand"` load only when the full condition
-  becomes true or code calls `this.$prefetch(path?)`. Explicit `lazy="idle"`
-  warms only that declaration after load when idle; `lazy="eager"` warms after
-  hydration. Explicit `lazy="intent"` warms on pointer/focus/touch anywhere in
-  the owner. Prefetch never
-  renders or fetches state, uses low fetch priority before the window `load`
-  event, and waits while the page is prerendering. For selective warming, use
-  bare `lazy` plus
-  `@pointerenter="{$prefetch('settingsOpen')}"` on the specific button.
-- Conditions retain the full expression language, e.g.
-  `<if condition="help == 'hello'" lazy><help-panel></help-panel></if>`.
-  Activation tests the expression; `$prefetch('help')` selects dependency paths
-  and can warm multiple conditions reading `help`, not a full-expression selector.
+  Never edit generated files or register custom loaders. Without lazy regions,
+  skip the integration.
+- Bare `lazy` is demand-loaded. Use `$prefetch(path?)` for selective warming;
+  `lazy="intent"` warms on interactions anywhere in the owner. Read the guide
+  before choosing owner-wide intent, idle, or eager prefetch.
 - Inline bodies do not split their owner's JavaScript. Put expensive behavior
-  in independently loadable child components. A dynamically imported route
-  downloads its page code independently, but a single build's installer still
-  registers the whole graph's small maps/callbacks at startup. A true MPA can
-  build each document separately. Closed sibling/nested lazy bodies stay
-  unfetched unless activated or explicitly warmed. Shared/eager bundler chunks
-  and Light-DOM global styles retain their normal ownership.
-- Focus already inside an intent owner when the runtime starts, such as
-  `autofocus`, schedules prefetch after window load when idle. A later intent
-  event or an activation can start loading sooner.
-- State is application-owned and loaded as usual; lazy regions never fetch it.
-  Await `this.$rendered()` only before touching body DOM, such as refs, focus, or
-  `showModal()`. It rejects on a failed pack or script and retries on the next
-  call. Failures also dispatch a cancelable, bubbling `lazyerror` event on the
-  owner with `detail.error`; uncanceled errors go to `reportError()`.
-- Shown regions release their body templates at idle once closed; reopening
-  reuses or refetches them. Do not cache pack contents yourself.
-  This does not unload JavaScript or clear the browser's module cache.
-  Invoking a failed loader again does not guarantee a fresh native import.
+  in independently loadable child components and enable bundler code splitting.
+  The integration loads templates and component scripts before rendering.
+- State remains application-owned; lazy regions never fetch it. Await
+  `$rendered()` only before using body DOM. Handle activation failures through
+  its rejection or the owner's `lazyerror` event; do not silently ignore them.
+- Closing a region does not unload JavaScript. Let the framework manage template
+  lifetimes rather than caching packs yourself.
 - `<if>` accepts only `condition` and `lazy`. `id` and other attributes fail
   the build. Rebuild protocol, packs, and client together.
 - Small or immediately used UI is cheaper as an ordinary `<if>`.
 - Do not combine this protocol-backed feature with `--emit-component-assets`.
 
-See [lazy UI](/learn/lazy) for triggers, hosting packs, and complete
-examples.
+Before adding lazy UI, follow the [lazy UI guide](/learn/lazy) for build/runtime
+setup, module mapping, prefetch behavior, and error handling.
 
 ### Loops
 
@@ -791,103 +787,18 @@ behavior:
 | `w-hydrate="interaction"` | Normal | Pointer, focus, keyboard, or click intent | One visible app shell/island when startup JS/heap matters more than first-use latency |
 | `w-render="lazy"` + reservation + `w-hydrate="interaction"` | `content-visibility: auto` skips offscreen layout/paint | Interaction intent | One offscreen singleton that should defer both rendering work and JavaScript |
 
-#### Agent decision rules
+Default to eager hydration for visible interactive roots. Use interaction
+hydration only for a singleton shell/island, never repeated items; it trades
+first-use latency for lower startup JavaScript and heap. Never combine
+`w-render="lazy"` with `w-hydrate="lazy"`, and always give `w-render="lazy"` a
+realistic `w-reserve-block-size`.
 
-1. **Default to eager hydration for the visible interactive root.** Put lazy
-   policies on offscreen descendants when request-to-interactive time matters.
-2. **For repeated rows/cards, use `w-render="lazy"` with a realistic
-   `w-reserve-block-size`.** Do not use interaction hydration for repeated items.
-3. **Use `w-hydrate="lazy"` only when hydration should wait for the viewport but
-   rendering containment could break layout or styling.**
-4. **Use `w-hydrate="interaction"` only for a singleton shell/island.** It saves
-   startup JavaScript and heap but adds first-interaction module-loading latency.
-5. **For one offscreen singleton that needs both savings, combine
-   `w-render="lazy"` with `w-hydrate="interaction"`.**
-6. **Never combine `w-render="lazy"` with `w-hydrate="lazy"`.**
-   `w-render="lazy"` already includes viewport-deferred hydration.
-7. **Never author `w-render="lazy"` without `w-reserve-block-size`.** The
-   reservation should approximate one instance's normal block size.
+These policies require optional coordinators; attributes alone do not install
+them. Before using them, follow the [policy guide](/learn/directives/lazy) and
+[hydration setup](/build/hydration), including interaction-loading limitations.
+Deferred hydration does not defer image fetching; use native `loading="lazy"`.
 
-For a component with many initially offscreen SSR instances:
-
-```html
-<template w-render="lazy" w-reserve-block-size="72px">
-  <!-- Component content -->
-</template>
-```
-
-For one offscreen SSR singleton whose module graph should remain unloaded until
-use:
-
-```html
-<template
-  w-render="lazy"
-  w-reserve-block-size="18rem"
-  w-hydrate="interaction"
->
-  <!-- Component content -->
-</template>
-```
-
-This keeps rendering containment active while interaction defers JavaScript and
-heap. It is a singleton interaction boundary, not a repeated-item policy.
-
-Import the optional coordinator in the application entry before `startRuntime()`:
-
-```typescript
-import '@microsoft/webui-framework/lazy-hydration.js';
-import './feed-item.js';
-```
-
-On an instance, `w-hydrate="eager"` keeps rendering deferral but hydrates
-immediately; `w-render="eager"` disables both. Use `hydratedCallback()` for work
-that requires bindings or refs. Missing coordinator or browser support falls
-back to eager hydration. Visibility-deferred hydration does not delay image
-fetching; use native `loading="lazy"` and reconcile an already-complete `w-ref`
-image from `hydratedCallback()` when component state depends on `@load` or
-`@error`.
-
-To defer a routed application until interaction, mark its root template:
-
-```html
-<template w-hydrate="interaction">
-  <nav>...</nav>
-  <outlet />
-</template>
-```
-
-```typescript
-import {
-  installInteractionHydration,
-  wakeInteractionHydration,
-} from '@microsoft/webui-framework/interaction-hydration.js';
-import { routePreload } from '@microsoft/webui-delivery/router.js';
-
-const preload = routePreload({ onIntent: () => wakeInteractionHydration() });
-const disposeHydration = installInteractionHydration({
-  onError: () => preload.destroy(),
-  load: async () => {
-    const [, { WebUIRouter, navigationCache }] = await Promise.all([
-      import('./component-definitions.js'),
-      import('@microsoft/webui-delivery/router.js'),
-    ]);
-    new WebUIRouter().start({ preload, cache: navigationCache(), loaders });
-  },
-});
-try {
-  preload.prepare();
-} catch (error) {
-  disposeHydration();
-  throw error;
-}
-```
-
-Use this policy once in the active document and give the component a matching
-authored `.ts` or `.js` module. Non-router apps use
-`installInteractionHydration({ load })`. It trades first-interaction latency
-for lower startup JS/heap and cannot preserve transient user activation or
-closed-shadow click targets. See
-[Interaction hydration](/build/hydration#interaction-triggered-application-hydration).
+### Component API quick reference
 
 | Decorator | Purpose | SSR? | Triggers DOM update? |
 |---|---|---|---|
@@ -923,6 +834,42 @@ onItemSelected(e: CustomEvent): void {
   this.selectedId = e.detail.id;
 }
 ```
+
+### Composing UI: ownership and boundaries
+
+Compose UI as a tree of templates and components, not as JavaScript that
+orchestrates DOM objects. State describes what should be present; templates
+describe its structure; WebUI reconciles the DOM.
+
+- **Give each piece of state one owner.** Keep state local when only one
+  component needs it; lift shared state to the nearest common owning component.
+  Do not keep competing parent and child copies of the same state or synchronize
+  them through DOM reads.
+- **Pass data down, emit intent up.** Parents supply child inputs through
+  bindings. Children emit semantic events with `$emit()`; the owner handles
+  application actions and updates its state. Do not mutate parent-owned inputs,
+  reach into a parent's implementation, or query siblings to coordinate them.
+- **Encapsulate presentation and local behavior.** A child owns its markup,
+  CSS, and interactions internal to that responsibility. The owning
+  page/controller coordinates application workflows. Choose component boundaries
+  around cohesive responsibilities, not merely to move markup into more files;
+  ordinary template fragments do not need their own component.
+- **Let the template owner control presence.** Express conditional, repeated,
+  and routed structure with `<if>`, `<for>`, and `<outlet>`. A child whose
+  presence is parent-controlled requests dismissal through an event; it does not
+  independently own that visibility or call `this.remove()`.
+- **Keep UI instances within their owner's lifetime.** Do not use module-global
+  DOM singletons or query, create, and append elements for ordinary UI.
+  Use `w-ref` for imperative browser APIs, not to bypass bindings or component
+  boundaries.
+
+Loading and composition are separate decisions: an ordinary `<if>` does not
+code-split JavaScript. For on-demand UI, load the required definition and assets
+before updating visibility through the documented `router.ensureLoaded()` flow,
+or use the [lazy conditional integration](#lazy-conditional-bodies), which loads
+before rendering. Prefer template-driven mounting; the narrow
+[component-asset mounting exception](#lazy-component-mounting) remains supported,
+not a general alternative to declarative composition.
 
 ### Hydration entry point
 
@@ -992,103 +939,23 @@ removal, or reordering shifts compiled element indices.
 
 ### Progressive streaming hydration
 
-`<boundary>` is a compile-time checkpoint directive for progressive sessions.
-It is valid in entries and reusable components, including runtime conditions,
-outlets, and selected route content.
+Streaming is an opt-in host integration, not required for ordinary SSR.
+`<boundary>` declares a named checkpoint; boundaries cannot nest or occur
+inside repeats. Never author generated `<webui-hydrate>` elements or construct
+browser streaming records yourself.
 
-```html
-<!-- index.html -->
-<head>
-  <script type="module" async src="/index.js"></script>
-</head>
-<body>
-  <ntp-page></ntp-page>
-</body>
-```
-
-```html
-<!-- ntp-page.html -->
-<main>
-  <boundary name="search-ready">
-    <search-box query="{{query}}"></search-box>
-  </boundary>
-  <section>{{slowFeed}}</section>
-</main>
-```
-
-- `name` is required, non-empty, static, and unique within its entry or
-  component owner. It
-  cannot contain a <code v-pre>{{binding}}</code>.
-- Boundaries may appear inside reusable components, true `<if>` paths, and
-  selected route content. Authored boundaries may not contain another authored
-  boundary directly or transitively.
-- A boundary-bearing subtree reached from a `<for>` body fails with
-  `boundary-in-repeat`, including declarations reached through a component,
-  condition, route, or outlet. A `<for>` may be wholly inside one boundary, and
-  boundaries before or after a `<for>` are valid.
-- A component-owned declaration reached from multiple static callsites in one
-  entry traversal requires `key`; it must resolve to a unique live string or
-  finite number. Independent entries that each reach it once do not.
-- Never author `<webui-hydrate>`. It is reserved generated runtime output.
-- Explicitly import `@microsoft/webui-framework/streaming.js` in application
-  code. For a coordinator-only head script, put that import in a small
-  `src/streaming.ts` entry and load its output with `type="module" async`.
-  WebUI never creates the entry or injects the import. With any bundler, preserve
-  initialization, share framework modules, and use native output metadata for
-  the host's existing asset handoff. No streaming JSON file is required.
-  See
-  [Separate coordinator and application assets](/build/hydration#separate-coordinator-and-application-assets).
-- Deferred application scripts can use `fetchpriority="low"` to stay out of
-  automatic modulepreload hints. Components remain inert and retain pending
-  state until their definitions arrive, so load early-interactive registrations
-  when needed rather than postponing every registration.
-- `start(state)`, `resume(instanceId, state, mode)`, and `advance()` return a
-  step with bytes, optional runtime descriptor
-  `{ instanceId, declarationId, owner, name, key }`, and `done`.
-- Drive the step state exactly: descriptor present means `resume`; no descriptor
-  with `done == false` means `advance`; `done == true` means complete.
-- `resume` writes only the pending occurrence through its checkpoint.
-  `advance` writes the following parent or shell bytes through the next
-  occurrence or terminal. No sibling boundary is needed to split an early
-  component child from its parent tail.
-- `update(instanceId, patch)` accepts only a committed updatable occurrence.
-  It is valid between that occurrence's `resume` and `advance`, and calls
-  `setState()` without inserting markup, rerunning hydration, or rerunning
-  `hydratedCallback()`.
-- State resolution across a suspension is lexical locals, resume state, then
-  the frozen projected parent state.
-- `render_streaming` borrows one state value and keeps one prepared render
-  context for the complete response. Host-driven `stream_response` sessions use
-  each `resume` state as an overlay for newly resolved occurrence data.
-  `resume_current` skips the overlay when retained state is authoritative.
-  `start` and `resume` move freshly decoded owned `Value`s or borrow shared
-  values through the same method names.
-- A component-local boundary can hydrate its complete child before the parent
-  tail arrives, in Light or open Shadow DOM.
-- `webui:boundary-hydrated` is emitted only when
-  `window.__WEBUI_STREAMING_DEBUG__ === true`; its `detail.kind` is
-  `checkpoint`, `span`, `update`, or `terminal`. Every commit also emits an
-  unconditional `performance.mark()` (`webui:boundary:<id>`,
-  `webui:boundary:<id>:update`, `webui:span:<id>`,
-  `webui:streaming:terminal`) that tooling can read retroactively.
-  `webui:hydration-complete` fires only after the terminal record and eager
-  pending hydration work complete. Visibility-deferred lazy roots do not keep
-  this one-shot startup event open.
-- `window.__WEBUI_STREAMING_SLICE_MS__` opts into a time-sliced drain that
-  yields between boundaries. Use it only when an intermediary coalesces the
-  response into one chunk; it costs total hydration time.
-- A semantic flush hands bytes to the HTTP transport. Server adapters,
-  compression, proxies, and CDNs can still buffer them.
-
-Invalid declarations fail the build with stable diagnostics. Do not construct
-browser streaming records yourself; malformed streams fail closed. The
-[`<boundary>` reference](/learn/directives/boundary) covers placements,
-keys, host ordering, and production delivery.
+Before adding streaming, read the
+[`<boundary>` reference](/learn/directives/boundary) for placement and keys,
+and [progressive streaming hydration](/build/hydration#progressive-streaming-hydration)
+for the browser coordinator and host lifecycle. The host must honor ordering,
+backpressure, and cancellation; bytes already streamed cannot be rewound.
 
 ### Lazy component mounting
 
-This is the **only** sanctioned place to insert an element from JavaScript,
-because a lazily loaded component has no template representation until fetched.
+This is the **only** sanctioned exception for inserting UI from JavaScript:
+mounting a lazily loaded component through the component-asset API into an
+explicit `w-ref` slot. It does not authorize manually building
+ordinary UI or removing a child owned by a parent template.
 
 Prefer the template-driven form, which needs no DOM insertion at all:
 
@@ -1109,62 +976,15 @@ hidden; the component may be unstyled. See
 </if>
 ```
 
-Without `@microsoft/webui-delivery`, prebuild the asset and mount it into a
-`w-ref` slot:
+Without delivery, follow [static component assets](/learn/interactivity#loading-static-component-assets)
+to prebuild and import a generated root, register it with
+`defineComponentAsset()`, await `asset.create()`, and mount into an explicit
+`w-ref` slot. Load the normal entry first. Component assets cannot be combined
+with `<route>`; use the router for routed components.
 
-```bash
-webui build ./src --out ./dist --plugin=webui \
-  --emit-component-assets settings-dialog \
-  --modules-out ./.webui \
-  --metafile ./dist/component-assets-meta.json
-```
-
-```typescript
-import {
-  defineComponentAsset,
-  preloadComponentAssetStyles,
-} from '@microsoft/webui-framework/component-asset-runtime.js';
-
-const loadSettings = () => {
-  preloadComponentAssetStyles('settings-dialog');
-  return import('../.webui/settings-dialog.webui.js')
-    .then(module => defineComponentAsset(module.default));
-};
-
-preloadSettings(): void {
-  void loadSettings().then(asset => asset.preload()).catch(() => {});
-}
-
-async openSettings(): Promise<void> {
-  this.panelSlot.replaceChildren(await (await loadSettings()).create());
-}
-```
-
-The compiler stores final Link stylesheet hrefs in the protocol. Shadow builds
-publish them as inert head JSON that `preload(tag)` consumes automatically;
-Light builds emit them as document stylesheets. Authored code therefore keeps
-only the stable root asset URL and never invents or hardcodes a content-hashed
-stylesheet filename.
-Automatic Shadow intent preloading requires HTML rendered through the WebUI
-handler or `Protocol`, which emits `#webui-component-assets`. Using build
-artifacts without rendering the protocol preserves the guarded native mount but
-does not provide early compiler-owned style preloading.
-
-WebUI emits one immutable `components/<tag>.<content-id>.webui.js` input per asset-owned
-component and a thin `<root>.webui.js` entry with static imports for its closure.
-The application bundler owns final chunks, hashes, public paths, caching, and
-delivery. `defineComponentAsset()` waits for graph and style registration before
-creating the element, returning one facade per imported payload. Failed
-registration can retry, but a native ESM import failure may stay cached for the
-document lifetime. Consume speculative failures without reloading; real open
-failures need visible errors and bundler-owned recovery or an explicit reload.
-Do not claim resetting a promise retries a native import. The versioned root
-imports compact template/style payloads and lists only external prerequisites.
-Generated dependencies stay available until older readers finish; clean the
-input directory only after stopping or coordinating those readers.
-The normal entry bundle must load first.
-Component assets cannot be combined with `<route>`; use the router for routed
-components.
+The bundler owns code splitting and asset URLs. Do not invent hashed stylesheet
+paths or edit generated modules. Real open failures need visible errors; resetting
+a promise does not guarantee retrying a failed native ESM import.
 
 ## Routing
 
@@ -1451,7 +1271,7 @@ top-layer stacking for free.
 Before emitting WebUI code, confirm:
 
 - [ ] No `createElement`, `innerHTML`, `appendChild`, or `insertAdjacentHTML`,
-      except mounting a lazily loaded component.
+      except the documented component-asset mount into an explicit `w-ref` slot.
 - [ ] No `.style.x =`, `classList`, `setAttribute('style')`, or
       `adoptedStyleSheets`.
 - [ ] No `element.animate()`, `requestAnimationFrame` tweening, or animation
@@ -1514,123 +1334,29 @@ names you control.
 Other Hosts are rejected before the app or API proxy handles them. See the
 [serve CLI reference](./reference/cli/#webui-serve) for details.
 
-Common flags on `build` and `serve`: `--entry`, `--css <link|style|module>`,
-`--dom <shadow|light>` (default `shadow`),
-`--css-bundle` (merge component stylesheets into shared chunks; not valid with
-`--css module`), `--components`, `--theme`,
-`--projection-manifest`, `--emit-component-assets`, `--metafile`,
-`--asset-base <BASE>` (public URL or path ending in `/` for the build output;
-override per request with `$webui.assetBase`), `--format json`.
-
-WebUI overwrites current component roots but does not delete older generated
-payloads or unrelated files from a developer-owned output directory. Remove and
-recreate the disposable directory when a clean build is required.
-
-For generated lazy/component modules plus state projection, the
-[Node build API](/build/integrations/node#single-compilation-builds) supports
-`prepareBuild(options)`, `writeModules()`, client bundling, then
-`finish({ projectionManifests })` without compiling templates twice.
-
-On `webui serve` (with or without `--watch`) and `webui press serve`, optionally
-add `--shutdown-timeout 10` for a ten-second shutdown grace period. Omit it to
-retain the default wait for an active rebuild with no deadline. Forced shutdown
-returns nonzero and may leave incomplete outputs; supervised mode reserves
-stdin. See [bounded shutdown](/reference/cli/#bounded-dev-server-shutdown) for
-platform limits.
-
-Unwrapped components default to Shadow. Under `--dom light`, they use
-authored/global Light DOM while a sole top-level
-`<template shadowrootmode="open">` remains a Shadow island. A sole bare
-`<template>` explicitly selects Light and is unwrapped.
+Use the [CLI reference](/reference/cli/) for CSS/DOM modes, component discovery,
+asset bases, generated assets, and shutdown options rather than guessing flags.
+For generated modules plus state projection, follow the
+[single-compilation build pipeline](/build/integrations/node#single-compilation-builds).
+Projection is optional; rebuild its manifest whenever client inputs change.
 
 Authoring mistakes fail the build with a structured diagnostic carrying a stable
 code, source location, snippet, and a `help:` fix. Branch on the `code`, never
 the message. `--format json` emits one JSON object per error on stdout.
 
-```
-x error: invalid <for> each expression [invalid-for-each]
-  --> index.html:67:5
-    each="person inpeople"
-  help: use the form each="item in collection", e.g. each="todo in todos"
-```
-
-Full flag tables, exit codes, and the error-code list:
-[CLI Reference](/reference/cli/).
-
 ### Desktop apps
 
-Install matching packages with optional dependencies enabled:
+Desktop is optional; the same UI composition rules apply inside its webview.
+Before adding a native host or packaging an app, read the
+[desktop guide](/build/desktop) and [desktop CLI](/reference/cli/#webui-desktop).
+Use matching package versions and enable only the capabilities needed.
 
-```bash
-npm install @microsoft/webui @microsoft/webui-desktop
-webui desktop run ./src
-```
-
-`run` needs no authored Rust host, but desktop `--watch` is not supported.
-Use `webui desktop init ./my-app` for a Rust-runner scaffold; existing files are
-protected unless `--force` is passed. Put persistent app-root packaging settings
-in `webui-desktop.json`; explicit flags override them. Pass current, complete
-`--projection-manifest` files when opting into state projection.
-
-Rust apps use `microsoft-webui-desktop` with `native`; enable `source` only for
-template compilation. Construct with `DesktopApp::from_bundle` or
-`DesktopApp::from_source`, configure `WindowOptions` before `build()`, and use
-`frame.window_handle()` for supported live changes. Native callbacks must not
-block the UI thread. See the [desktop Rust API](/build/desktop#rust-api)
-and [window controls](/build/desktop#events-and-window-control).
-
-For an existing HTTP application, `DesktopApp::from_local_server` requires
-`local-server` and a verified, already-bound loopback origin. It does not
-re-render or proxy the server. Retain the listener and `HostLifetimeOwner`
-until native close completes, revoke the lifetime before releasing ownership,
-and handle failed close delivery. A loopback address is not authentication.
-Preview-frame grants do not grant native authority. Read the
-[local-server contract](/build/desktop#existing-http-application)
-before implementing this mode.
-
-Enable native capabilities individually and follow their platform limits:
-
-- `native-services` provides trusted-host openers and macOS theme control.
-  `native-picker` and `native-dialogs` add macOS/Windows UI; Linux returns
-  unsupported errors. Await actual completion, handle cancellation separately,
-  and never display raw error chains. See
-  [native services](/build/desktop#trusted-host-os-openers).
-- `native-capture` and `native-clipboard` are explicit host-only capabilities.
-  Capture only covers the visible webview; preview readiness and authorization
-  belong to the host. Runtime qualification is limited, particularly on
-  Windows. Read the [capture limits](/build/desktop#host-owned-visible-content-capture-macos-and-windows)
-  and [clipboard ownership rules](/build/desktop#explicit-macos-and-windows-png-clipboard-write).
-- `native-url-activation` adds macOS incoming-URL callbacks, not OS scheme
-  registration. `startup-failure` provides pre-frame macOS/Windows alerts.
-  See [URL activation](/build/desktop#incoming-custom-scheme-urls) and
-  [startup failures](/build/desktop#before-frame-startup-failures).
-- `verified-update` checks staged bytes against independently authenticated
-  expected metadata. It does not prove provenance, archive identity, signatures,
-  or install safety. See [release-byte integrity](/build/desktop#staged-release-byte-integrity).
-
-These host services do not automatically expose renderer APIs. For application
-messages, enable `application-ipc`, define a proto3 contract, and run
-`webui desktop ipc generate`. Use generated calls and subscriptions, explicit
-`IpcRegistry`/`IpcOptions` grants, and document-scoped connections. JavaScript
-64-bit integers use `bigint`, bytes use `Uint8Array`, and maps use `Map`.
-Dispose subscriptions and honor cancellation; notifications acknowledge
-admission, not subscriber completion. See
-[message passing](/build/desktop#message-passing).
-
-macOS local-server data is ephemeral unless a packaged host explicitly requests
-`persistent_website_data()` with the exact running bundle ID. The store is
-app-wide, not per viewer. Windows uses app-ID-owned WebView2 profiles; Linux
-rejects this persistence request. See
-[website data](/build/desktop#website-data-and-persistence).
-
-`webui desktop package` builds an optimized runner by default. Targets
-`macos-app`, `windows-portable`, and `linux-portable` create layouts, not
-cross-compiled runners, installers, or signatures. Select declared runner
-features with `--runner-features`. For an already-compiled host, the separate
-`packaging` feature exposes `package_precompiled_host`. The application owns
-distribution, signing, and platform runtime prerequisites. See
-[packaging](/build/desktop#package-and-run) and the
-[desktop CLI](/reference/cli/#webui-desktop).
+Native host authority is not automatically renderer authority. For an existing
+HTTP app, read the [local-server contract](/build/desktop#existing-http-application):
+loopback alone is not authentication. For renderer-to-host calls, follow
+[message passing](/build/desktop#message-passing) with explicit grants and
+document-scoped lifetimes. Check each capability's platform and security limits
+in the guide rather than assuming browser access or cross-platform support.
 
 ### External component discovery
 
@@ -1655,9 +1381,15 @@ require registration imports or projection entries.
 
 ### WebUI Press
 
-Install `@microsoft/webui-press` at the same version as `@microsoft/webui`.
-`webui press build` and `webui press serve` invoke the native Press sidecar;
-Press does not support `--format json`.
+Press is the optional Markdown-site tool, not part of ordinary component
+authoring. Use `@microsoft/webui-press` at the same version as `@microsoft/webui`.
+Before configuring a site, read the [Press reference](/reference/webui-press)
+for commands, layouts, page state, named regions, and appearance.
+
+Prefer its built-in configuration and extension points over copying the shell,
+patching generated HTML, or duplicating appearance storage and listeners.
+Page state is client-facing: namespace application data to avoid reserved keys
+and never include secrets.
 
 Keep source-file links such as `[Install](guide/install.md#setup)` in Markdown.
 Press maps discovered Markdown destinations to their actual public page routes
@@ -1667,197 +1399,22 @@ directory; root-relative links start at `contentDir`. Query strings, fragments,
 and `basePath` are preserved. See
 [Markdown page links](/reference/webui-press#markdown-page-links).
 
-For page-local synchronized tabs, give related `<webui-press-tabs>` controls
-the same `sync` name and their `<webui-press-tab>` children matching `value`
-attributes. Add `storage="local"` to remember a category across page loads.
-See [tabbed content](/reference/webui-press#tabbed-content).
-
-Set `"outline": true` in `.webui-press/config.json` for the built-in page
-outline; it is off by default. Markdown frontmatter and object-form custom
-pages can override it with the same boolean. Eligible `doc`/`page` layouts get
-a sticky desktop outline and a mobile disclosure without copying templates or
-scripts. Home, `full`, 404, and content-only pages omit it. See
-[page outlines](/reference/webui-press#page-outlines) for heading eligibility,
-browser enhancement, and theme customization.
-
-Use native `webui press build --show=content` or `webui press serve --show=content`
-to generate Markdown/examples/API panels without Press shell UI. Default mode
-is `all`; explicit CLI values override config `show` across live reloads.
-Content mode retains the complete document, themes, SSR, and hydration.
-Content colors follow the OS, including live preference changes, without
-reading the full site's saved manual theme. Full mode retains its persisted
-theme control and applies that choice to native theme tokens and controls.
-See [WebUI Press](/reference/webui-press) for layout and asset behavior.
-
-Keep initial example data local to its Markdown file using YAML frontmatter:
-
-```markdown
----
-title: Button examples
-stateFile: ./button.json
-state:
-  example:
-    label: Save
-    count: 2
----
-
-<example-preview :example="{{example}}"></example-preview>
-```
-
-The receiving component declares `@observable example` and binds its nested
-fields inside its template. Keep Markdown complex-property bindings aligned
-with that top-level state key; entry-level nested-to-renamed-observable mappings
-do not currently preserve the initial hydration value.
-
-Frontmatter `state` is an inline JSON-compatible object, not a file path.
-Markdown `stateFile` accepts one relative JSON file path string. The file must
-contain an object; its top-level keys merge into the page state.
-Paths resolve from the Markdown source; `../` is supported. Files are cached
-per build (16 MiB each) and automatically watched by `serve`, even under `target`.
-Missing includes recover when the file or its parent directories are created.
-Precedence is **global config `state`/`stateFile` → Markdown `stateFile` →
-Markdown inline `state`**. Matching top-level keys are replaced shallowly for
-this page only, without deep-merging objects.
-The same merged state drives SSR and hydration in both display modes.
-Omit `state` or use `{}` for no local data. Non-object state, non-string object
-keys, custom YAML tags, non-finite numbers, and reserved top-level Press keys are build
-errors, as are invalid or missing includes. Namespace examples to avoid reserved keys such as `page`, `site`,
-`label`, and `icon`; `example.label` is fine. Never store secrets in render state.
-`customPages` replaces Markdown rather than supplementing it, and Markdown
-state does not populate `pageData`. See the
-[full state contract and reserved-key list](/reference/webui-press#markdown-local-state).
-
-In a WebUI Press template, use paired regions for fallback markup and
-self-closing regions for empty insertion points:
-
-```html
-<webui-press-region name="home.afterHero" layout="home">
-  <project-summary></project-summary>
-</webui-press-region>
-```
-
-A matching `regions` entry in `.webui-press/config.json` may replace or clear
-the HTML, add object state beneath the dotted `regions.*` path, and add a
-page-scoped `scriptFile`. Omit `html`/`htmlFile` to retain the fallback. Regions
-resolve before component discovery and compilation; do not manually register
-their components elsewhere. See [WebUI Press named regions](/reference/webui-press)
-for the stable built-in region list and full configuration contract.
-
-Press's `appearance.themes` config accepts named light/dark token sources.
-Theme family and System/Light/Dark preferences are independent; single-family
-sites omit the family picker. A palette button opens an Appearance popover with
-a themeable native family select and System/Light/Dark icon buttons. On narrow
-screens the same controls appear directly in the navigation menu.
-Deploy and CSP-authorize the generated same-origin initialization asset; it
-restores preferences before styles and hydration.
-Use `header.themePicker` or `header.modePicker` regions for custom controls and
-`@microsoft/webui-press/appearance.js` for shared selection/subscriptions.
-Do not duplicate preference storage, media listeners, or theme transitions.
-See [Press appearance](/reference/webui-press#theme-families-and-appearance).
-
-```json
-{
-  "scripts": {
-    "build:client": "node build-client.mjs",
-    "build:protocol": "webui build ./src --out ./dist --plugin=webui --projection-manifest ./dist/webui-projection.json",
-    "build": "npm run build:client && npm run build:protocol",
-    "dev:server": "webui serve ./src --state ./data/state.json --plugin=webui --projection-manifest ./dist/webui-projection.json --watch"
-  },
-  "dependencies": {
-    "@microsoft/webui": "latest",
-    "@microsoft/webui-framework": "latest"
-  }
-}
-```
-
-Add `@microsoft/webui-delivery` for client-side navigation. Passing
-`--projection-manifest` narrows hydration state to exactly the `@observable` and
-`@attr` fields your bundle uses; omitting it keeps full state.
-
 ## Server integration
 
 Choose a supported [host binding](/build/integrations/), load `protocol.bin`
 once, and reuse it with JSON state per request. Native bindings need a
 compatible platform library; WASM is a separate browser-hosted option.
 
-```rust
-let protocol = Protocol::from_protobuf(&fs::read("dist/protocol.bin")?)?;
-let handler = WebUIHandler::new();
-handler.render(&protocol, &state, &options, &mut writer)?;
-```
+Keep request state, route information, and CSP nonces request-scoped. Follow the
+binding's guide for rendering and partial responses rather than translating API
+names between languages. With nonce-based CSP, use the same response nonce for
+renderer output, authored module scripts, and modulepreload links.
 
-For one Rust endpoint that serves both initial documents and router partials,
-pass the complete per-response options through `ServeRequest`. Always attach a
-fresh document CSP nonce before calling the helper:
-
-```rust
-let options = RenderOptions::new("index.html", request_path)
-    .with_nonce(csp_nonce);
-let request = ServeRequest::new(options, accepts_json, inventory_header);
-let response = serve_request(&protocol, &handler, state, &request)?;
-```
-
-```javascript
-const protocol = new Protocol(result.protocol, { plugin: 'webui' });
-const html = protocol.render(state, { entry: 'index.html', requestPath: req.url });
-```
-
-For repeated renders of one immutable Node state snapshot, call
-`protocol.prepareState(state)` once and pass the result to
-`protocol.renderPrepared(prepared, options)`. Prepare a new snapshot when state
-changes.
-
-For Rust progressive hydration, create a `StreamingResponse` over a
-`FlushWriter`. Keep one bounded worker as the response owner, cap admitted
-renders before spawning it, and configure the transport's flush timeout.
-
-```rust
-let mut page = handler.stream_response(&protocol, &options, &mut writer)?;
-let mut step = page.start(&initial_state)?;
-while !step.done {
-    step = match step.boundary.as_ref() {
-        Some(boundary) => {
-            let state =
-                load_state(&boundary.owner, &boundary.name, boundary.key.as_ref())?;
-            page.resume(boundary.instance_id, &state, BoundaryMode::Final)?
-        }
-        None => page.advance()?,
-    };
-}
-```
-
-With `webui serve --api-port`, a Node or other HTTP backend can return
-newline-delimited control records instead:
-
-```text
-{"type":"start","version":2,"state":{"query":""}}
-{"type":"resume","boundary":{"owner":"ntp-page","name":"search-ready"},"state":{"query":""},"mode":"updatable"}
-{"type":"update","boundary":{"owner":"ntp-page","name":"search-ready"},"state":{"query":"webui"}}
-```
-
-Honor HTTP write backpressure and cap concurrent streams. The CLI uses a
-capacity-one command channel and matches each `boundary` target by
-descriptor `owner`, `name`, and optional `key` (plus optional
-`declarationId`). It keeps response-local instance IDs, the compiled protocol,
-and browser-facing bytes in Rust. A resume control commits boundary-only bytes;
-the CLI then calls `advance` internally for the following parent bytes. The
-control stream needs no advance record. After the backend sends the resume for
-the final descriptor and closes its body, the CLI's final `advance` completes
-the response. Returning JSON keeps the buffered state path.
-
-If the backend refuses a stream request (non-success status such as a `503`
-from its own concurrency cap), no response bytes were sent, so `webui serve` logs
-one warning and renders the page from fallback state rather than replacing the
-app with the upstream error body. A failure *after* the stream is live still
-fails the response, because bytes already flushed cannot be rewound.
-
-Bindings are available for WebAssembly, Python, and .NET; Go can call the C ABI
-through cgo. Python wheels are distributed on GitHub Releases, not yet PyPI.
-For `router.ensureLoaded()`, expose
-`GET /_webui/templates?t=tag1,tag2` backed by
-`render_component_templates(&tags, &inv)`.
-
-Full detail: [Integrations](/build/integrations/).
+For on-demand routing, implement the
+[component template endpoint](/build/routing#on-demand-component-loading).
+Streaming additionally requires host lifecycle and transport handling; follow
+the [streaming guide](/build/hydration#progressive-streaming-hydration), not a
+hand-built browser record format.
 
 ## Where to read more
 
