@@ -255,6 +255,7 @@ function scanSsrMarkerElements(
  */
 export function claimSsrComponentStyles(source: Element, target: StyleTarget): void {
   const catalog = catalogFor(owningDocument(target));
+  if (catalog.resources.size === 0) return;
   const state = targetStyleState(target, catalog);
   const route = source.parentElement;
   if (route?.localName === 'webui-route') {
@@ -712,6 +713,10 @@ export function installMountedComponentStyles(
   host: HTMLElement,
   flags: number,
 ): Promise<void> | undefined {
+  const catalog = catalogFor(owningDocument(target));
+  const closure = catalog.closures.get(rootId);
+  // An empty own closure can still need SSR Module resources from its CSS tree.
+  if (!closure || (closure.length === 0 && catalog.resources.size === 0)) return undefined;
   return installStyles(rootId, target, host, flags);
 }
 

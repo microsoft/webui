@@ -96,11 +96,13 @@ const observableRegistry = new WeakMap<Function, Set<string>>();
 
 /** Get the set of @observable property names registered for a class. */
 export function getObservableNames(ctor: Function): Set<string> {
-  const names = observableRegistry.get(ctor);
-  if (names) return names;
-
-  const parent = parentConstructor(ctor);
-  return parent ? getObservableNames(parent) : EMPTY_SET;
+  let current: Function | null = ctor;
+  while (current) {
+    const names = observableRegistry.get(current);
+    if (names) return names;
+    current = parentConstructor(current);
+  }
+  return EMPTY_SET;
 }
 
 function registerObservableProperty(ctor: Function, name: string): void {
@@ -121,11 +123,11 @@ const attrByAttribute = new WeakMap<Function, Map<string, AttrDefinition>>();
 /** Registry of property-name → attribute metadata, used for mount-time sync. */
 const attrByProperty = new WeakMap<Function, Map<string, AttrDefinition>>();
 
-function inheritedAttrMap(
+function attrMapFor(
   registry: WeakMap<Function, Map<string, AttrDefinition>>,
-  ctor: Function,
+  ctor: Function | null,
 ): Map<string, AttrDefinition> | undefined {
-  let current = parentConstructor(ctor);
+  let current = ctor;
   while (current) {
     const map = registry.get(current);
     if (map) return map;
@@ -147,18 +149,8 @@ function attrDefinitionFor(
   return undefined;
 }
 
-function attrPropertyMapFor(ctor: Function): Map<string, AttrDefinition> | undefined {
-  let current: Function | null = ctor;
-  while (current) {
-    const map = attrByProperty.get(current);
-    if (map) return map;
-    current = parentConstructor(current);
-  }
-  return undefined;
-}
-
 export function isAttributeProperty(ctor: Function, property: string): boolean {
-  return attrPropertyMapFor(ctor)?.has(property) === true;
+  return attrMapFor(attrByProperty, ctor)?.has(property) === true;
 }
 
 /** Return the reflected HTML attribute name for an `@attr` property. */
@@ -166,20 +158,12 @@ export function attributeNameForProperty(
   ctor: Function,
   property: string,
 ): string | undefined {
-  return attrPropertyMapFor(ctor)?.get(property)?.attribute;
+  return attrMapFor(attrByProperty, ctor)?.get(property)?.attribute;
 }
 
 // ---------------------------------------------------------------------------
 // Attribute reflection
 // ---------------------------------------------------------------------------
-
-function setReflectingAttribute(instance: ReactiveInstance, attrName: string): void {
-  instance[reflectingAttribute] = attrName;
-}
-
-function restoreReflectingAttribute(instance: ReactiveInstance): void {
-  instance[reflectingAttribute] = undefined;
-}
 
 function reflectPropertyToAttribute(
   instance: ReactiveInstance,
@@ -188,44 +172,31 @@ function reflectPropertyToAttribute(
 ): void {
   const element = instance as unknown as HTMLElement;
   const attrName = definition.attribute;
+  let attrValue: string | null;
 
   if (definition.boolean) {
     const shouldHaveAttribute = Boolean(value);
     if (element.hasAttribute(attrName) === shouldHaveAttribute) return;
-    setReflectingAttribute(instance, attrName);
-    try {
-      if (shouldHaveAttribute) element.setAttribute(attrName, '');
-      else element.removeAttribute(attrName);
-    } finally {
-      restoreReflectingAttribute(instance);
-    }
-    return;
-  }
-
-  if (value == null) {
+    attrValue = shouldHaveAttribute ? '' : null;
+  } else if (value == null) {
     if (!element.hasAttribute(attrName)) return;
-    setReflectingAttribute(instance, attrName);
-    try {
-      element.removeAttribute(attrName);
-    } finally {
-      restoreReflectingAttribute(instance);
-    }
-    return;
+    attrValue = null;
+  } else {
+    attrValue = typeof value === 'string' ? value : String(value);
+    if (element.getAttribute(attrName) === attrValue) return;
   }
-
-  const attrValue = typeof value === 'string' ? value : String(value);
-  if (element.getAttribute(attrName) === attrValue) return;
-  setReflectingAttribute(instance, attrName);
+  instance[reflectingAttribute] = attrName;
   try {
-    element.setAttribute(attrName, attrValue);
+    if (attrValue === null) element.removeAttribute(attrName);
+    else element.setAttribute(attrName, attrValue);
   } finally {
-    restoreReflectingAttribute(instance);
+    instance[reflectingAttribute] = undefined;
   }
 }
 
 /** Reflect every @attr property of an instance to its attribute at mount. */
 export function syncAttrProperties(instance: object, ctor: Function): void {
-  const attrs = attrPropertyMapFor(ctor);
+  const attrs = attrMapFor(attrByProperty, ctor);
   if (!attrs) return;
 
   const reactiveInstance = instance as ReactiveInstance;
@@ -369,7 +340,7 @@ function applyAttr(
   // 2. Register the attribute mapping.
   let byAttribute = attrByAttribute.get(ctor);
   if (!byAttribute) {
-    const inherited = inheritedAttrMap(attrByAttribute, ctor);
+    const inherited = attrMapFor(attrByAttribute, parentConstructor(ctor));
     byAttribute = inherited ? new Map(inherited) : new Map();
     attrByAttribute.set(ctor, byAttribute);
   }
@@ -377,14 +348,14 @@ function applyAttr(
 
   let byProperty = attrByProperty.get(ctor);
   if (!byProperty) {
-    const inherited = inheritedAttrMap(attrByProperty, ctor);
+    const inherited = attrMapFor(attrByProperty, parentConstructor(ctor));
     byProperty = inherited ? new Map(inherited) : new Map();
     attrByProperty.set(ctor, byProperty);
   }
   byProperty.set(name, definition);
 
   // 3. Accumulate observed attributes on the constructor.
-  if (!Object.prototype.hasOwnProperty.call(ctor, '_observedAttrs')) {
+  if (!Object.hasOwn(ctor, '_observedAttrs')) {
     const inheritedAttrs = ctor._observedAttrs;
     ctor._observedAttrs = inheritedAttrs ? inheritedAttrs.slice() : [];
 

@@ -44,7 +44,6 @@ import type {
   CompiledEventArgs,
   TemplateBlockMeta,
   TemplateMeta,
-  TemplateNodeIndex,
 } from './template.js';
 import type {
   ScopeFrame,
@@ -130,7 +129,7 @@ export class WebUIElement extends TemplateElement {
     super();
     const names = getObservableNames(this.constructor as Function);
     for (const name of names) {
-      if (!Object.prototype.hasOwnProperty.call(this, name)) continue;
+      if (!Object.hasOwn(this, name)) continue;
       (this.$preUpgradeProperties ??= new Map()).set(
         name, (this as Record<string, unknown>)[name],
       );
@@ -181,7 +180,7 @@ export class WebUIElement extends TemplateElement {
       for (const name of names) {
         if (typeof (this as Record<string, unknown>)[`${name}Changed`] !== 'function') continue;
         this.$authoredPhase = AUTHORED_LIVE;
-        if (Object.prototype.hasOwnProperty.call(this, `_${name}`)) {
+        if (Object.hasOwn(this, `_${name}`)) {
           (this.$pendingPropertyChanges ??= new Map()).set(name, undefined);
         }
       }
@@ -372,10 +371,19 @@ export class WebUIElement extends TemplateElement {
   /** Wire events + root events + refs (shared by $wire and $hydrate). */
   protected override $finalize(
     instance: TemplateInstance,
-    root: Node | null,
     meta: TemplateBlockMeta,
-    resolver: (root: Node | null, path: TemplateNodeIndex) => Node | null,
-    scope?: ScopeFrame,
+    elements: readonly (Node | undefined)[],
+  ): void {
+    if (meta.eg || (meta as TemplateMeta).re) {
+      this.$wireEvents(instance, meta, elements);
+    }
+    if (meta.rf) wireRefs(this as Record<string, unknown>, instance, meta, elements);
+  }
+
+  private $wireEvents(
+    instance: TemplateInstance,
+    meta: TemplateBlockMeta,
+    elements: readonly (Node | undefined)[],
   ): void {
     const groups = meta.eg;
     const rootEvents = (meta as TemplateMeta).re;
@@ -391,9 +399,9 @@ export class WebUIElement extends TemplateElement {
           const [eventName, bindings] = groups[i];
           for (let j = 0; j < bindings.length; j++) {
             const [handlerName, args, target] = bindings[j];
-            const el = resolver(root, target);
+            const el = elements[target];
             if (el && el.nodeType === 1) {
-              const listener = this.$addEvent(el, eventName, handlerName, args, scope);
+              const listener = this.$addEvent(el, eventName, handlerName, args, instance.scope);
               if (listener) listeners[count++] = listener;
             }
           }
@@ -408,21 +416,6 @@ export class WebUIElement extends TemplateElement {
       }
       listeners.length = count;
       instance.listeners = listeners;
-    }
-    const refs = meta.rf;
-    if (!refs) return;
-    const owner = this as Record<string, unknown>;
-    for (let i = 0; i < refs.length; i++) {
-      const [name, target] = refs[i];
-      const node = resolver(root, target);
-      if (!node || node.nodeType !== 1) continue;
-      owner[name] = node;
-      // Component roots retain their DOM; only removable views release refs.
-      if (!(meta as TemplateMeta).v || meta.f) {
-        (instance.cleanups ??= []).push(removeNodes => {
-          if (removeNodes && owner[name] === node) owner[name] = undefined;
-        });
-      }
     }
   }
 
@@ -442,6 +435,28 @@ export class WebUIElement extends TemplateElement {
     };
     target.addEventListener(eventName, listener);
     return listener;
+  }
+}
+
+function wireRefs(
+  owner: Record<string, unknown>,
+  instance: TemplateInstance,
+  meta: TemplateBlockMeta,
+  elements: readonly (Node | undefined)[],
+): void {
+  const refs = meta.rf;
+  if (!refs) return;
+  for (let i = 0; i < refs.length; i++) {
+    const [name, target] = refs[i];
+    const node = elements[target];
+    if (!node || node.nodeType !== 1) continue;
+    owner[name] = node;
+    // Component roots retain their DOM; only removable views release refs.
+    if (!(meta as TemplateMeta).v || meta.f) {
+      (instance.cleanups ??= []).push(removeNodes => {
+        if (removeNodes && owner[name] === node) owner[name] = undefined;
+      });
+    }
   }
 }
 

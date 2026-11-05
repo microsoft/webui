@@ -150,7 +150,8 @@ function commitKeyIdentity(state: RepeatKeyState): void {
   state.nextKeys.length = 0;
 }
 
-function clearKeyIdentity(state: RepeatKeyState): void {
+/** Release retained keys and scratch indexes when a repeat loses its identity. */
+export function clearRepeatKeyState(state: RepeatKeyState): void {
   state.keys.length = 0;
   state.nextKeys.length = 0;
   state.map.clear();
@@ -234,7 +235,7 @@ function syncKeyed(
 ): void {
   if (!collectRepeatKeys(items, state)) {
     warnKeyFallback(rep, state);
-    clearKeyIdentity(state);
+    clearRepeatKeyState(state);
     syncPositional(host, rep, items, container);
     return;
   }
@@ -249,7 +250,7 @@ function syncKeyed(
     if (rep.instances.length === items.length) {
       commitKeyIdentity(state);
     } else {
-      clearKeyIdentity(state);
+      clearRepeatKeyState(state);
     }
     return;
   }
@@ -301,7 +302,7 @@ export function syncRepeat(
     rep.instances.length = 0;
     if (hadInstances) host.$changeStructure(rep.owner);
     if (rep.keyState) {
-      clearKeyIdentity(rep.keyState);
+      clearRepeatKeyState(rep.keyState);
     }
     return;
   }

@@ -5,15 +5,14 @@ import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import {
   destroyRenderWork,
-  disconnectRenderWork,
-  enterRenderWork,
   finishRenderWork,
-  leaveRenderWork,
   MOUNT_WORK,
   queueRenderWork,
+  renderWork,
   whenRendered,
 } from './render-completion.js';
 import {
+  batchingRender,
   enqueueRender,
   finishRender,
   flushRender,
@@ -21,6 +20,11 @@ import {
   RENDER,
   RENDER_PENDING,
 } from './render-scheduler.js';
+
+const enterRenderWork = (element: Element) => renderWork?.enter(element);
+const leaveRenderWork = (element: Element, previous: ReturnType<typeof enterRenderWork>) =>
+  renderWork?.leave(element, previous);
+const disconnectRenderWork = (element: Element) => renderWork?.disconnect(element);
 
 Object.defineProperty(globalThis, 'HTMLElement', {
   value: class {},
@@ -102,6 +106,28 @@ test('a synchronous host flush cancels its stale slot before a new generation', 
     assert.equal(queued.length, 1);
     queued.shift()?.();
     assert.deepEqual(order, ['first', 'second', 'first']);
+  });
+});
+
+test('a synchronous host flush temporarily leaves batching and restores it after failure', () => {
+  withQueue(queued => {
+    const root = new Target();
+    const child = new Target();
+    const failure = new Error('synchronous render failed');
+    root.run = () => {
+      assert.equal(batchingRender, true);
+      enqueueRender(child);
+      child.run = () => {
+        assert.equal(batchingRender, false);
+        throw failure;
+      };
+      assert.throws(() => flushRender(child), error => error === failure);
+      assert.equal(batchingRender, true);
+    };
+    assert.equal(batchingRender, false);
+    enqueueRender(root);
+    queued.shift()?.();
+    assert.equal(batchingRender, false);
   });
 });
 

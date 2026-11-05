@@ -8,6 +8,7 @@ import { startRuntime } from '../../../src/runtime.js';
 class CompletionRoot extends WebUIElement {
   @observable value = '0';
   @observable rows: Array<{ id: string; value: string }> = [];
+  @observable complexRows: Array<{ id: string; value: string }> = [];
   @observable showUnloaded = false;
   @observable payload = { label: 'loaded' };
   @observable html = '';
@@ -32,6 +33,7 @@ class CompletionRoot extends WebUIElement {
 class CompletionChild extends WebUIElement {
   @attr value = '0';
   @observable derived = 1;
+  @observable label = '';
   captureInChanged = false;
   pending: Promise<void> | undefined;
 

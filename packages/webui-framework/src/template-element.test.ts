@@ -90,7 +90,7 @@ Object.defineProperty(globalThis, 'customElements', {
   configurable: true,
 });
 
-const { TemplateElement } = await import('./template-element.js');
+const { TemplateElement, writeComplexProperty } = await import('./template-element.js');
 const { registerTemplateData } = await import('./template.js');
 const { activateTemplateDefinitions } = await import('./template-registry.js');
 activateTemplateDefinitions();
@@ -121,15 +121,6 @@ function registerTemplate(tag: string): void {
   };
 }
 
-interface ComplexPropertyWriter {
-  $writeComplexProperty(
-    element: Element,
-    name: string,
-    value: unknown,
-    replayAfterHydration: boolean,
-  ): void;
-}
-
 interface PendingParentStateConsumer {
   $applyPendingParentState(replayAfterHydration: boolean): void;
 }
@@ -151,6 +142,33 @@ test('condition resolvers retain their owner and nested repeat scope', () => {
   assert.equal(second['$conditionResolver']()('label'), 'second');
 });
 
+test('scope resolution distinguishes complete names from prefixes and retains readiness', () => {
+  const host = Object.assign(new TemplateElement(), {
+    itemized: { label: 'component' },
+    item: { label: 'component fallback' },
+  });
+  const scope = {
+    name: 'item', value: { label: 'local' }, known: false,
+    parent: { name: 'items', value: { label: 'outer' }, known: true },
+  };
+  assert.equal(host.$resolveValue('item.label', scope), 'local');
+  assert.equal(host.$resolveValue('items.label', scope), 'outer');
+  assert.equal(host.$resolveValue('itemized.label', scope), 'component');
+  assert.equal(host.$hasStateRoot('item.label', scope), false);
+  assert.equal(host.$hasStateRoot('items.label', scope), true);
+  assert.equal(host.$hasStateRoot('itemized.label', scope), true);
+});
+
+test('an unavailable inner scope shadows both an outer scope and component state', () => {
+  const host = Object.assign(new TemplateElement(), { item: { label: 'component' } });
+  const scope = {
+    name: 'item', value: undefined, known: false,
+    parent: { name: 'item', value: { label: 'outer' }, known: true },
+  };
+  assert.equal(host.$resolveValue('item.label', scope), undefined);
+  assert.equal(host.$hasStateRoot('item.label', scope), false);
+});
+
 for (const wildcard of [false, true]) {
   test(`an unindexed reactive write preserves batching with wildcard=${wildcard}`, async () => {
     const element = new TemplateElement();
@@ -159,13 +177,16 @@ for (const wildcard of [false, true]) {
     const entry = (texts: string[]) => ({ texts, attrs: [], conds: [], repeats: [] });
     const applied: string[] = [];
     let fullRefreshes = 0;
+    const root = {};
     Object.defineProperties(element, {
       $ready: { value: true },
-      $root: { value: {} },
+      $root: { value: root },
       $pathIndex: { value: new Map([['derived', entry(targeted)]]) },
       $wildcardBindings: { value: wildcard ? entry(computed) : null },
-      $updateInstance: { value() { fullRefreshes++; } },
-      $updateBindings: { value(texts: string[]) { applied.push(...texts); } },
+      $updateInstance: { value(bindings: { texts: string[] }) {
+        if (bindings === root) fullRefreshes++;
+        else applied.push(...bindings.texts);
+      } },
     });
     element[REQUEST_UPDATE]('derived');
     element[REQUEST_UPDATE]('value');
@@ -223,6 +244,54 @@ test('binding arrays reserve their compiled size instead of push-grown capacity'
     if (commentDescriptor) Object.defineProperty(document, 'createComment', commentDescriptor);
     else Reflect.deleteProperty(document, 'createComment');
   }
+});
+
+test('path indexes share empty buckets without sharing populated binding arrays', () => {
+  const firstText = { node: {} as CharacterData, path: 'first' };
+  const secondText = { node: {} as CharacterData, parts: [['second'], ['second']] };
+  const thirdText = { node: {} as CharacterData, path: 'second' };
+  const localText = {
+    node: {} as CharacterData,
+    path: 'row.label',
+    scope: { name: 'row', value: { label: 'local' } },
+  };
+  const binding = {
+    element: {} as Element, name: 'title', kind: 0, path: 'first',
+  };
+  const unownedText = { node: {} as CharacterData, path: 'unowned' };
+  const condition = { condition: [() => true, ['first', 'first']] };
+  const repeat = { collection: 'second', instances: [] };
+  function indexed() {
+    const host = new TemplateElement();
+    Object.defineProperties(host, {
+      $root: { value: {
+        texts: [firstText, secondText, thirdText, localText, unownedText],
+        attrs: [binding], conds: [condition], repeats: [repeat],
+      } },
+      $observableNames: { value: () => new Set(['first', 'second']) },
+    });
+    host['$buildPathIndex']();
+    return host;
+  }
+  const first = indexed();
+  const second = indexed();
+  const index = first['$pathIndex']!;
+  const a = index.get('first')!;
+  const b = index.get('second')!;
+  assert.deepEqual(a.texts, [firstText]);
+  assert.deepEqual(a.attrs, [binding]);
+  assert.deepEqual(b.texts, [secondText, thirdText], 'duplicate parts are indexed once');
+  assert.deepEqual(a.conds, [condition], 'duplicate condition paths are indexed once');
+  assert.deepEqual(b.repeats, [repeat]);
+  assert.equal(index.has('row'), false, 'local repeat paths never enter the host index');
+  assert.deepEqual(first['$wildcardBindings']!.texts, [unownedText]);
+  assert.equal(b.conds, b.attrs);
+  assert.equal(b.conds, a.repeats);
+  assert.equal(b.conds, first['$wildcardBindings']!.conds);
+  assert.equal(b.conds, second['$pathIndex']!.get('second')!.attrs);
+  assert.notEqual(a.texts, second['$pathIndex']!.get('first')!.texts);
+  assert.notEqual(a.attrs, second['$pathIndex']!.get('first')!.attrs);
+  assert.equal(b.conds.length, 0, 'populating another bucket never mutates the shared empty array');
 });
 
 test('SSR text without a neighboring dynamic marker allocates no topology array', () => {
@@ -322,7 +391,7 @@ for (const wildcard of [false, true]) {
       $meta: { value: { h: '', tr: ['deferredValue'] } },
       $pathIndex: { value: new Map() },
       $wildcardBindings: { value: wildcard ? bindings(wildcardTexts) : null },
-      $updateBindings: { value(texts: unknown[]) { updated.push(texts); } },
+      $updateInstance: { value({ texts }: { texts: unknown[] }) { updated.push(texts); } },
     });
 
     element.setState({ deferredValue: 'Loaded before the body mounts' });
@@ -352,7 +421,7 @@ test('an observable without live bindings does not trigger a full template updat
     $ready: { value: true },
     $root: { value: { texts: [], attrs: [], conds: [], repeats: [] } },
     $pathIndex: { value: new Map() },
-    $updateBindings: { value() { updates++; } },
+    $updateInstance: { value() { updates++; } },
   });
   element[REQUEST_UPDATE]('deferredValue');
   element[FLUSH_UPDATES]();
@@ -373,7 +442,7 @@ test('a rejected binding releases the flush gate and preserves re-entrant update
     $ready: { value: true },
     $root: { value: {} },
     $pathIndex: { value: new Map([['raw', entry(rejected)], ['count', entry(valid)]]) },
-    $updateBindings: { value(texts: unknown[]) {
+    $updateInstance: { value({ texts }: { texts: unknown[] }) {
       if (texts === rejected) {
         element[REQUEST_UPDATE]('count');
         throw failure;
@@ -418,7 +487,7 @@ for (const paths of [
       $root: { value: {} },
       $pathIndex: { value: new Map([...paths, 'reentrant'].map(path =>
         [path, { texts: [path], attrs: [], conds: [], repeats: [] }])) },
-      $updateBindings: { value([path]: string[]) {
+      $updateInstance: { value({ texts: [path] }: { texts: string[] }) {
         if (path === 'raw' || path === 'otherRaw') {
           failures.push(path);
           element[REQUEST_UPDATE]('count');
@@ -461,7 +530,7 @@ test('a rejected binding does not drop a later path queued before the flush', ()
     $root: { value: {} },
     $pathIndex: { value: new Map(['raw', 'count'].map(path =>
       [path, { texts: [path], attrs: [], conds: [], repeats: [] }])) },
-    $updateBindings: { value([path]: string[]) {
+    $updateInstance: { value({ texts: [path] }: { texts: string[] }) {
       if (path === 'raw') throw failure;
       applied.push(path);
     } },
@@ -499,14 +568,13 @@ describe('TemplateElement complex-property delivery', () => {
       configurable: true,
     });
 
-    const parent = new TemplateElement();
     const child = new PendingChild() as PendingChild & {
       localName: string;
       _payload?: unknown;
     };
     child.localName = tag;
 
-    (parent as unknown as ComplexPropertyWriter).$writeComplexProperty(
+    writeComplexProperty(
       child,
       'payload',
       { label: 'from parent' },
@@ -521,11 +589,10 @@ describe('TemplateElement complex-property delivery', () => {
   });
 
   test('preserves direct assignment for an unresolved third-party element', () => {
-    const parent = new TemplateElement();
     const child = { localName: 'external-property-target' } as unknown as
       Element & { payload?: unknown };
 
-    (parent as unknown as ComplexPropertyWriter).$writeComplexProperty(
+    writeComplexProperty(
       child,
       'payload',
       { label: 'direct' },

@@ -9,6 +9,9 @@
   <for each="row in rows">
     <test-completion-child key="{{row.id}}" data-row="{{row.id}}" value="{{row.value}}"></test-completion-child>
   </for>
+  <for each="row in complexRows">
+    <test-completion-child key="{{row.id}}" data-row="{{row.id}}" :value="{{row.value}}" :label="{{row.value}}"></test-completion-child>
+  </for>
   <if condition="showUnloaded">
     <test-completion-unloaded :payload="{{payload}}"></test-completion-unloaded>
   </if>

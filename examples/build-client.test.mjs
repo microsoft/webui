@@ -31,6 +31,11 @@ export function calculate(value) {
   return redundant;
 }
 export const development = typeof __WEBUI_DEV__ === 'undefined' || __WEBUI_DEV__;
+export const diagnostic = ${JSON.stringify('\u2260')};
+export class Unicode {
+  ${'\u503c'} = ${JSON.stringify('\u96ea')};
+  ${'\u65b9\u6cd5'}(suffix) { return this.${'\u503c'} + suffix; }
+}
 `;
   await writeFile(path.join(root, 'src/index.js'), source);
   const result = await runWebUIClientBuild({
@@ -55,6 +60,33 @@ test('production output is optimized before projection hashes and metafile sizes
   const hashes = Object.values(manifest.outputs);
   assert.ok(hashes.includes(hashContent(code)), 'projection must bind the minified bytes');
   assert.equal(result.metafile.outputs['dist/index.js'].bytes, Buffer.byteLength(code));
+});
+
+test('production escapes non-ASCII diagnostics without changing their runtime text', async t => {
+  const { root, result } = await fixture(t, { sourcemap: 'external' });
+  const code = await readFile(path.join(root, 'dist/index.js'), 'utf8');
+  assert.doesNotMatch(code, /[^\x00-\x7f]/u);
+  assert.match(code, /@license Fixture MIT/);
+  const module = await import(pathToFileURL(path.join(root, 'dist/index.js')).href);
+  assert.equal(module.diagnostic, '\u2260');
+  const instance = new module.Unicode();
+  assert.equal(instance['\u503c'], '\u96ea');
+  assert.equal(instance['\u65b9\u6cd5']('!'), '\u96ea!');
+  assert.equal(instance['\u65b9\u6cd5'].name, '\u65b9\u6cd5');
+  assert.equal(instance['\u65b9\u6cd5'].length, 1);
+  const manifest = JSON.parse(await readFile(path.join(root, 'dist/webui-projection.json'), 'utf8'));
+  assert.ok(Object.values(manifest.outputs).includes(hashContent(code)));
+  assert.equal(result.metafile.outputs['dist/index.js'].bytes, Buffer.byteLength(code));
+  const map = JSON.parse(await readFile(path.join(root, 'dist/index.js.map'), 'utf8'));
+  assert.ok(map.sourcesContent.some(source => source.includes('\u503c') && source.includes('\u96ea')));
+  const valueIndex = code.indexOf('\\u96ea');
+  assert.ok(valueIndex >= 0);
+  const position = code.slice(0, valueIndex).split('\n');
+  const original = new SourceMapConsumer(map).originalPositionFor({
+    line: position.length, column: position.at(-1).length,
+  });
+  assert.ok(original.source.endsWith('src/index.js'));
+  assert.equal(original.line, 9);
 });
 
 for (const sourcemap of [false, true, 'external', 'inline', 'both']) {

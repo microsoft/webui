@@ -149,6 +149,69 @@ function styles(closures: Record<string, string[]>): ComponentStyles {
 }
 
 describe('component style resources', () => {
+  test('unstyled mounts skip DOM claiming and still install styles registered later', async () => {
+    const document = fakeDocument();
+    const source = new FakeElement() as unknown as HTMLElement;
+    const query = document.querySelectorAll.bind(document);
+    let scans = 0;
+    Object.defineProperty(document, 'querySelectorAll', {
+      value(selector: string) { scans++; return query(selector); },
+    });
+    registerComponentStyles({
+      version: 1, strategy: 'style', resources: {}, closures: { empty: [] },
+    }, document);
+    claimSsrComponentStyles(source, document);
+    assert.equal(installMountedComponentStyles('empty', document, source, 0), undefined);
+    assert.equal(scans, 0);
+
+    registerComponentStyles(styles({ root: ['first'] }), document);
+    claimSsrComponentStyles(source, document);
+    await installMountedComponentStyles('root', document, source, 0);
+    assert.equal(scans, 1, 'a skipped empty catalog must not suppress later SSR claiming');
+    const children = (document.head as unknown as FakeParent).children;
+    assert.equal(children.length, 1);
+    assert.equal(children[0].textContent, '.first{}');
+  });
+
+  test('an unresolved style closure still fails when the resource catalog is empty', () => {
+    const document = fakeDocument();
+    const source = new FakeElement() as unknown as HTMLElement;
+    registerComponentStyles({
+      version: 1, strategy: 'style', resources: {}, closures: { root: ['missing'] },
+    }, document);
+    claimSsrComponentStyles(source, document);
+    assert.throws(
+      () => installMountedComponentStyles('root', document, source, 0),
+      /Missing component style resource "missing"/,
+    );
+  });
+
+  test('an empty own closure still adopts registered SSR Module resources', async () => {
+    const document = fakeDocument();
+    const root = fakeShadow(document);
+    const parent = root as unknown as FakeParent;
+    const marker = new FakeElement('style');
+    marker.setAttribute('data-webui-resource', 'shared');
+    marker.setAttribute('data-webui-strategy', 'module');
+    parent.appendNested(marker);
+    registerComponentStyles({
+      version: 1, strategy: 'module',
+      resources: { shared: { kind: 'module', specifier: 'shared', css: '.shared{}' } },
+      closures: { empty: [] },
+    }, document);
+    const sheet = {} as CSSStyleSheet;
+    setCssModuleLoaderForTests(() => Promise.resolve({ default: sheet }));
+    try {
+      const source = new FakeElement() as unknown as HTMLElement;
+      claimSsrComponentStyles(source, root);
+      await installMountedComponentStyles('empty', root, source, 0);
+      assert.deepEqual(root.adoptedStyleSheets, [sheet]);
+      assert.equal(parent.querySelectorAll().length, 0);
+    } finally {
+      setCssModuleLoaderForTests();
+    }
+  });
+
   test('rejects registration without componentStyles', () => {
     assert.throws(
       () => registerComponentStyles(undefined, fakeDocument()),

@@ -12,6 +12,7 @@ type RenderHost = HTMLElement & {
   throwInChanged: boolean;
   pending: Promise<void> | undefined;
   rows: Array<{ id: string; value: string }>;
+  complexRows: Array<{ id: string; value: string }>;
   showUnloaded: boolean;
   note: string;
   html: string;
@@ -65,6 +66,50 @@ test('a pending descendant is captured even when the root has no update', async 
   });
   expect(value).toBe('13');
 });
+
+for (const observed of [false, true]) {
+  test(`complex parent bindings coalesce into one child render with completion=${observed}`, async ({ page }) => {
+    await page.goto('/render-completion/fixture.html');
+    const result = await page.evaluate(async observed => {
+      const root = document.querySelector<RenderHost>('test-completion-root')!;
+      root.rows = [];
+      root.complexRows = [{ id: 'complex', value: '1' }];
+      await root.$whenRendered();
+      const child = root.shadowRoot!.querySelector<RenderHost>('[data-row="complex"]')!;
+      let prototype = Object.getPrototypeOf(child) as object | null;
+      let render: symbol | undefined;
+      while (prototype && !render) {
+        render = Object.getOwnPropertySymbols(prototype).find(key => key.description === 'render');
+        prototype = Object.getPrototypeOf(prototype) as object | null;
+      }
+      if (!render) throw new Error('render hook not found');
+      const target = child as RenderHost & Record<symbol, () => void>;
+      const original = target[render];
+      let renders = 0;
+      target[render] = function (): void {
+        renders++;
+        original.call(this);
+      };
+      try {
+        root.complexRows = [{ id: 'complex', value: '7' }];
+        if (observed) await root.$whenRendered();
+        else {
+          await Promise.resolve();
+          await Promise.resolve();
+          await Promise.resolve();
+        }
+        return {
+          renders,
+          label: child.shadowRoot!.querySelector('.label')!.textContent,
+          leaf: child.shadowRoot!.querySelector('.action')!.textContent,
+        };
+      } finally {
+        delete target[render];
+      }
+    }, observed);
+    expect(result).toEqual({ renders: 1, label: '7', leaf: '8' });
+  });
+}
 
 test('a request from Changed includes the setter trailing that callback', async ({ page }) => {
   await page.goto('/render-completion/fixture.html');

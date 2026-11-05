@@ -8,26 +8,29 @@ import {
   blockRenderWork,
   cancelRenderTask,
   destroyRenderWork,
-  disconnectRenderWork,
   enterRenderTask,
-  enterRenderWork,
-  expectRenderRemoval,
-  failRenderWork,
   finishRenderTask,
   finishRenderWork,
-  finishRenderRemoval,
   invokeRenderCallback,
   leaveRenderTask,
-  leaveRenderWork,
   MOUNT_WORK,
   observingRender,
   queueRenderTask,
   queueRenderWork,
+  renderWork,
   startRenderTask,
   unblockRenderWork,
   UPDATE_WORK,
   whenRendered,
 } from './render-completion.js';
+
+const enterRenderWork = (element: Element) => renderWork?.enter(element);
+const leaveRenderWork = (element: Element, previous: ReturnType<typeof enterRenderWork>) =>
+  renderWork?.leave(element, previous);
+const failRenderWork = (element: Element, error: unknown) => renderWork?.fail(element, error);
+const disconnectRenderWork = (element: Element) => renderWork?.disconnect(element);
+const expectRenderRemoval = (node: Node, end?: Node) => renderWork?.remove(node, end);
+const finishRenderRemoval = (previous: readonly Node[] | undefined) => renderWork?.restoreRemoval(previous);
 
 Object.defineProperty(globalThis, 'HTMLElement', {
   value: class {},
@@ -49,6 +52,15 @@ function finish(host: Host, kind = UPDATE_WORK): void {
   const previous = enterRenderWork(host);
   finishRenderWork(host, kind);
   leaveRenderWork(host, previous);
+}
+
+async function collectAfterTurn(): Promise<void> {
+  const { setFlagsFromString } = await import('node:v8');
+  const { runInNewContext } = await import('node:vm');
+  setFlagsFromString('--expose-gc');
+  const gc = runInNewContext('gc') as () => void;
+  await new Promise(resolve => setTimeout(resolve, 0));
+  gc();
 }
 
 test('idle completion is asynchronous and rejects an unavailable root', async () => {
@@ -578,10 +590,6 @@ test('retiring one host task group does not capture its later independent work',
 });
 
 test('retired task groups do not retain their hosts', async () => {
-  const { setFlagsFromString } = await import('node:v8');
-  const { runInNewContext } = await import('node:vm');
-  setFlagsFromString('--expose-gc');
-  const gc = runInNewContext('gc') as () => void;
   function retiredHost(): WeakRef<Host> {
     const host = new Host();
     const first = startRenderTask(host);
@@ -591,9 +599,56 @@ test('retired task groups do not retain their hosts', async () => {
     return new WeakRef(host);
   }
   const host = retiredHost();
-  await new Promise(resolve => setTimeout(resolve, 0));
-  gc();
+  await collectAfterTurn();
   assert.equal(host.deref(), undefined);
+});
+
+test('idle observation indexes are collectible and later rendering creates fresh state', async () => {
+  await collectAfterTurn();
+  const original = globalThis.WeakMap;
+  const indexes: WeakRef<object>[] = [];
+  const root = new Host();
+  try {
+    globalThis.WeakMap = new Proxy(original, {
+      construct(target, args) {
+        const index = Reflect.construct(target, args) as WeakMap<object, unknown>;
+        indexes.push(new WeakRef(index));
+        return index;
+      },
+    });
+    queueRenderWork(root, UPDATE_WORK);
+    assert.equal(indexes.length, 0, 'ordinary work needs no observation indexes');
+    const waiting = whenRendered(root);
+    assert.equal(indexes.length, 3);
+    finish(root);
+    await waiting;
+  } finally {
+    globalThis.WeakMap = original;
+  }
+  await collectAfterTurn();
+  for (const index of indexes) assert.equal(index.deref(), undefined);
+  queueRenderWork(root, UPDATE_WORK);
+  const next = whenRendered(root);
+  finish(root);
+  await next;
+  assert.equal(observingRender, false);
+});
+
+test('collecting idle observers preserves independently pending mounts and lazy work', async () => {
+  const unrelated = new Host();
+  const root = new Host();
+  queueRenderWork(root, MOUNT_WORK);
+  const task = startRenderTask(root);
+  await whenRendered(unrelated);
+  await collectAfterTurn();
+  let completed = false;
+  const waiting = whenRendered(root).then(() => { completed = true; });
+  finish(root, MOUNT_WORK);
+  await Promise.resolve();
+  assert.equal(completed, false);
+  finishRenderTask(task);
+  await waiting;
+  assert.equal(completed, true);
 });
 
 test('a completed task can be queued again for a later boundary', async () => {

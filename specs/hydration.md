@@ -85,6 +85,11 @@ consequences within one microtask. Later application microtasks do not
 interleave between these parent and descendant jobs. A failed job still throws
 to the host and schedules remaining jobs for a subsequent drain. A synchronous
 host flush cancels its old queue slot so a new generation keeps FIFO order.
+During a scheduled drain, parent complex-property bindings use this same queue
+instead of flushing a child after each property. State and authored callbacks
+remain synchronous; the child's bindings reconcile once after the parent has
+delivered its values. Explicit host flushes, including `setState`, retain their
+synchronous child propagation for navigation snapshots.
 
 Completion captures pending jobs, started staged mounts,
 and retained blocked writes in the root's rendered ancestry scope. Walk
@@ -109,7 +114,11 @@ references and retain no copied state or strong subtree ownership. Initial
 discovery scales with outstanding work and ancestry depth, not just affected
 bindings. Waiter membership exists only for requested boundaries: jobs share a
 single observer set unless requests overlap. Release membership on settlement,
-and bypass observer-scope bookkeeping when no boundary is requested. Do not
+and bypass observer-scope bookkeeping when no boundary is requested. Allocate
+observation indexes on demand and weakly cache idle machinery so collection
+does not retain completed observer callbacks or lose pending mounts and tasks.
+Retire active hooks after the current stack has unwound; a callback can request
+a new boundary after an earlier boundary fails. Do not
 equate an empty instance queue or the startup hydration
 event with affected-descendant completion.
 

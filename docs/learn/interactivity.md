@@ -302,7 +302,7 @@ Use `@observable` for internal state that changes over time. When an observable 
 Observable values are readable immediately. Changes to bindings are targeted
 and batched in a microtask, so multiple assignments in one turn normally cause
 one DOM update. Use `$whenRendered()` when subsequent code needs the updated
-DOM.
+DOM. Multiple parent property bindings to the same child are batched too.
 
 You do not need `@observable` for values that are only read by the template.
 Add `@observable` when TypeScript code needs to read or mutate the value, for

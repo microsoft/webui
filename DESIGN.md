@@ -443,7 +443,9 @@ drains their synchronous consequences in the same microtask. Resource-gated
 mounts retain explicit pending work without blocking unrelated ready updates.
 Completion observes this scheduler's work rather than maintaining a second
 index of queued updates; ordinary scheduling creates no per-component
-microtask closures or completion promises.
+microtask closures or completion promises. Requested observation owns its
+transient indexes and callbacks; idle observation machinery is weakly cached,
+separately from pending ready and resource-gated work.
 
 Applications can observe completion of a finite, scoped batch of browser
 render work and its affected descendants through one author-facing completion

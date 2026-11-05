@@ -6,6 +6,7 @@ import { describe, test } from 'node:test';
 
 import {
   createRepeatKeyState,
+  clearRepeatKeyState,
   dotWalk,
   seedHydratedRepeatKeys,
   syncRepeat,
@@ -16,6 +17,26 @@ import type {
   ScopeFrame,
   TemplateInstance,
 } from './types.js';
+
+test('repeat identity cleanup reuses its arrays and map without changing key policy', () => {
+  const state = createRepeatKeyState('id');
+  const keys = state.keys;
+  const next = state.nextKeys;
+  const map = state.map;
+  keys.push('old');
+  next.push('next');
+  map.set('old', null);
+  state.warned = true;
+  clearRepeatKeyState(state);
+  assert.equal(state.keys, keys);
+  assert.equal(state.nextKeys, next);
+  assert.equal(state.map, map);
+  assert.equal(keys.length, 0);
+  assert.equal(next.length, 0);
+  assert.equal(map.size, 0);
+  assert.equal(state.path, 'id');
+  assert.equal(state.warned, true);
+});
 
 describe('dotWalk (allocation-free dotted path)', () => {
   test('resolves a single-segment path', () => {
