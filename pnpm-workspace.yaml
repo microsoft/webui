@@ -25,7 +25,7 @@ catalog:
   '@types/dom-view-transitions': ^1.0.6
   urlpattern-polyfill: ^10.1.0
   '@types/node': ^26.5.1
-  electron: ^44.3.0
+  electron: ^44.9.1
   esbuild: ^0.28.2
   tslib: ^2.8.1
   typescript: 7.0.2
