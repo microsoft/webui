@@ -343,6 +343,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "creates native windows; opt in with --ignored"]
     fn native_resize_hits_follow_live_window_capabilities_before_webview_setup() {
         use super::super::create::FrameWindow;
 
@@ -410,6 +411,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "creates native windows; opt in with --ignored"]
     fn sdk_overlay_preserves_default_non_client_geometry_before_attachment() {
         let options = WindowOptions {
             titlebar: TitlebarStyle::Overlay { height: 48 },
@@ -461,6 +463,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "creates native windows; opt in with --ignored"]
     fn startup_close_is_deferred_until_the_frame_is_ready() {
         let options = WindowOptions {
             center: false,

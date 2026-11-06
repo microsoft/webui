@@ -28,6 +28,28 @@ Every code change ships with tests:
 
 Never remove, weaken, or `#[ignore]` an existing test unless explicitly asked.
 
+### Windows native UI tests
+
+Tests that create native Windows windows or initialize the native UI dispatcher
+are opt-in (`#[ignore]`), including hidden-window and fullscreen-presenter checks.
+Do not treat an initially hidden HWND as headless: native presenter transitions
+can activate windows. Ordinary `cargo test`, `cargo xtask test`, and
+`cargo xtask check` runs keep pure configuration, geometry, protocol, and
+non-UI tests. Browser E2E tests use Playwright's default headless mode.
+
+The existing Windows CI desktop SDK step includes ignored tests, enables
+`native-dwm-frame`, and runs serially. This preserves native UI coverage once
+per CI run without repeating it through the ordinary feature matrix.
+
+To deliberately run the existing headed native tests (this opens windows):
+
+```bash
+cargo test -p microsoft-webui-desktop --features native,native-dwm-frame --lib windows:: -- --ignored --test-threads=1
+```
+
+Keep the native visibility, focus, and geometry assertions intact; do not make
+them appear headless by suppressing the window behavior they verify.
+
 ## WebUI Node package tests
 
 `cargo xtask test` builds the host native addon and the WebUI TypeScript package,

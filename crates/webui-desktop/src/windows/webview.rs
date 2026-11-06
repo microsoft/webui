@@ -649,6 +649,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "opens native windows; opt in with --ignored"]
     fn native_keyboard_focus_reaches_the_webview_child() {
         use windows::Win32::UI::{Input::KeyboardAndMouse, WindowsAndMessaging as wm};
 
