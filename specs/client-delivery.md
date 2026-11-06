@@ -371,10 +371,15 @@ captured lazy activations in the component and affected descendants, including
 nested regions and the scripts of open bodies. It rejects with a pack or script
 failure and retries failed regions that remain active when called again.
 
-A failed activation dispatches `lazyerror` on the owner: bubbling, composed,
-cancelable, with `detail.error`. If no listener cancels it, the error goes to
-`reportError` (or `console.error`). Internal promises never become unhandled
-rejections. Development builds add two warnings, each issued once. After the
+While a region remains active, an activation failure dispatches `lazyerror` on
+the owner: bubbling, composed, cancelable, with `detail.error`. If no listener
+cancels it, the error goes to `reportError` (or `console.error`). Internal
+promises never become unhandled rejections. Closing or disposing a region
+retires its activation; a late failure
+does not dispatch an error for that activation or affect a replacement. Shared
+loads still report failures to any activations that remain active.
+
+Development builds add two warnings, each issued once. After the
 page loads and goes idle, the runtime warns for each tag in the script map that
 is already defined or declared (waiting for its template) although no region
 that lists it has requested its scripts, which indicates a static import in the

@@ -493,6 +493,48 @@ test('cancelling one failed region keeps another on the same host retryable', as
   }
 });
 
+test('a closed activation ignores a late failure and can retry when reopened', async () => {
+  const id = region('cancelled-owner');
+  const url = '_webui/packs/cancelled-owner.json';
+  const binding = bindingFor(id);
+  const response = Promise.withResolvers<Response>();
+  responses.set(url, () => response.promise);
+  let mounted = 0;
+  let errors = 0;
+  const reportCount = reported.length;
+  const host = Object.assign(new EventTarget(), {
+    isConnected: true,
+    localName: 'cancelled-owner',
+    $toggleCond(): void { mounted++; },
+  }) as unknown as import('./lazy-runtime.js').LazyHost;
+  host.addEventListener('lazyerror', () => { errors++; });
+  try {
+    runtime.activate(host, binding, url);
+    const loading = runtime.load(id, url);
+    const rejected = assert.rejects(loading, /cancelled pack failed/);
+    const cancelled = assert.rejects(whenRendered(host), { name: 'AbortError' });
+    runtime.cancelActivation(host, binding);
+    await cancelled;
+    response.reject(new Error('cancelled pack failed'));
+    await rejected;
+    await tick();
+    assert.equal(errors, 0);
+    assert.equal(reported.length, reportCount);
+    assert.equal(mounted, 0);
+    await whenRendered(host);
+    assert.equal(mounted, 0, 'observing a closed region must not reactivate it');
+    serve(url, pack('cancelled-owner'));
+    runtime.activate(host, binding, url);
+    await whenRendered(host);
+    assert.equal(mounted, 1);
+    assert.equal(errors, 0);
+    assert.equal(reported.length, reportCount);
+  } finally {
+    runtime.cancelActivation(host, binding);
+    responses.delete(url);
+  }
+});
+
 test('a cancelled activation does not report a shared failure after reopening', async () => {
   const id = region('reopened-owner');
   const url = '_webui/packs/reopened-owner.0020.json';

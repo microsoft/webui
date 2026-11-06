@@ -252,6 +252,8 @@ regions and affected WebUI descendants. It rejects if a pack or script cannot
 be loaded. Calling it again, or setting the condition again, retries active
 regions. If the condition turns false before the pack arrives, the body is not
 rendered.
+Closing a region also cancels its pending activation: a later failure does not
+raise `lazyerror` for that activation. Opening it again can retry the load.
 
 Where `AbortSignal.timeout` is supported, a lazy pack fetch times out after
 10 seconds. This deadline does not bound component script imports or
