@@ -9,6 +9,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { test } from 'node:test';
 import { runInNewContext } from 'node:vm';
 import { runWebUIClientBuild } from './build-client.mjs';
+import { minifyClient } from './minify-client.mjs';
 
 const packageRoot = fileURLToPath(new URL('../packages/webui/', import.meta.url));
 const require = createRequire(path.join(packageRoot, 'package.json'));
@@ -18,6 +19,7 @@ const { hashContent } = await import(
 const { SourceMapConsumer } = createRequire(
   require.resolve('terser'),
 )('@jridgewell/source-map');
+const { build } = require('esbuild');
 process.chdir(fileURLToPath(new URL('../packages/webui-test-support/', import.meta.url)));
 
 async function fixture(t, options = {}) {
@@ -60,6 +62,72 @@ test('production output is optimized before projection hashes and metafile sizes
   const hashes = Object.values(manifest.outputs);
   assert.ok(hashes.includes(hashContent(code)), 'projection must bind the minified bytes');
   assert.equal(result.metafile.outputs['dist/index.js'].bytes, Buffer.byteLength(code));
+  assert.equal(
+    result.metafile.outputs['dist/index.js'].webui.inputBytesInOutput,
+    'before-minification',
+  );
+});
+
+test('minification labels original input attribution without changing the dependency graph', async t => {
+  const { root } = await fixture(t, { minify: false });
+  await writeFile(path.join(root, 'src/shared.js'), 'export const shared = value => value + 1;');
+  await writeFile(path.join(root, 'src/lazy.js'), `
+    import { shared } from './shared.js';
+    export const lazy = value => shared(value) * 2;
+  `);
+  await writeFile(path.join(root, 'src/style.css'), '.fixture { color: red; }');
+  await writeFile(path.join(root, 'src/index.js'), `
+    import './style.css';
+    import { shared } from './shared.js';
+    export const calculate = shared;
+    export const load = () => import('./lazy.js');
+  `);
+  let original;
+  const result = await build({
+    absWorkingDir: root,
+    entryPoints: ['src/index.js'],
+    outdir: 'dist',
+    bundle: true,
+    splitting: true,
+    format: 'esm',
+    sourcemap: 'external',
+    metafile: true,
+    write: false,
+    plugins: [{
+      name: 'capture-esbuild-attribution',
+      setup(plugin) {
+        plugin.onEnd(result => { original = structuredClone(result.metafile); });
+      },
+    }, minifyClient()],
+  });
+  assert.ok(original);
+  const metafile = JSON.parse(JSON.stringify(result.metafile));
+  assert.deepEqual(metafile.inputs, original.inputs);
+  const files = new Map(result.outputFiles.map(file => [file.path, file]));
+  let javascript = 0;
+  let smaller = 0;
+  for (const [file, output] of Object.entries(metafile.outputs)) {
+    const bytes = files.get(path.resolve(root, file)).contents.byteLength;
+    const { bytes: originalBytes, ...originalGraph } = original.outputs[file];
+    const { bytes: finalBytes, webui, ...graph } = output;
+    assert.equal(finalBytes, bytes);
+    assert.deepEqual(graph, originalGraph, `${file} must retain esbuild's graph and attribution`);
+    if (file.endsWith('.js')) {
+      javascript++;
+      if (finalBytes < originalBytes) smaller++;
+      assert.deepEqual(webui, {
+        inputBytesInOutput: 'before-minification',
+        bytesBeforeMinification: originalBytes,
+      });
+    } else {
+      assert.equal(webui, undefined, `${file} was not JavaScript-minified`);
+      if (file.endsWith('.css')) assert.equal(finalBytes, originalBytes);
+    }
+  }
+  assert.ok(javascript >= 3, 'entry, dynamic import and shared chunk must all be covered');
+  assert.equal(smaller, javascript);
+  assert.ok(Object.keys(metafile.outputs).some(file => file.endsWith('.css')));
+  assert.ok(Object.keys(metafile.outputs).some(file => file.endsWith('.map')));
 });
 
 test('production escapes non-ASCII diagnostics without changing their runtime text', async t => {
@@ -117,7 +185,7 @@ for (const sourcemap of [false, true, 'external', 'inline', 'both']) {
 }
 
 test('explicit minify false and developer flag overrides remain supported', async t => {
-  const { root } = await fixture(t, {
+  const { root, result } = await fixture(t, {
     minify: false,
     define: { __WEBUI_DEV__: 'true' },
   });
@@ -125,6 +193,7 @@ test('explicit minify false and developer flag overrides remain supported', asyn
   assert.match(code, /redundant/);
   const module = await import(pathToFileURL(path.join(root, 'dist/index.js')).href);
   assert.equal(module.development, true);
+  assert.equal(result.metafile.outputs['dist/index.js'].webui, undefined);
 });
 
 test('hashed output names change when final minifier settings change', async t => {
@@ -153,7 +222,23 @@ test('CommonJS, custom extensions and preserved function names remain supported'
   assert.equal(module.exports.calculate(41), 42);
   assert.equal(module.exports.calculate.name, 'calculate');
   assert.equal(result.metafile.outputs['dist/index.cjs'].bytes, js.contents.length);
+  assert.equal(
+    result.metafile.outputs['dist/index.cjs'].webui.inputBytesInOutput,
+    'before-minification',
+  );
   assert.ok(result.outputFiles.some(file => file.path.endsWith('.cjs.map')));
+});
+
+test('custom ESM extensions retain minification attribution', async t => {
+  const { result } = await fixture(t, {
+    outExtension: { '.js': '.mjs' },
+    write: false,
+  });
+  const js = result.outputFiles.find(file => file.path.endsWith('.mjs'));
+  const output = result.metafile.outputs['dist/index.mjs'];
+  assert.equal(output.bytes, js.contents.length);
+  assert.equal(output.webui.inputBytesInOutput, 'before-minification');
+  assert.ok(output.webui.bytesBeforeMinification > output.bytes);
 });
 
 test('watch mode retains development diagnostics and readable output', async t => {
@@ -163,11 +248,12 @@ test('watch mode retains development diagnostics and readable output', async t =
   try {
     const built = await fixture(t);
     context = built.result;
-    await context.rebuild();
+    const result = await context.rebuild();
     const code = await readFile(path.join(built.root, 'dist/index.js'), 'utf8');
     assert.match(code, /redundant/);
     const module = await import(pathToFileURL(path.join(built.root, 'dist/index.js')).href);
     assert.equal(module.development, true);
+    assert.equal(result.metafile.outputs['dist/index.js'].webui, undefined);
   } finally {
     process.argv = original;
     await context?.dispose();

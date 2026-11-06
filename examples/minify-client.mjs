@@ -6,6 +6,8 @@ import { readFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
+const JAVASCRIPT_OUTPUT = /\.(?:mjs|cjs|js)$/;
+
 function outputFile(filePath, text) {
   const contents = new TextEncoder().encode(text);
   return {
@@ -50,7 +52,7 @@ export function minifyClient() {
         const indices = new Map(files.map((file, index) => [file.path, index]));
         for (let index = 0; index < files.length; index++) {
           const file = files[index];
-          if (!/\.(?:mjs|cjs|js)$/.test(file.path)) continue;
+          if (!JAVASCRIPT_OUTPUT.test(file.path)) continue;
           const mapIndex = indices.get(`${file.path}.map`);
           const sourceMap = options.sourcemap;
           const inline = sourceMap === 'inline' || sourceMap === 'both';
@@ -90,7 +92,15 @@ export function minifyClient() {
         }
         for (const [filePath, output] of Object.entries(result.metafile.outputs)) {
           const index = indices.get(path.resolve(workingDirectory, filePath));
-          if (index !== undefined) output.bytes = files[index].contents.byteLength;
+          if (index === undefined) continue;
+          if (JAVASCRIPT_OUTPUT.test(filePath)) {
+            // Terser cannot attribute its rewritten bytes to esbuild inputs.
+            output.webui = {
+              inputBytesInOutput: 'before-minification',
+              bytesBeforeMinification: output.bytes,
+            };
+          }
+          output.bytes = files[index].contents.byteLength;
         }
         if (write) {
           for (const file of files) {

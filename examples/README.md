@@ -66,6 +66,19 @@ Pass `minify: false` to retain readable production JavaScript, or override
 `define.__WEBUI_DEV__` explicitly when diagnostics are needed. Neither option
 changes the availability of framework APIs such as `$whenRendered()`.
 
+The returned metafile's `outputs[path].bytes` is the final emitted size.
+For each Terser-processed JavaScript output, `outputs[path].webui` records:
+
+| Field | Meaning |
+|---|---|
+| `inputBytesInOutput: "before-minification"` | `inputs[*].bytesInOutput` contains esbuild's attribution before Terser, not final per-input sizes. |
+| `bytesBeforeMinification` | The output's total byte count before Terser. |
+
+Input membership, imports, and exports remain available for dependency analysis.
+Use emitted bytes for production size budgets; do not sum input attribution as
+a final bundle size. CSS, source maps, watch builds, and `minify: false` do not
+carry the JavaScript minification marker.
+
 ## More Details
 
 See integration-specific READMEs:
