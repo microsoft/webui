@@ -494,12 +494,17 @@ test('a blocked settings pack raises a handled lazyerror, and a retry opens the 
   expect(pageErrors).toEqual([]);
 });
 
-test('a settings pack that fails after the user cancels stays quiet', async ({ page }) => {
+test('a settings pack that fails after cancellation stays quiet and can reopen', async ({ page }) => {
   const pageErrors = collectPageErrors(page);
   await recordLazyErrors(page);
   let failPack = (): void => {};
   const failing = new Promise<void>(resolve => { failPack = resolve; });
+  let requests = 0;
   await page.route('**/_webui/packs/lazy-dialog.*', async route => {
+    if (++requests > 1) {
+      await route.continue();
+      return;
+    }
     await failing;
     await route.abort();
   });
@@ -511,12 +516,18 @@ test('a settings pack that fails after the user cancels stays quiet', async ({ p
   await expect(component.getByRole('button', { name: 'Cancel settings load' })).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(component.locator('.loading-state')).toHaveCount(0);
+  const failed = page.waitForEvent('requestfailed', request => isPackOf('lazy-dialog', request.url()));
   failPack();
-  await expect.poll(() => recorded(page, '__lazyErrors')).toEqual([
-    { owner: 'lazy-dialog', handled: true, error: expect.stringContaining('Failed to fetch') },
-  ]);
+  await failed;
   await expect(component.getByRole('alert')).toHaveCount(0);
-  await expect(component.getByRole('button', { name: 'View settings', exact: true })).toBeVisible();
+  await expect(component.locator('.settings-dialog')).not.toBeVisible();
+  await expect(component.locator('.settings-body')).toHaveCount(0);
+  await component.getByRole('button', { name: 'View settings', exact: true }).click();
+  await expect(component.getByRole('dialog', { name: 'View settings' })).toBeVisible();
+  await expect(component.locator('.settings-body')).toBeVisible();
+  await expect(component.getByRole('alert')).toHaveCount(0);
+  expect(requests).toBe(2);
+  expect(await recorded(page, '__lazyErrors')).toEqual([]);
   expect(await recorded(page, '__rejections')).toEqual([]);
   expect(pageErrors).toEqual([]);
 });

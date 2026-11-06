@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+import { FLUSH_UPDATES } from '../../../src/render-scheduler.js';
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import type {} from './element.js';
@@ -56,7 +57,7 @@ for (const enforced of [false, true]) {
         if (!host?.shadowRoot) throw new Error('Missing test host');
         const before = [...host.shadowRoot.querySelectorAll('.point')];
         host.reverseItems();
-        host.$flushUpdates();
+        host[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
         const after = [...host.shadowRoot.querySelectorAll('.point')];
         return before[0] === after[1] && before[1] === after[0];
       });
@@ -118,10 +119,10 @@ test('foreign integration points retain HTML and MathML children through nested 
       const host = document.querySelector('test-foreign-content');
       if (!host?.shadowRoot) throw new Error('Missing test host');
       host.show = false;
-      host.$flushUpdates();
+      host[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
       host.encoding = next;
       host.show = true;
-      host.$flushUpdates();
+      host[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
       return host.shadowRoot.querySelector('.annotation-link')?.namespaceURI;
     }, encoding);
     expect(namespace).toBe(expected);

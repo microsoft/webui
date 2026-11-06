@@ -29,7 +29,10 @@ const page = {
 const browser = Object.assign(new EventTarget(), {
   __webui: { inventory: '' } as NonNullable<Window['__webui']>,
 });
-setGlobal('HTMLElement', class extends EventTarget {});
+setGlobal('HTMLElement', class extends EventTarget {
+  contains(other: unknown): boolean { return other === this; }
+  getRootNode(): this { return this; }
+});
 setGlobal('window', browser);
 setGlobal('document', page);
 setGlobal('customElements', {
@@ -129,15 +132,24 @@ interface Shell extends EventTarget {
   $toggleCond(binding: CondBinding): void;
   $mount(...steps: (TemplateMeta | (() => void))[]): void;
   $changeStructure(): void;
-  $rendered(): Promise<void>;
+  $whenRendered(): Promise<void>;
   $prefetch(path?: string): void;
+}
+
+function markMounted(host: Shell, tag: string): void {
+  Object.defineProperties(host, {
+    localName: { value: tag },
+    isConnected: { value: true },
+    $hydrated: { value: true, writable: true },
+    $root: { value: {}, writable: true },
+  });
 }
 
 /** A component host whose template names the packs of the given regions. */
 function shell(packs: Record<string, string>): Shell {
   const Owner = class extends TemplateElement {};
   const host = new Owner() as unknown as Shell;
-  Object.defineProperty(host, 'localName', { value: 'test-shell' });
+  markMounted(host, 'test-shell');
   host.$meta = { v: 3, h: '', lp: packs };
   return host;
 }
@@ -146,7 +158,7 @@ function shell(packs: Record<string, string>): Shell {
 function ownerHost(tag: string): Shell {
   const Owner = class extends TemplateElement {};
   const host = new Owner() as unknown as Shell;
-  Object.defineProperty(host, 'localName', { value: tag });
+  markMounted(host, tag);
   return host;
 }
 
@@ -233,12 +245,12 @@ test('activation loads the pack and scripts in parallel and mounts only after bo
   assert.deepEqual(requests, [{ url, priority: 'high' }]);
   assert.equal(panel.calls, 1, 'scripts start with the pack request');
   let settled = false;
-  const done = host.$rendered().then(() => { settled = true; });
+  const done = host.$whenRendered().then(() => { settled = true; });
   serve(id, url);
   await tick();
   assert.ok(browser.__webui.templates?.[id], 'the pack installed');
   assert.equal(mounts.length, 0, 'the body waits for its custom elements');
-  assert.equal(settled, false, '$rendered() waits for scripts');
+  assert.equal(settled, false, '$whenRendered() waits for scripts');
   panel.release();
   await done;
   assert.equal(mounts.length, 1);
@@ -257,11 +269,11 @@ test('a mount waits for its pack even when its scripts arrive first', async () =
   await tick();
   assert.equal(mounts.length, 0, 'scripts alone do not mount the body');
   serve(id, url);
-  await host.$rendered();
+  await host.$whenRendered();
   assert.equal(mounts.length, 1);
 });
 
-test('a failed script rejects $rendered, raises lazyerror, and a retry loads only the scripts', async () => {
+test('a failed script rejects $whenRendered, raises lazyerror, and a retry loads only the scripts', async () => {
   const id = region(2);
   const url = '_webui/packs/test-shell.0002.json';
   const chart = deferredLoader('shell-chart');
@@ -290,14 +302,14 @@ test('a failed script rejects $rendered, raises lazyerror, and a retry loads onl
 
     // A component that presents the error itself cancels the report.
     host.addEventListener('lazyerror', event => event.preventDefault());
-    const retry = host.$rendered();
-    assert.equal(chart.calls, 2, '$rendered() retries the scripts');
+    const retry = host.$whenRendered();
+    assert.equal(chart.calls, 2, '$whenRendered() retries the scripts');
     chart.fail(new Error('chunk failed again'));
     await assert.rejects(retry, /chunk failed again/);
     assert.equal(events.length, 2);
     assert.equal(reported.length, 1, 'a cancelled lazyerror is not reported');
 
-    const retried = host.$rendered();
+    const retried = host.$whenRendered();
     assert.equal(chart.calls, 3);
     chart.release();
     await retried;
@@ -353,9 +365,9 @@ test('a body that hydrates open loads its scripts at once, even while prerenderi
   assert.equal(mounts.length, 0);
   assert.deepEqual(requests, [], 'the body templates are already present');
   let settled = false;
-  const done = host.$rendered().then(() => { settled = true; });
+  const done = host.$whenRendered().then(() => { settled = true; });
   await tick();
-  assert.equal(settled, false, '$rendered() waits for the hydrated body scripts');
+  assert.equal(settled, false, '$whenRendered() waits for the hydrated body scripts');
   menu.release();
   await done;
   assert.equal(mounts.length, 1);
@@ -363,7 +375,7 @@ test('a body that hydrates open loads its scripts at once, even while prerenderi
   assert.equal(menu.calls, 1);
 });
 
-test('hydrated body script failures raise lazyerror and $rendered() retries them', async () => {
+test('hydrated body script failures raise lazyerror and $whenRendered() retries them', async () => {
   const id = region(5);
   browser.__webui.templates![id] = template(id);
   const toast = deferredLoader('shell-toast');
@@ -379,12 +391,12 @@ test('hydrated body script failures raise lazyerror and $rendered() retries them
   toast.fail(failure);
   await tick();
   assert.deepEqual(errors, [failure]);
-  const retry = host.$rendered();
-  assert.equal(toast.calls, 2, '$rendered() retries the failed scripts');
+  const retry = host.$whenRendered();
+  assert.equal(toast.calls, 2, '$whenRendered() retries the failed scripts');
   toast.fail(new Error('toast chunk failed again'));
   await assert.rejects(retry, /toast chunk failed again/);
   assert.equal(errors.length, 2);
-  const retried = host.$rendered();
+  const retried = host.$whenRendered();
   assert.equal(toast.calls, 3);
   toast.release();
   await retried;
@@ -536,9 +548,9 @@ test('a speculative load before the window loads defers scripts that an activati
     host.$toggleCond(binding(id));
     assert.equal(panel.calls, 1, 'activation imports the scripts at once');
     let settled = false;
-    const done = host.$rendered().then(() => { settled = true; });
+    const done = host.$whenRendered().then(() => { settled = true; });
     await tick();
-    assert.equal(settled, false, '$rendered() waits for the scripts');
+    assert.equal(settled, false, '$whenRendered() waits for the scripts');
     panel.release();
     await done;
     assert.equal(mounts.length, 1);
@@ -617,7 +629,7 @@ test('an activation starts its stylesheets at once, also when it joins a specula
       ['preload', ['region.css'], 'high'],
     ], 'they start at activation priority while the pack loads');
     serve(id, url);
-    await host.$rendered();
+    await host.$whenRendered();
     assert.equal(mounts.length, 1);
   } finally {
     page.readyState = 'complete';
@@ -639,7 +651,7 @@ test('an install waits for the stylesheets that styles.js prepares', async () =>
     assert.deepEqual(styles.calls.at(-1), ['prepare', [id], 'high']);
     assert.equal(mounts.length, 0, 'the region waits for its stylesheets');
     prepared.resolve();
-    await host.$rendered();
+    await host.$whenRendered();
     assert.equal(mounts.length, 1);
   } finally {
     styles.restore();
@@ -670,7 +682,7 @@ test('an activation after a speculative install starts its stylesheets with its 
     assert.deepEqual(styles.calls.at(-1), ['preload', ['region.css'], 'high'], 'the stylesheets start with the scripts');
     assert.equal(mounts.length, 0, 'the body waits for its scripts');
     card.release();
-    await host.$rendered();
+    await host.$whenRendered();
     assert.equal(mounts.length, 1);
     assert.equal(preloads(), 2);
   } finally {
@@ -701,7 +713,7 @@ test('development warns once when a pack registers scripted components nothing l
         bits: {},
         templates: { [id]: template(id), ...templates },
       })));
-      await host.$rendered();
+      await host.$whenRendered();
     };
     registerGeneratedLazyScripts({ [region(40)]: { 'pack-loaded': () => {
       defined.set('pack-loaded', class {});
@@ -757,7 +769,7 @@ test('incomplete generated mappings reject explicitly when their region is neede
   assert.equal(calls, 0, 'unrelated loaders stay cold');
 });
 
-test('synchronous generated import errors reject $rendered and use the normal lazyerror path', async () => {
+test('synchronous generated import errors reject $whenRendered and use the normal lazyerror path', async () => {
   const id = region(104);
   const url = '_webui/packs/test-shell.0104.json';
   const failure = new Error('application loader failed synchronously');
@@ -777,10 +789,10 @@ test('synchronous generated import errors reject $rendered and use the normal la
   });
   assert.doesNotThrow(() => host.$toggleCond(binding(id)));
   serve(id, url);
-  await assert.rejects(host.$rendered(), error => error === failure);
+  await assert.rejects(host.$whenRendered(), error => error === failure);
   assert.deepEqual(errors, [failure]);
   fail = false;
-  await host.$rendered();
+  await host.$whenRendered();
   assert.ok(defined.has('sync-card'));
 });
 

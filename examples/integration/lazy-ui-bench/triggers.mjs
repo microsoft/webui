@@ -157,8 +157,7 @@ export const bench = {
     const start = performance.now();
     try {
       element.ready = true;
-      // Plain pages do not import lazy.js, which adds $rendered(); their body renders on flush.
-      await (element.$rendered?.() ?? element.$flushUpdates());
+      ${legacyFramework ? 'element.$flushUpdates();' : 'await element.$whenRendered();'}
       const rendered = performance.now();
       if (!element.dialog.open) element.dialog.showModal();
       const mounted = performance.now();
@@ -173,25 +172,25 @@ export const bench = {
       this.error = String(error);
     }
   },
-  close(element: any): void {
+  async close(element: any): Promise<void> {
     element.dialog.close();
     element.ready = false;
-    element.$flushUpdates();
+    ${legacyFramework ? 'element.$flushUpdates();' : 'await element.$whenRendered();'}
   },
   async reopen(): Promise<Record<string, number> | undefined> {
     const element = regions.get(this.target);
-    this.close(element);
+    await this.close(element);
     await paint();
     lastPointer = 0;
     await this.open(element);
     return this.result;
   },
-  closeTarget(): void { this.close(regions.get(this.target)); },
+  closeTarget(): Promise<void> { return this.close(regions.get(this.target)); },
   async cycle(): Promise<number> {
     for (const owner of this.owners) {
       await this.open(regions.get(owner));
       if (this.error) throw new Error(this.error);
-      this.close(regions.get(owner));
+      await this.close(regions.get(owner));
     }
     return this.owners.length;
   },
@@ -248,7 +247,7 @@ export class BenchDialog${n} extends WebUIElement {
   dialog!: HTMLDialogElement; introNode?: HTMLParagraphElement;
   protected override hydratedCallback(): void { bench.region(this); }
   open(): void { void bench.open(this); }
-  close(): void { bench.close(this); }
+  close(): void { void bench.close(this); }
   apply(event: Event): void { event.preventDefault(); this.close(); }
 }
 BenchDialog${n}.define('${tag}');\n`);

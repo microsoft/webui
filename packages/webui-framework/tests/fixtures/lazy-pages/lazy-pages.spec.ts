@@ -14,6 +14,8 @@ interface Graph {
   routePacks: Graph['packs'];
 }
 
+type CompletionHost = HTMLElement & { $whenRendered(): Promise<void> };
+
 function behavior(graph: Graph, name: string): string {
   const found = Object.entries(graph.outputs).find(([, output]) =>
     output.inputs.some(input => input.endsWith(`/lazy-pages/src/${name}.ts`)));
@@ -154,7 +156,7 @@ test('manual page switch: rapid close cannot mount a completed load; reactivatio
   await page.mouse.move(0, 0);
   gate.resolve();
   await page.locator('preview-page').evaluate(async element => {
-    await (element as PreviewPage).$rendered();
+    await (element as PreviewPage).$whenRendered();
   });
   await expect(page.locator('help-panel')).toHaveCount(0);
   expect(await page.locator('preview-page').evaluate(element => (element as PreviewPage).previewNode)).toBeUndefined();
@@ -169,6 +171,141 @@ test('manual page switch: rapid close cannot mount a completed load; reactivatio
   expect(requests).not.toContain(behavior(graph, 'unrelated-panel'));
   await page.locator('unrelated-page .unrelated').click();
   await expect(page.locator('unrelated-panel')).toHaveText('Unrelated only');
+});
+
+test('closing and reopening a failed in-flight region reports only its current activation', async ({ page }) => {
+  const { graph } = await setup(page);
+  const preview = pack(graph, 'preview-page', 0);
+  const gate = Promise.withResolvers<void>();
+  await page.route(`**${preview}`, async route => {
+    await gate.promise;
+    await route.fulfill({ status: 503, body: 'unavailable' });
+  });
+  try {
+    const requested = page.waitForRequest(`**${preview}`);
+    await page.locator('preview-page').evaluate(element => {
+      const owner = element as PreviewPage;
+      const state = window as unknown as { errors: number };
+      state.errors = 0;
+      owner.addEventListener('lazyerror', event => {
+        state.errors++;
+        event.preventDefault();
+      });
+      owner.help = 'hello';
+    });
+    await requested;
+    await page.locator('preview-page').evaluate(async element => {
+      const owner = element as PreviewPage;
+      owner.help = '';
+      await owner.$whenRendered();
+      owner.help = 'hello';
+      const state = window as unknown as { failure: Promise<string> };
+      state.failure = owner.$whenRendered().then(
+        () => 'resolved',
+        (error: Error) => error.message,
+      );
+      await Promise.resolve();
+    });
+    gate.resolve();
+    const result = await page.evaluate(async () => {
+      const state = window as unknown as { errors: number; failure: Promise<string> };
+      const failure = await state.failure;
+      return { errors: state.errors, failure };
+    });
+    expect(result.errors).toBe(1);
+    expect(result.failure).toContain('HTTP 503');
+    await expect(page.locator('help-panel')).toHaveCount(0);
+  } finally {
+    gate.resolve();
+  }
+});
+
+test('ancestor completion waits for concurrent lazy regions on an affected descendant', async ({ page }) => {
+  const { graph } = await setup(page);
+  const preview = pack(graph, 'preview-page', 0);
+  const sibling = pack(graph, 'preview-page', 2);
+  const previewGate = Promise.withResolvers<void>();
+  const siblingGate = Promise.withResolvers<void>();
+  await page.route(`**${preview}`, async route => { await previewGate.promise; await route.continue(); });
+  await page.route(`**${sibling}`, async route => { await siblingGate.promise; await route.continue(); });
+  try {
+    const requests = [page.waitForRequest(`**${preview}`), page.waitForRequest(`**${sibling}`)];
+    await page.evaluate(() => {
+      const parent = document.querySelector<CompletionHost>('pages-shell')!;
+      const owner = (parent.shadowRoot ?? parent).querySelector<PreviewPage>('preview-page')!;
+      const state = window as unknown as { completion?: Promise<void>; completed: boolean };
+      owner.help = 'hello';
+      owner.sibling = true;
+      state.completed = false;
+      state.completion = parent.$whenRendered().then(() => { state.completed = true; });
+    });
+    await Promise.all(requests);
+    previewGate.resolve();
+    await expect(page.locator('help-panel p')).toHaveText('Page-owned value');
+    expect(await page.evaluate(() => (window as unknown as { completed: boolean }).completed)).toBe(false);
+    siblingGate.resolve();
+    await page.evaluate(() => (window as unknown as { completion: Promise<void> }).completion);
+    await expect(page.locator('sibling-panel')).toHaveText('Sibling only');
+  } finally {
+    previewGate.resolve();
+    siblingGate.resolve();
+  }
+});
+
+test('a later independent lazy activation does not extend an existing ancestor completion', async ({ page }) => {
+  const { graph } = await setup(page);
+  const preview = pack(graph, 'preview-page', 0);
+  const sibling = pack(graph, 'preview-page', 2);
+  const previewGate = Promise.withResolvers<void>();
+  const siblingGate = Promise.withResolvers<void>();
+  await page.route(`**${preview}`, async route => { await previewGate.promise; await route.continue(); });
+  await page.route(`**${sibling}`, async route => { await siblingGate.promise; await route.continue(); });
+  try {
+    const requested = page.waitForRequest(`**${preview}`);
+    await page.evaluate(() => {
+      const parent = document.querySelector<CompletionHost>('pages-shell')!;
+      const owner = (parent.shadowRoot ?? parent).querySelector<PreviewPage>('preview-page')!;
+      owner.help = 'hello';
+      (window as unknown as { completion: Promise<void> }).completion = parent.$whenRendered();
+    });
+    await requested;
+    const later = page.waitForRequest(`**${sibling}`);
+    await page.locator('preview-page').evaluate(element => { (element as PreviewPage).sibling = true; });
+    await later;
+    previewGate.resolve();
+    await page.evaluate(() => (window as unknown as { completion: Promise<void> }).completion);
+    await expect(page.locator('help-panel p')).toHaveText('Page-owned value');
+    await expect(page.locator('sibling-panel')).toHaveCount(0);
+    siblingGate.resolve();
+    await expect(page.locator('sibling-panel')).toHaveText('Sibling only');
+  } finally {
+    previewGate.resolve();
+    siblingGate.resolve();
+  }
+});
+
+test('ancestor completion retries a failed lazy region of an affected descendant', async ({ page }) => {
+  const { graph } = await setup(page);
+  const preview = pack(graph, 'preview-page', 0);
+  let attempts = 0;
+  await page.route(`**${preview}`, route => ++attempts === 1
+    ? route.fulfill({ status: 503, body: 'unavailable' })
+    : route.continue());
+  const result = await page.evaluate(async () => {
+    const parent = document.querySelector<CompletionHost>('pages-shell')!;
+    const owner = (parent.shadowRoot ?? parent).querySelector<PreviewPage>('preview-page')!;
+    owner.addEventListener('lazyerror', event => event.preventDefault());
+    owner.help = 'hello';
+    let failed = false;
+    try { await parent.$whenRendered(); } catch (error) {
+      failed = error instanceof Error && error.message.includes('HTTP 503');
+    }
+    await parent.$whenRendered();
+    return { failed, mounted: !!owner.previewNode };
+  });
+  expect(result).toEqual({ failed: true, mounted: true });
+  expect(attempts).toBe(2);
+  await expect(page.locator('help-panel p')).toHaveText('Page-owned value');
 });
 
 async function activeRoute(page: Page, component: string): Promise<void> {
@@ -351,4 +488,79 @@ test('real router: direct SSR preview resolves its page loader without fetching 
   await page.locator('preview-page .preview').hover();
   await expect(page.locator('help-panel p')).toHaveText('Page-owned value');
   expect(errors).toEqual([]);
+});
+
+test('SSR-open lazy bodies wait for their deferred component scripts and hydration', async ({ page }) => {
+  const { graph } = await observe(page, 'routed');
+  const script = behavior(graph, 'help-panel');
+  const gate = Promise.withResolvers<void>();
+  await page.route(`**${script}`, async route => { await gate.promise; await route.continue(); });
+  try {
+    const requested = page.waitForRequest(`**${script}`);
+    await page.goto('/lazy-routes/preview?open=1', { waitUntil: 'domcontentloaded' });
+    await requested;
+    await expect.poll(() => page.locator('preview-page').evaluate(element =>
+      typeof (element as PreviewPage).$whenRendered)).toBe('function');
+    await page.locator('preview-page').evaluate(element => {
+      const state = window as unknown as { completion?: Promise<void>; completed: boolean };
+      state.completed = false;
+      state.completion = (element as PreviewPage).$whenRendered().then(() => { state.completed = true; });
+    });
+    expect(await page.evaluate(() => (window as unknown as { completed: boolean }).completed)).toBe(false);
+    gate.resolve();
+    await page.evaluate(() => (window as unknown as { completion: Promise<void> }).completion);
+    expect(await page.locator('help-panel').evaluate(element => {
+      const child = element as HTMLElement & { textNode?: HTMLParagraphElement };
+      return child.textNode === child.shadowRoot?.querySelector('p');
+    })).toBe(true);
+    await expect(page.locator('help-panel p')).toHaveText('Page-owned value');
+  } finally {
+    gate.resolve();
+  }
+});
+
+test('SSR-open lazy component upgrades include their stylesheet-gated descendant mounts', async ({ page }) => {
+  const { graph } = await observe(page, 'routed');
+  const script = behavior(graph, 'help-panel');
+  const scriptGate = Promise.withResolvers<void>();
+  const styleGate = Promise.withResolvers<void>();
+  await page.route('**/lazy-routes/preview?*', async route => {
+    const response = await route.fetch();
+    await route.fulfill({
+      response,
+      headers: {
+        ...response.headers(),
+        'content-security-policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self'; connect-src 'self'; img-src 'self'",
+      },
+    });
+  });
+  await page.route(`**${script}`, async route => { await scriptGate.promise; await route.continue(); });
+  await page.route('**/lazy-pages/deferred-panel.css', async route => {
+    await styleGate.promise;
+    await route.continue();
+  });
+  try {
+    const scriptRequested = page.waitForRequest(`**${script}`);
+    const styleRequested = page.waitForRequest('**/lazy-pages/deferred-panel.css');
+    await page.goto('/lazy-routes/preview?open=1&wait-style=1', { waitUntil: 'domcontentloaded' });
+    await scriptRequested;
+    await expect.poll(() => page.locator('preview-page').evaluate(element =>
+      typeof (element as PreviewPage).$whenRendered)).toBe('function');
+    await page.locator('preview-page').evaluate(element => {
+      const state = window as unknown as { completion?: Promise<void>; completed: boolean };
+      state.completed = false;
+      state.completion = (element as PreviewPage).$whenRendered().then(() => { state.completed = true; });
+    });
+    scriptGate.resolve();
+    await styleRequested;
+    await expect(page.locator('deferred-panel')).toHaveCount(1);
+    await expect(page.locator('deferred-panel .ready')).toHaveCount(0);
+    expect(await page.evaluate(() => (window as unknown as { completed: boolean }).completed)).toBe(false);
+    styleGate.resolve();
+    await page.evaluate(() => (window as unknown as { completion: Promise<void> }).completion);
+    await expect(page.locator('deferred-panel .ready')).toHaveText('Deferred mount ready');
+  } finally {
+    scriptGate.resolve();
+    styleGate.resolve();
+  }
 });

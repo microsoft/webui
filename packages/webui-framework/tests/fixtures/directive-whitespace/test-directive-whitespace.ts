@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+import { FLUSH_UPDATES } from '../../../src/render-scheduler.js';
 import { observable, WebUIElement } from '../../../src/index.js';
 import { startRuntime } from '../../../src/runtime.js';
 
@@ -32,7 +33,7 @@ export class TestDirectiveWhitespace extends WebUIElement {
       ...item,
       children: item.children.map(child => ({ ...child })),
     }));
-    this.$flushUpdates();
+    this[FLUSH_UPDATES]();
   }
 }
 

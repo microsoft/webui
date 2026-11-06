@@ -67,7 +67,7 @@ export class LazyDialog extends WebUIElement {
       this.settingsReady = true;
       // showModal() moves focus into the dialog, so its body must exist first.
       // If the body cannot load, onLazyError() resets the dialog before this rejects.
-      await this.$rendered();
+      await this.$whenRendered();
       if (generation !== this.generation) return;
       this.dialog.showModal();
     } catch (error) {

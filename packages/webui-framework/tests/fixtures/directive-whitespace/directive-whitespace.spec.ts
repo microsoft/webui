@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+import { FLUSH_UPDATES } from '../../../src/render-scheduler.js';
 import { expect, test, type Page } from '@playwright/test';
 import {
   buildBrowserModule,
@@ -99,7 +100,7 @@ async function exerciseMinimal(page: Page, fixture: DirectiveCase): Promise<void
     host.label = 'Updated';
     host.message = { ...host.message, label: 'Updated' };
     host.items = host.items.map(item => ({ ...item, label: `${item.label}!` }));
-    host.$flushUpdates();
+    host[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
   });
   await expect(buttons).toHaveText(fixture.kind === 'if' ? ['Updated'] : ['Alpha!', 'Beta!']);
   if (fixture.kind === 'for') {
@@ -113,7 +114,7 @@ async function exerciseMinimal(page: Page, fixture: DirectiveCase): Promise<void
     if (message) host.message = { ...host.message, enabled: false };
     else if (kind === 'if') host.enabled = false;
     else host.items = [];
-    host.$flushUpdates();
+    host[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
   }, fixture);
   await expect(buttons).toHaveCount(0);
   expect(await page.evaluate(() => window.__directiveWhitespaceSsr
@@ -125,7 +126,7 @@ async function exerciseMinimal(page: Page, fixture: DirectiveCase): Promise<void
     if (message) host.message = { ...host.message, enabled: true };
     else if (kind === 'if') host.enabled = true;
     else host.items = [{ id: 'c', label: 'New', visible: true, detail: true, children: [] }];
-    host.$flushUpdates();
+    host[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
   }, fixture);
   await expect(buttons).toHaveText(fixture.kind === 'if' ? ['Updated'] : ['New']);
   expect(await buttons.evaluateAll(elements =>
@@ -136,7 +137,7 @@ async function exerciseMinimal(page: Page, fixture: DirectiveCase): Promise<void
       const host = document.querySelector('test-directive-whitespace')!;
       host.ready = false;
       host.message = { ...host.message, ready: false };
-      host.$flushUpdates();
+      host[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
     });
     await expect(buttons).toHaveCount(0);
     await expect(page.locator('test-directive-whitespace article > footer')).toHaveCount(1);
@@ -164,7 +165,7 @@ async function exerciseKeyed(page: Page): Promise<void> {
     host.items = [...host.items].reverse().map(item => ({
       ...item, label: `${item.label}!`, children: [...item.children].reverse().map(child => ({ ...child })),
     }));
-    host.$flushUpdates();
+    host[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
   });
   await expect(root.locator('.pick')).toHaveText(['Beta!', 'Alpha!']);
   await expect(root.locator('.child')).toHaveText(['B child 2', 'B child 1', 'A child 2', 'A child 1']);
@@ -191,7 +192,7 @@ async function exerciseKeyed(page: Page): Promise<void> {
     const host = document.querySelector('test-directive-whitespace')!;
     host.items = host.items.map(item => ({ ...item, visible: item.id !== 'a', detail: true }));
     host.ready = false;
-    host.$flushUpdates();
+    host[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
   });
   await expect(root.locator('button')).toHaveCount(3);
   await expect(root.locator('article > .rows > div > .pick')).toHaveText(['Beta!']);
@@ -201,7 +202,7 @@ async function exerciseKeyed(page: Page): Promise<void> {
   await page.evaluate(() => {
     const host = document.querySelector('test-directive-whitespace')!;
     host.enabled = false;
-    host.$flushUpdates();
+    host[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
   });
   await expect(root.locator('button, .rows, .detail')).toHaveCount(0);
   await expect(root.locator('output')).toHaveText('tail');
@@ -210,7 +211,7 @@ async function exerciseKeyed(page: Page): Promise<void> {
     host.enabled = true;
     host.ready = true;
     host.items = host.items.map(item => ({ ...item, visible: true }));
-    host.$flushUpdates();
+    host[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
   });
   await expect(root.locator('button')).toHaveCount(7);
   await expect(root.locator('article > .rows > div > .pick')).toHaveText(['Beta!', 'Alpha!']);

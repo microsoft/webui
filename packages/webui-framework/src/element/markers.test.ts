@@ -684,6 +684,25 @@ describe('buildSSRIndex', () => {
     assert.strictEqual(index.elements[1], ssrStatic);
   });
 
+  test('raw pairing shares indexed-depth matching and rejects unterminated ranges', () => {
+    const template = el('ROOT', el('SPAN'));
+    const start = cmt('w2');
+    const nestedStart = cmt('w2');
+    const nestedEnd = cmt('/w2');
+    const otherEnd = cmt('/w3');
+    const end = cmt('/w2');
+    const after = el('SPAN');
+    const ssr = el('ROOT', start, el('B'), nestedStart, nestedEnd, otherEnd, end, after);
+    const index = build(template, ssr);
+    assert.deepStrictEqual(index.raws, [[start, end]]);
+    assert.strictEqual(index.elements[1], after);
+    assert.strictEqual(findBlockEnd(start as unknown as Comment, 'w2'), end);
+
+    const incomplete = build(template, el('ROOT', cmt('w2'), el('SPAN'), cmt('/w3')));
+    assert.deepStrictEqual(incomplete.raws, []);
+    assert.strictEqual(incomplete.elements[1], undefined);
+  });
+
   test('does not pair elements inside a structural range', () => {
     // The <p> rendered inside the conditional belongs to the block's own
     // metadata, so the template's first element must pair with <div>.

@@ -64,7 +64,7 @@ interface PerfLog {
 }
 
 type Owner = HTMLElement & Record<string, unknown> & {
-  $flushUpdates?(): void;
+  $whenRendered(): Promise<void>;
   $prefetch?(path?: string): void;
 };
 
@@ -234,10 +234,10 @@ export const bench = {
     return performance.now() - start;
   },
 
-  close(id: string): void {
+  async close(id: string): Promise<void> {
     const owner = ownerOf(id);
-    call(owner, config.uis[id].close);
-    owner.$flushUpdates?.();
+    await call(owner, config.uis[id].close);
+    await owner.$whenRendered();
   },
 
   /** Load a UI's code and templates ahead of use: `$prefetch` or the component-asset loader. */

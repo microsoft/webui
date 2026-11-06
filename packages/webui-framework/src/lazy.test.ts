@@ -3,6 +3,7 @@
 
 import { strict as assert } from 'node:assert';
 import { after, test } from 'node:test';
+import { whenRendered } from './render-completion.js';
 import type { CondBinding, TemplateInstance } from './element/types.js';
 import type { CompiledConditionalMeta, TemplateMeta } from './template-types.js';
 
@@ -13,7 +14,7 @@ interface FakeScript {
 }
 
 const requests: { url: string; priority?: string }[] = [];
-const responses = new Map<string, () => Response>();
+const responses = new Map<string, () => Response | Promise<Response>>();
 const idleCallbacks: (() => void)[] = [];
 const scripts: FakeScript[] = [];
 const documentListeners = new Map<string, (event: Event) => void>();
@@ -388,12 +389,14 @@ test('idle and eager triggers prefetch at low priority after startup unless the 
   }
 });
 
-test('activation loads at high priority, re-enters its host, and rendered retries failures', async () => {
+test('activation loads at high priority, re-enters its host, and completion retries failures', async () => {
   const id = region('active-owner');
   const url = '_webui/packs/active-owner.0011.json';
   const binding = bindingFor(id);
   const mounted: CondBinding[] = [];
   const host = Object.assign(new EventTarget(), {
+    isConnected: true,
+    localName: 'active-owner',
     $toggleCond(c: CondBinding): void {
       if (runtime.resolve(id, 'active-owner', true)) mounted.push(c);
       else runtime.activate(host, c, url);
@@ -402,16 +405,214 @@ test('activation loads at high priority, re-enters its host, and rendered retrie
   requests.length = 0;
   host.$toggleCond(binding);
   host.$toggleCond(binding);
-  await assert.rejects(runtime.rendered(host), /failed with HTTP 404/);
+  await assert.rejects(whenRendered(host), /failed with HTTP 404/);
   assert.deepEqual(mounted, []);
   assert.equal(reported.length, 1, 'the failed activation is reported once');
   assert.match(String(reported[0]), /failed with HTTP 404/);
   serve(url, pack('active-owner'));
-  await runtime.rendered(host);
+  await whenRendered(host);
   assert.deepEqual(mounted, [binding]);
   assert.deepEqual(requests, [{ url, priority: 'high' }, { url, priority: 'high' }]);
-  await runtime.rendered(host);
+  await whenRendered(host);
   assert.equal(mounted.length, 1, 'settled hosts have nothing left to render');
+});
+
+test('concurrent activations skip retry scans until a failure exists', async () => {
+  const id = region('many-active');
+  const url = '_webui/packs/many-active.json';
+  const bindings = Array.from({ length: 32 }, () => bindingFor(id));
+  const mounted: CondBinding[] = [];
+  const host = Object.assign(new EventTarget(), {
+    isConnected: true,
+    localName: 'many-active',
+    $toggleCond(binding: CondBinding): void { mounted.push(binding); },
+  }) as unknown as import('./lazy-runtime.js').LazyHost;
+  const resources = holdResources();
+  const values = Map.prototype.values;
+  let scanned = 0;
+  serve(url, pack('many-active'));
+  try {
+    Map.prototype.values = function (this: Map<unknown, unknown>) {
+      if (this.has(bindings[0])) scanned += this.size;
+      return values.call(this);
+    };
+    try {
+      for (const binding of bindings) runtime.activate(host, binding, url);
+    } finally {
+      Map.prototype.values = values;
+    }
+    assert.equal(scanned, 0, 'successful activations do not scan their siblings for failures');
+    await until(() => registry()[id]);
+    for (let i = 0; i < 8; i++) runtime.cancelActivation(host, bindings[i]);
+    let completed = false;
+    const completion = whenRendered(host).then(() => { completed = true; });
+    await tick();
+    assert.equal(completed, false);
+    resources.release();
+    await completion;
+    assert.deepEqual(mounted, bindings.slice(8));
+    await whenRendered(host);
+    assert.equal(mounted.length, 24);
+  } finally {
+    Map.prototype.values = values;
+    resources.release();
+    resources.restore();
+    for (const binding of bindings) runtime.cancelActivation(host, binding);
+    responses.delete(url);
+  }
+});
+
+test('cancelling one failed region keeps another on the same host retryable', async () => {
+  const id = region('retry-siblings');
+  const url = '_webui/packs/retry-siblings.json';
+  const first = bindingFor(id);
+  const second = bindingFor(id);
+  const mounted: CondBinding[] = [];
+  const host = Object.assign(new EventTarget(), {
+    isConnected: true,
+    localName: 'retry-siblings',
+    $toggleCond(binding: CondBinding): void {
+      if (runtime.resolve(id, 'retry-siblings', true)) mounted.push(binding);
+      else runtime.activate(host, binding, url);
+    },
+  }) as unknown as import('./lazy-runtime.js').LazyHost;
+  host.addEventListener('lazyerror', event => { event.preventDefault(); });
+  try {
+    runtime.activate(host, first, url);
+    runtime.activate(host, second, url);
+    await assert.rejects(whenRendered(host), /failed with HTTP 404/);
+    await tick();
+    runtime.cancelActivation(host, first);
+    serve(url, pack('retry-siblings'));
+    await whenRendered(host);
+    assert.deepEqual(mounted, [second]);
+  } finally {
+    runtime.cancelActivation(host, first);
+    runtime.cancelActivation(host, second);
+    responses.delete(url);
+  }
+});
+
+test('a closed activation ignores a late failure and can retry when reopened', async () => {
+  const id = region('cancelled-owner');
+  const url = '_webui/packs/cancelled-owner.json';
+  const binding = bindingFor(id);
+  const response = Promise.withResolvers<Response>();
+  responses.set(url, () => response.promise);
+  let mounted = 0;
+  let errors = 0;
+  const reportCount = reported.length;
+  const host = Object.assign(new EventTarget(), {
+    isConnected: true,
+    localName: 'cancelled-owner',
+    $toggleCond(): void { mounted++; },
+  }) as unknown as import('./lazy-runtime.js').LazyHost;
+  host.addEventListener('lazyerror', () => { errors++; });
+  try {
+    runtime.activate(host, binding, url);
+    const loading = runtime.load(id, url);
+    const rejected = assert.rejects(loading, /cancelled pack failed/);
+    const cancelled = assert.rejects(whenRendered(host), { name: 'AbortError' });
+    runtime.cancelActivation(host, binding);
+    await cancelled;
+    response.reject(new Error('cancelled pack failed'));
+    await rejected;
+    await tick();
+    assert.equal(errors, 0);
+    assert.equal(reported.length, reportCount);
+    assert.equal(mounted, 0);
+    await whenRendered(host);
+    assert.equal(mounted, 0, 'observing a closed region must not reactivate it');
+    serve(url, pack('cancelled-owner'));
+    runtime.activate(host, binding, url);
+    await whenRendered(host);
+    assert.equal(mounted, 1);
+    assert.equal(errors, 0);
+    assert.equal(reported.length, reportCount);
+  } finally {
+    runtime.cancelActivation(host, binding);
+    responses.delete(url);
+  }
+});
+
+test('a cancelled activation does not report a shared failure after reopening', async () => {
+  const id = region('reopened-owner');
+  const url = '_webui/packs/reopened-owner.0020.json';
+  const binding = bindingFor(id);
+  const ready = Promise.withResolvers<void>();
+  const target = browser as unknown as Window;
+  const host = Object.assign(new EventTarget(), {
+    isConnected: true,
+    localName: 'reopened-owner',
+    $toggleCond(): void {},
+  }) as unknown as import('./lazy-runtime.js').LazyHost;
+  let errors = 0;
+  host.addEventListener('lazyerror', event => {
+    errors++;
+    event.preventDefault();
+  });
+  target.__webuiPrepareResources = () => ready.promise;
+  serve(url, pack('reopened-owner'));
+  try {
+    runtime.activate(host, binding, url);
+    await until(() => registry()[id]);
+    runtime.cancelActivation(host, binding);
+    runtime.activate(host, binding, url);
+    const rejected = assert.rejects(whenRendered(host), /stylesheet readiness failed/);
+    ready.reject(new Error('stylesheet readiness failed'));
+    await rejected;
+    await tick();
+    assert.equal(errors, 1, 'only the current activation reports the failure');
+  } finally {
+    runtime.cancelActivation(host, binding);
+    delete target.__webuiPrepareResources;
+  }
+});
+
+test('a late cancelled activation cannot settle or fail its replacement', async () => {
+  const id = region('generation-owner');
+  const oldUrl = '_webui/packs/generation-owner.old.json';
+  const newUrl = '_webui/packs/generation-owner.new.json';
+  const binding = bindingFor(id);
+  const old = Promise.withResolvers<Response>();
+  const next = Promise.withResolvers<Response>();
+  responses.set(oldUrl, () => old.promise);
+  responses.set(newUrl, () => next.promise);
+  let mounted = 0;
+  let errors = 0;
+  const host = Object.assign(new EventTarget(), {
+    isConnected: true,
+    localName: 'generation-owner',
+    $toggleCond(): void { mounted++; },
+  }) as unknown as import('./lazy-runtime.js').LazyHost;
+  host.addEventListener('lazyerror', event => {
+    errors++;
+    event.preventDefault();
+  });
+  try {
+    runtime.activate(host, binding, oldUrl);
+    const cancelled = assert.rejects(whenRendered(host), { name: 'AbortError' });
+    runtime.cancelActivation(host, binding);
+    await cancelled;
+    runtime.activate(host, binding, newUrl);
+    let completed = false;
+    const waiting = whenRendered(host).then(() => { completed = true; });
+    old.reject(new Error('old activation failed'));
+    await tick();
+    assert.equal(completed, false);
+    assert.equal(errors, 0);
+    assert.equal(mounted, 0);
+    next.resolve(new Response(JSON.stringify(pack('generation-owner')), {
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    await waiting;
+    assert.equal(mounted, 1);
+    assert.equal(errors, 0);
+  } finally {
+    runtime.cancelActivation(host, binding);
+    responses.delete(oldUrl);
+    responses.delete(newUrl);
+  }
 });
 
 test('a pack that is still installing is joined rather than treated as ready', async () => {
@@ -547,10 +748,11 @@ test('the element waits for a closed region condition and never mounts into a di
   let open = false;
   const host = Object.assign(Object.create(TemplateElement.prototype) as object, {
     localName: 'glue-owner',
+    isConnected: true,
     $meta: { v: 3, h: '', lp: { [id]: url } } as TemplateMeta,
   }) as import('./lazy-runtime.js').LazyHost & {
     $meta?: TemplateMeta;
-    $rendered(): Promise<void>;
+    $whenRendered(): Promise<void>;
   };
   const binding = bindingFor(id, true);
   Object.assign(binding, { condition: [() => open], anchor: { parentNode: {} } });
@@ -559,11 +761,11 @@ test('the element waits for a closed region condition and never mounts into a di
   assert.equal(requests.length, 0, 'a false condition loads nothing');
   open = true;
   host.$toggleCond(binding);
-  await runtime.rendered(host);
+  await whenRendered(host);
   assert.deepEqual(requests, [{ url, priority: 'high' }]);
   assert.equal(binding.instance, null, 'the detached binding stays unmounted');
   assert.ok(registry()[id], 'the pack stays available for the next activation');
-  assert.equal(typeof host.$rendered, 'function');
+  assert.equal(typeof host.$whenRendered, 'function');
   assert.equal(typeof (host as { $prefetch?: unknown }).$prefetch, 'function');
 });
 
@@ -576,6 +778,7 @@ test('the element joins an installing pack instead of mounting before its resour
   try {
     const host = Object.assign(Object.create(TemplateElement.prototype) as object, {
       localName: 'join-owner',
+      isConnected: true,
       $meta: { v: 3, h: '', lp: { [id]: url } } as TemplateMeta,
     }) as unknown as import('./lazy-runtime.js').LazyHost;
     // Detached bindings never mount, so the core needs no DOM here.
@@ -587,7 +790,7 @@ test('the element joins an installing pack instead of mounting before its resour
     await until(() => registry()[id]);
     host.$toggleCond(second);
     let settled = false;
-    const done = runtime.rendered(host).then(() => { settled = true; });
+    const done = whenRendered(host).then(() => { settled = true; });
     await tick();
     assert.equal(settled, false, 'the second activation waits for the same install');
     resources.release();

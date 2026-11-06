@@ -257,7 +257,7 @@ array or string does work: `<if condition="items.length > 3">`.
 this.settingsOpen = true;
 
 // Only when code needs the body's DOM right away, such as before showModal():
-await this.$rendered();
+await this.$whenRendered();
 this.settingsDialog.showModal();
 ```
 
@@ -277,8 +277,11 @@ this.settingsDialog.showModal();
   in independently loadable child components and enable bundler code splitting.
   The integration loads templates and component scripts before rendering.
 - State remains application-owned; lazy regions never fetch it. Await
-  `$rendered()` only before using body DOM. Handle activation failures through
+  `$whenRendered()` only before using body DOM. Handle activation failures through
   its rejection or the owner's `lazyerror` event; do not silently ignore them.
+- Where `AbortSignal.timeout` is supported, pack fetches time out after
+  10 seconds. That deadline does not bound component script imports or
+  stylesheet readiness; stylesheet waits have no deadline.
 - Closing a region does not unload JavaScript. Let the framework manage template
   lifetimes rather than caching packs yourself.
 - `<if>` accepts only `condition` and `lazy`. `id` and other attributes fail
@@ -809,12 +812,34 @@ Deferred hydration does not defer image fetching; use native `loading="lazy"`.
 | Method / property | Description |
 |---|---|
 | `this.$emit(name, detail?)` | Dispatch a bubbling CustomEvent |
-| `this.$update()` | Force a reactive update cycle |
-| `this.$flushUpdates()` | Synchronously flush pending updates |
+| `await this.$whenRendered()` | Wait for pending rendering, activated lazy regions, and affected WebUI descendants before using the updated DOM |
 | `<property>Changed(oldValue, newValue)` | For `@attr` and `@observable`, run once after the component mounts with `oldValue` undefined, then synchronously on each live assignment |
 | `protected hydratedCallback()` | Run synchronously once after the first successful hydration or client mount |
 | `static define(tagName)` | Register as a custom element |
 | Generated component asset root | Import a stable generated `<tag>.webui.js` payload, then wrap its default export with `defineComponentAsset()` |
+
+**Change state, await rendering, then use the DOM.** Reactive assignments
+request updates automatically:
+
+```typescript
+this.showAction = true;
+await this.$whenRendered();
+this.actionButton.focus(); // w-ref="{actionButton}" on the conditional button
+```
+
+Call it on a connected, mounted component. It includes affected WebUI
+descendants, not unrelated future work or paint. Handle rejections at your
+application's error boundary and recheck focus intent after awaiting. See
+[affected rendering](/learn/interactivity#wait-for-affected-rendering)
+for the complete contract. Do not count microtasks or use timers to guess when
+rendering has finished.
+
+**Render API migration:** `$update(path?)`, `$flushUpdates()`, and lazy
+`$rendered()` were intentionally removed. Use reactive assignments to request
+rendering; replace observable objects or arrays instead of mutating them in
+place. Await `$whenRendered()` before dependent DOM work; it is not a
+synchronous flush or an update request.
+See [migration guidance](/learn/interactivity#migrating-render-calls).
 
 ### Custom events
 
@@ -930,7 +955,7 @@ pre-`super.connectedCallback()` writes safe.
 once with `oldValue` undefined for initial state, then synchronously for each
 live assignment. Template bindings remain batched in a microtask.
 Disconnected changes reconcile on reconnect. A throwing callback is not retried;
-`$flushUpdates()` or reconnect resumes other pending callbacks.
+reconnecting resumes other pending initial callbacks.
 
 Load buffered definitions through a parser-inserted, non-async ES module script
 or a classic `defer` script. Descendants must not structurally mutate a

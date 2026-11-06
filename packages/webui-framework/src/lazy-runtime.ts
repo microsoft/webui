@@ -19,7 +19,18 @@ import { runCompilerScript } from './trusted-types-policy.js';
 import { resolveAsset } from './asset-base.js';
 import { loadScripts, warnUnscriptedComponents } from './lazy-scripts.js';
 import { afterLoad, idle, speculativeTemplates } from './speculation.js';
-import type { CondBinding } from './element/types.js';
+import {
+  associateRenderTask,
+  cancelRenderTask,
+  enterRenderTask,
+  finishRenderTask,
+  inScope,
+  leaveRenderTask,
+  observingRender,
+  queueRenderTask,
+  type RenderTask,
+} from './render-completion.js';
+import type { CondBinding, TemplateInstance } from './element/types.js';
 import type { CompiledConditionalMeta, TemplateBlockMeta, TemplateMeta } from './template-types.js';
 
 // A compile-time constant (see `lazy-entry.ts`): checks use the define
@@ -77,12 +88,22 @@ const registered = new Map<string, Registration>();
 const released = new Map<string, Registration & { template: WeakRef<TemplateMeta> }>();
 /** Bindings that mounted each region this runtime registered. */
 const views = new Map<string, Set<WeakRef<CondBinding>>>();
-/**
- * Work each host's active regions wait for: a binding's activation, or the
- * scripts of a region that hydrated open. The value is the in-flight load,
- * or `undefined` after it failed until `$rendered()` retries it.
- */
-const pending = new WeakMap<Element, Map<CondBinding | string, Promise<void> | undefined>>();
+type ActivationKey = CondBinding | string;
+
+interface Activation extends RenderTask {
+  readonly element: LazyHost;
+  loading?: Promise<void>;
+  instances?: Set<TemplateInstance>;
+}
+
+/** In-flight or retryable work, keyed by the particular active region. */
+const pending = new WeakMap<Element, Map<ActivationKey, Activation>>();
+/** SSR-open fragments whose scripts can upgrade existing descendants. */
+const hydrating = new Set<Activation>();
+/** Failed hosts are weakly held so an ancestor can retry affected descendants. */
+const failed = new Set<WeakRef<LazyHost>>();
+const failedByHost = new WeakMap<LazyHost, WeakRef<LazyHost>>();
+const finalizedFailures = new FinalizationRegistry<WeakRef<LazyHost>>(ref => { failed.delete(ref); });
 /** Intent regions waiting for interaction, by owner tag and pack URL. */
 let intent: Map<string, Map<string, Armed>> | undefined;
 /** Idle and eager prefetch queues, by trigger and pack URL. */
@@ -256,16 +277,28 @@ function mismatch(url: string, region: string): Error {
 
 /** Load an active region, then let its host re-evaluate it; a closed region stays unmounted. */
 export function activate(host: LazyHost, binding: CondBinding, url: string, styles?: readonly string[]): void {
-  if (!pending.get(host)?.get(binding)) {
-    track(host, binding, load(binding.blockIndex as string, url, 'high', styles));
+  const entry = pending.get(host)?.get(binding);
+  if (entry?.loading) {
+    queueRenderTask(entry);
+    return;
   }
+  track(host, binding, load(binding.blockIndex as string, url, 'high', styles), entry);
 }
 
 /** Load the scripts of a region whose templates arrived with its open body. */
-export function hydrated(host: LazyHost, region: string): void {
-  if (pending.get(host)?.get(region)) return;
+export function hydrated(host: LazyHost, region: string, instance?: TemplateInstance): void {
+  const entry = pending.get(host)?.get(region);
+  if (entry?.loading) {
+    if (instance) (entry.instances ??= new Set()).add(instance);
+    queueRenderTask(entry);
+    return;
+  }
   const scripts = loadScripts(region);
-  if (scripts) track(host, region, scripts);
+  if (scripts) {
+    const active = track(host, region, scripts, entry);
+    if (instance) (active.instances ??= new Set()).add(instance);
+    hydrating.add(active);
+  }
 }
 
 /**
@@ -273,44 +306,155 @@ export function hydrated(host: LazyHost, region: string): void {
  * re-enters its host once loaded, or the scripts of a body that hydrated open.
  * A failure is reported unless a `lazyerror` listener handles it.
  */
-function track(host: LazyHost, key: CondBinding | string, work: Promise<unknown>): void {
-  const entries = pending.get(host) ?? new Map<CondBinding | string, Promise<void> | undefined>();
-  pending.set(host, entries);
-  // Only one load per key is in flight, so each settles its own entry.
-  const loading: Promise<void> = work.then(() => {
-    entries.delete(key);
-    if (typeof key !== 'string' && attached(key)) host.$toggleCond(key);
+function track(
+  host: LazyHost,
+  key: ActivationKey,
+  work: Promise<unknown>,
+  previous?: Activation,
+): Activation {
+  let entries = pending.get(host);
+  if (!entries) pending.set(host, entries = new Map());
+  const entry: Activation = { element: host };
+  if (previous?.instances) entry.instances = previous.instances;
+  entries.set(key, entry);
+  queueRenderTask(entry);
+  entry.loading = work.then(() => {
+    const before = enterRenderTask(entry);
+    try {
+      if (entries.get(key) === entry) {
+        entries.delete(key);
+        hydrating.delete(entry);
+        if (typeof key !== 'string' && attached(key)) host.$toggleCond(key);
+      }
+    } catch (error) {
+      finishRenderTask(entry, { value: error });
+      throw error;
+    } finally {
+      leaveRenderTask(before);
+      finishRenderTask(entry);
+      forgetFailureIfRetried(host, entries);
+    }
   }, (error: unknown) => {
-    entries.set(key, undefined);
-    if (host.dispatchEvent(new CustomEvent('lazyerror', {
-      bubbles: true, composed: true, cancelable: true, detail: { error },
-    }))) {
-      (globalThis.reportError ?? console.error)(error);
+    if (entries.get(key) !== entry) {
+      finishRenderTask(entry);
+      throw error;
+    }
+    entry.loading = undefined;
+    hydrating.delete(entry);
+    rememberFailure(host);
+    const before = enterRenderTask(entry);
+    try {
+      if (host.dispatchEvent(new CustomEvent('lazyerror', {
+        bubbles: true, composed: true, cancelable: true, detail: { error },
+      }))) {
+        (globalThis.reportError ?? console.error)(error);
+      }
+    } finally {
+      leaveRenderTask(before);
+      finishRenderTask(entry, { value: error });
     }
     throw error;
   });
-  // Only `$rendered()` callers observe the rejection.
-  loading.catch(noop);
-  entries.set(key, loading);
+  entry.loading.catch(noop);
+  forgetFailureIfRetried(host, entries);
+  return entry;
 }
 
-/** Wait for the host's active regions, including nested ones they activate; retry failures. */
-export async function rendered(host: LazyHost): Promise<void> {
-  const entries = pending.get(host);
-  while (entries && entries.size > 0) {
-    const waits: Promise<void>[] = [];
-    for (const [key, loading] of entries) {
-      if (!loading) {
-        if (typeof key === 'string') hydrated(host, key);
-        else if (attached(key)) host.$toggleCond(key);
-      }
-      const next = entries.get(key);
-      if (next) waits.push(next);
-      else entries.delete(key);
-    }
-    if (waits.length === 0) return;
-    await Promise.all(waits);
+function rememberFailure(host: LazyHost): void {
+  if (failedByHost.has(host)) return;
+  const ref = new WeakRef(host);
+  failedByHost.set(host, ref);
+  failed.add(ref);
+  finalizedFailures.register(host, ref, ref);
+}
+
+function forgetFailureIfRetried(host: LazyHost, entries: Map<ActivationKey, Activation>): void {
+  if (pending.get(host) !== entries) return;
+  const ref = failedByHost.get(host);
+  if (ref) {
+    for (const entry of entries.values()) if (!entry.loading) return;
+    failed.delete(ref);
+    failedByHost.delete(host);
+    finalizedFailures.unregister(ref);
   }
+  if (!entries.size) pending.delete(host);
+}
+
+/** Retry previously failed active work within a requested completion scope. */
+export function retryFailed(root: Element): void {
+  for (const ref of failed) {
+    const host = ref.deref();
+    if (!host) {
+      failed.delete(ref);
+      continue;
+    }
+    if (!host.isConnected || !inScope(host, root)) continue;
+    const entries = pending.get(host);
+    if (!entries) continue;
+    for (const [key, entry] of entries) {
+      if (entry.loading) continue;
+      if (typeof key === 'string') hydrated(host, key);
+      else if (attached(key)) host.$toggleCond(key);
+      if (!entries.get(key)?.loading) entries.delete(key);
+    }
+    forgetFailureIfRetried(host, entries);
+  }
+}
+
+/** A closed region no longer belongs to completions that captured its load. */
+export function cancelActivation(host: LazyHost, binding: CondBinding): void {
+  const entries = pending.get(host);
+  const entry = entries?.get(binding);
+  if (!entries || !entry) return;
+  entries.delete(binding);
+  cancelRenderTask(entry);
+  forgetFailureIfRetried(host, entries);
+}
+
+function within(instance: TemplateInstance, root: TemplateInstance): boolean {
+  let current: TemplateInstance | undefined = instance;
+  while (current) {
+    if (current === root) return true;
+    current = current.parent;
+  }
+  return false;
+}
+
+/** Forget activations owned by an instance before its bindings are disposed. */
+export function disposeActivations(host: LazyHost, root: TemplateInstance): void {
+  const entries = pending.get(host);
+  if (!entries) return;
+  for (const [key, entry] of entries) {
+    if (typeof key === 'string') {
+      if (!entry.instances) continue;
+      for (const instance of entry.instances) {
+        if (within(instance, root)) entry.instances.delete(instance);
+      }
+      if (entry.instances.size) continue;
+      hydrating.delete(entry);
+    } else if (!within(key.owner, root)) {
+      continue;
+    }
+    entries.delete(key);
+    cancelRenderTask(entry);
+  }
+  forgetFailureIfRetried(host, entries);
+}
+
+/** Join upgrades inside an SSR-open fragment to its existing lazy work. */
+export function joinHydratedMount(host: LazyHost): boolean {
+  if (!observingRender || !hydrating.size) return false;
+  let associated = false;
+  for (const entry of hydrating) {
+    if (!entry.instances || entry.element === host) continue;
+    for (const instance of entry.instances) {
+      if (instance.nodes.some(node => inScope(host, node))) {
+        associated = associateRenderTask(entry, host) || associated;
+        break;
+      }
+    }
+  }
+  return associated;
 }
 
 /** Disposing an instance empties its bindings, so a pack arriving later never mounts into it. */

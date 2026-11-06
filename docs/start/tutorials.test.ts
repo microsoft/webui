@@ -290,7 +290,7 @@ test('the lazy guide builds its documented region into a pack the CLI serves', a
   const template = guide.match(/```html\r?\n<!-- app-shell\.html -->\r?\n([\s\S]*?)```/)?.[1];
   assert.ok(template, 'the guide must contain its component template');
   assert.match(guide, /import '\.\.\/dist\/lazy\.webui\.js';/);
-  assert.match(guide, /await this\.\$rendered\(\);/);
+  assert.match(guide, /await this\.\$whenRendered\(\);/);
   const owner = 'app-shell';
   const region = `${owner}::lazy:@0`;
   const parent = path.join(workspace, 'packages/webui-press/dist-test/sites');

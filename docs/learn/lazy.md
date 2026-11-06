@@ -208,7 +208,7 @@ ownership; lazy cannot make an already-eager dependency private to a preview.
 
 Pages without lazy regions do not need any of this and pay nothing for the
 feature: the rendering core contains no lazy code. The import also adds
-`$rendered()` and `$prefetch()` to your components; the build writes
+`$prefetch()` to your components; the build writes
 `lazy.webui.d.ts` beside the module, so
 TypeScript sees the element methods without `allowJs`.
 Activating a lazy region without the import throws an error that names it.
@@ -221,7 +221,7 @@ request, the body's pack downloads at the same time.
 
 ## Dialogs, popovers, and focus
 
-Setting the condition is enough to show the body. Await `this.$rendered()` only
+Setting the condition is enough to show the body. Await `this.$whenRendered()` only
 when code needs the body's DOM right away. The common case is a native dialog:
 `showModal()` moves focus into the dialog immediately, so the body must exist
 before you call it.
@@ -238,7 +238,7 @@ before you call it.
 ```typescript
 async openSettings(): Promise<void> {
   this.settingsOpen = true;
-  await this.$rendered();
+  await this.$whenRendered();
   this.settingsDialog.showModal();
 }
 
@@ -247,12 +247,17 @@ closeSettings(): void {
 }
 ```
 
-`$rendered()` applies queued updates, waits for every active lazy region of the
-component, including nested regions activated by that render and the scripts of
-the components they introduce, and then resolves. It rejects if a pack or script
-cannot be loaded, including a pack request that does not finish within 10
-seconds. Calling it again, or setting the condition again, retries. If the
-condition turns false before the pack arrives, the body is not rendered.
+`$whenRendered()` waits for the affected rendering, including activated lazy
+regions and affected WebUI descendants. It rejects if a pack or script cannot
+be loaded. Calling it again, or setting the condition again, retries active
+regions. If the condition turns false before the pack arrives, the body is not
+rendered.
+Closing a region also cancels its pending activation: a later failure does not
+raise `lazyerror` for that activation. Opening it again can retry the load.
+
+Where `AbortSignal.timeout` is supported, a lazy pack fetch times out after
+10 seconds. This deadline does not bound component script imports or
+stylesheet readiness; stylesheet waits have no deadline.
 
 Refs inside a lazy body are valid while that view exists. Removing it clears
 refs that still point to its nodes, so the owner does not keep a detached UI tree
@@ -278,7 +283,7 @@ constructor() {
 }
 ```
 
-Setting the condition again, or awaiting `$rendered()`, retries the load.
+Setting the condition again, or awaiting `$whenRendered()`, retries the load.
 The framework invokes a failed code loader again; this does not evict the
 browser's module cache or guarantee that a failed native `import()` is fetched
 again. Recovery from a cached module failure may require a page reload or an

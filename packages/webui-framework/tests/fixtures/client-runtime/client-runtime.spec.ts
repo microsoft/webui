@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+import { FLUSH_UPDATES } from '../../../src/render-scheduler.js';
 import { expect, test } from '@playwright/test';
 import type { TestRuntimeEffects } from './element.js';
 
@@ -93,8 +94,8 @@ for (const teardown of [false, true]) {
       document.body.appendChild(el);
       const afterReconnect = el.propertyCalls.length;
       el.count = 7;
-      el.$flushUpdates();
-      el.$flushUpdates();
+      el[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
+      el[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
       return { afterReconnect, calls: el.propertyCalls, hydratedCalls: el.hydratedCalls };
     }, teardown);
     expect(result).toEqual({
@@ -308,12 +309,12 @@ test.describe('authored callback recovery', () => {
       el.b = 7;
       await new Promise<void>(resolve => queueMicrotask(resolve));
       el.b = 8;
-      el.$flushUpdates();
+      el[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
       const connected = el.isConnected;
       const whileDetached = el.calls.filter(call => call.name !== 'hydrated');
       document.body.appendChild(el);
-      el.$flushUpdates();
-      el.$flushUpdates();
+      el[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
+      el[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
       return {
         connected,
         whileDetached,
@@ -348,12 +349,12 @@ test.describe('authored callback recovery', () => {
       document.body.appendChild(el);
       el.b = 2;
       await new Promise<void>(resolve => queueMicrotask(resolve));
-      el.$flushUpdates();
+      el[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
       const connected = el.isConnected;
       const whileDetached = el.calls.slice(initialCount);
       document.body.appendChild(el);
-      el.$flushUpdates();
-      el.$flushUpdates();
+      el[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
+      el[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
       return { connected, whileDetached, afterReconnect: el.calls.slice(initialCount) };
     });
     expect(result).toEqual({
@@ -388,7 +389,7 @@ test.describe('authored callback recovery', () => {
       const whileDetached = child.propertyCalls.slice(initialCount);
       await new Promise<void>(resolve => queueMicrotask(resolve));
       document.body.appendChild(parent);
-      child.$flushUpdates();
+      child[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
       return {
         connectedDuringParentCallback,
         whileDetached,
@@ -418,9 +419,9 @@ test.describe('authored callback recovery', () => {
       document.body.appendChild(el);
       const beforeFlush = { calls: el.propertyCalls.slice(), hydratedCalls: el.hydratedCalls };
       el.countChanged = original;
-      el.$flushUpdates();
+      el[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
       const afterFlush = { calls: el.propertyCalls.slice(), hydratedCalls: el.hydratedCalls };
-      el.$flushUpdates();
+      el[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
       await new Promise<void>(resolve => queueMicrotask(resolve));
       el.remove();
       document.body.appendChild(el);
@@ -453,9 +454,9 @@ test.describe('authored callback recovery', () => {
       document.body.appendChild(el);
       const beforeFlush = el.calls.slice();
       el.bChanged = original;
-      el.$flushUpdates();
+      el[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
       const afterFlush = el.calls.slice();
-      el.$flushUpdates();
+      el[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
       await new Promise<void>(resolve => queueMicrotask(resolve));
       el.remove();
       document.body.appendChild(el);
@@ -486,8 +487,8 @@ test.describe('authored callback recovery', () => {
       await new Promise<void>(resolve => queueMicrotask(resolve));
       document.body.appendChild(el);
       const afterRecovery = el.calls.slice();
-      el.$flushUpdates();
-      el.$flushUpdates();
+      el[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
+      el[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
       el.remove();
       await new Promise<void>(resolve => queueMicrotask(resolve));
       document.body.appendChild(el);
@@ -523,8 +524,8 @@ test.describe('authored callback recovery', () => {
         el.b = 3;
         el.b = 4;
         const afterLiveWrites = el.calls.slice(initialCount);
-        el.$flushUpdates();
-        el.$flushUpdates();
+        el[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
+        el[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
         await new Promise<void>(resolve => queueMicrotask(resolve));
         return { reconciled, afterLiveWrites, afterFlush: el.calls.slice(initialCount) };
       }, teardown);
@@ -543,7 +544,7 @@ test.describe('authored callback recovery', () => {
 });
 
 type TestRuntimeLife = HTMLElement & {
-  $flushUpdates(): void;
+  [FLUSH_UPDATES](): void;
   count: number;
   hydratedCalls: number;
   attributeChanges: string[];

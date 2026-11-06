@@ -6,7 +6,7 @@
  *
  * A reactive write that runs while an element is connected but before hydration
  * finishes — a `@observable` field initializer, the `constructor`, or code
- * before `super.connectedCallback()` — is dropped by `TemplateElement.$update`'s
+ * before `super.connectedCallback()` — is dropped by the reactive update's
  * pre-ready guard: the backing field changes, but the server-rendered DOM is
  * trusted and left untouched. That leaves the element's own observable
  * disagreeing with its DOM — silently, and inconsistently with client-side

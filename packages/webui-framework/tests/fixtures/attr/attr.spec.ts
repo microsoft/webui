@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+import { FLUSH_UPDATES } from '../../../src/render-scheduler.js';
 import { expect, test } from '@playwright/test';
 
 test.describe('attr fixture', () => {
@@ -128,7 +129,7 @@ test.describe('attr fixture', () => {
         displayValue: string;
         changeLog: { name: string; value: unknown }[];
         labelChanged(oldValue: unknown, value: string): void;
-        $flushUpdates(): void;
+        [FLUSH_UPDATES](): void;
       };
       const initialCount = el.changeLog.length;
       el.remove();
@@ -145,7 +146,7 @@ test.describe('attr fixture', () => {
       } finally {
         proto.labelChanged = original;
       }
-      el.$flushUpdates();
+      el[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
       return {
         error,
         calls: el.changeLog.slice(initialCount).map(({ name, value }) => ({ name, value })),

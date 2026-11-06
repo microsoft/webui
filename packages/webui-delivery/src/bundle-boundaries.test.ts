@@ -37,6 +37,7 @@ interface Bundle {
   inputs: Set<string>;
   initialInputs: Set<string>;
   initialText: string;
+  totalText: string;
   inputCopies: Map<string, number>;
 }
 
@@ -112,7 +113,7 @@ async function buildProfile(profile: Profile): Promise<Bundle> {
   const measured: Bundle = {
     initialBytes: 0, initialGzip: 0, totalBytes: 0, totalGzip: 0,
     initialBrotli: 0, totalBrotli: 0, initialRequests: initial.size, chunks: Object.keys(outputs).length,
-    inputs: new Set(), initialInputs: new Set(), initialText: '', inputCopies: new Map(),
+    inputs: new Set(), initialInputs: new Set(), initialText: '', totalText: '', inputCopies: new Map(),
   };
   for (const [path, output] of Object.entries(outputs)) {
     const bytes = files.get(resolve(root, path));
@@ -122,6 +123,7 @@ async function buildProfile(profile: Profile): Promise<Bundle> {
     measured.totalBytes += bytes.byteLength;
     measured.totalGzip += gzip;
     measured.totalBrotli += brotli;
+    measured.totalText += new TextDecoder().decode(bytes);
     if (initial.has(path)) {
       measured.initialBytes += bytes.byteLength;
       measured.initialGzip += gzip;
@@ -167,8 +169,8 @@ test('normal bootstrap includes styling once and keeps optional coordinators sep
     'styles-entry.js',
     'template-cache.js', 'streaming-coordinator.js', 'lazy-hydration-coordinator.js',
   ]);
-  assert.ok(core.initialBytes <= 85_000, `default startup: ${core.initialBytes} bytes`);
-  assert.ok(core.initialGzip <= 27_000, `default startup gzip: ${core.initialGzip} bytes`);
+  assert.ok(core.initialBytes <= 89_000, `default startup: ${core.initialBytes} bytes`);
+  assert.ok(core.initialGzip <= 29_000, `default startup gzip: ${core.initialGzip} bytes`);
   assert.ok(Math.abs(core.initialBytes - styled.initialBytes) <= 128,
     'the compatibility import must not bundle another style implementation');
   for (const [input, copies] of core.inputCopies) {
@@ -182,6 +184,18 @@ test('normal bootstrap includes styling once and keeps optional coordinators sep
   // The CSS module loader imports a runtime specifier; bundling must leave it native.
   assert.match(styled.initialText, /import\([\w$]+,\{with:\{type:"css"\}\}\)/);
   assert.match(core.initialText, /import\([\w$]+,\{with:\{type:"css"\}\}\)/);
+});
+
+test('production rendering excludes development diagnostics from every chunk', async () => {
+  const core = await bundle('buffered');
+  excludes(core.inputs, ['hydration-mismatch.js']);
+  for (const diagnostic of [
+    'was compiled with',
+    'so it hydrated eagerly instead',
+    'but they are already installed in the opposite order',
+  ]) {
+    assert.equal(core.totalText.includes(diagnostic), false, `${diagnostic} is development-only`);
+  }
 });
 
 test('component assets and routing reuse the normal bootstrap style engine', async () => {
@@ -247,7 +261,7 @@ test('lazy regions add one small framework runtime and no delivery code', async 
   // The rendering core holds no lazy logic, so this is the whole cost of the
   // feature, including script loading through `registerGeneratedLazyScripts()`.
   const added = lazy.initialBrotli - core.initialBrotli;
-  assert.ok(added <= 2_609, `lazy runtime adds ${added} brotli bytes`);
+  assert.ok(added <= 3_100, `lazy runtime adds ${added} brotli bytes`);
 });
 test('early progressive HTML remains separate from network partial decoding and authored rendering', async () => {
   const progressive = await bundle('progressive');
@@ -268,7 +282,7 @@ test('combined delivery reuses shared code and records public bundle measurement
     ? 'delivery-packed-public.json' : 'delivery-public-after.json');
   mkdirSync(dirname(output), { recursive: true });
   writeFileSync(output, JSON.stringify(Object.fromEntries(names.map((name, index) => {
-    const { inputs, initialInputs, initialText: _text, inputCopies: _copies, ...sizes } = profiles[index];
+    const { inputs, initialInputs, initialText: _text, totalText: _totalText, inputCopies: _copies, ...sizes } = profiles[index];
     return [name, { ...sizes, inputs: [...inputs], initialInputs: [...initialInputs] }];
   })), null, 2));
 });

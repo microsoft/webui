@@ -70,7 +70,7 @@ export class LazyPopover extends WebUIElement {
       this.activityReady = true;
       // Show the popover once its body exists, so it never opens empty. This
       // rejects when the body cannot load, and the catch below reports it.
-      await this.$rendered();
+      await this.$whenRendered();
       if (generation !== this.generation) return;
       this.popoverElement.showPopover({ source: this.triggerElement });
     } catch (error) {

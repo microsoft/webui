@@ -28,5 +28,6 @@ catalog:
   electron: ^44.9.1
   esbuild: ^0.28.2
   tslib: ^2.8.1
+  terser: ^5.51.2
   typescript: 7.0.2
   typescript-6: npm:typescript@6.0.3

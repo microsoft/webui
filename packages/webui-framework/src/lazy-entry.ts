@@ -16,16 +16,20 @@ import { installLazyResolver } from './lazy-contract.js';
 import {
   activate,
   blockOwner,
+  cancelActivation,
+  disposeActivations,
   disposed,
   hydrated,
+  joinHydratedMount,
   opened,
   prefetchRegions,
-  rendered,
   resolve,
+  retryFailed,
   unloaded,
   watch,
   type LazyHost,
 } from './lazy-runtime.js';
+import { installRenderTaskRetry, renderWork } from './render-completion.js';
 import { isConditionTruthy } from './template-conditions.js';
 import { TemplateElement } from './template-element.js';
 import type { CondBinding, TemplateInstance } from './element/types.js';
@@ -33,18 +37,6 @@ import type { TemplateMeta } from './template-types.js';
 
 declare module './template-element.js' {
   interface TemplateElement {
-    /**
-     * Resolve once every active lazy region of this component has rendered.
-     *
-     * Setting a lazy condition is enough to show its body; await this only when
-     * code needs the body's DOM right away, such as before `showModal()`. It
-     * applies queued updates first, so `this.open = true; await this.$rendered()`
-     * waits for the region that the assignment activated, including nested
-     * regions that it activates, and for the custom elements they introduce.
-     * Rejects when a pack or script fails to load; calling again, or the next
-     * activation, retries it.
-     */
-    $rendered(): Promise<void>;
     /**
      * Start loading this component's lazy regions before they activate.
      *
@@ -76,10 +68,8 @@ interface Host extends LazyHost {
   $changeStructure(removedFrom?: TemplateInstance): void;
   $conditionResolver(): (path: string, scope?: unknown) => unknown;
   $disposeInstance(root: TemplateInstance, removeNodes: boolean, retainFragments?: boolean): void;
-  $flushUpdates(): void;
   $mount(...args: unknown[]): void;
   $prefetch(path?: string): void;
-  $rendered(): Promise<void>;
 }
 
 const element = TemplateElement.prototype as unknown as Host;
@@ -97,7 +87,10 @@ element.$toggleCond = function (this: Host, c: CondBinding): void {
     return;
   }
   // A closed region needs its template only once its condition holds.
-  if (!c.condition[0](this.$conditionResolver(), c.scope, isConditionTruthy)) return;
+  if (!c.condition[0](this.$conditionResolver(), c.scope, isConditionTruthy)) {
+    cancelActivation(this, c);
+    return;
+  }
   const container = c.anchor?.parentNode ? c.owner.fragment ?? this.$meta : undefined;
   const url = container?.lp?.[region];
   if (url && unloaded(region, url, this.localName)) {
@@ -110,11 +103,14 @@ element.$toggleCond = function (this: Host, c: CondBinding): void {
 
 element.$mount = function (this: Host, ...args: unknown[]): void {
   const previous = mounting;
+  const associated = joinHydratedMount(this);
+  const previousRender = associated ? renderWork?.enter(this) : undefined;
   mounting = this;
   try {
     mount.apply(this, args);
   } finally {
     mounting = previous;
+    if (associated) renderWork?.leave(this, previousRender);
   }
   watch(this);
 };
@@ -132,24 +128,21 @@ element.$disposeInstance = function (
   removeNodes: boolean,
   retainFragments?: boolean,
 ): void {
+  disposeActivations(this, root);
   dispose.call(this, root, removeNodes, retainFragments);
   disposed();
-};
-
-element.$rendered = function (this: Host): Promise<void> {
-  this.$flushUpdates();
-  return rendered(this);
 };
 
 element.$prefetch = function (this: Host, path?: string): void {
   prefetchRegions(this.$meta, path);
 };
 
-installLazyResolver(resolve, meta => {
+installRenderTaskRetry(retryFailed);
+installLazyResolver(resolve, (meta, instance) => {
   // A region body rendered by the server hydrates with its templates but not
   // its scripts, so they load now at activation priority.
   const region = (meta as TemplateMeta).f;
-  if (region && mounting) hydrated(mounting, region);
+  if (region && mounting) hydrated(mounting, region, instance);
   return blockOwner(meta);
 });
 

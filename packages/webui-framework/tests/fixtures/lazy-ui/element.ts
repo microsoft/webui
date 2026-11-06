@@ -62,7 +62,7 @@ export class LazyOwner extends WebUIElement {
       if (generation !== this.generation || controller.signal.aborted) return;
       this.setState(state);
       this.opened = true;
-      await this.$rendered();
+      await this.$whenRendered();
     } catch (error) {
       if (generation === this.generation && !controller.signal.aborted) this.error = String(error);
     } finally {

@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+import { FLUSH_UPDATES } from '../../../src/render-scheduler.js';
 import { expect, test, type Page } from '@playwright/test';
 
 const FIXTURE = '/lazy-hydration/fixture.html';
@@ -685,11 +686,11 @@ test.describe('component lazy hydration', () => {
       const host = element as HTMLElement & {
         note: string;
         $deferredSSR: boolean;
-        $flushUpdates(): void;
+        [FLUSH_UPDATES](): void;
         $hydrated: boolean;
       };
       host.note = 'Live reconnect state';
-      host.$flushUpdates();
+      host[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
       const bootstrap = window as unknown as {
         __webui?: { state?: Record<string, unknown> };
       };
@@ -893,10 +894,10 @@ test.describe('component lazy hydration', () => {
     await page.locator('#streamed').evaluate((element) => {
       const host = element as HTMLElement & {
         label: string;
-        $flushUpdates(): void;
+        [FLUSH_UPDATES](): void;
       };
       host.label = 'Second patch';
-      host.$flushUpdates();
+      host[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
     });
     await expect(page.locator('#streamed .label')).toHaveText('Second patch');
     await expect(page.locator('#streamed .mixed')).toHaveText(
@@ -1260,7 +1261,7 @@ test.describe('component lazy hydration', () => {
       const host = element as HTMLElement & {
         note: string;
         $deferredSSR: boolean;
-        $flushUpdates(): void;
+        [FLUSH_UPDATES](): void;
         $hydrated: boolean;
       };
       host.id = 'client-reconnect';
@@ -1270,7 +1271,7 @@ test.describe('component lazy hydration', () => {
       document.body.appendChild(host);
       const mountedEagerly = host.$hydrated;
       host.note = 'Client reconnect state';
-      host.$flushUpdates();
+      host[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
       host.remove();
       await Promise.resolve();
       const tornDown = !host.$hydrated;

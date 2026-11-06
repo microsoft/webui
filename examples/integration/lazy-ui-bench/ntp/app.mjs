@@ -429,13 +429,13 @@ ${wire}
   async open${C}(): Promise<void> {
     ${flag} = true;
     // showModal() moves focus into the dialog, so its body must exist first.
-    await this.$rendered();
+    await this.$whenRendered();
     if (${flag} && !this.${id}Dialog.open) this.${id}Dialog.showModal();
   }
 ` : `
-  open${C}(): void {
+  async open${C}(): Promise<void> {
     ${flag} = true;
-    this.$flushUpdates();
+    await this.$whenRendered();
     if (!this.${id}Dialog.open) this.${id}Dialog.showModal();
   }
 `);

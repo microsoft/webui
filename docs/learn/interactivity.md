@@ -301,12 +301,96 @@ Use `@observable` for internal state that changes over time. When an observable 
 
 Observable values are readable immediately. Changes to bindings are targeted
 and batched in a microtask, so multiple assignments in one turn normally cause
-one DOM update. Call `$flushUpdates()` if code needs pending template updates
-synchronously.
+one DOM update. Use `$whenRendered()` when subsequent code needs the updated
+DOM. Multiple parent property bindings to the same child are batched too.
 
 You do not need `@observable` for values that are only read by the template.
 Add `@observable` when TypeScript code needs to read or mutate the value, for
 example in an event handler.
+
+### Wait for affected rendering
+
+**Change state, await rendering, then use the updated DOM.** Use
+`await this.$whenRendered()` for focus, scrolling, or other DOM work that
+depends on the change. It waits for this component **and its affected WebUI
+descendants**. Reactive assignments already request rendering; no explicit
+update or flush is needed.
+
+For example, show a button in the template:
+
+```html
+<button @click="{revealAction()}">Show action</button>
+<if condition="showAction">
+  <button w-ref="{actionButton}">Continue</button>
+</if>
+```
+
+Then focus it from the component's event handler:
+
+```typescript
+@observable showAction = false;
+declare actionButton: HTMLButtonElement;
+
+async revealAction(): Promise<void> {
+  this.showAction = true;
+  await this.$whenRendered();
+  this.actionButton.focus();
+}
+```
+
+Declare `showAction: false` in the initial server state as well. This example
+assumes focus intent is still current when rendering completes. For a wait
+that can outlast the interaction, revalidate that intent before moving focus.
+Handle completion failures at your application's error boundary.
+
+The promise preserves batching and waits for a **finite batch of DOM updates**:
+pending work, changes in the current synchronous turn, and updates they cause
+in affected WebUI descendants. This includes Shadow, Light, and slotted
+descendants, activated lazy regions, and DOM insertion already waiting for
+component stylesheets.
+Untouched dormant components are not activated.
+
+It does **not** wait for later independent updates, timers, fetches, asynchronous
+user callbacks, or non-WebUI rendering. Completion does not imply layout or
+paint, loaded images or fonts, or finished animations. Use this method instead
+of timers or counting microtasks.
+
+Call it on a connected, mounted component. Handle rejections at your
+application's error boundary:
+
+| Failure | Meaning |
+|---|---|
+| `InvalidStateError` | The component or affected work is not ready, such as deferred hydration, incomplete streaming, or unloaded definitions/templates. Wait for readiness before making a new request. |
+| `AbortError` | The component disconnected or captured work unexpectedly left its scope. |
+| Original error | Rendering, a property callback, or a required mount stylesheet failed. |
+
+Stylesheet waits have no deadline. The DOM can change again before your code
+resumes; focus selection and avoiding focus theft remain application policy.
+
+### Migrating render calls
+
+The removal of `$update(path?)`, `$flushUpdates()`, and lazy `$rendered()` is an
+**intentional breaking change**. Migrate existing callers to reactive
+assignments and asynchronous render completion.
+
+| Previous API | Migration |
+|---|---|
+| `$update(path?)` | Assign an `@observable` or `@attr` property to request rendering. For an in-place object or array mutation, replace the observable root instead; awaiting completion does not notify an unobserved mutation. |
+| `$flushUpdates()` | Make DOM-dependent code asynchronous and await `$whenRendered()` after changing state. There is no public synchronous-flush replacement. |
+| Lazy `$rendered()` | Await `$whenRendered()` on the connected, mounted owner. It includes activated lazy regions and affected descendants, rather than preserving the old owner-only wait. |
+
+For example, replace mutating `settings.theme` followed by
+`$update('settings.theme')` with an assignment to the `@observable settings`
+property:
+
+```typescript
+this.settings = { ...this.settings, theme: 'dark' };
+await this.$whenRendered();
+```
+
+`$whenRendered()` is an asynchronous completion boundary, not a compatibility
+alias for requesting updates or flushing them synchronously. Callers that
+require synchronous DOM changes must be redesigned before upgrading.
 
 ### React to Property Changes
 
@@ -331,8 +415,8 @@ For work that runs only once regardless of property values, use
 `hydratedCallback()`. Optional resources and deferred descendants may still
 need readiness checks.
 
-Callback errors propagate. The failed callback is not retried; call
-`$flushUpdates()` or reconnect the element to resume other pending callbacks.
+Callback errors propagate. The failed callback is not retried; reconnecting
+the element resumes other pending initial callbacks.
 
 ### Initial Hydration State
 

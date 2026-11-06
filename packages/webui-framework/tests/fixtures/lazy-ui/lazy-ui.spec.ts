@@ -116,7 +116,47 @@ test('idle regions prefetch after load without rendering or touching intent regi
   expect(await page.evaluate(() => window.__lazyFixture.registered('test-lazy-light'))).toBe(false);
 });
 
-test('$rendered waits for an activated region and the nested region it activates', async ({ page }) => {
+test('$whenRendered waits for an activated lazy body before its ref can be focused', async ({ page }) => {
+  await page.goto('/lazy-ui/fixture.html?initial=0');
+  await ready(page);
+  const url = await packUrl(page, 'test-lazy-shadow');
+  const gate = Promise.withResolvers<void>();
+  await page.route(url, async route => {
+    await gate.promise;
+    await route.continue();
+  });
+  try {
+    const requested = page.waitForRequest(url);
+    await page.evaluate(() => {
+      const owner = document.querySelector('test-lazy-shadow') as LazyOwner;
+      const state = window as unknown as {
+        lazyCompletionDone: boolean;
+        lazyCompletion: Promise<void>;
+      };
+      state.lazyCompletionDone = false;
+      owner.opened = true;
+      state.lazyCompletion = owner.$whenRendered().then(() => { state.lazyCompletionDone = true; });
+    });
+    await requested;
+    expect(await page.evaluate(async () => {
+      await new Promise<void>(resolve => setTimeout(resolve, 0));
+      return (window as unknown as { lazyCompletionDone: boolean }).lazyCompletionDone;
+    })).toBe(false);
+    gate.resolve();
+    const result = await page.evaluate(async () => {
+      const state = window as unknown as { lazyCompletion: Promise<void> };
+      await state.lazyCompletion;
+      const owner = document.querySelector('test-lazy-shadow') as LazyOwner;
+      owner.inputEl.focus();
+      return owner.shadowRoot!.activeElement === owner.inputEl;
+    });
+    expect(result).toBe(true);
+  } finally {
+    gate.resolve();
+  }
+});
+
+test('$whenRendered waits for an activated region and the nested region it activates', async ({ page }) => {
   await page.goto('/lazy-ui/fixture.html?initial=0&advanced=1');
   await ready(page);
   const packs: string[] = [];
@@ -155,7 +195,7 @@ test('closing before the pack arrives keeps the region unmounted', async ({ page
   await expect(page.locator('test-lazy-shadow .loading')).toHaveCount(0);
 });
 
-test('a failed pack rejects $rendered and the next activation retries it', async ({ page }) => {
+test('a failed pack rejects $whenRendered and the next activation retries it', async ({ page }) => {
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.goto('/lazy-ui/fixture.html?initial=0&delay=0');

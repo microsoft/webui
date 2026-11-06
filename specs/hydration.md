@@ -74,6 +74,72 @@ Captured pre-upgrade own properties survive constructor defaults and initial
 attribute reactions. An explicit property assignment after upgrade supersedes
 the captured value, including while the element remains detached.
 
+### Affected-render completion
+
+`TemplateElement.$whenRendered(): Promise<void>` is the only public rendering
+control. Reactive update requests and synchronous host flushes use internal
+symbols, not public `$update` or `$flushUpdates` methods.
+
+A shared FIFO scheduler drains ready component updates and their synchronous
+consequences within one microtask. Later application microtasks do not
+interleave between these parent and descendant jobs. A failed job still throws
+to the host and schedules remaining jobs for a subsequent drain. A synchronous
+host flush cancels its old queue slot so a new generation keeps FIFO order.
+During a scheduled drain, parent complex-property bindings use this same queue
+instead of flushing a child after each property. State and authored callbacks
+remain synchronous; the child's bindings reconcile once after the parent has
+delivered its values. Explicit host flushes, including `setState`, retain their
+synchronous child propagation for navigation snapshots.
+
+Completion captures pending jobs, started staged mounts,
+and retained blocked writes in the root's rendered ancestry scope. Walk
+assigned slots, parent elements, and shadow hosts, not DOM subtrees. Keep
+enrollment open until one explicit microtask checkpoint so requests from a
+Changed callback include the setter's trailing update. Jobs that run before
+that checkpoint must still be accounted for.
+
+After enrollment closes, propagate membership only through synchronous work
+executing in captured renders and explicitly carried mount continuations.
+Coalesced writes are inseparable from their captured job; new independent
+jobs, user microtasks, async callback returns, timers, and later stream records
+are not automatically included. The boundary covers own DOM/refs and
+synchronous lifecycle work, not foreign component schedulers or paint.
+
+The scheduler's actual ready queue discovers work queued before a request;
+do not mirror updates in a second pending index. Cleared queue slots release
+completed targets. Explicit resource-gated mount work remains separate from
+the ready queue and does not block its drain. Neither path allocates per-job
+wrapper objects or eager promises. Blocked targets use weak
+references and retain no copied state or strong subtree ownership. Initial
+discovery scales with outstanding work and ancestry depth, not just affected
+bindings. Waiter membership exists only for requested boundaries: jobs share a
+single observer set unless requests overlap. Release membership on settlement,
+and bypass observer-scope bookkeeping when no boundary is requested. Allocate
+observation indexes on demand and weakly cache idle machinery so collection
+does not retain completed observer callbacks or lose pending mounts and tasks.
+Retire active hooks after the current stack has unwound; a callback can request
+a new boundary after an earlier boundary fails. Do not
+equate an empty instance queue or the startup hydration
+event with affected-descendant completion.
+
+Untouched dormant descendants do not participate. Writes to readiness-blocked
+lazy, streamed, undefined, or missing-template WebUI targets reject instead of
+activating them or succeeding partially. Staged blocked writes created during
+a captured render are checked after insertion. Started stylesheet-gated DOM
+mounts participate even if they started before the request. Carry render
+membership through their reconciliation/append callbacks and report explicit
+load/error/cancellation outcomes. A link failure may preserve native-link
+fallback rendering while rejecting the boundary. This does not impose a
+resource deadline or wait for all CSS on the page.
+
+Structural disposal retires removed descendant jobs. Root disconnection or
+unexpected loss of captured work rejects; same-stack descendant moves that restore the
+scope remain valid. Destruction clears pending and weak blocked entries.
+Failures reject affected waiters with the original error without changing
+existing callback retry or unprocessed-path recovery behavior. Overlapping
+waiters settle independently and exactly once; a settled boundary is never
+reopened. DOM is not frozen between settlement and an await continuation.
+
 There is no flash of content, because the HTML was already on screen at step 2. There is no first render, because the framework never re-renders the DOM that SSR emitted.
 
 ---
@@ -411,7 +477,7 @@ allocate or retain a per-template boundary array.
 
 ## State seeding
 
-When the server renders `<span>42</span>` for `@observable count = 0`, the JS class default is still `0`. If the framework called `$update()` immediately, it would overwrite `42` with `0`.
+When the server renders `<span>42</span>` for `@observable count = 0`, the JS class default is still `0`. An immediate update would overwrite `42` with `0`.
 
 `$applySSRState` runs **before** any binding is wired:
 
@@ -436,7 +502,7 @@ After hydration, every dynamic value is connected to a direct DOM-node reference
 
 ### Path index
 
-`$buildPathIndex` (called lazily on the first `$update`) walks every binding in the component and groups them by the observable property names they depend on:
+`$buildPathIndex` (called lazily on the first update) walks every binding in the component and groups them by the observable property names they depend on:
 
 ```text
 'count'  → { texts: [t1, t2], attrs: [], conds: [c1], repeats: [] }
@@ -456,9 +522,9 @@ conditional updates.
 
 ```
 this.count = 5
-  → @observable setter writes _count, calls $update('count')
-  → $update queues 'count' on $dirtyPaths, schedules a microtask
-  → $flush walks $dirtyPaths once, looking each path up in $pathIndex
+  → @observable setter writes _count, requests an update for 'count'
+  → the scheduler queues 'count' on $dirtyPaths and schedules a microtask
+  → rendering walks $dirtyPaths once, looking each path up in $pathIndex
   → for each entry, walks only that subset of bindings
   → wildcard bindings run once per flush (not per dirty path)
   → DOM is patched via direct .textContent / setAttribute / etc.
@@ -466,9 +532,9 @@ this.count = 5
 
 Updates are coalesced via `queueMicrotask`. Multiple synchronous setter calls inside a single tick produce one DOM pass.
 
-### `$flushUpdates()`
-
-Synchronous escape hatch. Call it when you need the DOM to reflect pending writes immediately (test code, measurement before paint, etc.).
+The public `$whenRendered()` completion boundary waits for the finite affected
+rendering batch, including activated lazy regions and affected descendants.
+Internal synchronous flushing remains private to framework coordination.
 
 ### Why this is fast
 

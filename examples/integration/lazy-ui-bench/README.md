@@ -743,9 +743,8 @@ style builds in the rerun, but the link-build gap of about 20 ms remains.
 generates the same module. Each app has a grid of cards; each card owns a native
 `<dialog>` whose 24-field form, repeat, and nested component live in the body.
 **s1** has one dialog; **s30** has 30, and the user opens one. Opening sets the
-condition, calls `showModal()` once the body has rendered (lazy pages await
-`this.$rendered()`; plain pages, which do not load the lazy runtime, flush
-updates), and waits for paint.
+condition, awaits `this.$whenRendered()`, calls `showModal()`, and waits for
+paint. The recorded results below used the previous completion and flush APIs.
 
 The run uses Edge with the Lighthouse mobile profile (150 ms RTT, 1.6 Mbps down,
 750 Kbps up, 4x CPU), 20 samples after one warmup in alternating order, and fresh
@@ -941,7 +940,8 @@ task.
 - **eager-fresh**: ordinary `<if>`, templates local, fresh state fetched on every open.
 - **lazy**: `<if lazy="demand">`; opening starts the state request, sets the
   condition so the pack downloads at the same time, then applies the state and
-  awaits `this.$rendered()`.
+  awaits `this.$whenRendered()`. Historical results used the previous lazy
+  completion API.
 
 `WEBUI_BENCH_SAMPLES` defaults to 20 (plus two discarded warmups);
 `WEBUI_BENCH_LATENCY_MS` defaults to 40 ms of state-provider delay. Fresh browser

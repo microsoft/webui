@@ -49,7 +49,7 @@ class BenchOwner extends WebUIElement {
     await this.open();
     this.loading = false;
     this.status = 'Ready';
-    this.$flushUpdates();
+    await this.$whenRendered();
     window.uiProbe.finish(action);
   }
   onShell(event) {
@@ -70,23 +70,23 @@ class BenchOwner extends WebUIElement {
     if (action) queueMicrotask(() => window.uiProbe.finish(action));
   }
   changeBroadcast(event) { this.broadcast = event.currentTarget.checked; }
-  onClose(event) {
+  async onClose(event) {
     const action = window.uiProbe.begin(event, this.loading);
-    this.close();
+    await this.close();
     this.status = 'Closed';
-    this.$flushUpdates();
+    await this.$whenRendered();
     window.uiProbe.finish(action);
   }` : ''}
   async open() {
     const start = performance.now();
     ${mode === 'lazy'
-      ? "const state = fetchState(); this.shown = true; this.setState(await state); await this.$rendered();"
+      ? "const state = fetchState(); this.shown = true; this.setState(await state); await this.$whenRendered();"
       : mode === 'eager-fresh'
-        ? "this.setState(await fetchState()); this.shown = true; this.$flushUpdates();"
-        : 'this.shown = true; this.$flushUpdates();'}
+        ? "this.setState(await fetchState()); this.shown = true; await this.$whenRendered();"
+        : 'this.shown = true; await this.$whenRendered();'}
     return performance.now() - start;
   }
-  close() { this.shown = false; this.$flushUpdates(); }
+  async close() { this.shown = false; await this.$whenRendered(); }
 }
 const started = performance.now();
 BenchOwner.define('bench-owner');

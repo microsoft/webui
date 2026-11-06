@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+import { FLUSH_UPDATES } from '../../../src/render-scheduler.js';
 import { expect, test } from '@playwright/test';
 
 test.describe('nested event fixture', () => {
@@ -18,7 +19,7 @@ test.describe('nested event fixture', () => {
       const root = host?.shadowRoot ?? host;
       const btn = root?.querySelector('.parent-btn');
       btn?.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
-      host?.$flushUpdates();
+      host?.[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
       return host?.parentClicks ?? -1;
     });
 

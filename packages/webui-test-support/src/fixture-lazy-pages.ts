@@ -115,8 +115,11 @@ export async function prepareLazyPages(
           state, 'routed.html', url.pathname, typeof inventory === 'string' ? inventory : '',
         ), 'application/json');
       } else {
+        const documentState = url.searchParams.get('open') === '1'
+          ? { ...state, help: 'hello' }
+          : state;
         send(200, routeProtocol.render({
-          ...state, $webui: { bodyEnd: `<script type="module" src="${routeApplication}"></script>` },
+          ...documentState, $webui: { bodyEnd: `<script type="module" src="${routeApplication}"></script>` },
         }, { entry: 'routed.html', requestPath: url.pathname }), 'text/html; charset=utf-8');
       }
       return true;

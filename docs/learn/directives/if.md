@@ -40,7 +40,7 @@ Use `lazy="idle"`, `lazy="eager"`, or `lazy="demand"` to prefetch when the
 browser is idle, right after startup, or only when code calls `$prefetch()`. An
 initially true condition still renders on the server. The body keeps its owning
 template's state, events, refs, and loop scope; it does not become a component,
-and DOM-mode rules are unchanged. Await `this.$rendered()` after turning the
+and DOM-mode rules are unchanged. Await `this.$whenRendered()` after turning the
 condition on before you use refs inside the body. See
 [lazy template bodies](../lazy) for setup, triggers, prefetching from code,
 failures, styles, and hosting packs.

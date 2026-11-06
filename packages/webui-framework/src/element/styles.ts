@@ -28,12 +28,8 @@ export {
 } from './style-catalog.js';
 export type { ComponentStyleResource, ComponentStyles } from './style-catalog.js';
 
-// `__WEBUI_DEV__` is a compile-time constant a bundler folds to a literal, so
-// the `if (DEV)` diagnostics below become dead code in production builds. See
-// the longer note in `template-element.ts`; the flag is declared module-locally
-// on purpose, because esbuild does not inline an imported constant.
+// Guard the warning at its call site so production bundlers can remove it.
 declare const __WEBUI_DEV__: boolean;
-const DEV: boolean = typeof __WEBUI_DEV__ === 'undefined' || __WEBUI_DEV__;
 
 /** One ID, or a Set once a second distinct ID is added. */
 type CompactIds = string | Set<string> | undefined;
@@ -259,6 +255,7 @@ function scanSsrMarkerElements(
  */
 export function claimSsrComponentStyles(source: Element, target: StyleTarget): void {
   const catalog = catalogFor(owningDocument(target));
+  if (catalog.resources.size === 0) return;
   const state = targetStyleState(target, catalog);
   const route = source.parentElement;
   if (route?.localName === 'webui-route') {
@@ -487,7 +484,9 @@ function installElements(
   let segmentEnd = closure.length;
   let before: Element | undefined;
   if (markers) {
-    if (DEV) warnOnContradictoryOrder(rootId, closure, markers);
+    if (typeof __WEBUI_DEV__ === 'undefined' || __WEBUI_DEV__) {
+      warnOnContradictoryOrder(rootId, closure, markers);
+    }
     for (let i = closure.length - 1; i >= 0; i--) {
       const marker = markers.get(closure[i]);
       if (!marker) continue;
@@ -714,6 +713,10 @@ export function installMountedComponentStyles(
   host: HTMLElement,
   flags: number,
 ): Promise<void> | undefined {
+  const catalog = catalogFor(owningDocument(target));
+  const closure = catalog.closures.get(rootId);
+  // An empty own closure can still need SSR Module resources from its CSS tree.
+  if (!closure || (closure.length === 0 && catalog.resources.size === 0)) return undefined;
   return installStyles(rootId, target, host, flags);
 }
 

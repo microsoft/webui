@@ -405,14 +405,13 @@ export class DocsPlayground extends WebUIElement {
     return null;
   }
 
-  private scrollTabIntoView(name: string): void {
-    setTimeout(() => {
-      this.$flushUpdates();
-      this.tabByName(name)?.scrollIntoView({
-        block: "nearest",
-        inline: "nearest",
-      });
-    }, 0);
+  private async scrollTabIntoView(name: string): Promise<void> {
+    await this.$whenRendered();
+    if (this.active !== name) return;
+    this.tabByName(name)?.scrollIntoView({
+      block: "nearest",
+      inline: "nearest",
+    });
   }
 
   private flushEditorToFile(): void {
@@ -457,15 +456,13 @@ export class DocsPlayground extends WebUIElement {
     return htmlName;
   }
 
-  private focusInlineFileInput(selectValue: boolean): void {
-    setTimeout(() => {
-      this.$flushUpdates();
-      const input = this.shadowRoot?.querySelector<HTMLInputElement>(
-        ".tab-rename-input",
-      );
-      input?.focus();
-      if (selectValue) input?.select();
-    }, 0);
+  private async focusInlineFileInput(selectValue: boolean): Promise<void> {
+    await this.$whenRendered();
+    const input = this.shadowRoot?.querySelector<HTMLInputElement>(
+      ".tab-rename-input",
+    );
+    input?.focus();
+    if (selectValue) input?.select();
   }
 
   private commitCurrentFileEditFromDom(): boolean {

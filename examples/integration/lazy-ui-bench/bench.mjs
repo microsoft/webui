@@ -76,7 +76,7 @@ try {
         await correctness(page, count);
         await page.evaluate(() => window.bench.track());
         const openHeap = await heap(session);
-        await page.evaluate(() => { window.bench.close(); window.bench.collect(); });
+        await page.evaluate(async () => { await window.bench.close(); window.bench.collect(); });
         assert.equal(await page.locator('bench-owner input').count(), 0);
         const collectedHeap = await heap(session);
         const retained = await page.evaluate(() => window.bench.retained());

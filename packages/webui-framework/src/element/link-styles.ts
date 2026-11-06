@@ -52,6 +52,8 @@ interface DeferredContentCallbacks {
   readonly afterAppend?: () => void;
   readonly beforeAppend?: () => void;
   readonly hasAuthorHydrationLifecycle?: boolean;
+  readonly run?: (append: () => void) => void;
+  readonly failed?: (error: Error) => void;
 }
 
 /**
@@ -405,17 +407,13 @@ export function installComponentLinkStyles(
 
   const guard = installGuard(host, root);
   const settled = new Uint8Array(links.length);
-  const loadHandlers = new Array<() => void>(links.length);
-  const errorHandlers = new Array<() => void>(links.length);
+  const listeners = new Array<EventListener>(links.length);
   let remaining = 0;
   let cancelled = false;
 
   const cleanup = (): void => {
     for (let i = 0; i < links.length; i++) {
-      const onLoad = loadHandlers[i];
-      const onError = errorHandlers[i];
-      if (onLoad) links[i].removeEventListener('load', onLoad);
-      if (onError) links[i].removeEventListener('error', onError);
+      removeLinkListener(links[i], listeners[i]);
     }
     releasePreloads();
   };
@@ -443,10 +441,7 @@ export function installComponentLinkStyles(
     if (cancelled || settled[index] !== 0) return;
     settled[index] = 1;
     remaining -= 1;
-    const onLoad = loadHandlers[index];
-    const onError = errorHandlers[index];
-    if (onLoad) links[index].removeEventListener('load', onLoad);
-    if (onError) links[index].removeEventListener('error', onError);
+    removeLinkListener(links[index], listeners[index]);
     finish();
   };
 
@@ -460,12 +455,7 @@ export function installComponentLinkStyles(
       continue;
     }
     remaining += 1;
-    const onLoad = (): void => settle(i);
-    const onError = (): void => reveal();
-    loadHandlers[i] = onLoad;
-    errorHandlers[i] = onError;
-    links[i].addEventListener('load', onLoad, { once: true });
-    links[i].addEventListener('error', onError, { once: true });
+    listeners[i] = addLinkListener(links[i], i, settle, reveal);
   }
   if (remaining === 0) finish();
 }
@@ -533,8 +523,7 @@ export function installTemplateLinkStyles(
   }
 
   const settled = new Uint8Array(links.length);
-  const loadHandlers = new Array<() => void>(links.length);
-  const errorHandlers = new Array<() => void>(links.length);
+  const listeners = new Array<EventListener>(links.length);
   const mountStartedAt = performanceNow();
   const timingStartedAt = state.preloadStartedAt === undefined
     ? mountStartedAt
@@ -582,6 +571,10 @@ export function installTemplateLinkStyles(
       `[WebUI] Stylesheet "${href}" failed to load for <${host.localName}>.${reason} ` +
       'The component will continue with its native stylesheet links and may be unstyled.',
     );
+    deferredCallbacks?.failed?.(new Error(
+      `[WebUI] Stylesheet "${href}" failed to load for <${host.localName}>. ` +
+      'Check the stylesheet URL and its network or CSP failure.',
+    ));
     finishMount(false);
   };
 
@@ -615,10 +608,7 @@ export function installTemplateLinkStyles(
   };
 
   function removeLinkListeners(index: number): void {
-    const load = loadHandlers[index];
-    const error = errorHandlers[index];
-    if (load) links[index].removeEventListener('load', load);
-    if (error) links[index].removeEventListener('error', error);
+    removeLinkListener(links[index], listeners[index]);
   }
 
   function removeAllLinkListeners(): void {
@@ -626,17 +616,7 @@ export function installTemplateLinkStyles(
   }
 
   function armLink(index: number): void {
-    const onLoad = (): void => {
-      if (settled[index] === 0) settle(index);
-    };
-    const onError = (): void => {
-      if (cancelled) return;
-      fail(index);
-    };
-    loadHandlers[index] = onLoad;
-    errorHandlers[index] = onError;
-    links[index].addEventListener('load', onLoad, { once: true });
-    links[index].addEventListener('error', onError, { once: true });
+    listeners[index] = addLinkListener(links[index], index, settle, fail);
   }
 
   function rearmChangedLinks(previousKeys: readonly string[]): boolean {
@@ -672,6 +652,14 @@ export function installTemplateLinkStyles(
   }
 
   function finishMount(reconcileLinks: boolean): void {
+    if (deferredCallbacks?.run) {
+      deferredCallbacks.run(() => commitMount(reconcileLinks));
+    } else {
+      commitMount(reconcileLinks);
+    }
+  }
+
+  function commitMount(reconcileLinks: boolean): void {
     if (deferContent && !contentAppended) {
       const loadKeys = reconcileLinks ? captureNativeLoadKeys(links) : undefined;
       deferredCallbacks?.beforeAppend?.();
@@ -1055,6 +1043,27 @@ function collectStylesheetLinks(root: ParentNode): HTMLLinkElement[] {
     }
   }
   return links;
+}
+
+function addLinkListener(
+  link: HTMLLinkElement,
+  index: number,
+  onLoad: (index: number) => void,
+  onError: (index: number) => void,
+): EventListener {
+  const listener: EventListener = event => {
+    if (event.type === 'load') onLoad(index);
+    else onError(index);
+  };
+  link.addEventListener('load', listener, { once: true });
+  link.addEventListener('error', listener, { once: true });
+  return listener;
+}
+
+function removeLinkListener(link: HTMLLinkElement, listener?: EventListener): void {
+  if (!listener) return;
+  link.removeEventListener('load', listener);
+  link.removeEventListener('error', listener);
 }
 
 function requiresNativeLoad(link: HTMLLinkElement): boolean {

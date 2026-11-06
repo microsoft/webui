@@ -250,7 +250,7 @@ import '@microsoft/webui-framework/lazy.js';
 ```
 
 TypeScript resolves an import of `./lazy.webui.js` to this declaration, which
-brings in the runtime's module augmentation (`$rendered()`, `$prefetch()`)
+brings in the runtime's module augmentation (`$prefetch()`)
 without `allowJs`. Declaration files are exempt from `rootDir`, so the
 generated directory may sit outside it. Both files are published together and
 rewritten only when their content changes.
@@ -361,21 +361,25 @@ templates from packs stay registered; ordinary template collection governs them.
 Collection in a new epoch leaves the runtime's earlier registrations to that
 collection.
 
-Setting a lazy condition is the whole activation API. `lazy.js` adds two
-optional methods to elements and to their types through module augmentation.
+Setting a lazy condition is the whole activation API. `lazy.js` adds one
+optional method to elements and to their types through module augmentation.
 `$prefetch(path?)` loads, without rendering, the regions whose conditions are in
 the element's own template, all of them (including demand regions) or only
 those whose compiled condition paths equal `path` or lie below it; it returns
-nothing and its failures are silent. `$rendered()` is for code that needs a
-body's DOM immediately. It flushes queued updates, then waits for the owner's
-pending regions, including nested regions activated by their mounts and the
-scripts of open bodies. It rejects with a pack or script failure and retries
-failed regions that remain active when called again.
+nothing and its failures are silent. The core's `$whenRendered()` waits for
+captured lazy activations in the component and affected descendants, including
+nested regions and the scripts of open bodies. It rejects with a pack or script
+failure and retries failed regions that remain active when called again.
 
-A failed activation dispatches `lazyerror` on the owner: bubbling, composed,
-cancelable, with `detail.error`. If no listener cancels it, the error goes to
-`reportError` (or `console.error`). Internal promises never become unhandled
-rejections. Development builds add two warnings, each issued once. After the
+While a region remains active, an activation failure dispatches `lazyerror` on
+the owner: bubbling, composed, cancelable, with `detail.error`. If no listener
+cancels it, the error goes to `reportError` (or `console.error`). Internal
+promises never become unhandled rejections. Closing or disposing a region
+retires its activation; a late failure
+does not dispatch an error for that activation or affect a replacement. Shared
+loads still report failures to any activations that remain active.
+
+Development builds add two warnings, each issued once. After the
 page loads and goes idle, the runtime warns for each tag in the script map that
 is already defined or declared (waiting for its template) although no region
 that lists it has requested its scripts, which indicates a static import in the

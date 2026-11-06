@@ -15,9 +15,13 @@ export async function verifyTriggerFixture(browser, url, target, legacy, packNam
     await page.waitForFunction(() => window.__bench?.hydrated);
     const proof = await page.evaluate(async ({ target, legacy }) => {
       const app = document.querySelector('bench-app');
+      const finish = async element => {
+        if (legacy) element.$flushUpdates();
+        else await element.$whenRendered();
+      };
       if (!target) {
         app.title = 'Updated workspace';
-        await app.$flushUpdates();
+        await finish(app);
         return {
           definitions: app instanceof customElements.get('bench-app'),
           startupText: app.shadowRoot.querySelector('h1').textContent === 'Updated workspace',
@@ -25,9 +29,6 @@ export async function verifyTriggerFixture(browser, url, target, legacy, packNam
         };
       }
       const owner = app.shadowRoot.querySelector(target);
-      const flush = async element => {
-        await (element.$rendered?.() ?? element.$flushUpdates());
-      };
       const result = {
         definitions: [app, owner, app.shadowRoot.querySelector('bench-badge')]
           .every(element => element instanceof customElements.get(element.localName)),
@@ -35,7 +36,7 @@ export async function verifyTriggerFixture(browser, url, target, legacy, packNam
         ownerStyle: getComputedStyle(owner.dialog).borderRadius === '12px',
       };
       app.title = 'Updated workspace';
-      await flush(app);
+      await finish(app);
       result.startupText = app.shadowRoot.querySelector('h1').textContent === 'Updated workspace';
       owner.shadowRoot.querySelector('.trigger').click();
       await pageResult();
@@ -51,7 +52,7 @@ export async function verifyTriggerFixture(browser, url, target, legacy, packNam
       owner.badge = 'Updated badge';
       owner.items = [{ name: 'Updated row', detail: 'Updated detail' }];
       owner.options = [{ value: 'updated', label: 'Updated option' }];
-      await flush(owner);
+      await finish(owner);
       result.text = owner.dialog.querySelector('.intro').textContent === 'Updated introduction';
       result.attribute = owner.dialog.querySelector('input:not([type=checkbox])').value === 'Updated text';
       result.boolean = !owner.dialog.querySelector('input[type=checkbox]').checked;
@@ -62,6 +63,7 @@ export async function verifyTriggerFixture(browser, url, target, legacy, packNam
         && select.options[0].value === 'updated' && select.options[0].textContent === 'Updated option');
       const oldRef = owner.introNode;
       owner.dialog.querySelector('.close').click();
+      await finish(owner);
       result.closeEvent = !owner.dialog.open && !owner.ready;
       result.removal = !owner.dialog.querySelector('.intro');
       // Older main did not release body refs. Record that contract difference;
@@ -71,10 +73,10 @@ export async function verifyTriggerFixture(browser, url, target, legacy, packNam
       result.detachedRef = oldRef && !oldRef.isConnected;
       const created = document.createElement(target);
       app.shadowRoot.append(created);
-      await flush(created);
+      await finish(created);
       result.createdRef = created.dialog === created.shadowRoot.querySelector('dialog');
       created.ready = true;
-      await flush(created);
+      await finish(created);
       result.createdBody = created.introNode === created.dialog.querySelector('.intro')
         && created.dialog.querySelectorAll('.items li').length === 5;
       result.createdStyle = getComputedStyle(created.dialog).borderRadius === '12px';

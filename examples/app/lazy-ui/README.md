@@ -52,7 +52,7 @@ returns only state, at `/api/activity` and `/api/settings`.
   renders the body from the prefetched pack, or fetches the pack first at high
   priority. Opening never waits for the `load` event: it starts the pack, the
   script, and the stylesheet immediately, including any that a low-priority
-  prefetch has not started yet. The component awaits `this.$rendered()` only so
+  prefetch has not started yet. The component awaits `this.$whenRendered()` only so
   the overlay never opens before its body exists.
 - Enable **Simulate slow data** to observe loading feedback and cancellation.
 - While loading, press Escape or click **Cancel activity load** / **Cancel settings
@@ -91,7 +91,7 @@ is inserted. For `/?open=dialog`, the chunk loads while the page hydrates.
 
 Next to the module, the build writes `.webui/lazy.webui.d.ts`, which imports the
 runtime's types. TypeScript reads it for the import in `src/index.ts`, so
-`$rendered()` and `$prefetch()` type-check without `allowJs`, and declaration
+`$prefetch()` type-checks without `allowJs`, and declaration
 files are exempt from `tsconfig.json`'s `rootDir: "src"`.
 
 The preview's stylesheet, `layout-preview.css`, is a Link-mode stylesheet. The
@@ -116,7 +116,7 @@ any change. Development retains separate client/server watchers.
 
 ## Failures
 
-When a body's pack or a component script cannot load, `$rendered()` rejects and
+When a body's pack or a component script cannot load, `$whenRendered()` rejects and
 the owner receives a cancelable `lazyerror` event. Without a listener that
 cancels it, the error goes to `reportError()`.
 
@@ -124,7 +124,7 @@ cancels it, the error goes to `reportError()`.
   closes the dialog, resets `settingsReady`, and shows **Try again** beside the
   trigger. This also covers a dialog rendered open by the server, whose preview
   script loads during hydration rather than from `open()`.
-- `lazy-popover` reports the rejection of `$rendered()` in `load()` and cancels
+- `lazy-popover` reports the rejection of `$whenRendered()` in `load()` and cancels
   `lazyerror`, so the failure is reported once.
 - A failed prefetch is silent. **Try again** sets the condition again, which
   retries the request.

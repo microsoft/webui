@@ -16,6 +16,8 @@
  */
 
 import { TemplateElement } from './template-element.js';
+import { invokeRenderCallback } from './render-completion.js';
+import { FLUSH_UPDATES } from './render-scheduler.js';
 import {
   disconnectLazyHydration,
   isStreamedLazyActivation,
@@ -42,7 +44,6 @@ import type {
   CompiledEventArgs,
   TemplateBlockMeta,
   TemplateMeta,
-  TemplateNodeIndex,
 } from './template.js';
 import type {
   ScopeFrame,
@@ -85,13 +86,8 @@ const AUTHORED_PENDING = 2;
 const AUTHORED_FLUSHING = 4;
 
 // ── Development build flag ──────────────────────────────────────
-// See the identical `__WEBUI_DEV__` note in `template-element.ts`: a
-// bundler-folded compile-time constant, declared and consumed module-locally
-// so a production build (`--define:__WEBUI_DEV__=false`) can constant-fold
-// `DEV` to `false` and dead-code-eliminate `warnMissingLazyHydrationEntry`'s
-// body, while `tsc`, unit tests, and `webui-press serve` keep it active.
+// Guard the warning at its call site so production bundlers can remove it.
 declare const __WEBUI_DEV__: boolean;
-const DEV: boolean = typeof __WEBUI_DEV__ === 'undefined' || __WEBUI_DEV__;
 
 let warnedMissingLazyHydrationEntry = false;
 
@@ -103,7 +99,7 @@ let warnedMissingLazyHydrationEntry = false;
  * documented, expected behavior on older browsers, not a misconfiguration.
  */
 function warnMissingLazyHydrationEntry(tag: string, policy: 1 | 2): void {
-  if (!DEV || warnedMissingLazyHydrationEntry) return;
+  if (warnedMissingLazyHydrationEntry) return;
   warnedMissingLazyHydrationEntry = true;
   const directive = policy === LAZY_HYDRATION_CONTENT_VISIBILITY
     ? 'w-render="lazy"'
@@ -133,7 +129,7 @@ export class WebUIElement extends TemplateElement {
     super();
     const names = getObservableNames(this.constructor as Function);
     for (const name of names) {
-      if (!Object.prototype.hasOwnProperty.call(this, name)) continue;
+      if (!Object.hasOwn(this, name)) continue;
       (this.$preUpgradeProperties ??= new Map()).set(
         name, (this as Record<string, unknown>)[name],
       );
@@ -184,7 +180,7 @@ export class WebUIElement extends TemplateElement {
       for (const name of names) {
         if (typeof (this as Record<string, unknown>)[`${name}Changed`] !== 'function') continue;
         this.$authoredPhase = AUTHORED_LIVE;
-        if (Object.prototype.hasOwnProperty.call(this, `_${name}`)) {
+        if (Object.hasOwn(this, `_${name}`)) {
           (this.$pendingPropertyChanges ??= new Map()).set(name, undefined);
         }
       }
@@ -199,9 +195,9 @@ export class WebUIElement extends TemplateElement {
     return !this.$pendingPropertyChanges;
   }
 
-  override $flushUpdates(): void {
+  override [FLUSH_UPDATES](): void {
     if (this.$pendingPropertyChanges) this.$notifyHydrated();
-    super.$flushUpdates();
+    super[FLUSH_UPDATES]();
   }
 
   private $flushAuthoredChanges(): void {
@@ -228,7 +224,7 @@ export class WebUIElement extends TemplateElement {
     if (Object.is(oldValue, value)) return;
     const callback = (this as Record<string, unknown>)[`${name}Changed`];
     if (typeof callback === 'function') {
-      (callback as (old: unknown, next: unknown) => void).call(this, oldValue, value);
+      invokeRenderCallback(this, callback as (old: unknown, next: unknown) => void, oldValue, value);
     }
   }
 
@@ -317,7 +313,9 @@ export class WebUIElement extends TemplateElement {
     ) return undefined;
     if (this.getAttribute(HYDRATE_ATTR) === HYDRATE_EAGER) return undefined;
     if (!isLazyHydrationCoordinatorInstalled()) {
-      warnMissingLazyHydrationEntry(this.tagName, policy);
+      if (typeof __WEBUI_DEV__ === 'undefined' || __WEBUI_DEV__) {
+        warnMissingLazyHydrationEntry(this.tagName, policy);
+      }
       return undefined;
     }
     if (!supportsLazyHydration()) return undefined;
@@ -373,10 +371,19 @@ export class WebUIElement extends TemplateElement {
   /** Wire events + root events + refs (shared by $wire and $hydrate). */
   protected override $finalize(
     instance: TemplateInstance,
-    root: Node | null,
     meta: TemplateBlockMeta,
-    resolver: (root: Node | null, path: TemplateNodeIndex) => Node | null,
-    scope?: ScopeFrame,
+    elements: readonly (Node | undefined)[],
+  ): void {
+    if (meta.eg || (meta as TemplateMeta).re) {
+      this.$wireEvents(instance, meta, elements);
+    }
+    if (meta.rf) wireRefs(this as Record<string, unknown>, instance, meta, elements);
+  }
+
+  private $wireEvents(
+    instance: TemplateInstance,
+    meta: TemplateBlockMeta,
+    elements: readonly (Node | undefined)[],
   ): void {
     const groups = meta.eg;
     const rootEvents = (meta as TemplateMeta).re;
@@ -392,9 +399,9 @@ export class WebUIElement extends TemplateElement {
           const [eventName, bindings] = groups[i];
           for (let j = 0; j < bindings.length; j++) {
             const [handlerName, args, target] = bindings[j];
-            const el = resolver(root, target);
+            const el = elements[target];
             if (el && el.nodeType === 1) {
-              const listener = this.$addEvent(el, eventName, handlerName, args, scope);
+              const listener = this.$addEvent(el, eventName, handlerName, args, instance.scope);
               if (listener) listeners[count++] = listener;
             }
           }
@@ -409,21 +416,6 @@ export class WebUIElement extends TemplateElement {
       }
       listeners.length = count;
       instance.listeners = listeners;
-    }
-    const refs = meta.rf;
-    if (!refs) return;
-    const owner = this as Record<string, unknown>;
-    for (let i = 0; i < refs.length; i++) {
-      const [name, target] = refs[i];
-      const node = resolver(root, target);
-      if (!node || node.nodeType !== 1) continue;
-      owner[name] = node;
-      // Component roots retain their DOM; only removable views release refs.
-      if (!(meta as TemplateMeta).v || meta.f) {
-        (instance.cleanups ??= []).push(removeNodes => {
-          if (removeNodes && owner[name] === node) owner[name] = undefined;
-        });
-      }
     }
   }
 
@@ -444,7 +436,28 @@ export class WebUIElement extends TemplateElement {
     target.addEventListener(eventName, listener);
     return listener;
   }
+}
 
+function wireRefs(
+  owner: Record<string, unknown>,
+  instance: TemplateInstance,
+  meta: TemplateBlockMeta,
+  elements: readonly (Node | undefined)[],
+): void {
+  const refs = meta.rf;
+  if (!refs) return;
+  for (let i = 0; i < refs.length; i++) {
+    const [name, target] = refs[i];
+    const node = elements[target];
+    if (!node || node.nodeType !== 1) continue;
+    owner[name] = node;
+    // Component roots retain their DOM; only removable views release refs.
+    if (!(meta as TemplateMeta).v || meta.f) {
+      (instance.cleanups ??= []).push(removeNodes => {
+        if (removeNodes && owner[name] === node) owner[name] = undefined;
+      });
+    }
+  }
 }
 
 function handleTemplateEvent(this: BoundTemplateEvent, event: Event): void {

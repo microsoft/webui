@@ -248,19 +248,9 @@ export function buildSSRIndex(
         }
         if (isRawStartMarker(data)) {
           const start = s as Comment;
-          let end: ChildNode | null = start.nextSibling;
-          let depth = 1;
-          const endMarker = `/${data}`;
-          while (end && depth > 0) {
-            if (end.nodeType === 8 /* COMMENT_NODE */) {
-              const marker = (end as Comment).data;
-              if (marker === data) depth++;
-              else if (marker === endMarker) depth--;
-            }
-            if (depth > 0) end = end.nextSibling;
-          }
+          const end = findBlockEnd(start, data);
           if (end) {
-            raws.push([start, end as Comment]);
+            raws.push([start, end]);
             s = end.nextSibling;
           } else {
             s = null;
