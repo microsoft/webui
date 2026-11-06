@@ -1,3 +1,5 @@
 test/integration.test.js
 /ai.md
+/docs/
+/.webui-reference-*/
 !bin/

@@ -43,7 +43,8 @@ interface Bundle {
 
 const entries = {
   buffered: renderer,
-  styled: `import '@microsoft/webui-framework/styles.js'; ${renderer}`,
+  // Keep shared dependency order identical so minifier naming does not skew the byte comparison.
+  styled: `${renderer} import '@microsoft/webui-framework/styles.js';`,
   templates: `export { getTemplate, registerTemplateData } from '@microsoft/webui-framework/templates.js';`,
   progressive: `import '@microsoft/webui-framework/streaming.js';`,
   jsonRouter: `import { WebUIRouter } from '@microsoft/webui-delivery/router.js'; new WebUIRouter().start();`,
@@ -172,6 +173,14 @@ test('normal bootstrap includes styling once and keeps optional coordinators sep
   assert.ok(core.initialGzip <= 29_000, `default startup gzip: ${core.initialGzip} bytes`);
   assert.ok(Math.abs(core.initialBytes - styled.initialBytes) <= 128,
     'the compatibility import must not bundle another style implementation');
+  for (const [input, copies] of core.inputCopies) {
+    if (input.endsWith('/buffered.ts')) continue;
+    assert.equal(styled.inputCopies.get(input), copies, `${input} must not be duplicated by the compatibility import`);
+  }
+  excludes(new Set([...styled.inputs].filter(input => !core.inputs.has(input))), [
+    'style-installation.js', 'element/style-catalog.js',
+    'element/styles.js', 'element/link-styles.js',
+  ]);
   // The CSS module loader imports a runtime specifier; bundling must leave it native.
   assert.match(styled.initialText, /import\([\w$]+,\{with:\{type:"css"\}\}\)/);
   assert.match(core.initialText, /import\([\w$]+,\{with:\{type:"css"\}\}\)/);

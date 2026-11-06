@@ -16,6 +16,7 @@
   },
   "files": [
     "ai.md",
+    "docs/",
     "bin/",
     "dist/index.*",
     "dist/install.*",
@@ -36,6 +37,7 @@
   },
   "exports": {
     "./ai.md": "./ai.md",
+    "./docs/*": "./docs/*",
     ".": {
       "import": {
         "types": "./dist/index.d.ts",
