@@ -97,11 +97,13 @@ mod tests {
     use windows::Win32::Foundation::RECT;
 
     #[test]
+    #[ignore = "opens native windows; opt in with --ignored"]
     fn configured_client_viewport_is_ready_before_the_browser_starts() {
+        // Stay within a small CI desktop's native tracking bounds.
         let options = WindowOptions {
             titlebar: TitlebarStyle::Overlay { height: 48 },
-            width: 1200,
-            height: 800,
+            width: 800,
+            height: 600,
             center: false,
             ..WindowOptions::default()
         };
@@ -145,6 +147,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "opens native windows; opt in with --ignored"]
     fn client_resize_preserves_minimized_and_maximized_state() {
         for show in [wm::SW_MINIMIZE, wm::SW_MAXIMIZE] {
             let options = WindowOptions {
@@ -181,6 +184,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "opens native windows; opt in with --ignored"]
     fn startup_preserves_saved_native_window_bounds() {
         let options = WindowOptions {
             titlebar: TitlebarStyle::Overlay { height: 48 },

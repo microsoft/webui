@@ -219,6 +219,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "initializes the native UI dispatcher; opt in with --ignored"]
     fn borrowing_an_existing_ui_queue_does_not_shut_it_down() {
         use super::super::bindings::Microsoft::UI::Dispatching::DispatcherQueueHandler;
         let _bootstrap_lock = super::super::BOOTSTRAP_TEST_LOCK.lock().unwrap();

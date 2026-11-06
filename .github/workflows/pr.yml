@@ -247,7 +247,7 @@ jobs:
         run: cargo test -p microsoft-webui-dev-server -p microsoft-webui-cli -p microsoft-webui-press
 
       - name: Test native desktop SDK
-        run: cargo test -p microsoft-webui-desktop --no-default-features --features native
+        run: cargo test -p microsoft-webui-desktop --no-default-features --features native,native-dwm-frame -- --include-ignored --test-threads=1
 
       - name: Test opt-in Windows native services
         run: cargo test --locked -p microsoft-webui-desktop --no-default-features --features native-picker,native-dialogs,native-clipboard,application-ipc,startup-failure --lib
