@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-//! Internal Windows test isolation; never changes application presentation.
+//! Internal Windows test execution; alternate desktops locally, current desktop in CI.
 
 mod stdio;
 mod windows;
@@ -17,6 +17,14 @@ pub(crate) fn run(command: &[String]) -> Result<u32, String> {
 
 pub(crate) fn is_current() -> Result<bool, String> {
     windows::is_current()
+}
+
+pub(crate) fn uses_alternate_desktop() -> bool {
+    alternate_desktop(std::env::var_os("GITHUB_ACTIONS").as_deref())
+}
+
+fn alternate_desktop(github_actions: Option<&std::ffi::OsStr>) -> bool {
+    github_actions != Some(std::ffi::OsStr::new("true"))
 }
 
 fn request(command: &[String], timeout_ms: u32) -> Result<Request<'_>, String> {
@@ -36,7 +44,17 @@ fn request(command: &[String], timeout_ms: u32) -> Result<Request<'_>, String> {
 }
 
 fn execute(request: Request<'_>) -> Result<u32, String> {
-    windows::execute(request)
+    let isolated = uses_alternate_desktop();
+    eprintln!(
+        "  {} Windows tests: {}",
+        console::style("▸").cyan().bold(),
+        if isolated {
+            "alternate desktop (local)"
+        } else {
+            "current desktop (GitHub Actions)"
+        }
+    );
+    windows::execute(request, isolated)
 }
 
 fn quote_argument(output: &mut Vec<u16>, value: impl Iterator<Item = u16> + Clone) {
@@ -73,6 +91,15 @@ fn quote_argument(output: &mut Vec<u16>, value: impl Iterator<Item = u16> + Clon
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selects_current_desktop_only_for_github_actions() {
+        use std::ffi::OsStr;
+        for marker in [None, Some(""), Some("false"), Some("0"), Some("TRUE")] {
+            assert!(alternate_desktop(marker.map(OsStr::new)));
+        }
+        assert!(!alternate_desktop(Some(OsStr::new("true"))));
+    }
 
     #[test]
     fn preserves_child_args_and_default_timeout() {

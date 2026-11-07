@@ -25,9 +25,13 @@ use windows_sys::Win32::System::Threading::{
     WaitForSingleObject, CREATE_SUSPENDED, EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION,
 };
 
-pub(super) fn execute(request: Request<'_>) -> Result<u32, String> {
-    let desktop = Desktop::new()?;
-    launch(request, &desktop)
+pub(super) fn execute(request: Request<'_>, isolated: bool) -> Result<u32, String> {
+    let desktop = if isolated {
+        Some(Desktop::new()?)
+    } else {
+        None
+    };
+    launch(request, desktop.as_ref())
 }
 
 pub(super) fn is_current() -> Result<bool, String> {
@@ -69,7 +73,7 @@ fn desktop_name(handle: HDESK) -> Result<String, String> {
     String::from_utf16(&buffer[..length]).map_err(|error| error.to_string())
 }
 
-fn launch(request: Request<'_>, desktop: &Desktop) -> Result<u32, String> {
+fn launch(request: Request<'_>, desktop: Option<&Desktop>) -> Result<u32, String> {
     let executable = which::which(&request.command[0])
         .map_err(|error| format!("cannot locate {}: {error}", request.command[0]))?;
     if !executable
@@ -97,7 +101,9 @@ fn launch(request: Request<'_>, desktop: &Desktop) -> Result<u32, String> {
     }
     let job = job()?;
     let mut stdio = Stdio::new()?;
-    stdio.startup.StartupInfo.lpDesktop = desktop.name.as_ptr().cast_mut();
+    if let Some(desktop) = desktop {
+        stdio.startup.StartupInfo.lpDesktop = desktop.name.as_ptr().cast_mut();
+    }
     let mut information = PROCESS_INFORMATION::default();
     // SAFETY: All strings are terminated; stdio storage and the desktop outlive
     // creation. Suspend before assigning the job so no descendants can escape it.

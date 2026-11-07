@@ -147,10 +147,7 @@ fn run_windows_native_with(
     mut execute: impl FnMut(&[&'static str]) -> Result<u32, String>,
 ) -> Result<(), String> {
     for (label, args) in WINDOWS_NATIVE_SUITES {
-        eprintln!(
-            "  {} {label} (isolated desktop)",
-            console::style("▸").cyan().bold()
-        );
+        eprintln!("  {} {label}", console::style("▸").cyan().bold());
         let code = execute(args).map_err(|error| format!("{label}: {error}"))?;
         if code != 0 {
             return Err(format!("{label} failed with exit code {code}"));

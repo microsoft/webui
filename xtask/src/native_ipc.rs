@@ -109,7 +109,7 @@ fn execute(args: &[String]) -> Result<(), String> {
     }
 
     #[cfg(windows)]
-    if !crate::windows_desktop::is_current()? {
+    if crate::windows_desktop::uses_alternate_desktop() && !crate::windows_desktop::is_current()? {
         let executable = std::env::current_exe()
             .map_err(|error| format!("locate native IPC test runner: {error}"))?;
         let executable = executable

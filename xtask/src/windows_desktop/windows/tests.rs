@@ -48,10 +48,13 @@ fn isolates_real_visible_windows_and_focus_without_switching_input_desktops() {
     ]
     .map(String::from);
     assert_eq!(
-        execute(Request {
-            command: &args,
-            timeout_ms: 30_000,
-        })
+        execute(
+            Request {
+                command: &args,
+                timeout_ms: 30_000,
+            },
+            true,
+        )
         .unwrap(),
         0
     );
@@ -61,6 +64,40 @@ fn isolates_real_visible_windows_and_focus_without_switching_input_desktops() {
         desktop_name(unsafe { GetThreadDesktop(GetCurrentThreadId()) }),
         original_name
     );
+}
+
+#[test]
+fn preserves_current_desktop_for_ci_commands() {
+    let before = input_desktop_name();
+    let binary = std::env::current_exe().unwrap();
+    let args = [
+        binary.to_str().unwrap(),
+        "--exact",
+        "windows_desktop::windows::tests::current_desktop_probe",
+        "--ignored",
+    ]
+    .map(String::from);
+    assert_eq!(
+        execute(
+            Request {
+                command: &args,
+                timeout_ms: 30_000,
+            },
+            false,
+        )
+        .unwrap(),
+        0
+    );
+    assert_eq!(input_desktop_name(), before);
+}
+
+#[test]
+#[ignore = "child-only non-UI probe; run by the CI desktop regression"]
+fn current_desktop_probe() {
+    // SAFETY: Reads this thread's desktop; this probe creates no windows.
+    let name = desktop_name(unsafe { GetThreadDesktop(GetCurrentThreadId()) });
+    assert_eq!(name, input_desktop_name());
+    assert!(!super::is_current().unwrap());
 }
 
 fn input_desktop_name() -> String {
@@ -153,7 +190,7 @@ fn kills_orphaned_descendants_when_the_command_exits() {
                 command: &args,
                 timeout_ms: 30_000,
             },
-            &desktop,
+            Some(&desktop),
         )
         .unwrap(),
         0
@@ -218,16 +255,21 @@ fn orphan_child_probe() {
 
 #[test]
 fn preserves_failure_exit_codes_and_reports_timeouts() {
-    for (script, expected) in [("exit 37", 37), ("exit -1", u32::MAX)] {
-        let command = ["cmd.exe", "/d", "/c", script].map(String::from);
-        assert_eq!(
-            execute(Request {
-                command: &command,
-                timeout_ms: 30_000,
-            })
-            .unwrap(),
-            expected
-        );
+    for isolated in [true, false] {
+        for (script, expected) in [("exit 37", 37), ("exit -1", u32::MAX)] {
+            let command = ["cmd.exe", "/d", "/c", script].map(String::from);
+            assert_eq!(
+                execute(
+                    Request {
+                        command: &command,
+                        timeout_ms: 30_000,
+                    },
+                    isolated,
+                )
+                .unwrap(),
+                expected
+            );
+        }
     }
     let binary = std::env::current_exe().unwrap();
     let command = [
@@ -237,10 +279,13 @@ fn preserves_failure_exit_codes_and_reports_timeouts() {
         "--ignored",
     ]
     .map(String::from);
-    assert!(execute(Request {
-        command: &command,
-        timeout_ms: 1,
-    })
+    assert!(execute(
+        Request {
+            command: &command,
+            timeout_ms: 1,
+        },
+        true,
+    )
     .unwrap_err()
     .contains("timed out"));
 }
