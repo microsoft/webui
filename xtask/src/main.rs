@@ -10,7 +10,6 @@ mod dev;
 mod e2e;
 mod e2e_approve;
 mod hotfix;
-mod isolated_desktop;
 mod license_headers;
 mod native_ipc;
 mod node_tests;
@@ -21,6 +20,8 @@ mod util;
 mod version;
 #[cfg(feature = "windows-app-sdk-tools")]
 mod windows_app_sdk;
+#[cfg(windows)]
+mod windows_desktop;
 mod windows_local;
 
 use std::process::ExitCode;
@@ -55,7 +56,6 @@ fn main() -> ExitCode {
         #[cfg(feature = "windows-app-sdk-tools")]
         Some("windows-app-sdk-bindings") => windows_app_sdk::run(args.get(2)),
         Some("check") => check(),
-        Some("isolated-desktop") => isolated_desktop::run(&args[2..]),
         Some("desktop-assets") => desktop_assets::run(),
         Some("package-check") => match desktop_assets::package_check() {
             Ok(()) => ExitCode::SUCCESS,
@@ -165,8 +165,7 @@ fn usage() -> ExitCode {
            clippy  Run clippy lints\n  \
            deny    Run cargo-deny license/advisory checks\n  \
            test    Run all tests\n  \
-           test-desktop  Run isolated desktop SDK feature combinations\n  \
-           isolated-desktop [--timeout SECONDS] -- <exe> [args...]  Run Windows UI tests on a non-input desktop (default timeout: 1800s)\n  \
+           test-desktop  Run desktop SDK feature combinations and isolated Windows native tests\n  \
            desktop-acceptance  Run desktop SDK, binding, and browser contracts\n  \
            native-ipc [--timeout SECONDS] [--fail-fast] [--plan darwin|win32|linux]  Run native IPC source/package and no-IPC contracts\n  \
            build   Build the workspace\n  \

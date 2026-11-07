@@ -30,33 +30,37 @@ Never remove, weaken, or `#[ignore]` an existing test unless explicitly asked.
 
 ### Windows native UI tests
 
-Tests that create native Windows windows or initialize the native UI dispatcher
-are opt-in (`#[ignore]`), including hidden-window and fullscreen-presenter checks.
+Desktop SDK tests that create native Windows windows or initialize the native UI
+dispatcher remain `#[ignore]` for direct `cargo test`, including hidden-window
+and fullscreen-presenter checks.
 Do not treat an initially hidden HWND as headless: native presenter transitions
-can activate windows. Ordinary `cargo test`, `cargo xtask test`, and
-`cargo xtask check` runs keep pure configuration, geometry, protocol, and
+can activate windows. On Windows, `cargo xtask check`, `cargo xtask test`,
+`cargo xtask test-desktop`, and `cargo xtask desktop-acceptance` automatically
+run the native SDK suite with `native-dwm-frame` and `--include-ignored`,
+followed by the opt-in native-services suite. Both run serially on non-input
+desktops through an internal helper. Ordinary `cargo test` keeps the SDK's
 non-UI tests. Browser E2E tests use Playwright's default headless mode.
 
-The existing Windows CI desktop SDK step includes ignored tests, enables
-`native-dwm-frame`, and runs serially through `cargo xtask isolated-desktop`.
-Windows native-service and native-IPC CI commands use the same launcher.
-This preserves native UI coverage without showing windows on the user's desktop.
-CI also explicitly runs the launcher's opt-in visible-window/focus regression;
-its child verifies desktop isolation before creating any HWND.
+Windows CI uses the same desktop suite through `desktop-acceptance`, rather
+than repeating native SDK and services tests in separate steps. The isolation
+helper's visible-window/focus regression runs as an ordinary xtask test;
+its child verifies isolation before creating any HWND.
 
 To run the native tests without interrupting the Windows desktop:
 
 ```bash
-cargo xtask isolated-desktop -- cargo test -p microsoft-webui-desktop --features native,native-dwm-frame --lib windows:: -- --ignored --test-threads=1
+cargo xtask test-desktop
 ```
 
-The Windows-only launcher creates one non-input desktop per command, not per
-test. It never switches the input desktop or changes application visibility.
-It preserves standard I/O and exit codes, bounds the command to 1800 seconds
-(`--timeout SECONDS` before `--` overrides this), and terminates remaining
-child processes when the command completes or fails. Native executables are
-launched directly; run scripts through their interpreter. Failure to establish
-isolation fails the command rather than running on the user's desktop.
+The internal Windows-only helper creates one non-input desktop per suite, not
+per test. It never switches the input desktop or changes application visibility.
+It preserves standard I/O and exit codes, bounds each command to 1800 seconds,
+and terminates remaining child processes when the command completes or fails.
+Failure to establish isolation fails the gate rather than running on the user's
+desktop. There is no standalone `isolated-desktop` command.
+`cargo xtask native-ipc` automatically isolates its Windows release acceptance
+run as well; this heavier source/package suite remains a separate CI step.
+macOS and Linux native execution is unchanged.
 Direct `cargo test ... --ignored` remains an explicit headed debugging option.
 Physical-input and active-compositor tests still need an interactive Windows
 session; do not assume alternate-desktop execution is equivalent.

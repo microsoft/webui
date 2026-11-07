@@ -33,7 +33,6 @@ fn desktop_name(handle: HDESK) -> String {
 }
 
 #[test]
-#[ignore = "creates native windows on an alternate desktop; opt in with --ignored"]
 fn isolates_real_visible_windows_and_focus_without_switching_input_desktops() {
     // SAFETY: Queries only the current thread and input desktop.
     let original = unsafe { GetThreadDesktop(GetCurrentThreadId()) };
@@ -43,7 +42,7 @@ fn isolates_real_visible_windows_and_focus_without_switching_input_desktops() {
     let args = [
         binary.to_str().unwrap(),
         "--exact",
-        "isolated_desktop::windows::tests::isolated_window_probe",
+        "windows_desktop::windows::tests::isolated_window_probe",
         "--ignored",
         "--nocapture",
     ]
@@ -81,7 +80,7 @@ fn isolated_window_probe() {
     let status = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
-            "isolated_desktop::windows::tests::grandchild_window_probe",
+            "windows_desktop::windows::tests::grandchild_window_probe",
             "--ignored",
         ])
         .status()
@@ -99,6 +98,7 @@ fn grandchild_window_probe() {
 }
 
 fn assert_isolated_window() {
+    assert!(super::is_current().unwrap());
     // Check isolation before creating anything; direct invocation cannot show a window.
     // SAFETY: Queries the desktop assigned to the current test thread.
     let name = desktop_name(unsafe { GetThreadDesktop(GetCurrentThreadId()) });
@@ -143,7 +143,7 @@ fn kills_orphaned_descendants_when_the_command_exits() {
     let args = [
         binary.to_str().unwrap(),
         "--exact",
-        "isolated_desktop::windows::tests::orphan_parent_probe",
+        "windows_desktop::windows::tests::orphan_parent_probe",
         "--ignored",
     ]
     .map(String::from);
@@ -193,7 +193,7 @@ fn orphan_parent_probe() {
     let child = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
-            "isolated_desktop::windows::tests::orphan_child_probe",
+            "windows_desktop::windows::tests::orphan_child_probe",
             "--ignored",
         ])
         .spawn()
@@ -233,7 +233,7 @@ fn preserves_failure_exit_codes_and_reports_timeouts() {
     let command = [
         binary.to_str().unwrap(),
         "--exact",
-        "isolated_desktop::windows::tests::orphan_child_probe",
+        "windows_desktop::windows::tests::orphan_child_probe",
         "--ignored",
     ]
     .map(String::from);

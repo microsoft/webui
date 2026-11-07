@@ -17,17 +17,56 @@ use windows_sys::Win32::System::JobObjects::{
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 use windows_sys::Win32::System::StationsAndDesktops::{
-    CloseDesktop, CreateDesktopW, DESKTOP_CREATEWINDOW, DESKTOP_READOBJECTS, DESKTOP_WRITEOBJECTS,
-    HDESK,
+    CloseDesktop, CreateDesktopW, GetThreadDesktop, GetUserObjectInformationW, OpenInputDesktop,
+    DESKTOP_CREATEWINDOW, DESKTOP_READOBJECTS, DESKTOP_WRITEOBJECTS, HDESK, UOI_NAME,
 };
 use windows_sys::Win32::System::Threading::{
-    CreateProcessW, GetExitCodeProcess, ResumeThread, TerminateProcess, WaitForSingleObject,
-    CREATE_SUSPENDED, EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION,
+    CreateProcessW, GetCurrentThreadId, GetExitCodeProcess, ResumeThread, TerminateProcess,
+    WaitForSingleObject, CREATE_SUSPENDED, EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION,
 };
 
 pub(super) fn execute(request: Request<'_>) -> Result<u32, String> {
     let desktop = Desktop::new()?;
     launch(request, &desktop)
+}
+
+pub(super) fn is_current() -> Result<bool, String> {
+    // SAFETY: Reads this thread's desktop; no handle ownership is transferred.
+    let current = desktop_name(unsafe { GetThreadDesktop(GetCurrentThreadId()) })?;
+    if !current.starts_with("WebUI-Tests-") {
+        return Ok(false);
+    }
+    // SAFETY: Opens the input desktop only for reading, never for switching.
+    let input = unsafe { OpenInputDesktop(0, 0, DESKTOP_READOBJECTS) };
+    if input.is_null() {
+        return Err(last_error("read input desktop for test isolation"));
+    }
+    let name = desktop_name(input);
+    // SAFETY: This function owns the OpenInputDesktop reference.
+    check(unsafe { CloseDesktop(input) }, "close input desktop")?;
+    Ok(current != name?)
+}
+
+fn desktop_name(handle: HDESK) -> Result<String, String> {
+    let mut buffer = [0_u16; 256];
+    // SAFETY: The handle is live and the buffer has the specified byte capacity.
+    check(
+        unsafe {
+            GetUserObjectInformationW(
+                handle,
+                UOI_NAME,
+                buffer.as_mut_ptr().cast(),
+                u32::try_from(size_of_val(&buffer)).map_err(|error| error.to_string())?,
+                std::ptr::null_mut(),
+            )
+        },
+        "read test desktop name",
+    )?;
+    let length = buffer
+        .iter()
+        .position(|unit| *unit == 0)
+        .ok_or("Windows returned an unterminated desktop name")?;
+    String::from_utf16(&buffer[..length]).map_err(|error| error.to_string())
 }
 
 fn launch(request: Request<'_>, desktop: &Desktop) -> Result<u32, String> {
