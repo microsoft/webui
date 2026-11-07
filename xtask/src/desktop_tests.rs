@@ -17,6 +17,42 @@ const FEATURES: &[&str] = &[
     "native,source,application-ipc",
 ];
 
+#[cfg(any(windows, test))]
+const WINDOWS_NATIVE_SUITES: &[(&str, &[&str])] = &[
+    (
+        "Windows native desktop SDK",
+        &[
+            "test",
+            "--locked",
+            "-p",
+            "microsoft-webui-desktop",
+            "--no-default-features",
+            "--features",
+            "native,native-dwm-frame",
+            "--lib",
+            "--tests",
+            "--",
+            "--include-ignored",
+            "--test-threads=1",
+        ],
+    ),
+    (
+        "Windows native services",
+        &[
+            "test",
+            "--locked",
+            "-p",
+            "microsoft-webui-desktop",
+            "--no-default-features",
+            "--features",
+            "native-picker,native-dialogs,native-clipboard,application-ipc,startup-failure",
+            "--lib",
+            "--",
+            "--test-threads=1",
+        ],
+    ),
+];
+
 pub(crate) fn run() -> Result<(), String> {
     for features in FEATURES {
         let mut command = build_command(
@@ -96,6 +132,27 @@ pub(crate) fn run() -> Result<(), String> {
         ),
         "Desktop capture allocations",
     )?;
+    #[cfg(windows)]
+    run_windows_native_with(|args| {
+        let mut command = Vec::with_capacity(args.len() + 1);
+        command.push(String::from("cargo"));
+        command.extend(args.iter().map(|arg| String::from(*arg)));
+        crate::windows_desktop::run(&command)
+    })?;
+    Ok(())
+}
+
+#[cfg(any(windows, test))]
+fn run_windows_native_with(
+    mut execute: impl FnMut(&[&'static str]) -> Result<u32, String>,
+) -> Result<(), String> {
+    for (label, args) in WINDOWS_NATIVE_SUITES {
+        eprintln!("  {} {label}", console::style("▸").cyan().bold());
+        let code = execute(args).map_err(|error| format!("{label}: {error}"))?;
+        if code != 0 {
+            return Err(format!("{label} failed with exit code {code}"));
+        }
+    }
     Ok(())
 }
 
@@ -132,7 +189,44 @@ fn nonempty_suites(output: &str) -> Result<(), &'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::nonempty_suites;
+    use super::{nonempty_suites, run_windows_native_with};
+
+    #[test]
+    fn windows_gate_runs_native_sdk_and_services_with_original_assertions() {
+        let mut suites = Vec::new();
+        run_windows_native_with(|args| {
+            suites.push(args.to_vec());
+            Ok(0)
+        })
+        .unwrap();
+        assert_eq!(suites.len(), 2);
+        assert!(suites[0].contains(&"native,native-dwm-frame"));
+        assert!(suites[0].contains(&"--include-ignored"));
+        assert!(suites[0].contains(&"--tests"));
+        assert!(suites[1].contains(
+            &"native-picker,native-dialogs,native-clipboard,application-ipc,startup-failure"
+        ));
+        for suite in suites {
+            assert!(suite.contains(&"--test-threads=1"));
+            assert!(suite.contains(&"--locked"));
+            assert!(suite.contains(&"--no-default-features"));
+        }
+    }
+
+    #[test]
+    fn windows_gate_stops_after_failure_or_isolation_error() {
+        for result in [Ok(37), Err(String::from("desktop creation failed"))] {
+            let mut calls = 0;
+            let error = run_windows_native_with(|_| {
+                calls += 1;
+                result.clone()
+            })
+            .unwrap_err();
+            assert_eq!(calls, 1);
+            assert!(error.contains("Windows native desktop SDK"));
+            assert!(error.contains("37") || error.contains("desktop creation failed"));
+        }
+    }
 
     #[test]
     fn accepts_nonempty_suites() {

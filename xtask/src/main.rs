@@ -20,6 +20,8 @@ mod util;
 mod version;
 #[cfg(feature = "windows-app-sdk-tools")]
 mod windows_app_sdk;
+#[cfg(windows)]
+mod windows_desktop;
 mod windows_local;
 
 use std::process::ExitCode;
@@ -163,7 +165,7 @@ fn usage() -> ExitCode {
            clippy  Run clippy lints\n  \
            deny    Run cargo-deny license/advisory checks\n  \
            test    Run all tests\n  \
-           test-desktop  Run isolated desktop SDK feature combinations\n  \
+           test-desktop  Run desktop SDK feature combinations and isolated Windows native tests\n  \
            desktop-acceptance  Run desktop SDK, binding, and browser contracts\n  \
            native-ipc [--timeout SECONDS] [--fail-fast] [--plan darwin|win32|linux]  Run native IPC source/package and no-IPC contracts\n  \
            build   Build the workspace\n  \

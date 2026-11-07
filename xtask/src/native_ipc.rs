@@ -108,6 +108,27 @@ fn execute(args: &[String]) -> Result<(), String> {
         return Ok(());
     }
 
+    #[cfg(windows)]
+    if crate::windows_desktop::uses_alternate_desktop() && !crate::windows_desktop::is_current()? {
+        let executable = std::env::current_exe()
+            .map_err(|error| format!("locate native IPC test runner: {error}"))?;
+        let executable = executable
+            .to_str()
+            .ok_or("native IPC test runner path is not valid UTF-8")?;
+        let mut command = Vec::with_capacity(args.len() + 2);
+        command.push(executable.to_owned());
+        command.push(String::from("native-ipc"));
+        command.extend_from_slice(args);
+        let code = crate::windows_desktop::run(&command)?;
+        return if code == 0 {
+            Ok(())
+        } else {
+            Err(format!(
+                "isolated native IPC acceptance failed with exit code {code}"
+            ))
+        };
+    }
+
     let plan = Plan::for_host()?;
     let root = crate::util::workspace_root()?;
     let fixture = root.join(FIXTURE);
