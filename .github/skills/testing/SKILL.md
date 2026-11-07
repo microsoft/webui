@@ -38,14 +38,28 @@ can activate windows. Ordinary `cargo test`, `cargo xtask test`, and
 non-UI tests. Browser E2E tests use Playwright's default headless mode.
 
 The existing Windows CI desktop SDK step includes ignored tests, enables
-`native-dwm-frame`, and runs serially. This preserves native UI coverage once
-per CI run without repeating it through the ordinary feature matrix.
+`native-dwm-frame`, and runs serially through `cargo xtask isolated-desktop`.
+Windows native-service and native-IPC CI commands use the same launcher.
+This preserves native UI coverage without showing windows on the user's desktop.
+CI also explicitly runs the launcher's opt-in visible-window/focus regression;
+its child verifies desktop isolation before creating any HWND.
 
-To deliberately run the existing headed native tests (this opens windows):
+To run the native tests without interrupting the Windows desktop:
 
 ```bash
-cargo test -p microsoft-webui-desktop --features native,native-dwm-frame --lib windows:: -- --ignored --test-threads=1
+cargo xtask isolated-desktop -- cargo test -p microsoft-webui-desktop --features native,native-dwm-frame --lib windows:: -- --ignored --test-threads=1
 ```
+
+The Windows-only launcher creates one non-input desktop per command, not per
+test. It never switches the input desktop or changes application visibility.
+It preserves standard I/O and exit codes, bounds the command to 1800 seconds
+(`--timeout SECONDS` before `--` overrides this), and terminates remaining
+child processes when the command completes or fails. Native executables are
+launched directly; run scripts through their interpreter. Failure to establish
+isolation fails the command rather than running on the user's desktop.
+Direct `cargo test ... --ignored` remains an explicit headed debugging option.
+Physical-input and active-compositor tests still need an interactive Windows
+session; do not assume alternate-desktop execution is equivalent.
 
 Keep the native visibility, focus, and geometry assertions intact; do not make
 them appear headless by suppressing the window behavior they verify.
