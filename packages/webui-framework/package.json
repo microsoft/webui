@@ -103,7 +103,7 @@
     "typecheck:e2e": "tsc -p tsconfig.test.json --noEmit",
     "bench:render": "node benchmarks/render-completion.mjs",
     "test": "pnpm test:unit && pnpm test:e2e",
-    "test:unit": "tsc -p tsconfig.unit-test.json --incremental false && node --test \"dist/**/*.test.js\"",
+    "test:unit": "tsc -p tsconfig.unit-test.json --incremental false && node --test \"dist-test/**/*.test.js\"",
     "test:e2e": "pnpm typecheck:e2e && playwright test",
     "test:update-snapshots": "pnpm test:e2e:update-snapshots",
     "test:e2e:update-snapshots": "pnpm typecheck:e2e && playwright test --update-snapshots"

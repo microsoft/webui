@@ -80,6 +80,12 @@ them appear headless by suppressing the window behavior they verify.
 
 ## WebUI Node package tests
 
+Framework and delivery unit tests emit to `dist-test/`, never public `dist/`.
+The E2E runner builds public packages before starting suites in parallel;
+delivery's bundle-boundary tests and browser fixtures consume those immutable
+public outputs while unit compilers write their private test outputs.
+Keep the unit runner glob aligned with its compiler output directory.
+
 `cargo xtask test` builds the host native addon and the WebUI TypeScript package,
 then runs `pnpm --filter @microsoft/webui test` with `WEBUI_ADDON_PATH` set to the
 artifact reported by Cargo. This includes the projection compiler, adapter,
