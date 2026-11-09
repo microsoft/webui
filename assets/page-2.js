@@ -1,1 +1,1 @@
-import{b as t}from"./chunk-QWN6K5Y3.js";t();
+import{b as t}from"./chunk-25V3Z7GZ.js";t();
