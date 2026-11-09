@@ -21,6 +21,28 @@ is a historical baseline. Heap measurements include fixture/browser state,
 not just framework allocations. Run without other builds or tests and compare
 multiple runs before drawing conclusions.
 
+When both revisions support `$whenRendered()`, compare their automatic and
+await modes directly. Discovery measurements also need unrelated pending ready
+jobs, gated mounts, lazy tasks, and blocked/failed hosts outside the requested
+scope. Include nested independent roots, not just roots sharing one parent,
+and keep same-root and overlapping requests' enrollment checkpoints separate.
+Record emitted code and full retained heap as well as live objects: a smaller
+bundle can still retain more compiled code.
+
+For asynchronous task storage, vary both host count and tasks per host. Compare
+pending, actively observed, and fully retired groups; a single task per host
+must not be treated as representative of overlapping activations on one host.
+
+Stress-case gains alone do not justify a runtime change. First profile normal
+application interactions and record actual concurrent work, completion calls,
+and unrelated candidates. Existing components and network requests are not
+necessarily pending render tasks. Collect counts in a separate instrumented
+run; use uninstrumented production bundles with identical-source controls for
+latency and memory. Compare startup, warmed, open, and retired states, and
+distinguish framework allocations from application, browser, and automation
+overhead. Keep speculative optimizations out when representative gains do not
+justify their code size or lifetime complexity.
+
 For a strict heap comparison, use fresh contexts and independently launched
 browsers, rotate case order, settle resources and two frames before full GC, and
 compare full snapshot totals rather than only live objects or VM-used size.

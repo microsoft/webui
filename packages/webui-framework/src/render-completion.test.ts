@@ -24,6 +24,7 @@ import {
   UPDATE_WORK,
   whenRendered,
 } from './render-completion.js';
+import { enqueueRender, finishRender, RENDER, RENDER_PENDING } from './render-scheduler.js';
 
 const enterRenderWork = (element: Element) => renderWork?.enter(element);
 const leaveRenderWork = (element: Element, previous: ReturnType<typeof enterRenderWork>) =>
@@ -57,7 +58,12 @@ function finish(host: Host, kind = UPDATE_WORK): void {
 }
 
 test('a native render-root containment proof avoids repeated parent reads', () => {
-  const root = new Host();
+  class Root extends Host {
+    override get parentNode(): ParentNode {
+      throw new Error('an already proven scope needs no exclusion boundary');
+    }
+  }
+  const root = new Root();
   class Child extends Host {
     override get parentNode(): ParentNode {
       throw new Error('an already proven lineage should not be walked again');
@@ -74,6 +80,92 @@ test('a native render-root containment proof avoids repeated parent reads', () =
   Object.defineProperty(root, 'shadowRoot', { value: renderRoot });
   assert.equal(inScope(child, root), true);
   assert.equal(probes, 1);
+});
+
+for (const kind of ['ready', 'mount', 'task', 'blocked'] as const) {
+  test(`initial discovery excludes unrelated ${kind} work from cancellation`, async () => {
+    class Unrelated extends Host {
+      [RENDER_PENDING] = 0;
+      [RENDER](): void { finishRender(this); }
+    }
+    const root = new Host();
+    const unrelated = new Unrelated();
+    if (kind === 'ready') enqueueRender(unrelated);
+    else if (kind === 'mount') queueRenderWork(unrelated, MOUNT_WORK);
+    else if (kind === 'task') startRenderTask(unrelated);
+    else blockRenderWork(unrelated, 'outside the requested scope');
+    try {
+      const waiting = whenRendered(root);
+      destroyRenderWork(unrelated);
+      await waiting;
+    } finally {
+      destroyRenderWork(unrelated);
+    }
+  });
+}
+
+test('captured work retains native proofs across shadow roots', () => {
+  const root = new Host();
+  const host = new Host();
+  class Shadow extends Host {
+    override readonly nodeType = 11;
+    readonly host = host;
+  }
+  const shadow = new Shadow();
+  Object.defineProperty(root, 'shadowRoot', { value: {
+    contains: (node: Node | null) => node === host,
+  } });
+  class Child extends Host {
+    override getRootNode(): Node { return shadow; }
+    override get parentNode(): ParentNode {
+      throw new Error('a native proof must not walk the inner shadow tree');
+    }
+  }
+  assert.equal(inScope(new Child(), root), true);
+});
+
+test('assigned slots enter the scope before an unrelated native parent', () => {
+  const parent = new Host();
+  const root = new Host();
+  const slot = new Host();
+  const child = new Host();
+  root.parent = parent;
+  slot.parent = root;
+  child.parent = parent;
+  Object.defineProperty(child, 'assignedSlot', { value: slot });
+  assert.equal(inScope(child, root), true);
+});
+
+test('a scope lookup follows synchronously changed ancestry', () => {
+  const parent = new Host();
+  const nextParent = new Host();
+  const root = new Host();
+  root.parent = parent;
+  class MovingChild extends Host {
+    override get parentNode(): ParentNode {
+      root.parent = nextParent;
+      parent.parent = root;
+      return parent;
+    }
+  }
+  assert.equal(inScope(new MovingChild(), root), true);
+});
+
+test('a shadow scope entered during lookup is not skipped for its host', () => {
+  class Shadow extends Host {
+    override readonly nodeType = 11;
+    readonly host = new Host();
+  }
+  const root = new Shadow();
+  const child = new Host();
+  let moved = false;
+  Object.defineProperty(root, 'contains', {
+    value: (node: Node | null) => node === root || (node === child && moved),
+  });
+  Object.defineProperty(child, 'parentNode', {
+    get() { moved = true; return root; },
+  });
+  assert.equal(inScope(child, root), true);
 });
 
 async function collectAfterTurn(): Promise<void> {
@@ -605,6 +697,33 @@ test('independent lazy work on one descendant is tracked per activation', async 
   assert.equal(completed, false);
   finishRenderTask(second);
   await waiting;
+});
+
+test('duplicate task registration preserves completion across repeated overlaps', async () => {
+  const host = new Host();
+  try {
+    const first = startRenderTask(host);
+    queueRenderTask(first);
+    const second = startRenderTask(host);
+    let completed = false;
+    const waiting = whenRendered(host).then(() => { completed = true; });
+    queueRenderTask(first);
+    queueRenderTask(second);
+    finishRenderTask(first);
+    const third = startRenderTask(host);
+    finishRenderTask(second);
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(completed, false, 'the remaining overlapping task is still pending');
+    finishRenderTask(third);
+    await waiting;
+    const next = startRenderTask(host);
+    const later = whenRendered(host);
+    finishRenderTask(next);
+    await later;
+  } finally {
+    destroyRenderWork(host);
+  }
 });
 
 test('retiring one host task group does not capture its later independent work', async () => {

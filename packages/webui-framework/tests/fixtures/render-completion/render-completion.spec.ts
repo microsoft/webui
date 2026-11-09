@@ -355,8 +355,8 @@ async function guardStyles(page: Page): Promise<void> {
   });
 }
 
-for (const failed of [false, true]) {
-  test(`started stylesheet-gated mounts ${failed ? 'reject failures' : 'wait for DOM insertion'}`, async ({ page }) => {
+for (const [failed, closed] of [[false, false], [true, false], [false, true], [true, true]]) {
+  test(`started stylesheet-gated mounts ${failed ? 'reject failures' : 'wait for DOM insertion'}${closed ? ' through a closed shadow root' : ''}`, async ({ page }) => {
     await guardStyles(page);
     let release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
@@ -366,9 +366,17 @@ for (const failed of [false, true]) {
       else await route.continue();
     });
     await page.goto('/css-link/fixture.html', { waitUntil: 'domcontentloaded' });
-    await page.evaluate(() => {
+    await page.evaluate(closed => {
       const root = document.querySelector<RenderHost>('test-link-host')!;
-      root.shadowRoot!.querySelector('.slot')!.appendChild(document.createElement('test-link-child'));
+      const slot = root.shadowRoot!.querySelector('.slot')!;
+      const child = document.createElement('test-link-child');
+      if (closed) {
+        const wrapper = document.createElement('section');
+        wrapper.attachShadow({ mode: 'closed' }).appendChild(child);
+        slot.appendChild(wrapper);
+      } else {
+        slot.appendChild(child);
+      }
       const state = window as unknown as {
         completionFinished: boolean;
         completionResult: Promise<{ failed: boolean; hasContent: boolean }>;
@@ -377,7 +385,6 @@ for (const failed of [false, true]) {
       state.completionResult = root.$whenRendered().then(
         () => {
           state.completionFinished = true;
-          const child = root.shadowRoot!.querySelector('test-link-child')!;
           return { failed: false, hasContent: child.shadowRoot!.querySelector('.child-label') !== null };
         },
         () => {
@@ -385,7 +392,7 @@ for (const failed of [false, true]) {
           return { failed: true, hasContent: false };
         },
       );
-    });
+    }, closed);
     expect(await page.evaluate(() => (window as unknown as { completionFinished: boolean }).completionFinished)).toBe(false);
     release();
     const result = await page.evaluate(() => (window as unknown as {

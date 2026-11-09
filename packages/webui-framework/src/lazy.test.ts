@@ -493,6 +493,37 @@ test('cancelling one failed region keeps another on the same host retryable', as
   }
 });
 
+test('completion does not retry unrelated failed hosts', async () => {
+  const id = region('unrelated-failure');
+  const url = '_webui/packs/unrelated-failure.json';
+  const binding = bindingFor(id);
+  let retries = 0;
+  const host = Object.assign(new EventTarget(), {
+    isConnected: true,
+    localName: 'unrelated-failure',
+    parentNode: null,
+    assignedSlot: null,
+    getRootNode(): Node { return host; },
+    $toggleCond(): void { retries++; },
+  }) as unknown as import('./lazy-runtime.js').LazyHost;
+  const root = Object.assign(new EventTarget(), {
+    isConnected: true,
+    localName: 'independent-owner',
+    contains(node: Node | null): boolean { return node === root; },
+  }) as unknown as Element;
+  host.addEventListener('lazyerror', event => { event.preventDefault(); });
+  try {
+    runtime.activate(host, binding, url);
+    await assert.rejects(whenRendered(host), /failed with HTTP 404/);
+    await tick();
+    await whenRendered(root);
+    assert.equal(retries, 0);
+  } finally {
+    runtime.cancelActivation(host, binding);
+    responses.delete(url);
+  }
+});
+
 test('a closed activation ignores a late failure and can retry when reopened', async () => {
   const id = region('cancelled-owner');
   const url = '_webui/packs/cancelled-owner.json';
