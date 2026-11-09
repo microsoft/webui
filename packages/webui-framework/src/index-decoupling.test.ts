@@ -163,7 +163,7 @@ describe('default entry decoupling', () => {
   });
 
   test('dist/index.js has no static or dynamic path to any streaming coordinator module', () => {
-    // This compiled test lives beside the emitted modules in `dist/`.
+    // This compiled test lives beside the emitted modules in `dist-test/`.
     const distDir = dirname(fileURLToPath(import.meta.url));
 
     const streamingModules = readdirSync(distDir)

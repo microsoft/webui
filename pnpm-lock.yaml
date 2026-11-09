@@ -148,7 +148,7 @@ catalogs:
       version: 26.5.1
     electron:
       specifier: ^44.9.1
-      version: 44.10.2
+      version: 44.10.0
     esbuild:
       specifier: ^0.28.2
       version: 0.28.2
@@ -547,7 +547,7 @@ importers:
     devDependencies:
       electron:
         specifier: 'catalog:'
-        version: 44.10.2
+        version: 44.10.0
       esbuild:
         specifier: 'catalog:'
         version: 0.28.2
@@ -1266,8 +1266,8 @@ packages:
   ee-first@1.1.1:
     resolution: {integrity: sha512-WMwm9LhRUo+WUaRN+vRuETqG89IgZphVSNkdFgeb6sS/E4OrDIN7t48CAewSHXc6C8lefD8KKfr5vY61brQlow==}
 
-  electron@44.10.2:
-    resolution: {integrity: sha512-Bz+GV+9Xj++3RW95NYfzp5Wgivf61BgWTPBxYTOUETytVB1uLUAOdSM39Dn/V3PGYeGTE6LYeCTR5SCiu3BR2A==}
+  electron@44.10.0:
+    resolution: {integrity: sha512-ss4pCfrQKV4TWkuVYtWB4HmeysPZgB96cSYNKYZv1UVCRP4vQMGNW5oopFbvx6Bbfce1XtP5pm5RDuKehp0svQ==}
     engines: {node: '>= 22.12.0'}
     hasBin: true
 
@@ -1526,7 +1526,7 @@ packages:
     engines: {node: '>= 18'}
 
   typescript@6.0.3:
-    resolution: {integrity: sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw==}
+    resolution: {integrity: sha1-kCUdwAeRbpcnhsuU100VsYVXfSE=, tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/typescript/-/typescript-6.0.3.tgz}
     engines: {node: '>=14.17'}
     hasBin: true
 
@@ -1981,7 +1981,7 @@ snapshots:
 
   ee-first@1.1.1: {}
 
-  electron@44.10.2:
+  electron@44.10.0:
     dependencies:
       '@electron-internal/extract-zip': 1.0.5
       '@electron/get': 5.1.0
