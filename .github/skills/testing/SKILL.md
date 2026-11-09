@@ -30,22 +30,50 @@ Never remove, weaken, or `#[ignore]` an existing test unless explicitly asked.
 
 ### Windows native UI tests
 
-Tests that create native Windows windows or initialize the native UI dispatcher
-are opt-in (`#[ignore]`), including hidden-window and fullscreen-presenter checks.
+Desktop SDK tests that create native Windows windows or initialize the native UI
+dispatcher remain `#[ignore]` for direct `cargo test`, including hidden-window
+and fullscreen-presenter checks.
 Do not treat an initially hidden HWND as headless: native presenter transitions
-can activate windows. Ordinary `cargo test`, `cargo xtask test`, and
-`cargo xtask check` runs keep pure configuration, geometry, protocol, and
-non-UI tests. Browser E2E tests use Playwright's default headless mode.
+can activate windows. On Windows, `cargo xtask check`, `cargo xtask test`,
+`cargo xtask test-desktop`, and `cargo xtask desktop-acceptance` automatically
+run the native SDK suite with `native-dwm-frame` and `--include-ignored`,
+followed by the opt-in native-services suite. Both run serially through an
+internal helper: local runs use non-input desktops, while GitHub Actions
+(`GITHUB_ACTIONS=true`) uses the current desktop in its dedicated runner VM.
+The suites and native assertions are identical in both modes. Ordinary
+`cargo test` keeps the SDK's non-UI tests. Browser E2E tests use Playwright's
+default headless mode.
 
-The existing Windows CI desktop SDK step includes ignored tests, enables
-`native-dwm-frame`, and runs serially. This preserves native UI coverage once
-per CI run without repeating it through the ordinary feature matrix.
+Windows CI uses the same desktop suite through `desktop-acceptance`, rather
+than repeating native SDK and services tests in separate steps. The isolation
+helper's visible-window/focus regression runs as an ordinary xtask test;
+its child always verifies alternate-desktop isolation before creating any HWND,
+including in CI. A separate non-UI probe verifies current-desktop execution.
 
-To deliberately run the existing headed native tests (this opens windows):
+To run the native tests without interrupting the Windows desktop:
 
 ```bash
-cargo test -p microsoft-webui-desktop --features native,native-dwm-frame --lib windows:: -- --ignored --test-threads=1
+cargo xtask test-desktop
 ```
+
+Locally, the internal Windows-only helper creates one non-input desktop per
+suite, not per test. GitHub Actions retains the original current-desktop
+execution because elevated WebView2 initialization on alternate desktops can
+fail. The execution policy is selected before launch, not as a fallback after
+a failure. The helper never switches the input desktop or changes application
+visibility.
+It preserves standard I/O and exit codes, bounds each command to 1800 seconds,
+and terminates remaining child processes when the command completes or fails.
+Failure to establish local isolation fails the gate rather than running on the
+user's desktop. There is no standalone `isolated-desktop` command.
+`cargo xtask native-ipc` uses the same policy for its Windows release acceptance
+run: automatic alternate-desktop execution locally, original current-desktop
+execution in GitHub Actions. This heavier source/package suite remains a
+separate CI step.
+macOS and Linux native execution is unchanged.
+Direct `cargo test ... --ignored` remains an explicit headed debugging option.
+Physical-input and active-compositor tests still need an interactive Windows
+session; do not assume alternate-desktop execution is equivalent.
 
 Keep the native visibility, focus, and geometry assertions intact; do not make
 them appear headless by suppressing the window behavior they verify.
