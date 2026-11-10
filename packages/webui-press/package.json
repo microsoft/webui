@@ -2,7 +2,7 @@
   "name": "@microsoft/webui-press",
   "description": "Native WebUI Press documentation builder and shared browser appearance API",
   "license": "MIT",
-  "version": "3.1.0",
+  "version": "3.1.1",
   "publishConfig": {
     "tag": "latest"
   },
