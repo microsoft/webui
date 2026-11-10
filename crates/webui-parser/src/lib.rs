@@ -2244,8 +2244,9 @@ impl HtmlParser {
     /// Analyze CSS token requirements from the parsed fragment/component graph.
     ///
     /// Each token candidate in a `var()` fallback chain is removed when covered
-    /// by a same-block definition or an unconditional root/host default in the
-    /// current fragment or an ancestor component/root. The returned list is
+    /// by a same-block definition, selector-proven inheritance within a stylesheet,
+    /// or an unconditional root/host default in the current fragment or an
+    /// ancestor component/root. The returned list is
     /// sorted and deduplicated from the remaining unresolved candidates.
     #[must_use]
     pub fn token_analysis(&self) -> CssTokenAnalysis {

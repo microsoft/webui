@@ -9,11 +9,14 @@ use std::collections::HashSet;
 use std::fmt;
 use webui_tokens::CssFallbackChain;
 
+mod inheritance;
+use inheritance::CssInheritance;
+
 /// Parser for CSS files.
 pub struct CssParser;
 
 struct CssScanResult<'a> {
-    // Only unconditional root/host defaults can satisfy another rule or component.
+    // Only unconditional root/host defaults can escape into another component.
     inherited_definitions: HashSet<&'a str>,
     local_definitions: HashSet<&'a str>,
     comments: Vec<CssComment>,
@@ -41,7 +44,9 @@ impl CssScanResult<'_> {
 
 #[derive(Clone, Copy, Default)]
 struct CssRuleScope {
+    // One-based source offset lets unresolved requirements revisit their selector.
     id: usize,
+    unconditional: bool,
     unconditional_group: bool,
     defines_defaults: bool,
     definition_start: usize,
@@ -154,7 +159,7 @@ fn scan_css(
     let mut requirement_scopes = Vec::new();
     let mut scopes: Vec<CssRuleScope> = Vec::new();
     let mut scope = CssRuleScope::default();
-    let mut next_scope_id = 0;
+    let mut inheritance = CssInheritance::default();
     let mut prelude_start = 0;
     let mut index = 0usize;
     let mut quote: u8 = 0;
@@ -223,6 +228,9 @@ fn scan_css(
                             inherited_definitions.insert(name);
                         } else {
                             local_definitions.insert(name);
+                            if scope.unconditional {
+                                inheritance.define(source, scope.id, name);
+                            }
                             if active_definitions.insert((scope.id, name)) {
                                 definition_stack.push(name);
                             }
@@ -246,8 +254,11 @@ fn scan_css(
                 if brace_depth != 0 {
                     scopes.push(scope);
                 }
-                next_scope_id += 1;
-                scope = css_rule_scope(&source[prelude_start..index], next_scope_id, unconditional);
+                scope = css_rule_scope(
+                    &source[prelude_start..index],
+                    prelude_start + 1,
+                    unconditional,
+                );
                 scope.definition_start = definition_stack.len();
                 scope.requirement_start = requirements.len();
                 brace_depth += 1;
@@ -340,6 +351,12 @@ fn scan_css(
         &mut requirements,
         &mut requirement_scopes,
     );
+    inheritance.resolve(
+        source,
+        &local_definitions,
+        &mut requirements,
+        &requirement_scopes,
+    );
     Ok(CssScanResult {
         inherited_definitions,
         local_definitions,
@@ -390,6 +407,7 @@ fn css_rule_scope(prelude: &str, id: usize, unconditional: bool) -> CssRuleScope
         && skip_css_trivia(&prelude[name_end..]).is_empty();
     CssRuleScope {
         id,
+        unconditional,
         unconditional_group: unconditional && name.eq_ignore_ascii_case("@layer"),
         defines_defaults,
         definition_start: 0,

@@ -118,6 +118,25 @@ Unconditional `:host` or `:root` defaults also apply to descendant components:
 
 Here, the theme needs `designSystemColor`, but not `card-spacing`.
 
+Within one stylesheet, an unconditional simple tag, class, or ID definition
+also covers rules whose selectors prove that the usage is on that element or
+its descendants. For example, in Light DOM:
+
+```css
+local-token {
+  --private-color: #123456;
+}
+
+local-token span {
+  color: var(--private-color);
+}
+```
+
+`private-color` does not need a theme value here. An unrelated `span` rule or
+`local-token + span` still needs one. Every branch of a selector list must be
+covered. More complex defining selectors remain conservative; WebUI does not
+match selectors against template markup to infer coverage across stylesheets.
+
 Selector-scoped overrides do not replace theme defaults outside their matching
 elements. For example, `.green { --brand: var(--green-brand); }` still requires
 the theme's `brand` token when another rule or child component uses
@@ -132,8 +151,8 @@ Light component CSS.
 When a build is given a theme (`webui build --theme`, `webui serve --theme`, or
 API build options with a theme), every **required** token must exist in every
 theme. For `var(--a, var(--b, var(--c)))`, the theme must provide `a`, `b`, and
-`c` unless those references are covered by same-block definitions or
-unconditional local/ancestor defaults. Missing
+`c` unless those references are covered by same-block definitions,
+selector-proven local inheritance, or unconditional local/ancestor defaults. Missing
 tokens fail with `missing-theme-token`; theme token values that reference an
 undefined or cyclic `var(--token)` are trusted and left to browser CSS
 semantics.
