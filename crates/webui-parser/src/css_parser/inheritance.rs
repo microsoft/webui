@@ -6,12 +6,16 @@ use crate::css_scan;
 use std::collections::{HashMap, HashSet};
 use webui_tokens::CssFallbackChain;
 
+type CssCoverage<'a> = HashMap<(usize, &'a str), bool>;
+
 #[derive(Default)]
 pub(super) struct CssInheritance<'a> {
     definitions: HashSet<(usize, &'a str)>,
     // Flat per-selector rule lists avoid per-branch allocations and selector/property products.
     selectors: HashMap<&'a str, usize>,
     selector_rules: Vec<(usize, Option<usize>)>,
+    #[cfg(test)]
+    history_visits: std::cell::Cell<usize>,
 }
 
 impl<'a> CssInheritance<'a> {
@@ -52,6 +56,7 @@ impl<'a> CssInheritance<'a> {
         if self.definitions.is_empty() {
             return;
         }
+        let mut coverage = CssCoverage::new();
         let mut kept = 0;
         for index in 0..requirements.len() {
             let usage = &scopes[index];
@@ -61,8 +66,9 @@ impl<'a> CssInheritance<'a> {
                 .and_then(|start| source.get(start..));
             if let Some(selector) = selector.filter(|_| !usage.in_keyframes) {
                 requirements[index].tokens.retain(|name| {
-                    !local_definitions.contains(name.as_str())
-                        || !self.covers(selector, name.as_str())
+                    local_definitions
+                        .get(name.as_str())
+                        .is_none_or(|name| !self.covers(selector, name, &mut coverage))
                 });
             }
             if !requirements[index].tokens.is_empty() {
@@ -75,11 +81,16 @@ impl<'a> CssInheritance<'a> {
         scopes.truncate(kept);
     }
 
-    fn covers(&self, mut selector: &str, name: &str) -> bool {
+    fn covers<'n>(
+        &self,
+        mut selector: &str,
+        name: &'n str,
+        coverage: &mut CssCoverage<'n>,
+    ) -> bool {
         let mut inherited = false;
         selector = skip_css_trivia(selector);
         loop {
-            let Some((rest, subject)) = self.compound(selector, name) else {
+            let Some((rest, subject)) = self.compound(selector, name, coverage) else {
                 return false;
             };
             let (tail, whitespace) = skip_css_trivia_with_whitespace(rest);
@@ -100,26 +111,47 @@ impl<'a> CssInheritance<'a> {
         }
     }
 
-    fn compound<'s>(&self, selector: &'s str, name: &str) -> Option<(&'s str, bool)> {
+    fn compound<'s, 'n>(
+        &self,
+        selector: &'s str,
+        name: &'n str,
+        coverage: &mut CssCoverage<'n>,
+    ) -> Option<(&'s str, bool)> {
         let mut end = simple_selector_end(selector);
         if end == 0 {
             return None;
         }
-        let mut covered = self.defines(&selector[..end], name);
+        let mut covered = self.defines(&selector[..end], name, coverage);
         while matches!(selector.as_bytes().get(end), Some(b'.' | b'#')) {
             let next = simple_selector_end(&selector[end..]);
             if next == 0 {
                 return None;
             }
-            covered |= self.defines(&selector[end..end + next], name);
+            covered |= self.defines(&selector[end..end + next], name, coverage);
             end += next;
         }
         Some((&selector[end..], covered))
     }
 
-    fn defines(&self, selector: &str, name: &str) -> bool {
-        let mut next = self.selectors.get(selector).copied();
+    fn defines<'n>(&self, selector: &str, name: &'n str, coverage: &mut CssCoverage<'n>) -> bool {
+        let Some(&head) = self.selectors.get(selector) else {
+            return false;
+        };
+        let (id, previous) = self.selector_rules[head];
+        if previous.is_none() {
+            return self.definitions.contains(&(id, name));
+        }
+        // Cache only queried multi-rule histories, never every selector/property pair.
+        *coverage
+            .entry((head, name))
+            .or_insert_with(|| self.find_definition(head, name))
+    }
+
+    fn find_definition(&self, head: usize, name: &str) -> bool {
+        let mut next = Some(head);
         while let Some(index) = next {
+            #[cfg(test)]
+            self.history_visits.set(self.history_visits.get() + 1);
             let (id, previous) = self.selector_rules[index];
             if self.definitions.contains(&(id, name)) {
                 return true;
@@ -187,10 +219,69 @@ fn simple_selector_list<'a>(mut selector: &'a str, mut visit: impl FnMut(&'a str
 #[allow(clippy::disallowed_methods)]
 mod tests {
     use super::CssInheritance;
-    use crate::css_parser::CssRuleScope;
+    use crate::css_parser::{CssRequirementScope, CssRuleScope};
     use crate::{CssParser, LegalComments};
     use std::collections::HashSet;
     use std::fmt::Write;
+    use webui_tokens::CssFallbackChain;
+
+    #[test]
+    fn repeated_selector_queries_scan_history_once_per_property() {
+        const COUNT: usize = 256;
+        let names: Vec<String> = (0..COUNT).map(|index| format!("local-{index}")).collect();
+        let mut css = String::with_capacity(COUNT * 40);
+        let mut starts = Vec::with_capacity(COUNT);
+        for name in &names {
+            starts.push(css.len() + 1);
+            writeln!(css, ".scope {{ --{name}: red; }}").unwrap();
+        }
+        let other_id = css.len() + 1;
+        css.push_str(".other { --uncovered: blue; }\n");
+        let usage_id = css.len() + 1;
+        css.push_str(".scope span { color: var(--local-0); }");
+        let mut inheritance = CssInheritance::default();
+        for (id, name) in starts.into_iter().zip(&names) {
+            inheritance.define(
+                &css,
+                &mut CssRuleScope {
+                    id,
+                    ..CssRuleScope::default()
+                },
+                name,
+            );
+        }
+        inheritance.define(
+            &css,
+            &mut CssRuleScope {
+                id: other_id,
+                ..CssRuleScope::default()
+            },
+            "uncovered",
+        );
+        let local_definitions = HashSet::from(["local-0", "uncovered"]);
+        let mut requirements = Vec::with_capacity(COUNT * 2);
+        let mut scopes = Vec::with_capacity(COUNT * 2);
+        for _ in 0..COUNT {
+            for name in ["local-0", "uncovered"] {
+                requirements.push(CssFallbackChain {
+                    tokens: vec![name.to_string()],
+                    has_literal_fallback: false,
+                });
+                scopes.push(CssRequirementScope {
+                    rule_id: usage_id,
+                    start: 0,
+                    in_keyframes: false,
+                });
+            }
+        }
+        inheritance.resolve(&css, &local_definitions, &mut requirements, &mut scopes);
+        assert_eq!(requirements.len(), COUNT);
+        assert!(requirements
+            .iter()
+            .all(|chain| chain.tokens == ["uncovered"]));
+        assert_eq!(scopes.len(), COUNT);
+        assert_eq!(inheritance.history_visits.get(), COUNT * 2);
+    }
 
     #[test]
     fn css_wide_values_do_not_supply_selector_local_defaults() {
@@ -399,6 +490,15 @@ mod tests {
         assert_eq!(
             parser
                 .extract_tokens(".scope span { color: var(--local); }")
+                .unwrap(),
+            HashSet::from(["local".to_string()]),
+        );
+        parser
+            .extract_tokens(".scope { --local: red; } .scope { --other: blue; } .scope span { color: var(--local); }")
+            .unwrap();
+        assert_eq!(
+            parser
+                .extract_tokens(".other { --local: red; } .scope { --one: red; } .scope { --two: blue; } .scope span { color: var(--local); }")
                 .unwrap(),
             HashSet::from(["local".to_string()]),
         );
