@@ -16,6 +16,7 @@ import {
 } from '@microsoft/webui';
 import type {
   BoundaryDescriptor,
+  BuildOptions,
   ComponentTemplatesResponse,
   PreparedState,
   StreamStep,
@@ -31,6 +32,43 @@ import { analyzeMetafile, build as bundle, type Metafile } from 'esbuild';
 import { esbuildProjection } from '@microsoft/webui/projection.js';
 
 let appDir: string;
+
+test('theme validation accepts selector-proven local inheritance without hiding missing tokens', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'webui-inherited-tokens-'));
+  try {
+    writeFileSync(join(directory, 'index.html'),
+      '<!doctype html><html lang="en"><head><title>Local tokens</title></head>' +
+      '<body><local-token></local-token></body></html>');
+    writeFileSync(join(directory, 'local-token.html'), '<span>Inherited local color</span>');
+    const css = 'local-token { --private-color: #123456; }\n' +
+      'local-token span { color: var(--private-color); }';
+    const cssPath = join(directory, 'local-token.css');
+    writeFileSync(cssPath, css);
+    const theme = join(directory, 'theme.json');
+    writeFileSync(theme, '{"themes":{"light":{"brand":"#654321"}}}');
+    const options: BuildOptions = { appDir: directory, plugin: 'webui', dom: 'light', css: 'style' };
+    const baseline = build(options);
+    const themed = build({ ...options, theme });
+    const render = (protocol: Buffer): string =>
+      new Protocol(protocol, { plugin: 'webui' }).render({}).toString('utf8');
+    const html = render(themed.protocol);
+    assert.ok(html.includes('<span>Inherited local color</span>'));
+    assert.ok(!html.includes('shadowrootmode='));
+    assert.equal(html, render(baseline.protocol));
+    assert.deepEqual(new Protocol(themed.protocol).tokens(), []);
+    assert.deepEqual(themed.warnings, []);
+
+    writeFileSync(cssPath, `${css}\nother-token { color: var(--brand-missing); }`);
+    assert.throws(() => build({ ...options, theme }), /missing-theme-token[\s\S]*--brand-missing/);
+
+    writeFileSync(cssPath, `${css}\nlocal-token span { color: var(--brnad, #000); }`);
+    const optional = build({ ...options, theme });
+    assert.equal(optional.warnings.length, 1);
+    assert.match(optional.warnings[0]!, /brnad/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test('retained public build bundles generated imports once and finishes the same native snapshot', async () => {
   const directory = mkdtempSync(resolve(process.cwd(), '..', 'webui-delivery', '.tmp-retained-build-'));

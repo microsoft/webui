@@ -545,6 +545,12 @@ my-component[variant="primary"] {
 - Use CSS custom properties for theming. Nested fallbacks like
   `var(--primary, var(--fallback))` are also discovered as tokens.
 - Scoped token overrides do not replace theme defaults for other elements.
+  An unconditional `my-card { --local: ... }` default covers a
+  `my-card span { color: var(--local) }` rule in the same stylesheet, not an
+  unrelated `span` or sibling rule.
+  This proof covers simple tag/class/ID usage selectors and their compounds
+  and combinators, not pseudos, attributes, universal selectors, or implicit
+  nesting. CSS-wide values such as `inherit` do not supply these defaults.
   Use bare `:host` rules for shared Shadow component defaults or `:root` for
   document defaults. See [design tokens](/learn/css-tokens).
 - Malformed CSS fails the build, including unterminated `var()` calls,

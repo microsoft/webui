@@ -699,6 +699,33 @@ fn css_token_analysis_bench(c: &mut Criterion) {
     });
 }
 
+fn css_selector_history_bench(c: &mut Criterion) {
+    use std::fmt::Write as _;
+
+    let mut group = c.benchmark_group("css_token_analysis/repeated_selector_history");
+    for count in [100, 1000] {
+        let mut css = String::with_capacity(count * 80);
+        css.push_str(".scope { --local: red; }");
+        for index in 1..count {
+            write!(css, ".scope {{ --other-{index}: red; }}")
+                .unwrap_or_else(|error| panic!("fixture: {error}"));
+        }
+        for _ in 0..count {
+            css.push_str(".scope span { color: var(--local); }");
+        }
+        group.bench_with_input(BenchmarkId::from_parameter(count), &css, |b, css| {
+            b.iter(|| {
+                black_box(
+                    webui_parser::CssParser::new()
+                        .extract_tokens(black_box(css))
+                        .unwrap_or_else(|error| panic!("token extraction: {error}")),
+                )
+            });
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     parser_parse_reuse_bench,
@@ -712,6 +739,7 @@ criterion_group!(
     client_template_directives_bench,
     client_template_whitespace_bench,
     parser_isolated_bench,
-    css_token_analysis_bench
+    css_token_analysis_bench,
+    css_selector_history_bench
 );
 criterion_main!(benches);

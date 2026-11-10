@@ -118,6 +118,35 @@ Unconditional `:host` or `:root` defaults also apply to descendant components:
 
 Here, the theme needs `designSystemColor`, but not `card-spacing`.
 
+Within one stylesheet, an unconditional simple tag, class, or ID definition
+also covers rules whose selectors prove that the usage is on that element or
+its descendants. For example, in Light DOM:
+
+```css
+local-token {
+  --private-color: #123456;
+}
+
+local-token span {
+  color: var(--private-color);
+}
+```
+
+`private-color` does not need a theme value here. An unrelated `span` rule or
+`local-token + span` still needs one. Every branch of a selector list must be
+covered. Recognized usage selectors contain tag, class, and ID selectors or
+compounds such as `local-token.active`, with descendant, child, or sibling
+combinators. A sibling combinator does not inherit from the preceding sibling.
+Usage selectors with pseudo-classes, pseudo-elements, attributes, or `*` remain
+conservative, as do complex defining selectors. Nested rules do not gain coverage
+from their outer selector. WebUI does not match selectors against template
+markup to infer coverage across stylesheets.
+
+CSS-wide values such as `inherit`, `unset`, `initial`, `revert`, and
+`revert-layer` do not supply selector-local defaults for another rule.
+Keyframe offsets such as `from` and `to` are not element selectors and do not
+gain coverage from same-named element rules.
+
 Selector-scoped overrides do not replace theme defaults outside their matching
 elements. For example, `.green { --brand: var(--green-brand); }` still requires
 the theme's `brand` token when another rule or child component uses
@@ -132,8 +161,8 @@ Light component CSS.
 When a build is given a theme (`webui build --theme`, `webui serve --theme`, or
 API build options with a theme), every **required** token must exist in every
 theme. For `var(--a, var(--b, var(--c)))`, the theme must provide `a`, `b`, and
-`c` unless those references are covered by same-block definitions or
-unconditional local/ancestor defaults. Missing
+`c` unless those references are covered by same-block definitions,
+selector-proven local inheritance, or unconditional local/ancestor defaults. Missing
 tokens fail with `missing-theme-token`; theme token values that reference an
 undefined or cyclic `var(--token)` are trusted and left to browser CSS
 semantics.
