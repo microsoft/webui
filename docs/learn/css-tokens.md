@@ -134,8 +134,18 @@ local-token span {
 
 `private-color` does not need a theme value here. An unrelated `span` rule or
 `local-token + span` still needs one. Every branch of a selector list must be
-covered. More complex defining selectors remain conservative; WebUI does not
-match selectors against template markup to infer coverage across stylesheets.
+covered. Recognized usage selectors contain tag, class, and ID selectors or
+compounds such as `local-token.active`, with descendant, child, or sibling
+combinators. A sibling combinator does not inherit from the preceding sibling.
+Usage selectors with pseudo-classes, pseudo-elements, attributes, or `*` remain
+conservative, as do complex defining selectors. Nested rules do not gain coverage
+from their outer selector. WebUI does not match selectors against template
+markup to infer coverage across stylesheets.
+
+CSS-wide values such as `inherit`, `unset`, `initial`, `revert`, and
+`revert-layer` do not supply selector-local defaults for another rule.
+Keyframe offsets such as `from` and `to` are not element selectors and do not
+gain coverage from same-named element rules.
 
 Selector-scoped overrides do not replace theme defaults outside their matching
 elements. For example, `.green { --brand: var(--green-brand); }` still requires

@@ -1294,10 +1294,10 @@ fn record_unresolved_requirements(
     source: &[CssFallbackChain],
     available_counts: &HashMap<&str, usize>,
     owner: &str,
-    css_source: Option<&str>,
+    css_source: Option<(&str, &[usize])>,
     out: &mut UnresolvedTokens,
 ) {
-    for requirement in source {
+    for (index, requirement) in source.iter().enumerate() {
         let tokens: Vec<String> = requirement
             .tokens
             .iter()
@@ -1309,8 +1309,14 @@ fn record_unresolved_requirements(
         }
         for token in &tokens {
             if !out.sites.contains_key(token) {
-                out.sites
-                    .insert(token.clone(), token_site(owner, css_source, token));
+                out.sites.insert(
+                    token.clone(),
+                    token_site(
+                        owner,
+                        css_source.map(|(css, offsets)| (css, offsets[index])),
+                        token,
+                    ),
+                );
             }
         }
         out.chains.push(CssFallbackChain {
@@ -1320,14 +1326,15 @@ fn record_unresolved_requirements(
     }
 }
 
-/// Build the [`TokenSite`] for `token`. When `css_source` is available (a
-/// component's standalone CSS), the token's `var()` usage is located for a
-/// precise `line:column` and snippet; otherwise only the `owner` is recorded.
-fn token_site(owner: &str, css_source: Option<&str>, token: &str) -> TokenSite {
-    let (position, snippet) = match css_source.and_then(|css| locate_css_token(css, token)) {
-        Some((line, column, snippet)) => (Some((line, column)), Some(snippet)),
-        None => (None, None),
-    };
+// Locate a surviving var() usage, or record only the owner for inline styles.
+#[cold]
+#[inline(never)]
+fn token_site(owner: &str, css_source: Option<(&str, usize)>, token: &str) -> TokenSite {
+    let (position, snippet) =
+        match css_source.and_then(|(css, start)| locate_css_token(css, token, start)) {
+            Some((line, column, snippet)) => (Some((line, column)), Some(snippet)),
+            None => (None, None),
+        };
     TokenSite {
         owner: owner.to_string(),
         position,
@@ -1335,16 +1342,33 @@ fn token_site(owner: &str, css_source: Option<&str>, token: &str) -> TokenSite {
     }
 }
 
-/// Locate the first `var(--token)` **usage** (not a `--token:` definition) in
-/// `css`, returning its 1-based `(line, column)` and a one-line snippet.
-///
-/// Iterative byte scan — no regex, no recursion. Cold-ish (build time, only for
-/// unresolved tokens).
-fn locate_css_token(css: &str, token: &str) -> Option<(usize, usize, String)> {
+// Locate token within a surviving var() call starting at start.
+#[cold]
+#[inline(never)]
+fn locate_css_token(css: &str, token: &str, start: usize) -> Option<(usize, usize, String)> {
     let bytes = css.as_bytes();
     let name = token.as_bytes();
-    let mut index = 0;
+    let mut index = start;
     while index + 2 + name.len() <= bytes.len() {
+        match bytes[index] {
+            b'"' | b'\'' => {
+                index = css_scan::quoted_end(css, index);
+                continue;
+            }
+            b'/' if bytes.get(index + 1) == Some(&b'*') => {
+                index = css_scan::block_comment_end(css, index);
+                continue;
+            }
+            b'/' if comment_policy::is_css_line_comment_start(css, index) => {
+                index = comment_policy::find_css_line_comment_end(css, index + 2);
+                continue;
+            }
+            b'\\' => {
+                index = css_scan::css_escape_end(bytes, index, bytes.len());
+                continue;
+            }
+            _ => {}
+        }
         let is_prefixed = bytes[index] == b'-'
             && bytes[index + 1] == b'-'
             && bytes.get(index + 2..index + 2 + name.len()) == Some(name);
@@ -11176,6 +11200,53 @@ mod tests {
             analysis.unthemed_literal_fallback_tokens(&theme),
             vec!["colr-brand".to_string()]
         );
+    }
+
+    #[test]
+    fn test_theme_diagnostics_locate_surviving_selector_usage() {
+        for fallback in ["", ", red"] {
+            let css = format!(
+                "/* removed */.scope {{ --accent: red; }}\n.scope span {{ color: var(--accent{fallback}); }}\n/* removed */.footer {{\n  color: var(--accent{fallback});\n}}",
+            );
+            let mut parser = HtmlParser::new();
+            parser
+                .component_registry_mut()
+                .register_component(ComponentRegistration::new(
+                    "my-card",
+                    "<span>Card</span>",
+                    Some(&css),
+                    true,
+                ))
+                .unwrap();
+            parser.parse("index.html", "<my-card></my-card>").unwrap();
+            let analysis = parser.token_analysis();
+            let theme = webui_tokens::TokenFile {
+                themes: HashMap::from([("light".to_string(), HashMap::new())]),
+            };
+            let diagnostic = if fallback.is_empty() {
+                let Err(ParserError::Template(diagnostic)) = analysis.validate_theme_tokens(&theme)
+                else {
+                    panic!("uncovered selector must require a theme token");
+                };
+                assert_eq!(diagnostic.error_code(), Some(codes::MISSING_THEME_TOKEN));
+                *diagnostic
+            } else {
+                let mut warnings = analysis.theme_token_warnings(&theme);
+                assert_eq!(warnings.len(), 1);
+                warnings.remove(0)
+            };
+            assert_eq!(diagnostic.position_line_column(), Some((4, 14)));
+        }
+    }
+
+    #[test]
+    fn test_token_location_skips_fallback_strings_and_comments() {
+        let css =
+            r#".footer { color: var(--outer, fn("--accent", var(/* --accent */ --accent))); }"#;
+        let start = css.find("var(").unwrap();
+        let expected = css.rfind("--accent").unwrap();
+        let (line, column, _) = locate_css_token(css, "accent", start).unwrap();
+        assert_eq!((line, column), (1, expected + 1));
     }
 
     #[test]

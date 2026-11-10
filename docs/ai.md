@@ -548,6 +548,9 @@ my-component[variant="primary"] {
   An unconditional `my-card { --local: ... }` default covers a
   `my-card span { color: var(--local) }` rule in the same stylesheet, not an
   unrelated `span` or sibling rule.
+  This proof covers simple tag/class/ID usage selectors and their compounds
+  and combinators, not pseudos, attributes, universal selectors, or implicit
+  nesting. CSS-wide values such as `inherit` do not supply these defaults.
   Use bare `:host` rules for shared Shadow component defaults or `:root` for
   document defaults. See [design tokens](/learn/css-tokens).
 - Malformed CSS fails the build, including unterminated `var()` calls,

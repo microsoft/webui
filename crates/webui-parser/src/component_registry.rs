@@ -18,7 +18,7 @@ use std::sync::Arc;
 #[cfg(feature = "fs")]
 use walkdir::WalkDir;
 
-type ProcessedCss = (String, Vec<String>, Vec<CssFallbackChain>);
+type ProcessedCss = (String, Vec<String>, Vec<CssFallbackChain>, Vec<usize>);
 
 /// Represents a web component in the registry.
 ///
@@ -125,6 +125,8 @@ pub struct ComponentRegistry {
     source_transform: Option<ComponentSourceTransform>,
     /// Reusable CSS parser for token extraction during registration.
     css_parser: CssParser,
+    // Starts of surviving var() calls in the retained, comment-stripped CSS.
+    css_requirement_offsets: HashMap<String, Vec<usize>>,
     /// Legal comment preservation policy for component CSS.
     legal_comments: LegalComments,
 }
@@ -168,6 +170,7 @@ impl ComponentRegistry {
             component_authored_sources: HashMap::new(),
             source_transform: None,
             css_parser: CssParser::new(),
+            css_requirement_offsets: HashMap::new(),
             legal_comments,
         }
     }
@@ -287,20 +290,23 @@ impl ComponentRegistry {
         }
 
         // Read CSS content and extract definitions/fallback requirements if available
-        let (css_content, css_definitions, css_fallback_chains) = if let Some(css_path) = css_path {
-            if css_path.exists() {
-                let content = fs::read_to_string(css_path).map_err(|source| ParserError::IO {
-                    context: format!("Failed to read CSS file: {}", css_path.display()),
-                    source,
-                })?;
-                let (content, definitions, requirements) = self.process_css_content(&content)?;
-                (Some(content), definitions, requirements)
+        let (css_content, css_definitions, css_fallback_chains, css_offsets) =
+            if let Some(css_path) = css_path {
+                if css_path.exists() {
+                    let content =
+                        fs::read_to_string(css_path).map_err(|source| ParserError::IO {
+                            context: format!("Failed to read CSS file: {}", css_path.display()),
+                            source,
+                        })?;
+                    let (content, definitions, requirements, offsets) =
+                        self.process_css_content(&content)?;
+                    (Some(content), definitions, requirements, offsets)
+                } else {
+                    (None, Vec::new(), Vec::new(), Vec::new())
+                }
             } else {
-                (None, Vec::new(), Vec::new())
-            }
-        } else {
-            (None, Vec::new(), Vec::new())
-        };
+                (None, Vec::new(), Vec::new(), Vec::new())
+            };
 
         let script_path = component_script(html_path)?;
         let is_client_owned = script_path.is_some();
@@ -325,6 +331,10 @@ impl ComponentRegistry {
             script_path,
         };
 
+        if !css_offsets.is_empty() {
+            self.css_requirement_offsets
+                .insert(component.tag_name.clone(), css_offsets);
+        }
         self.render_policies
             .insert(component.tag_name.clone(), render_policy);
         if let Some(artifact) = resolved.artifact_content {
@@ -378,12 +388,13 @@ impl ComponentRegistry {
         }
 
         // Extract CSS definitions/fallback requirements if CSS content is provided
-        let (css_content, css_definitions, css_fallback_chains) = match css_content {
+        let (css_content, css_definitions, css_fallback_chains, css_offsets) = match css_content {
             Some(css) => {
-                let (content, definitions, requirements) = self.process_css_content(css)?;
-                (Some(content), definitions, requirements)
+                let (content, definitions, requirements, offsets) =
+                    self.process_css_content(css)?;
+                (Some(content), definitions, requirements, offsets)
             }
-            None => (None, Vec::new(), Vec::new()),
+            None => (None, Vec::new(), Vec::new(), Vec::new()),
         };
         let render_policy =
             parse_component_render_policy(&resolved.tag_name, &resolved.parser_content)?;
@@ -403,6 +414,10 @@ impl ComponentRegistry {
             script_path: script_path.map(Path::to_path_buf),
         };
 
+        if !css_offsets.is_empty() {
+            self.css_requirement_offsets
+                .insert(component.tag_name.clone(), css_offsets);
+        }
         // Register the component
         self.render_policies
             .insert(component.tag_name.clone(), render_policy);
@@ -432,7 +447,7 @@ impl ComponentRegistry {
 
     /// Strip comments and extract CSS definitions/fallback requirements.
     fn process_css_content(&mut self, css_content: &str) -> Result<ProcessedCss> {
-        let (definitions, requirements, stripped) = self
+        let (definitions, requirements, stripped, offsets) = self
             .css_parser
             .extract_definitions_requirements_and_strip_comments(
                 css_content,
@@ -440,7 +455,12 @@ impl ComponentRegistry {
             )?;
         let mut sorted_definitions: Vec<String> = definitions.into_iter().collect();
         sorted_definitions.sort();
-        Ok((stripped.into_owned(), sorted_definitions, requirements))
+        Ok((
+            stripped.into_owned(),
+            sorted_definitions,
+            requirements,
+            offsets,
+        ))
     }
 
     /// Append the render policy CSS appropriate for the component's CSS tree.
@@ -501,10 +521,14 @@ impl ComponentRegistry {
     }
 
     /// Return component CSS for source diagnostics.
-    pub(crate) fn diagnostic_css_content(&self, tag_name: &str) -> Option<&str> {
-        self.components
+    pub(crate) fn diagnostic_css_content(&self, tag_name: &str) -> Option<(&str, &[usize])> {
+        let content = self
+            .components
             .get(tag_name)
-            .and_then(|component| component.css_content.as_deref())
+            .and_then(|component| component.css_content.as_deref())?;
+        self.css_requirement_offsets
+            .get(tag_name)
+            .map(|offsets| (content, offsets.as_slice()))
     }
 
     // Get a distinct client artifact retained by the source transform.

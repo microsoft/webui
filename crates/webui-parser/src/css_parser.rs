@@ -21,6 +21,7 @@ struct CssScanResult<'a> {
     local_definitions: HashSet<&'a str>,
     comments: Vec<CssComment>,
     requirements: Vec<CssFallbackChain>,
+    requirement_scopes: Vec<CssRequirementScope>,
 }
 
 impl CssScanResult<'_> {
@@ -49,11 +50,24 @@ struct CssRuleScope {
     unconditional: bool,
     unconditional_group: bool,
     defines_defaults: bool,
+    in_keyframes: bool,
+    local_selector: Option<bool>,
     definition_start: usize,
     requirement_start: usize,
 }
 
-type CssRequirementsAndStripped<'a> = (HashSet<String>, Vec<CssFallbackChain>, Cow<'a, str>);
+struct CssRequirementScope {
+    rule_id: usize,
+    start: usize,
+    in_keyframes: bool,
+}
+
+type CssRequirementsAndStripped<'a> = (
+    HashSet<String>,
+    Vec<CssFallbackChain>,
+    Cow<'a, str>,
+    Vec<usize>,
+);
 type CssRequirementsAndComments = (HashSet<String>, Vec<CssFallbackChain>, Vec<CssComment>);
 
 /// Format a byte `offset` into CSS `source` as `at line L, column C`.
@@ -114,6 +128,19 @@ impl CssParser {
         let scan = scan_css(css_content, legal_comments, true)?;
         let mut comment_ranges = removable_ranges(&scan.comments);
         let stripped = comment_policy::strip_ranges(css_content, comment_ranges.as_mut_slice());
+        let mut ranges = comment_ranges.iter().peekable();
+        let mut removed = 0;
+        let mut offsets = Vec::with_capacity(scan.requirement_scopes.len());
+        for usage in scan.requirement_scopes {
+            while let Some(&&(start, end)) = ranges.peek() {
+                if end > usage.start {
+                    break;
+                }
+                removed += end - start;
+                ranges.next();
+            }
+            offsets.push(usage.start - removed);
+        }
         Ok((
             scan.inherited_definitions
                 .into_iter()
@@ -121,6 +148,7 @@ impl CssParser {
                 .collect(),
             scan.requirements,
             stripped,
+            offsets,
         ))
     }
 
@@ -181,6 +209,9 @@ fn scan_css(
         }
 
         match bytes[index] {
+            b'\\' => {
+                index = crate::css_scan::css_escape_end(bytes, index, bytes.len());
+            }
             b'"' | b'\'' => {
                 quote = bytes[index];
                 index += 1;
@@ -228,8 +259,8 @@ fn scan_css(
                             inherited_definitions.insert(name);
                         } else {
                             local_definitions.insert(name);
-                            if scope.unconditional {
-                                inheritance.define(source, scope.id, name);
+                            if scope.unconditional && inheritance::has_local_default(source, end) {
+                                inheritance.define(source, &mut scope, name);
                             }
                             if active_definitions.insert((scope.id, name)) {
                                 definition_stack.push(name);
@@ -243,11 +274,15 @@ fn scan_css(
             }
             b'v' if source[index..].starts_with("var(") => {
                 let start = requirements.len();
+                let offset = index;
                 index = scan_var_call(source, index, &mut requirements)?;
-                requirement_scopes.resize(
-                    requirement_scopes.len() + requirements.len() - start,
-                    scope.id,
-                );
+                requirement_scopes.extend((start..requirements.len()).map(|_| {
+                    CssRequirementScope {
+                        rule_id: scope.id,
+                        start: offset,
+                        in_keyframes: scope.in_keyframes,
+                    }
+                }));
             }
             b'{' => {
                 let unconditional = brace_depth == 0 || scope.unconditional_group;
@@ -258,6 +293,7 @@ fn scan_css(
                     &source[prelude_start..index],
                     prelude_start + 1,
                     unconditional,
+                    scope.in_keyframes,
                 );
                 scope.definition_start = definition_stack.len();
                 scope.requirement_start = requirements.len();
@@ -355,13 +391,14 @@ fn scan_css(
         source,
         &local_definitions,
         &mut requirements,
-        &requirement_scopes,
+        &mut requirement_scopes,
     );
     Ok(CssScanResult {
         inherited_definitions,
         local_definitions,
         comments,
         requirements,
+        requirement_scopes,
     })
 }
 
@@ -370,14 +407,14 @@ fn finish_css_rule<'a>(
     definitions: &mut HashSet<(usize, &'a str)>,
     definition_stack: &mut Vec<&'a str>,
     requirements: &mut Vec<CssFallbackChain>,
-    requirement_scopes: &mut Vec<usize>,
+    requirement_scopes: &mut Vec<CssRequirementScope>,
 ) {
     if definition_stack.len() == scope.definition_start {
         return;
     }
     let mut kept = scope.requirement_start;
     for index in scope.requirement_start..requirements.len() {
-        if requirement_scopes[index] == scope.id {
+        if requirement_scopes[index].rule_id == scope.id {
             requirements[index]
                 .tokens
                 .retain(|token| !definitions.contains(&(scope.id, token.as_str())));
@@ -395,7 +432,12 @@ fn finish_css_rule<'a>(
     }
 }
 
-fn css_rule_scope(prelude: &str, id: usize, unconditional: bool) -> CssRuleScope {
+fn css_rule_scope(
+    prelude: &str,
+    id: usize,
+    unconditional: bool,
+    in_keyframes: bool,
+) -> CssRuleScope {
     let prelude = skip_css_trivia(prelude);
     let name_end = prelude
         .bytes()
@@ -405,25 +447,39 @@ fn css_rule_scope(prelude: &str, id: usize, unconditional: bool) -> CssRuleScope
     let defines_defaults = unconditional
         && (name.eq_ignore_ascii_case(":host") || name.eq_ignore_ascii_case(":root"))
         && skip_css_trivia(&prelude[name_end..]).is_empty();
+    let is_keyframes = prelude.starts_with('@')
+        && ["keyframes", "-webkit-keyframes"].iter().any(|name| {
+            let end = crate::css_scan::ident_end(prelude.as_bytes(), 1, prelude.len());
+            crate::css_scan::css_identifier_eq(&prelude[1..end], name)
+        });
     CssRuleScope {
         id,
         unconditional,
         unconditional_group: unconditional && name.eq_ignore_ascii_case("@layer"),
         defines_defaults,
+        in_keyframes: in_keyframes || is_keyframes,
+        local_selector: None,
         definition_start: 0,
         requirement_start: 0,
     }
 }
 
-fn skip_css_trivia(mut source: &str) -> &str {
+fn skip_css_trivia(source: &str) -> &str {
+    skip_css_trivia_with_whitespace(source).0
+}
+
+fn skip_css_trivia_with_whitespace(mut source: &str) -> (&str, bool) {
+    let mut whitespace = false;
     loop {
-        source = source.trim_start();
+        let trimmed = source.trim_start_matches([' ', '\t', '\n', '\r', '\x0c']);
+        whitespace |= trimmed.len() != source.len();
+        source = trimmed;
         if source.starts_with("/*") {
             source = &source[crate::css_scan::block_comment_end(source, 0)..];
         } else if comment_policy::is_css_line_comment_start(source, 0) {
             source = &source[comment_policy::find_css_line_comment_end(source, 2)..];
         } else {
-            return source;
+            return (source, whitespace);
         }
     }
 }
@@ -1045,12 +1101,39 @@ mod tests {
     #[test]
     fn test_comments_are_collected_and_stripped() {
         let mut parser = CssParser::new();
-        let (_defs, _requirements, stripped) = parser
+        let (_defs, _requirements, stripped, offsets) = parser
             .extract_definitions_requirements_and_strip_comments(
                 "/* remove */.x{color:var(--a)}/*! keep */",
                 LegalComments::Inline,
             )
             .expect("scan failed");
         assert_eq!(stripped, ".x{color:var(--a)}/*! keep */");
+        assert_eq!(offsets, [9]);
+    }
+
+    #[test]
+    fn requirement_offsets_survive_both_pruning_passes_and_comment_removal() {
+        let css = "/* removed */.scope { --local: red; }
+            .scope span { color: var(--local); }
+            /* removed */.other {
+                color: var(--same); --same: red;
+                background: var(--local, var(/* retained */ --missing));
+            }
+            /* removed */.last { color: var(--last); }";
+        let (_, requirements, stripped, offsets) = CssParser::new()
+            .extract_definitions_requirements_and_strip_comments(css, LegalComments::Inline)
+            .unwrap();
+        assert_eq!(requirements.len(), 2);
+        assert_eq!(requirements[0].tokens, ["local", "missing"]);
+        assert_eq!(requirements[1].tokens, ["last"]);
+        assert_eq!(
+            offsets,
+            [
+                stripped.find("var(--local,").unwrap(),
+                stripped.find("var(--last)").unwrap(),
+            ]
+        );
+        assert!(!stripped.contains("removed"));
+        assert!(stripped.contains("/* retained */"));
     }
 }
