@@ -1,0 +1,1 @@
+import{a as o,c as i,e as l}from"./chunk-QASUNWW4.js";var e=class extends l{constructor(){super(...arguments);this.label="Copy"}copy(){let t=this.querySelector("code");t&&navigator.clipboard.writeText(t.textContent||"").then(()=>{this.label="Copied!",setTimeout(()=>{this.label="Copy"},1500)})}};o([i],e.prototype,"label",2);e.define("code-block");
