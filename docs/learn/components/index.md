@@ -88,6 +88,25 @@ The wrapper must contain the complete component. Closed roots, invalid values
 or placement, and additional top-level content fail the build. Native `<slot>`
 is supported in effective Shadow components and rejected in Light components.
 
+### Slot content and empty values
+
+Slot fallback follows native DOM assignment, not whether the assigned content
+looks empty. A text binding remains a Text node when its value is cleared, so
+an empty value does not request fallback. Values such as `0`, `false`, and
+whitespace remain text content.
+
+HTML cannot encode a zero-length Text node, so initially empty server output
+can have no assigned text until hydration creates the binding. Do not use
+fallback as an empty-value state. When content should be absent, express that
+decision with a conditional:
+
+```html
+<details-card><if condition="hasDetails">{{details}}</if></details-card>
+```
+
+Set `hasDetails` according to the application's rules. When it is false, no
+text is supplied by that branch and native slot fallback can apply.
+
 Component templates must use browser-valid HTML nesting. WebUI recognizes native
 void tags case-insensitively and accounts for the `<colgroup>` and `<tbody>` that
 browsers imply around direct `<col>` and `<tr>` runs. If an `<if>` or `<for>`

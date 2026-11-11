@@ -2215,6 +2215,7 @@ fn process_fragment_children(
             FragmentNode::Comment(data) => {
                 if let Some(idx) = parse_marker_index(data, "c:") {
                     if let Some(slot) = condition_slots.get_mut(idx) {
+                        ssr_children.dynamic();
                         let order = slot_orders.get(&child_index).copied().unwrap_or(0);
                         slot_orders.insert(child_index, order + 1);
                         *slot = Some(SlotLocator {
@@ -2225,6 +2226,7 @@ fn process_fragment_children(
                     }
                 } else if let Some(idx) = parse_marker_index(data, "r:") {
                     if let Some(slot) = repeat_slots.get_mut(idx) {
+                        ssr_children.dynamic();
                         let order = slot_orders.get(&child_index).copied().unwrap_or(0);
                         slot_orders.insert(child_index, order + 1);
                         *slot = Some(SlotLocator {

@@ -2124,7 +2124,7 @@ export class TemplateElement extends HTMLElement {
       const binding: CondBinding = {
         condition: condition as CompiledCondition, blockIndex,
         anchor: liveAnchor,
-        scope, owner: instance, instance: condInstance,
+        scope, owner: instance, instance: condInstance ?? undefined,
       };
       instance.conds[i] = binding;
     }
@@ -2303,6 +2303,17 @@ export class TemplateElement extends HTMLElement {
           append(p, 'conds', c);
         }
         if (c.instance) visit(c.instance);
+        else if (c.instance === undefined) {
+          // A true text-only SSR body can serialize to an empty marker range.
+          const block = this.$block(c.blockIndex, instance.fragment);
+          if (block?.h === '') {
+            for (const text of block.tx ?? EMPTY_ARR) {
+              for (const part of text[1]) {
+                if (typeof part !== 'string') append(part[0], 'conds', c);
+              }
+            }
+          }
+        }
       }
       for (const rep of instance.repeats) {
         append(rep.collection, 'repeats', rep);
@@ -2486,6 +2497,9 @@ export class TemplateElement extends HTMLElement {
       this.$removeInstance(instance);
       c.instance = null;
       this.$changeStructure(compactOwners ? c.owner : undefined);
+    } else if (c.instance === undefined) {
+      c.instance = null;
+      this.$changeStructure();
     }
   }
 

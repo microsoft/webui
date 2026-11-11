@@ -298,6 +298,47 @@ test('path indexes share empty buckets without sharing populated binding arrays'
   assert.equal(b.conds.length, 0, 'populating another bucket never mutates the shared empty array');
 });
 
+test('body-only writes can reach a text-only conditional with an empty SSR range', () => {
+  const root: TemplateInstance = {
+    container: null, nodes: [], texts: [], attrs: [], conds: [], repeats: [],
+  };
+  root.conds.push({
+    condition: [() => true, ['show']], blockIndex: 0,
+    anchor: null, owner: root, instance: undefined,
+  }, {
+    condition: [() => false, ['hidden']], blockIndex: 1,
+    anchor: null, owner: root, instance: null,
+  }, {
+    condition: [() => false, ['hidden']], blockIndex: 2,
+    anchor: null, owner: root, instance: undefined,
+  }, {
+    condition: [() => false, ['hidden']], blockIndex: 3,
+    anchor: null, owner: root, instance: undefined,
+  });
+  const host = new TemplateElement();
+  Object.defineProperties(host, {
+    $root: { value: root },
+    $observableNames: { value: () => new Set(['show', 'details', 'hidden', 'unmounted', 'probe', 'staticBody']) },
+    $meta: { value: {
+      v: 3, h: '', b: [
+        { h: '', tx: [[[0, 0], [['details'], ['details']]]] },
+        { h: '', tx: [[[0, 0], [['unmounted']]]] },
+        { h: '', tx: [[[0, 0], [['probe']]]] },
+        { h: '<span></span>', tx: [[[1, 0], [['staticBody']]]] },
+      ],
+    } satisfies TemplateMeta },
+  });
+  host['$buildPathIndex']();
+  assert.deepEqual(host['$pathIndex']?.get('details')?.conds, [root.conds[0]]);
+  assert.equal(host['$pathIndex']?.has('unmounted'), false);
+  assert.equal(host['$pathIndex']?.has('staticBody'), false);
+  assert.deepEqual(host['$pathIndex']?.get('probe')?.conds, [root.conds[2]]);
+  host['$toggleCond'](root.conds[2]);
+  assert.equal(root.conds[2].instance, null);
+  host['$buildPathIndex']();
+  assert.equal(host['$pathIndex']?.has('probe'), false);
+});
+
 test('SSR text without a neighboring dynamic marker allocates no topology array', () => {
   const original = globalThis.Int32Array;
   const text = { nodeType: 3, previousSibling: null, nextSibling: null };

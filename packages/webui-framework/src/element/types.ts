@@ -110,7 +110,8 @@ export interface CondBinding {
   anchor: Comment | null;
   scope?: ScopeFrame;
   owner: TemplateInstance;
-  instance: TemplateInstance | null;
+  /** Undefined is an absent SSR view not yet reconciled; null is known inactive. */
+  instance: TemplateInstance | null | undefined;
 }
 
 export type RepeatKey = string | number;
