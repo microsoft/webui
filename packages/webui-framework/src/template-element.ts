@@ -230,29 +230,36 @@ function appendPathBinding<Kind extends keyof PathBindingTypes>(
  * `meta.r` indexes plus one; large positive values encode raw-range indexes.
  * The compiler assigns gapless order values within each static slot.
  */
-function getTextMarkerBoundaries(meta: TemplateBlockMeta, texts: CompiledTextRunMeta[]): ArrayLike<number> {
+function getTextMarkerBoundaries(
+  meta: TemplateBlockMeta,
+  texts: readonly CompiledTextRunMeta[],
+): ArrayLike<number> {
   const cached = textMarkerBoundaryCache.get(meta);
   if (cached) return cached;
 
   const markers = new Map<string, number>();
+  // Compiler-owned dynamic slots establish projection ownership even without
+  // static children. Enrich the validated layout once, without another cache.
   if (meta.c) {
     for (let i = 0; i < meta.c.length; i++) {
+      meta.l![meta.c[i][2][0]] |= 1;
       markers.set(slotKey(meta.c[i][2]), i + 1);
     }
   }
   if (meta.r) {
     for (let i = 0; i < meta.r.length; i++) {
+      meta.l![meta.r[i][3][0]] |= 1;
       markers.set(slotKey(meta.r[i][3]), -(i + 1));
     }
   }
   let rawIndex = 0;
   for (let i = 0; i < texts.length; i++) {
     if (texts[i][2] !== 1) continue;
+    meta.l![texts[i][0][0]] |= 1;
     markers.set(
       slotKey(texts[i][0]),
-      RAW_MARKER_BOUNDARY_BASE + rawIndex + 1,
+      RAW_MARKER_BOUNDARY_BASE + ++rawIndex,
     );
-    rawIndex++;
   }
 
   let boundaries: Int32Array | undefined;
@@ -845,7 +852,7 @@ export class TemplateElement extends HTMLElement {
 
       } else {
         clientRoot = this.$createStagingRoot(meta);
-        this.$root = this.$wire(clientRoot, meta);
+        this.$root = this.$wire(clientRoot, meta, undefined, root);
       }
 
       this.$meta = meta;
@@ -1585,9 +1592,7 @@ export class TemplateElement extends HTMLElement {
 
   private $recordDeferredWrite(path: string): void {
     blockRenderWork(this, 'hydration is deferred');
-    const dot = path.indexOf('.');
-    const root = dot === -1 ? path : path.slice(0, dot);
-    (this.$deferredWrites ??= new Set()).add(root);
+    (this.$deferredWrites ??= new Set()).add(stateRoot(path));
   }
 
   private $replayDeferredWrites(): void {
@@ -1765,9 +1770,15 @@ export class TemplateElement extends HTMLElement {
   //  Client-created wiring — exact childNode index resolution
   // ═══════════════════════════════════════════════════════════════
 
-  private $wire(root: Node, meta: TemplateBlockMeta, scope?: ScopeFrame): TemplateInstance {
+  private $wire(
+    root: Node,
+    meta: TemplateBlockMeta,
+    scope?: ScopeFrame,
+    destination = root,
+  ): TemplateInstance {
     const ownerDocument = this.ownerDocument;
     const instance = createTemplateInstance(root, meta, childNodesArray(root), scope);
+    if (isSlotHost(destination)) slottableStagingRoots.add(root);
 
     // Resolve every static insertion reference before inserting dynamic nodes.
     // Any insertion shifts childNodes and invalidates later compiled offsets.
@@ -1803,13 +1814,17 @@ export class TemplateElement extends HTMLElement {
             parts,
             scope,
             raw: true,
-            rawEnd: end,
-            rawOwner: instance,
+            end,
+            owner: instance,
           };
           node = start;
         } else {
           const textNode = ownerDocument.createTextNode('');
-          instance.texts[textCount++] = { node: textNode, parts, scope };
+          const binding: TextBinding = { node: textNode, parts, scope };
+          if (parent === root) {
+            binding.owner = instance;
+          }
+          instance.texts[textCount++] = binding;
           node = textNode;
         }
         pendingSlots[pendingSlotCount++] = {
@@ -1962,6 +1977,9 @@ export class TemplateElement extends HTMLElement {
       }
     }
     const layout = getTemplateSSRLayout(meta);
+    const textMarkerBoundaries = meta.c?.length || meta.r?.length || rawTextCount
+      ? getTextMarkerBoundaries(meta, meta.tx ?? EMPTY_ARR)
+      : EMPTY_ARR;
     const ssrIndex = buildSSRIndex(
       layout,
       ssrRoot,
@@ -1970,9 +1988,6 @@ export class TemplateElement extends HTMLElement {
       rangeEnd,
     );
     const ssrElements = ssrIndex.elements;
-    const textMarkerBoundaries = meta.tx && (meta.c?.length || meta.r?.length || rawTextCount)
-      ? getTextMarkerBoundaries(meta, meta.tx)
-      : EMPTY_ARR;
     if (meta.tx) {
       const rawRanges = ssrIndex.raws.length === rawTextCount ? ssrIndex.raws : null;
       let rawIndex = 0;
@@ -1991,14 +2006,14 @@ export class TemplateElement extends HTMLElement {
             parts,
             scope,
             raw: true,
-            rawEnd: rawRange[1],
-            rawOwner: instance,
+            end: rawRange[1],
+            owner: instance,
           };
           if (
             (!scope || scopeIsKnown(scope))
             && this.$textStateIsKnown(binding)
           ) {
-            binding.rawValue = this.$resolveParts(parts, scope);
+            binding.value = this.$resolveParts(parts, scope);
           }
           instance.texts[textCount++] = binding;
         } else {
@@ -2028,7 +2043,9 @@ export class TemplateElement extends HTMLElement {
             textNode = ownerDocument.createTextNode('');
             ssrParent.insertBefore(textNode, before);
           }
-          instance.texts[textCount++] = { node: textNode, parts, scope };
+          const binding: TextBinding = { node: textNode, parts, scope };
+          if (ssrParent === ssrRoot) binding.owner = instance;
+          instance.texts[textCount++] = binding;
         }
       }
     }
@@ -2054,6 +2071,13 @@ export class TemplateElement extends HTMLElement {
     // A block range has no subtree root of its own; its compiled events and
     // refs resolve through the SSR index.
     this.$finalize(instance, meta, ssrElements);
+
+    // Comment ordinals still belong to the SSR skeleton until resolution ends.
+    // Preserve trusted server data, even when the corresponding state is absent.
+    for (let i = 0; i < instance.texts.length; i++) {
+      const binding = instance.texts[i];
+      if (!binding.raw && binding.node.data === '') patchSlotText(binding, '');
+    }
 
     // All path-based resolution is complete. Remove the SSR markers that
     // were kept alive for structural-block skipping. Repeat starts and starts
@@ -2262,8 +2286,7 @@ export class TemplateElement extends HTMLElement {
     const append = <Kind extends keyof PathBindingTypes>(
       path: string, kind: Kind, binding: PathBindingTypes[Kind],
     ): void => {
-      const dot = path.indexOf('.');
-      const root = dot > -1 ? path.slice(0, dot) : path;
+      const root = stateRoot(path);
       if (findScope(root, binding.scope)) return;
       const key = observableNames.has(root) || this.$usesTemplateState(root) ? root : '*';
       let entry = index.get(key);
@@ -2303,6 +2326,18 @@ export class TemplateElement extends HTMLElement {
           append(p, 'conds', c);
         }
         if (c.instance) visit(c.instance);
+        else {
+          // An active escaped-text body can serialize to an empty SSR range.
+          // Watch its paths until a client write can create the missing view.
+          const block = this.$block(c.blockIndex, instance.fragment);
+          if (block?.h === '') {
+            for (const text of block.tx ?? EMPTY_ARR) {
+              for (const p of text[1]) {
+                if (typeof p !== 'string') append(p[0], 'conds', c);
+              }
+            }
+          }
+        }
       }
       for (const rep of instance.repeats) {
         append(rep.collection, 'repeats', rep);
@@ -2376,14 +2411,13 @@ export class TemplateElement extends HTMLElement {
     if (b.parts) {
       val = this.$resolveParts(b.parts, b.scope);
     } else if (b.path) {
-      const raw = this.$resolveValue(b.path, b.scope);
-      val = raw == null ? '' : String(raw);
+      val = textValue(this.$resolveValue(b.path, b.scope));
     } else {
       return;
     }
-    if (b.raw && b.rawEnd) {
-      patchRawText(b, val, b.rawEnd);
-    } else if (b.node.data !== val) b.node.data = val;
+    if (b.raw && b.end) {
+      patchRawText(b, val, b.end);
+    } else patchSlotText(b, val);
   }
 
   private $patchAttr(b: AttrBinding): void {
@@ -2418,7 +2452,7 @@ export class TemplateElement extends HTMLElement {
       }
       default: {
         const v = this.$resolveValue(b.path!, b.scope);
-        const s = v == null ? '' : String(v);
+        const s = textValue(v);
         if (v == null) {
           if (el.hasAttribute(b.name)) blockUnupgradedAttribute(el);
           el.removeAttribute(b.name);
@@ -2499,10 +2533,9 @@ export class TemplateElement extends HTMLElement {
       ? frame.value
       : dotWalk(frame.value, path, frame.name.length + 1);
     // Resolve against component — fast path for single-segment (no dot)
-    const dot = path.indexOf('.');
-    const instance = this as Record<string, unknown>;
-    if (dot === -1) return resolveComponentRoot(instance, this.$templateState, path);
-    return dotWalk(resolveComponentRoot(instance, this.$templateState, path.substring(0, dot)), path, dot + 1);
+    const root = stateRoot(path);
+    const value = resolveComponentRoot(this as Record<string, unknown>, this.$templateState, root);
+    return root.length === path.length ? value : dotWalk(value, path, root.length + 1);
   }
 
   private $conditionResolver(): (path: string, scope?: unknown) => unknown {
@@ -2516,8 +2549,7 @@ export class TemplateElement extends HTMLElement {
     const frame = findScope(path, scope);
     if (frame) return frame.known !== false;
 
-    const dot = path.indexOf('.');
-    const root = dot === -1 ? path : path.substring(0, dot);
+    const root = stateRoot(path);
     return hasAuthoredMember(this, root)
       || (this.$templateState !== null
         && Object.hasOwn(this.$templateState, root));
@@ -2528,8 +2560,7 @@ export class TemplateElement extends HTMLElement {
     for (let i = 0; i < parts.length; i++) {
       const p = parts[i];
       if (typeof p === 'string') { result += p; continue; }
-      const v = this.$resolveValue(p[0], scope);
-      result += v == null ? '' : String(v);
+      result += textValue(this.$resolveValue(p[0], scope));
     }
     return result;
   }
@@ -2557,7 +2588,7 @@ export class TemplateElement extends HTMLElement {
     const context = container?.nodeType === 1 ? container as Element : undefined;
     const wrapper = createTemplateContainer(this.ownerDocument, context);
     this.$stageTemplate(wrapper, bm);
-    const inst = this.$wire(wrapper, bm, scope);
+    const inst = this.$wire(wrapper, bm, scope, container);
     inst.nodes = childNodesArray(wrapper);
     this.$updateInstance(inst);
     if (inst.repeats.length !== 0 || inst.conds.length !== 0) {
@@ -2747,8 +2778,26 @@ function updateRepeat(this: TemplateElement, binding: RepeatBinding): void {
   syncRepeat(this, binding);
 }
 
+const slottableStagingRoots = new WeakSet<Node>();
+
+function isSlotHost(parent?: Node | null): boolean {
+  return !!(parent && (slottableStagingRoots.has(parent)
+    || (parent as Element).localName?.includes('-') || (parent as Element).shadowRoot));
+}
+
+function patchSlotText(binding: TextBinding, value: string): void {
+  const text = binding.node;
+  if (text.data !== value) text.data = value;
+  if (value ? !binding.end : binding.end || !isSlotHost(text.parentNode)) return;
+  const previous = binding.end ?? text;
+  const next = value ? text : text.ownerDocument.createComment('');
+  binding.end = value ? undefined : next as Comment;
+  swapOwnedRange(binding.owner, previous, next);
+  previous.replaceWith(next);
+}
+
 function patchRawText(binding: TextBinding, value: string, end: Comment): void {
-  if (binding.rawValue === value) return;
+  if (binding.value === value) return;
   const range = document.createRange();
   range.setStartAfter(binding.node);
   range.setEndBefore(end);
@@ -2761,7 +2810,7 @@ function patchRawText(binding: TextBinding, value: string, end: Comment): void {
     renderWork?.restoreRemoval(previousRemoval);
   }
   let rawNodes: Node[] | undefined;
-  const rawOwner = binding.rawOwner;
+  const rawOwner = binding.owner;
   if (fragment) {
     if (rawOwner && binding.node.parentNode === rawOwner.container) {
       rawNodes = childNodesArray(fragment);
@@ -2783,7 +2832,7 @@ function patchRawText(binding: TextBinding, value: string, end: Comment): void {
       owner = owner.parent;
     }
   }
-  binding.rawValue = value;
+  binding.value = value;
 }
 
 function replaceInstanceContainer(
@@ -2887,7 +2936,7 @@ function invalidateRawValues(root: TemplateInstance): void {
     if (!instance) continue;
     for (let i = 0; i < instance.texts.length; i++) {
       const binding = instance.texts[i];
-      if (binding.raw) binding.rawValue = undefined;
+      if (binding.raw) binding.value = undefined;
     }
     for (let i = 0; i < instance.conds.length; i++) {
       const child = instance.conds[i].instance;
@@ -2898,6 +2947,15 @@ function invalidateRawValues(root: TemplateInstance): void {
       for (let j = 0; j < children.length; j++) stack.push(children[j]);
     }
   }
+}
+
+function stateRoot(path: string): string {
+  const dot = path.indexOf('.');
+  return dot < 0 ? path : path.slice(0, dot);
+}
+
+function textValue(value: unknown): string {
+  return value == null ? '' : String(value);
 }
 
 function findScope(path: string, scope?: ScopeFrame): ScopeFrame | undefined {
@@ -2929,7 +2987,7 @@ function blockUnupgradedAttribute(element: Element): void {
 
 /** Swap one live range in every owner that shares its DOM container. */
 function swapOwnedRange(
-  owner: TemplateInstance,
+  owner: TemplateInstance | undefined,
   current: Node | readonly Node[],
   replacement: Node | readonly Node[],
 ): void {
@@ -2946,6 +3004,8 @@ function swapOwnedRange(
     if (index >= 0 && nodes[index + count - 1] === last) {
       if (Array.isArray(replacement)) {
         nodes.splice(index, count, ...replacement);
+      } else if (count === 1) {
+        nodes[index] = replacement as Node;
       } else {
         nodes.splice(index, count, replacement as Node);
       }

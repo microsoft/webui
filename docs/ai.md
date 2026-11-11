@@ -214,6 +214,13 @@ parsing context.
 
 Text bindings do path lookups only. They cannot do arithmetic or call functions.
 
+An entirely empty resolved text binding supplies no assigned text to a default
+slot, allowing its fallback when no other content is assigned. Empty strings,
+`null`, and missing values render empty; `0`, `false`, nonempty whitespace, and
+static text surrounding a binding remain content. Clearing optional text
+restores the fallback after hydration or client creation too. See
+[optional text and slot fallback](/learn/components/#optional-text-and-slot-fallback).
+
 ### Conditionals
 
 ```html

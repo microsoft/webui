@@ -91,7 +91,7 @@ describe('textDiffersFromDom', () => {
       node: { data: 'wh' } as unknown as Comment,
       path: 'html',
       raw: true,
-      rawEnd: { data: '/wh' } as unknown as Comment,
+      end: { data: '/wh' } as unknown as Comment,
     } as TextBinding;
     // Even with a divergent value, raw bindings never report a mismatch.
     assert.equal(textDiffersFromDom(b, makeCtx({ html: '<b>y</b>' })), false);
