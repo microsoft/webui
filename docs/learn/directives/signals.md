@@ -72,6 +72,13 @@ You can access nested properties using dot notation:
 
 ## Special Values
 
+An entirely empty resolved text binding supplies no text content. Empty strings,
+`null`, and missing values render empty; `0` and `false` render as `0` and
+`false`. Whitespace is not trimmed, and static text around a binding is
+preserved: <code v-pre>Details: {{details}}</code> still displays `Details: `
+when `details` is empty. This also determines whether optional text occupies a
+component's [default slot](../components/#optional-text-and-slot-fallback).
+
 Use `.length` to read a collection size:
 
 - `array.length` - Returns the number of items in the array

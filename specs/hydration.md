@@ -233,7 +233,12 @@ binds the range where the parser placed it: adopted nodes never leave the
 document, so custom elements see no disconnect or reconnect. The instance owns
 every node in the range, including static text beside its elements, so later
 moves and removals take the whole range. An empty conditional range stays
-empty and keeps its start marker as the anchor.
+empty and keeps its start marker as the anchor. For an absent body containing
+only escaped text bindings, retain its text dependencies so a later explicit
+body-only write re-evaluates the condition and can mount the latest values.
+Hydration does not paint client defaults. False or unknown conditions keep
+the body absent; existing nonempty SSR bodies remain trusted when condition
+state is unavailable.
 
 ### Marker removal is deferred
 
@@ -315,7 +320,10 @@ The same metadata serves both paths:
 `l` is `[rootShape, ...elementShapes]`. Each pre-order shape encodes
 twice its direct static element-child count, plus an ownership bit. The bit
 allows marker collection inside ordinary elements and explicitly authored
-projected children, but not inside an otherwise empty child component.
+projected children. Compiler-declared dynamic slots also establish parent
+ownership of projected conditional, repeat, and raw ranges, even when the
+child component has no static projected children. A child component's own
+rendered internals remain outside the parent's walk.
 The root is index zero. Inert `<template>` contents are not numbered.
 A layout format change also renames its key, so metadata from a mismatched
 compiler fails the layout check instead of being read with the wrong shape.
@@ -450,9 +458,9 @@ Two details shape the walk:
   the wrong node.
 - It descends where the template has children, and also into a template-empty
   element when the section has blocks to place - `<ul><for …></ul>` compiles to
-  an empty `<ul>`. Child components are the exception: they contribute no
-  children to the parent's `h`, so whatever the server rendered inside belongs
-  to them.
+  an empty `<ul>`. A child component's own rendered content is excluded, but
+  compiler-declared projected dynamic slots remain parent-owned even when
+  they contribute no children to the parent's `h`.
 
 ### Text slot boundaries
 
@@ -464,8 +472,18 @@ and repeat bindings removed at the same static child offset.
 During hydration, the runtime finds the slot's right-hand boundary: the next
 co-located structural marker by `order`, or the next static child. A
 server-rendered text node is the boundary's immediate previous sibling. When an
-empty server value produced no text node, the runtime inserts one at that exact
-boundary. The text-to-marker relation is encoded once into an `Int32Array`
+empty server value produced no text node, the binding retains that exact
+insertion position. In slottable light DOM, a completely empty resolved text
+run must leave no assigned text node; a non-slottable comment may retain its
+position. Resolve all static and dynamic parts before deciding emptiness:
+`0`, `false`, whitespace, and static text remain content. Clearing a run
+removes only its binding-owned text, and a later nonempty value returns it to
+the same ordered position. The owning instance tracks whichever nodes are
+attached for block moves and disposal. Hydration adopts existing SSR text
+without replacing its identity and preserves it when client state is unknown.
+These rules apply equally to client creation and reactive updates.
+
+The text-to-marker relation is encoded once into an `Int32Array`
 cached by template metadata, so every instance resolves a structural boundary
 in O(1) without retaining a `Map`. This avoids rescanning sibling ranges and
 prevents adjacent dynamic slots from claiming the same text node.

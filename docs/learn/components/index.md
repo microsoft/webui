@@ -94,6 +94,28 @@ browsers imply around direct `<col>` and `<tr>` runs. If an `<if>` or `<for>`
 controls table columns or rows, write the `<colgroup>` or `<tbody>` explicitly
 so its SSR hydration markers share one parser context.
 
+### Optional text and slot fallback
+
+A Shadow component can provide fallback content for its default slot:
+
+```html
+<!-- details-card.html -->
+<template shadowrootmode="open"><slot>No details available</slot></template>
+```
+
+Supply optional text from another component:
+
+```html
+<details-card>{{details}}</details-card>
+```
+
+When the complete resolved text is empty and no other content is assigned, the
+fallback appears. Setting `details` to nonempty text fills the slot; clearing it
+restores the fallback. This applies to server rendering, hydration, and
+client-created components. `0`, `false`, and nonempty whitespace remain
+content, as does any static text surrounding the binding. See
+[text binding values](../directives/signals#special-values).
+
 ## How Components Work
 
 `webui build` compiles the templates and styles. A native handler then renders

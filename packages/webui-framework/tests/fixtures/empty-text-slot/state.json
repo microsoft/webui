@@ -1,0 +1,10 @@
+{
+  "details": "",
+  "nonemptyDetails": "Server details",
+  "first": "",
+  "middle": "",
+  "last": "",
+  "showMiddle": true,
+  "showClient": false,
+  "items": [{ "value": "" }, { "value": "Second" }]
+}

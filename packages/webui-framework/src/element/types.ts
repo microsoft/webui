@@ -37,12 +37,12 @@ export interface TextBinding {
   /** When true, the binding renders unescaped HTML between comment anchors.
    *  Corresponds to the triple-brace `{{{expr}}}` template syntax. */
   raw?: boolean;
-  /** Closing ownership anchor for a raw HTML binding. */
-  rawEnd?: Comment;
+  /** Closing raw boundary, or the position of an empty projected text run. */
+  end?: Comment;
   /** Last client-patched value, used to avoid repeat HTML parsing. */
-  rawValue?: string;
-  /** Owning instance when the raw range is part of its top-level node list. */
-  rawOwner?: TemplateInstance;
+  value?: string;
+  /** Instance owning a raw range or root-level ordinary text. */
+  owner?: TemplateInstance;
 }
 
 /** Attribute binding kind constants (matches compiled metadata). */
