@@ -214,11 +214,6 @@ parsing context.
 
 Text bindings do path lookups only. They cannot do arithmetic or call functions.
 
-Slot fallback follows native assigned-node semantics. Clearing a text binding
-does not remove its Text node or request fallback. Use an explicit conditional
-when the application wants to omit slot content; do not use fallback to detect
-an empty value. See [Slot content and empty values](/learn/components/#slot-content-and-empty-values).
-
 ### Conditionals
 
 ```html
