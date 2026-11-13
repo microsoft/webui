@@ -154,6 +154,8 @@ export interface TemplateMeta extends TemplateBlockMeta {
   re?: [string, string, CompiledEventArgs][];
   /** Component-level state roots referenced by template bindings. */
   tr?: string[];
+  /** Shared reactive root for a compiler-proven fully covered flat section. */
+  rp?: string;
   /** Observed host attributes index-aligned with `tr`. */
   ta?: string[];
   /** Compact shadow DOM flag - when present, client-created components use a shadow root. */

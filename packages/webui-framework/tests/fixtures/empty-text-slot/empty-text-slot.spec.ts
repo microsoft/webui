@@ -182,8 +182,9 @@ for (const mode of ['hydrated', 'client-created'] as const) {
         binding.container === host.shadowRoot!.querySelector('#repeat'))!;
       const [first, removed] = repeat.instances;
       const node = first.texts[0].node;
-      const compact = !Object.hasOwn(first, 'attrs') &&
-        !Object.hasOwn(first, 'conds') && !Object.hasOwn(first, 'repeats');
+      const compact = first.nodes.length === 1 && first.attrs.length === 0 &&
+        first.attrs === removed.attrs && first.conds === removed.conds &&
+        first.repeats === removed.repeats;
       host.items = [{ value: '' }];
       await host.$whenRendered();
       const released = removed.nodes.length === 0 && removed.texts.length === 0 &&
@@ -200,5 +201,32 @@ for (const mode of ['hydrated', 'client-created'] as const) {
       compact: true, released: true, same: true,
       values: ['Changed', 'New'], independent: true,
     });
+  });
+
+  test(`${mode} creates conditional rows with one initial condition evaluation`, async ({ page }) => {
+    const panel = await hydrate(page, mode);
+    await update(panel, { items: [], showMiddle: true });
+    const evaluations = await panel.evaluate(async element => {
+      const host = element as DetailsPanel;
+      const repeat = host['$root']!.repeats.find(binding =>
+        binding.container === host.shadowRoot!.querySelector('#item-conditions'))!;
+      const condition = host.$block(repeat.blockIndex)!.c![0][0];
+      const evaluate = condition[0];
+      if (typeof evaluate !== 'function') throw new Error('Expected a normalized condition');
+      let calls = 0;
+      condition[0] = (...args: Parameters<typeof evaluate>) => {
+        calls++;
+        return evaluate(...args);
+      };
+      try {
+        host.items = [{ value: 'A' }, { value: 'B' }, { value: 'C' }];
+        await host.$whenRendered();
+        return calls;
+      } finally {
+        condition[0] = evaluate;
+      }
+    });
+    expect(evaluations).toBe(3);
+    expect(await assigned(panel.locator('#item-conditions'))).toEqual(['A', 'B', 'C']);
   });
 }

@@ -401,6 +401,9 @@ from an untrusted manifest opt back into the full check set.
 
 The WebUI parser also compiles component templates into static, marker-free
 client HTML plus compact binding, block, event, and state-path metadata.
+The compiler also proves when a flat component's bindings share one reactive
+root. The browser checks the host's reactive surface before using that shared
+plan; general templates retain instance-scoped dependency indexes.
 Server HTML and client metadata come from the same source. The compiler also
 records static topology and text boundaries so hydration can adopt the live
 DOM without materializing a second template tree. Client-template HTML remains

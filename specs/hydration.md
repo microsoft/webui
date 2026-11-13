@@ -462,7 +462,11 @@ tracking for nested blocks), because that content belongs to the block's own
 metadata. This is why closing markers must survive the whole hydration pass:
 they delimit the regions to skip.
 
-The same pass collects `<!--wc-->` and `<!--wr-->` markers in document order.
+The same pass captures conditional end markers and repeat item/end boundaries
+in document order. Block hydration consumes those temporary records instead
+of scanning the same range again; the records do not survive hydration.
+Sections without static elements or structural/raw markers only index their
+root and do not traverse siblings.
 The compiler emits `c` / `r` in source order and the server renders in source
 order, so the two line up by index - which is what makes each block's anchor
 unambiguous.
@@ -526,10 +530,13 @@ After hydration, every dynamic value is connected to a direct DOM-node reference
 
 ### Path index
 
-`$buildPathIndex` runs lazily on the first path-specific update. Flat sections
-whose bindings all depend on the same reactive root share a metadata-keyed
-root name instead of retaining a per-instance map. The proof requires complete
-binding coverage and is checked against each host's reactive surface.
+`$buildPathIndex` runs lazily on the first path-specific update. The compiler
+emits a shared root name in `rp` only when every text and attribute binding depends
+on that root. Constant-only bindings and structural sections do not
+qualify. The browser checks that root against the host's reactive surface, then
+retains the shared root name instead of constructing a per-instance map.
+Older metadata without the proof uses the general index; authored non-observable
+members still use wildcard buckets.
 Live bindings and repeat scopes remain instance-owned. Multi-root sections,
 structural sections, and wildcard dependencies use instance
 buckets grouped by the observable property names they depend on:
@@ -616,7 +623,12 @@ scratch map. Compiler metadata also proves when a row's top-level nodes cannot
 change; those rows need no placement check in an unchanged positional prefix.
 Root-level conditionals, repeats, and raw ranges retain general placement.
 
-Instances inherit shared empty binding arrays and own only populated arrays.
+Instances use stable binding-field shapes and share empty binding arrays.
+Single-node adopted ranges retain an exactly sized node array rather than a
+growable backing store.
+Client wiring captures its node list after inserting binding slots. Its caller
+performs the initial binding pass, including conditional creation, once while
+detached; structural reconciliation refreshes the owned range afterward.
 Repeat records retain no consumed marker ordinal or closing marker. Wiring and
 relocation always supply the live container; disposal clears it rather than
 rediscovering ownership from historical nodes.

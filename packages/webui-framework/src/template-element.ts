@@ -105,13 +105,10 @@ import {
   dotWalk,
 } from './element/diff.js';
 import {
-  collectItemMarkers,
-  findBlockEnd,
   findByOrdinal,
   buildSSRIndex,
   collectTemplateElements,
   rangeChildAt,
-  MARKER_COND_START,
   rawMarker,
   type SSRIndex,
 } from './element/markers.js';
@@ -163,7 +160,6 @@ declare const __WEBUI_DEV__: boolean;
 
 /** Encoded next marker boundary per text slot, built once per template. */
 const textMarkerBoundaryCache = new WeakMap<TemplateBlockMeta, ArrayLike<number>>();
-const flatPathPlans = new WeakMap<TemplateBlockMeta, string>();
 const RAW_MARKER_BOUNDARY_BASE = 0x40000000;
 
 /**
@@ -217,6 +213,18 @@ function appendPathBinding<T>(bindings: T[], binding: T): T[] {
   // One binding's paths are processed together, so only the tail can duplicate it.
   if (bindings[bindings.length - 1] !== binding) bindings.push(binding);
   return bindings;
+}
+
+function indexEmptyBody(
+  meta: TemplateBlockMeta,
+  binding: CondBinding,
+  append: (path: string, kind: 'conds', binding: CondBinding) => void,
+): void {
+  for (const text of meta.tx ?? EMPTY_ARR) {
+    for (const part of text[1]) {
+      if (typeof part !== 'string') append(part[0], 'conds', binding);
+    }
+  }
 }
 
 /**
@@ -294,20 +302,20 @@ const FLAT_BINDINGS: PathBindings = {
   repeats: EMPTY_ARR,
 };
 
+function bindingArray<T>(entries?: readonly unknown[]): T[] {
+  return entries?.length ? new Array<T>(entries.length) : EMPTY_ARR;
+}
+
 function createTemplateInstance(
-  root: Node,
-  meta: TemplateBlockMeta,
-  nodes: Node[],
-  scope?: ScopeFrame,
+  root: Node, meta: TemplateBlockMeta, nodes: Node[], scope?: ScopeFrame,
 ): TemplateInstance {
-  const instance = Object.create(FLAT_BINDINGS) as TemplateInstance;
-  instance.scope = scope;
-  instance.container = root as ParentNode & Node;
-  instance.nodes = nodes;
-  if (meta.tx?.length) instance.texts = new Array<TextBinding>(meta.tx.length);
-  if (meta.a?.length) instance.attrs = new Array<AttrBinding>(meta.a.length);
-  if (meta.c?.length) instance.conds = new Array<CondBinding>(meta.c.length);
-  if (meta.r?.length) instance.repeats = new Array<RepeatBinding>(meta.r.length);
+  const instance: TemplateInstance = {
+    scope, container: root as ParentNode & Node, nodes,
+    texts: bindingArray(meta.tx),
+    attrs: bindingArray(meta.a),
+    conds: bindingArray(meta.c),
+    repeats: bindingArray(meta.r),
+  };
   const fragment = lazyBlockOwner(meta, instance);
   if (fragment) instance.fragment = fragment;
   return instance;
@@ -369,8 +377,10 @@ function childNodesArray(parent: Node): Node[] {
 
 /** Snapshot the siblings strictly between two block range boundaries. */
 function rangeNodesArray(start: Node, end: Node | null): Node[] {
+  const first = start.nextSibling;
+  if (first?.nextSibling === end) return [first];
   const result: Node[] = [];
-  for (let node = start.nextSibling; node && node !== end; node = node.nextSibling) result.push(node);
+  for (let node = first; node && node !== end; node = node.nextSibling) result.push(node);
   return result;
 }
 
@@ -1631,9 +1641,8 @@ export class TemplateElement extends HTMLElement {
     return index === path ? this.$root : typeof index === 'object' ? index.get(path) : undefined;
   }
 
-  private $updatePath(path: string, known: boolean): void {
-    const entry = this.$pathBindings(path);
-    if (entry) this.$updateInstance(entry, known);
+  private $restoreDirtyPaths(paths?: IterableIterator<string>): void {
+    if (paths) for (const path of paths) this.$markDirty(path);
   }
 
   /** Flush all queued path updates. Handles re-entrant setter calls. */
@@ -1652,19 +1661,18 @@ export class TemplateElement extends HTMLElement {
         const dirty = this.$dirtyPaths;
         this.$dirtyPaths = null;
 
-        if (typeof dirty === 'string') {
-          this.$updatePath(dirty, requireKnownState);
-        } else {
-          const paths = dirty.values();
-          try {
-            for (const path of paths) {
-              this.$updatePath(path, requireKnownState);
-            }
-          } catch (error) {
-            // Preserve only the unprocessed tail alongside re-entrant writes.
-            for (const path of paths) this.$markDirty(path);
-            throw error;
+        const paths = typeof dirty === 'string' ? undefined : dirty.values();
+        let path = typeof dirty === 'string' ? dirty : paths!.next().value;
+        try {
+          while (path !== undefined) {
+            const entry = this.$pathBindings(path);
+            if (entry) this.$updateInstance(entry, requireKnownState);
+            path = paths?.next().value;
           }
+        } catch (error) {
+          // The iterator has passed the failed path; retain only its pending tail.
+          this.$restoreDirtyPaths(paths);
+          throw error;
         }
         // Update wildcard bindings once per flush (not per dirty path)
         if (!this.$pathIndex) this.$buildPathIndex();
@@ -1761,7 +1769,7 @@ export class TemplateElement extends HTMLElement {
 
   private $wire(root: Node, meta: TemplateBlockMeta, scope?: ScopeFrame): TemplateInstance {
     const ownerDocument = this.ownerDocument;
-    const instance = createTemplateInstance(root, meta, childNodesArray(root), scope);
+    const instance = createTemplateInstance(root, meta, EMPTY_ARR, scope);
 
     // Resolve every static insertion reference before inserting dynamic nodes.
     // Any insertion shifts childNodes and invalidates later compiled offsets.
@@ -1789,18 +1797,10 @@ export class TemplateElement extends HTMLElement {
         let node: Node;
         let end: Comment | undefined;
         if (raw) {
-          const start = ownerDocument.createComment(rawMarker(rawIndex));
-          end = ownerDocument.createComment(rawMarker(rawIndex, true));
-          rawIndex++;
-          instance.texts[textCount++] = {
-            node: start,
-            parts,
-            scope,
-            raw: true,
-            rawEnd: end,
-            rawOwner: instance,
-          };
-          node = start;
+          const binding = this.$createRawText(rawIndex++, parts, instance);
+          instance.texts[textCount++] = binding;
+          node = binding.node;
+          end = binding.rawEnd;
         } else {
           const textNode = ownerDocument.createTextNode('');
           instance.texts[textCount++] = { node: textNode, parts, scope };
@@ -1829,8 +1829,16 @@ export class TemplateElement extends HTMLElement {
     this.$finalize(instance, meta, elements);
     insertPendingSlots(pendingSlots, pendingSlotCount);
 
-    for (let i = 0; i < instance.conds.length; i++) this.$toggleCond(instance.conds[i]);
+    instance.nodes = childNodesArray(root);
     return instance;
+  }
+
+  private $createRawText(index: number, parts: CompiledAttrPart[], owner: TemplateInstance): TextBinding {
+    return makeRawText(
+      this.ownerDocument.createComment(rawMarker(index)),
+      this.ownerDocument.createComment(rawMarker(index, true)),
+      parts, owner,
+    );
   }
 
   private $wireStructuralSlots(
@@ -1981,21 +1989,7 @@ export class TemplateElement extends HTMLElement {
         if (raw) {
           const rawRange = rawRanges?.[rawIndex++];
           if (!rawRange) continue;
-          const binding: TextBinding = {
-            node: rawRange[0],
-            parts,
-            scope,
-            raw: true,
-            rawEnd: rawRange[1],
-            rawOwner: instance,
-          };
-          if (
-            (!scope || scopeIsKnown(scope))
-            && this.$bindingStateIsKnown(binding)
-          ) {
-            binding.rawValue = this.$resolveParts(parts, scope);
-          }
-          instance.texts[textCount++] = binding;
+          instance.texts[textCount++] = this.$hydrateRawText(rawRange, parts, instance);
         } else {
           // A block range bounds its root-level slots, not the shared parent.
           const rootStart = ssrParent === ssrRoot ? rangeStart : undefined;
@@ -2066,6 +2060,17 @@ export class TemplateElement extends HTMLElement {
     return instance;
   }
 
+  private $hydrateRawText(
+    range: [Comment, Comment], parts: CompiledAttrPart[], owner: TemplateInstance,
+  ): TextBinding {
+    const scope = owner.scope;
+    const binding = makeRawText(range[0], range[1], parts, owner);
+    if ((!scope || scopeIsKnown(scope)) && this.$bindingStateIsKnown(binding)) {
+      binding.rawValue = this.$resolveParts(parts, scope);
+    }
+    return binding;
+  }
+
   private $hydrateConditions(
     instance: TemplateInstance,
     conditions: NonNullable<TemplateBlockMeta['c']>,
@@ -2079,13 +2084,14 @@ export class TemplateElement extends HTMLElement {
     // them is what makes a block's anchor unambiguous: reconstructing it from
     // a parent plus a scan cursor is what previously let a block claim a
     // marker belonging to a nested or already-hydrated sibling.
-    const condMarkers = ssrIndex.conds.length === conditions.length ? ssrIndex.conds : null;
+    const condMarkers = ssrIndex.conds.length === conditions.length * 2 ? ssrIndex.conds : null;
     for (let i = 0; i < conditions.length; i++) {
+      const markerIndex = i * 2;
       const [condition, blockIndex, slotMeta] = conditions[i];
       let blockMeta = this.$block(blockIndex, instance.fragment);
       let condInstance: TemplateInstance | null = null;
 
-      const marker = condMarkers ? condMarkers[i] : null;
+      const marker = condMarkers ? condMarkers[markerIndex] : null;
       const condAnchor = marker ?? hydrateAnchor(this.ownerDocument, context, slotMeta);
       const ssrParent = condAnchor.parentNode ?? ssrRoot;
       if (marker) {
@@ -2093,7 +2099,7 @@ export class TemplateElement extends HTMLElement {
         // Parent bindings may not have arrived yet, so the client value can
         // temporarily disagree with SSR. An empty range must stay empty rather
         // than claiming the first static sibling after <!--/wc-->.
-        const endMarker = findBlockEnd(marker, MARKER_COND_START);
+        const endMarker = condMarkers![markerIndex + 1];
         const rendered = marker.nextSibling !== endMarker;
         // A lazy body the server rendered hydrates from its inlined templates.
         if (!blockMeta && rendered && typeof blockIndex === 'string') {
@@ -2141,15 +2147,13 @@ export class TemplateElement extends HTMLElement {
       const [collection, itemVar, blockIndex, slotMeta, keyPath] = repeats[i];
       const marker = repMarkers ? repMarkers[i] : null;
       const blockMeta = this.$block(blockIndex, instance.fragment);
-      const anchor = marker ?? hydrateAnchor(this.ownerDocument, context, slotMeta);
+      const anchor = marker?.start ?? hydrateAnchor(this.ownerDocument, context, slotMeta);
       const hasCollectionState = this.$hasStateRoot(collection, scope);
       const itemsArr = this.$resolveValue(collection, scope);
       const items = Array.isArray(itemsArr) ? itemsArr as unknown[] : [];
 
-      // Collect SSR markers — single walk captures items + end boundary
-      const { items: itemMarkers, end: endMarker } = marker
-        ? collectItemMarkers(anchor)
-        : { items: [] as Comment[], end: null as Comment | null };
+      const itemMarkers = marker?.items ?? EMPTY_ARR;
+      const endMarker = marker?.end ?? null;
 
       const container = (anchor.parentNode ?? ssrRoot) as ParentNode & Node;
       const count = blockMeta && anchor.parentNode ? itemMarkers.length : 0;
@@ -2254,11 +2258,7 @@ export class TemplateElement extends HTMLElement {
     const instance = this.$root;
     if (!instance) return;
     const observableNames = this.$observableNames();
-    const meta = this.$meta;
-    const flat = meta && !instance.conds.length && !instance.repeats.length &&
-      instance.texts.length === (meta.tx?.length ?? 0) &&
-      instance.attrs.length === (meta.a?.length ?? 0);
-    const plan = flat && flatPathPlans.get(meta);
+    const plan = this.$meta?.rp;
     if (plan && (observableNames.has(plan) || this.$usesTemplateState(plan))) {
       this.$pathIndex = plan;
       return;
@@ -2268,13 +2268,13 @@ export class TemplateElement extends HTMLElement {
     const append = <Kind extends keyof PathBindingTypes>(
       path: string, kind: Kind, binding: PathBindingTypes[Kind],
     ): void => {
+      if (findScope(path, binding.scope)) return;
       const dot = path.indexOf('.');
-      const root = dot > -1 ? path.slice(0, dot) : path;
-      if (findScope(root, binding.scope)) return;
+      const root = dot === -1 ? path : path.slice(0, dot);
       const key = observableNames.has(root) || this.$usesTemplateState(root) ? root : '*';
       let entry = index.get(key);
       if (!entry) {
-        entry = Object.create(FLAT_BINDINGS) as PathBindings;
+        entry = { ...FLAT_BINDINGS };
         index.set(key, entry);
       }
       const bucket: Record<Kind, PathBindingTypes[Kind][]> = entry;
@@ -2306,13 +2306,7 @@ export class TemplateElement extends HTMLElement {
         else if (c.instance === undefined) {
           // A true text-only SSR body can serialize to an empty marker range.
           const block = this.$block(c.blockIndex, instance.fragment);
-          if (block?.h === '') {
-            for (const text of block.tx ?? EMPTY_ARR) {
-              for (const part of text[1]) {
-                if (typeof part !== 'string') append(part[0], 'conds', c);
-              }
-            }
-          }
+          if (block?.h === '') indexEmptyBody(block, c, append);
         }
       }
       for (const rep of instance.repeats) {
@@ -2328,14 +2322,6 @@ export class TemplateElement extends HTMLElement {
     const wc = index.get('*');
     if (wc) {
       index.delete('*');
-    } else if (flat && index.size === 1) {
-      for (const [path, entry] of index) {
-        if (entry.texts.length === instance.texts.length && entry.attrs.length === instance.attrs.length) {
-          flatPathPlans.set(meta, path);
-          this.$pathIndex = path;
-          return;
-        }
-      }
     }
     this.$wildcardBindings = wc ?? null;
     this.$pathIndex = index;
@@ -2397,31 +2383,32 @@ export class TemplateElement extends HTMLElement {
 
   private $patchAttr(b: AttrBinding): void {
     const el = b.element;
+    const name = b.name;
     switch (b.kind) {
       case ATTR_KIND_COMPLEX: {
         const v = this.$resolveValue(b.path!, b.scope);
-        writeComplexProperty(el, b.name, v, true);
+        writeComplexProperty(el, name, v, true);
         break;
       }
       case ATTR_KIND_BOOLEAN: {
         const show = b.condition![0](this.$conditionResolver(), b.scope, isConditionTruthy);
         blockUnupgradedAttribute(el);
-        if (show) el.setAttribute(b.name, '');
-        else el.removeAttribute(b.name);
+        if (show) el.setAttribute(name, '');
+        else el.removeAttribute(name);
         // Form control properties must be set via DOM property, not attribute
         if (
-          (b.name === 'checked' || b.name === 'selected' || b.name === 'disabled')
-          && hasNativeLiveProperty(el, b.name)
+          (name === 'checked' || name === 'selected' || name === 'disabled')
+          && hasNativeLiveProperty(el, name)
         ) {
-          (el as unknown as Record<string, unknown>)[b.name] = show;
+          (el as unknown as Record<string, unknown>)[name] = show;
         }
         break;
       }
       case ATTR_KIND_TEMPLATE: {
         const v = this.$resolveParts(b.parts!, b.scope);
-        if (el.getAttribute(b.name) !== v) {
+        if (el.getAttribute(name) !== v) {
           blockUnupgradedAttribute(el);
-          el.setAttribute(b.name, v);
+          el.setAttribute(name, v);
         }
         break;
       }
@@ -2429,22 +2416,19 @@ export class TemplateElement extends HTMLElement {
         const v = this.$resolveValue(b.path!, b.scope);
         const s = v == null ? '' : String(v);
         if (v == null) {
-          if (el.hasAttribute(b.name)) blockUnupgradedAttribute(el);
-          el.removeAttribute(b.name);
+          if (el.hasAttribute(name)) blockUnupgradedAttribute(el);
+          el.removeAttribute(name);
         }
         // Form control properties diverge from attributes after user interaction
         if (
-          (b.name === 'checked' || b.name === 'selected')
-          && hasNativeLiveProperty(el, b.name)
+          (name === 'checked' || name === 'selected' || name === 'value')
+          && hasNativeLiveProperty(el, name)
         ) {
-          (el as unknown as Record<string, unknown>)[b.name] = !!v && v !== 'false' && v !== '0';
-        } else if (b.name === 'value' && hasNativeLiveProperty(el, b.name)) {
-          const target = el as Element & { value: unknown };
-          if (target.value !== s) target.value = s;
+          patchLiveAttribute(el, name, v, s);
         } else if (v != null) {
-          if (el.getAttribute(b.name) !== s) {
+          if (el.getAttribute(name) !== s) {
             blockUnupgradedAttribute(el);
-            el.setAttribute(b.name, s);
+            el.setAttribute(name, s);
           }
         }
         break;
@@ -2570,7 +2554,6 @@ export class TemplateElement extends HTMLElement {
     const wrapper = createTemplateContainer(this.ownerDocument, context);
     this.$stageTemplate(wrapper, bm);
     const inst = this.$wire(wrapper, bm, scope);
-    inst.nodes = childNodesArray(wrapper);
     this.$updateInstance(inst);
     if (inst.repeats.length !== 0 || inst.conds.length !== 0) {
       inst.nodes = childNodesArray(wrapper);
@@ -2699,10 +2682,10 @@ function clearInstance(instance: TemplateInstance): void {
   instance.container = null;
   instance.nodes.length = 0;
   if (instance.fragment) instance.fragment = undefined;
-  instance.texts.length = 0;
-  instance.attrs.length = 0;
-  instance.conds.length = 0;
-  instance.repeats.length = 0;
+  if (instance.texts !== EMPTY_ARR) instance.texts.length = 0;
+  if (instance.attrs !== EMPTY_ARR) instance.attrs.length = 0;
+  if (instance.conds !== EMPTY_ARR) instance.conds.length = 0;
+  if (instance.repeats !== EMPTY_ARR) instance.repeats.length = 0;
 }
 
 function hydrateAnchor(
@@ -2848,15 +2831,15 @@ function findSSRSlotRef(
   } else if (
     markerBoundary > 0
     && meta.c
-    && ssrIndex.conds.length === meta.c.length
+    && ssrIndex.conds.length === meta.c.length * 2
   ) {
-    marker = ssrIndex.conds[markerBoundary - 1];
+    marker = ssrIndex.conds[(markerBoundary - 1) * 2];
   } else if (
     markerBoundary < 0
     && meta.r
     && ssrIndex.repeats.length === meta.r.length
   ) {
-    marker = ssrIndex.repeats[-markerBoundary - 1];
+    marker = ssrIndex.repeats[-markerBoundary - 1].start;
   }
   if (marker?.parentNode === ssrParent) return marker;
 
@@ -2878,6 +2861,12 @@ function makeAttr(el: Element, entry: CompiledAttrMeta, scope?: ScopeFrame): Att
   if (kind === ATTR_KIND_BOOLEAN) return { element: el, name, kind, condition: entry[2] as CompiledCondition, scope };
   if (kind === ATTR_KIND_TEMPLATE) return { element: el, name, kind, parts: entry[2] as CompiledAttrPart[], scope };
   return { element: el, name, kind: kind as number, path: (entry[2] as string) || '', scope };
+}
+
+function makeRawText(
+  node: Comment, rawEnd: Comment, parts: CompiledAttrPart[], owner: TemplateInstance,
+): TextBinding {
+  return { node, parts, scope: owner.scope, raw: true, rawEnd, rawOwner: owner };
 }
 
 function invalidateRawValues(root: TemplateInstance): void {
@@ -2925,6 +2914,15 @@ function blockUnupgradedAttribute(element: Element): void {
   if (!(element instanceof TemplateElement) && isUnupgradedWebUITarget(element)) {
     blockRenderWork(element, 'the component has not upgraded');
   }
+}
+
+function patchLiveAttribute(
+  element: Element, name: 'checked' | 'selected' | 'value', value: unknown, text: string,
+): void {
+  const target = element as Element & { value: string; checked: boolean; selected: boolean };
+  if (name === 'value') {
+    if (target.value !== text) target.value = text;
+  } else target[name] = !!value && value !== 'false' && value !== '0';
 }
 
 /** Swap one live range in every owner that shares its DOM container. */

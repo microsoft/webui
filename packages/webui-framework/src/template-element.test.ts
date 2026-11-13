@@ -540,9 +540,9 @@ test('single dirty paths allocate no collection and promotion preserves reentran
   assert.equal(element['$dirtyPaths'], null);
 });
 
-test('flat reactive plans are shared without retaining another instance bindings', () => {
+test('flat reactive plans are shared without allocating instance indexes', () => {
   const meta: TemplateMeta = {
-    v: 3, h: '', tx: [[[0, 0], [['value']]]],
+    v: 3, h: '', tx: [[[0, 0], [['value']]]], tr: ['value'], rp: 'value',
   };
   const make = (value: string) => {
     const element = Object.assign(new TemplateElement(), { value });
@@ -560,8 +560,23 @@ test('flat reactive plans are shared without retaining another instance bindings
     element[FLUSH_UPDATES]();
     return { element, node };
   };
-  const first = make('first');
-  const second = make('second');
+  const OriginalMap = globalThis.Map;
+  let allocations = 0;
+  let first: ReturnType<typeof make>;
+  let second: ReturnType<typeof make>;
+  try {
+    globalThis.Map = new Proxy(OriginalMap, {
+      construct(target, args) {
+        allocations++;
+        return Reflect.construct(target, args);
+      },
+    });
+    first = make('first');
+    second = make('second');
+  } finally {
+    globalThis.Map = OriginalMap;
+  }
+  assert.equal(allocations, 0);
   assert.equal(first.element['$pathIndex'], second.element['$pathIndex']);
   assert.equal(first.node.data, 'first');
   assert.equal(second.node.data, 'second');
@@ -570,6 +585,28 @@ test('flat reactive plans are shared without retaining another instance bindings
   second.element[FLUSH_UPDATES]();
   assert.equal(first.node.data, 'first');
   assert.equal(second.node.data, 'changed');
+});
+
+test('a compiled single-root plan preserves wildcard updates for an authored non-observable value', () => {
+  const element = Object.assign(new TemplateElement(), { computed: 'derived' });
+  const node = { data: '' } as CharacterData;
+  const meta: TemplateMeta = {
+    v: 3, h: '', tx: [[[0, 0], [['computed']]]], tr: ['computed'], rp: 'computed',
+  };
+  Object.defineProperties(element, {
+    $meta: { value: meta },
+    $ready: { value: true },
+    $root: { value: {
+      container: null, nodes: [node], texts: [{ node, parts: meta.tx![0][1] }],
+      attrs: [], conds: [], repeats: [],
+    } },
+    $observableNames: { value: () => new Set(['trigger']) },
+  });
+  element[REQUEST_UPDATE]('trigger');
+  element[FLUSH_UPDATES]();
+  assert.equal(node.data, 'derived');
+  assert.ok(element['$pathIndex'] instanceof Map);
+  assert.equal(element['$wildcardBindings']?.texts.length, 1);
 });
 
 test('a shared plan stops when a binding destroys its current root', () => {
@@ -583,7 +620,7 @@ test('a shared plan stops when a binding destroys its current root', () => {
     attrs: [], conds: [], repeats: [],
   };
   Object.defineProperties(element, {
-    $meta: { value: { v: 3, h: '', tx: [[[0, 0], parts], [[0, 1], parts]] } },
+    $meta: { value: { v: 3, h: '', tx: [[[0, 0], parts], [[0, 1], parts]], tr: ['value'], rp: 'value' } },
     $ready: { value: true },
     $root: { value: root, writable: true },
     $observableNames: { value: () => new Set(['value']) },
