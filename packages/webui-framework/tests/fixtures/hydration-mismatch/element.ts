@@ -99,6 +99,7 @@ MismatchDeferred.define('mismatch-deferred');
 export class MismatchSeeded extends WebUIElement {
   @observable seededShow = true;
   @observable seededValue = '3';
+  @observable emptyDetails = '';
 }
 MismatchSeeded.define('mismatch-seeded');
 

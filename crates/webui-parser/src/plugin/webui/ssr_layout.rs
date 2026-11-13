@@ -36,7 +36,7 @@ impl SsrLayout {
         let Some(shape) = self.elements.get_mut(parent) else {
             return; // Inert <template> content is not in the numbered DOM.
         };
-        *shape |= usize::from(children.count != 0);
+        *shape |= usize::from(children.has_children);
         self.texts.resize(text_count, 0);
     }
 
@@ -55,16 +55,21 @@ impl SsrLayout {
 
 #[derive(Default)]
 pub(super) struct SsrChildren {
-    count: usize,
+    has_children: bool,
     ordinals: [usize; 4],
     pending: Option<usize>,
 }
 
 impl SsrChildren {
+    pub(super) fn dynamic(&mut self) {
+        self.has_children = true;
+    }
+
     pub(super) fn text(&mut self, layout: &mut SsrLayout, index: usize) {
         if layout.elements.is_empty() {
             return;
         }
+        self.dynamic();
         layout.texts.resize(index + 1, 0);
         self.pending.get_or_insert(index);
     }
@@ -78,7 +83,7 @@ impl SsrChildren {
             layout.texts[start..].fill(self.ordinals[code] * 4 + code);
         }
         self.ordinals[code] += 1;
-        self.count += 1;
+        self.has_children = true;
     }
 }
 
@@ -111,6 +116,21 @@ mod tests {
             Vec::new(),
         )?;
         assert_eq!(meta.root.ssr_layout.elements, [3, 9, 0, 3, 1, 1, 1]);
+        Ok(())
+    }
+
+    #[test]
+    fn dynamic_children_establish_custom_element_ownership() -> crate::Result<()> {
+        for source in [
+            "<details-card>{{details}}</details-card>",
+            "<details-card>{{{details}}}</details-card>",
+            r#"<details-card><if condition="show">{{details}}</if></details-card>"#,
+            r#"<details-card><for each="item in items">{{item.value}}</for></details-card>"#,
+            r#"<details-card>{{first}}<if condition="show">{{middle}}</if>{{last}}</details-card>"#,
+        ] {
+            let meta = compile_to_metadata("layout-test", source.into(), Vec::new())?;
+            assert_eq!(meta.root.ssr_layout.elements, [3, 1], "{source}");
+        }
         Ok(())
     }
 

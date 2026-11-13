@@ -163,6 +163,23 @@ HTML binding. The client counterparts are defined in
 Ordinary escaped text bindings, attribute bindings, and event handlers are
 **not** marked. They are located via compiled element indices.
 
+The compiled ownership bit includes dynamic text, raw ranges, conditions and
+repeats, even when a custom element has no static light-DOM children. Static
+element counts and successor ordinals still exclude those dynamic slots.
+
+Ordinary escaped bindings use stable Text nodes, including when their values
+become empty. Native slot assignment therefore treats them as supplied content;
+no reactive empty-text fallback policy is applied. Serialized HTML cannot
+represent a zero-length Text node, so an initially empty run may acquire its
+Text during hydration. No slottable sentinel is emitted solely to hide that
+distinction.
+
+An empty SSR conditional range does not prove that the condition was false: a
+true text-only body can render no bytes. Its text dependencies must remain
+reachable until a client write can reconcile the conditional with known state.
+That provisional dependency tracking ends after the first evaluation, so
+known-inactive or client-created bodies do not receive unrelated body writes.
+
 An emitted text run preserves all of its static pieces, including indentation
 around bindings. SSR fragments and client text parts must agree on those
 pieces; formatting-only text between elements is not a reason to discard

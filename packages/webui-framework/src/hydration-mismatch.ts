@@ -81,7 +81,7 @@ export function reportHydrationMismatch(
   const mismatched: string[] = [];
   for (const path of writes) {
     const entry = index.get(path);
-    if (entry && bindingsDisagreeWithDom(entry, ctx)) mismatched.push(path);
+    if (entry && bindingsDisagreeWithDom(entry, ctx, path)) mismatched.push(path);
   }
   if (mismatched.length !== 0) warnHydrationMismatch(tag, mismatched);
 }
@@ -91,11 +91,19 @@ export function reportHydrationMismatch(
  * Stops at the first disagreement — the caller only needs to know whether the
  * observable diverged, not every binding that did.
  */
-export function bindingsDisagreeWithDom(entry: PathBindings, ctx: MismatchContext): boolean {
+export function bindingsDisagreeWithDom(
+  entry: PathBindings, ctx: MismatchContext, changedRoot?: string,
+): boolean {
   const { texts, attrs, conds, repeats } = entry;
   for (let i = 0; i < texts.length; i++) if (textDiffersFromDom(texts[i], ctx)) return true;
   for (let i = 0; i < attrs.length; i++) if (attrDiffersFromDom(attrs[i], ctx)) return true;
-  for (let i = 0; i < conds.length; i++) if (condDiffersFromDom(conds[i], ctx)) return true;
+  for (let i = 0; i < conds.length; i++) {
+    const condition = conds[i];
+    // Provisional body dependencies trigger reconciliation, not presence proof.
+    if (condition.instance === undefined && changedRoot !== undefined &&
+        !condition.condition[1].some(path => path === changedRoot || path.startsWith(changedRoot + '.'))) continue;
+    if (condDiffersFromDom(condition, ctx)) return true;
+  }
   for (let i = 0; i < repeats.length; i++) if (repeatDiffersFromDom(repeats[i], ctx)) return true;
   return false;
 }
