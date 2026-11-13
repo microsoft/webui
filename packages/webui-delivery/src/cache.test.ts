@@ -71,6 +71,30 @@ describe('completed navigation response ownership', () => {
       assert.equal(owner.has('/e'), true);
     });
 
+    test('whole-cache invalidation releases all bookkeeping without enumerating keys', t => {
+      const owner = navigationCache({ staleTime: 60_000, maxBytes: 4_096 });
+      const first = response(60_000, ['first', 'shared']);
+      const stream = response(60_000, ['stream', 'shared']);
+      const keys = t.mock.method(owner['cache'], 'keys');
+      for (const path of [undefined, '']) {
+        owner.store('/a', first);
+        owner.store('/b', stream, true, true);
+        keys.mock.resetCalls();
+        owner.invalidate(path);
+        assert.equal(keys.mock.callCount(), 0);
+        assert.equal(owner.has('/a'), false);
+        assert.equal(owner.has('/b'), false);
+        assert.equal(owner['tagIndex'].size, 0);
+        assert.equal(owner['bytes'], 0);
+        const replacement = response(60_000, ['new']);
+        owner.store('/b', replacement);
+        owner.settleStream('/b', stream, true);
+        owner.invalidateTags(['stream']);
+        assert.equal(owner.lookup('/b'), replacement);
+        owner.invalidate('/b');
+      }
+    });
+
     test('an oversized response does not displace unrelated entries or leave stale replacement tags', () => {
       const owner = navigationCache({ staleTime: 60_000, maxBytes: 2_000 });
       owner.store('/a', response(60_000, ['old']));

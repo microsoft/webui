@@ -39,7 +39,9 @@ import {
   type ScopeFrame,
   type TextBinding,
   type TemplateInstance,
+  type PathBindings,
 } from './element/types.js';
+export type { PathBindings } from './element/types.js';
 
 /**
  * The slice of `TemplateElement` the comparators need to evaluate a binding's
@@ -53,14 +55,6 @@ export interface MismatchContext {
   resolveParts: (parts: CompiledAttrPart[], scope?: ScopeFrame) => string;
   /** Resolve a single property path to its current value. */
   resolveValue: (path: string, scope?: ScopeFrame) => unknown;
-}
-
-/** Bindings for one observable root, grouped by kind (the path-index entry). */
-export interface PathBindings {
-  texts: TextBinding[];
-  attrs: AttrBinding[];
-  conds: CondBinding[];
-  repeats: RepeatBinding[];
 }
 
 /**

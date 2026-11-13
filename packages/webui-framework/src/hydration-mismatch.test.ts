@@ -62,6 +62,18 @@ function cond(fn: (resolve: (p: string, s?: unknown) => unknown) => boolean): Co
 
 const emptyEntry: PathBindings = { texts: [], attrs: [], conds: [], repeats: [] };
 
+function captureWarn(fn: () => void): string[] {
+  const original = console.warn;
+  const calls: string[] = [];
+  console.warn = (msg?: unknown) => { calls.push(String(msg)); };
+  try {
+    fn();
+  } finally {
+    console.warn = original;
+  }
+  return calls;
+}
+
 // ── textDiffersFromDom ──────────────────────────────────────────
 
 describe('textDiffersFromDom', () => {
@@ -294,18 +306,6 @@ describe('formatHydrationMismatch', () => {
 // ── warnHydrationMismatch (per-tag dedup) ───────────────────────
 
 describe('warnHydrationMismatch', () => {
-  function captureWarn(fn: () => void): string[] {
-    const original = console.warn;
-    const calls: string[] = [];
-    console.warn = (msg?: unknown) => { calls.push(String(msg)); };
-    try {
-      fn();
-    } finally {
-      console.warn = original;
-    }
-    return calls;
-  }
-
   test('warns once per (tag, path-set) even when called repeatedly', () => {
     resetHydrationMismatchWarnings();
     const calls = captureWarn(() => {
@@ -346,18 +346,6 @@ describe('warnHydrationMismatch', () => {
 // ── reportHydrationMismatch (dynamic-import entry point) ─────────
 
 describe('reportHydrationMismatch', () => {
-  function captureWarn(fn: () => void): string[] {
-    const original = console.warn;
-    const calls: string[] = [];
-    console.warn = (msg?: unknown) => { calls.push(String(msg)); };
-    try {
-      fn();
-    } finally {
-      console.warn = original;
-    }
-    return calls;
-  }
-
   function disagreeingEntry(): PathBindings {
     return {
       ...emptyEntry,

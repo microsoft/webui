@@ -313,9 +313,7 @@ export class NavigationCache {
     if (path) {
       this.evict(path);
     } else {
-      for (const key of [...this.cache.keys()]) {
-        this.evict(key);
-      }
+      this.clear();
     }
   }
 
