@@ -6,6 +6,8 @@ import {
   stripBaseFromPathname,
 } from './navigation-path.js';
 import { pointerPreloadPath } from './preload-path.js';
+import { cancelResponse, inspectResponse } from './response-policy.js';
+import type { RouteResponseInfo, RouteResponsePolicy } from './types.js';
 
 const PRELOAD_TTL_MS = 5_000;
 const MAX_PRELOAD_BYTES = 2_000_000;
@@ -15,11 +17,14 @@ export interface RawPreloadedPartial {
   readonly controller: AbortController;
   readonly inventory: string;
   readonly response: Response;
+  readonly responseInfo: RouteResponseInfo;
   readonly timestamp: number;
 }
 
 export interface PreparedRoutePreloadOptions {
   readonly excludePaths?: readonly string[];
+  /** Use the same policy object in router.start() when preparing before startup. */
+  readonly responsePolicy?: RouteResponsePolicy;
   /** Begin deferred application work after a valid internal link intent. */
   readonly onIntent?: () => void | Promise<unknown>;
 }
@@ -41,10 +46,12 @@ export class PreparedRoutePreload {
   private pending: Promise<RawPreloadedPartial | null> | null = null;
   private expiryTimer: ReturnType<typeof setTimeout> | null = null;
   private listening = true;
+  private readonly responsePolicy: RouteResponsePolicy | undefined;
 
   constructor(options: PreparedRoutePreloadOptions = {}) {
     this.excludePaths = options.excludePaths ?? [];
     this.onIntent = options.onIntent;
+    this.responsePolicy = options.responsePolicy;
     document.addEventListener('pointermove', this.onPointerMove);
   }
 
@@ -83,8 +90,14 @@ export class PreparedRoutePreload {
     requestPath: string,
     inventory: string,
     signal?: AbortSignal,
+    responsePolicy?: RouteResponsePolicy,
   ): Promise<RawPreloadedPartial | null> {
     if (this.path !== requestPath || !this.pending) return null;
+    // A prepared response must not bypass the active router's redirect/classification policy.
+    if (responsePolicy !== this.responsePolicy) {
+      this.destroy();
+      return null;
+    }
     const pending = this.pending;
     const controller = this.controller;
     this.adoptedController = controller;
@@ -138,6 +151,8 @@ export class PreparedRoutePreload {
       prependBasePath(requestPath, this.basePath),
       inventory,
       controller,
+      this.responsePolicy,
+      requestPath,
     );
     this.pending = pending;
     this.expiryTimer = setTimeout(() => this.expirePending(), PRELOAD_TTL_MS);
@@ -216,20 +231,25 @@ async function fetchRawPartial(
   path: string,
   inventory: string,
   controller: AbortController,
+  policy?: RouteResponsePolicy,
+  requestPath = path,
 ): Promise<RawPreloadedPartial | null> {
   const signal = controller.signal;
+  let response: Response | undefined;
   try {
     const headers: Record<string, string> = {
       Accept: 'application/json',
     };
     if (inventory) headers['X-WebUI-Inventory'] = inventory;
-    const response = await fetch(path, { headers, signal });
+    response = await fetch(path, { headers, signal, redirect: policy?.redirect });
+    if (policy) await inspectResponse(policy, response, requestPath, signal, true);
     const contentType = response.headers.get('content-type') ?? '';
     if (
       !response.ok
       || (!contentType.includes('json') && !contentType.includes('ndjson'))
     ) {
       controller.abort();
+      await cancelResponse(response);
       return null;
     }
     const prepared = contentType.includes('ndjson')
@@ -240,10 +260,13 @@ async function fetchRawPartial(
           controller,
           inventory,
           response: prepared,
+          responseInfo: response,
           timestamp: Date.now(),
         }
       : null;
-  } catch {
+  } catch (error) {
+    controller.abort(error);
+    if (response) await cancelResponse(response, error);
     return null;
   }
 }

@@ -13,7 +13,7 @@ export interface StreamingPartialResponse extends PartialResponse {
 
 export interface DeferredStreamControl {
   cancel(): Promise<void>;
-  start(): void;
+  start(): void | Promise<void>;
 }
 
 const deferredStreams = new WeakMap<PartialResponse, DeferredStreamControl>();
@@ -37,8 +37,8 @@ export function hasDeferredStream(data: PartialResponse): data is StreamingParti
 }
 
 /** Begin deferred state delivery only after the consumer commits its UI. */
-export function startDeferredStream(data: PartialResponse): void {
-  deferredStreams.get(data)?.start();
+export function startDeferredStream(data: PartialResponse): void | Promise<void> {
+  return deferredStreams.get(data)?.start();
 }
 
 /** Cancel an abandoned partial without importing a stream decoder. */

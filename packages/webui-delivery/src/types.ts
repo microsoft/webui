@@ -57,6 +57,41 @@ export interface ComponentStyles {
   closures: Record<string, string[]>;
 }
 
+/** Metadata available before the router consumes a partial response body. */
+export type RouteResponseInfo = Pick<
+  Response, 'status' | 'statusText' | 'ok' | 'headers' | 'type' | 'url' | 'redirected'
+>;
+
+/** Lifetime and destination of an intercepted navigation. */
+export interface RouteNavigationContext {
+  /** Request path, including query, relative to the configured base. */
+  readonly path: string;
+  /** Aborted when this operation is superseded or destroyed. */
+  readonly signal: AbortSignal;
+}
+
+/** Classification context; speculative work must not present recovery UI. */
+export interface RouteResponseContext extends RouteNavigationContext {
+  readonly speculative: boolean;
+}
+
+/** Opt into response classification and observable navigation failures. */
+export interface RouteResponsePolicy {
+  /** Fetch redirect behavior. Defaults to "follow"; "manual" exposes opaque redirects. */
+  readonly redirect?: RequestRedirect;
+  /**
+   * Inspect status/headers before decoding or document fallback. Return normally
+   * to continue, or throw to reject without replacing the document. Do not consume
+   * the body. Async work must honor signal and recheck it before side effects.
+   */
+  inspect(response: RouteResponseInfo, context: RouteResponseContext): void | Promise<void>;
+  /**
+   * Report a failed active navigation, not speculation or superseded work.
+   * This synchronous notification does not turn failure into success.
+   */
+  onError(error: unknown, context: RouteNavigationContext): void;
+}
+
 /** Configure and select routing capabilities once in `WebUIRouter.start()`. */
 export interface RouterConfig {
   /**
@@ -84,6 +119,8 @@ export interface RouterConfig {
 
   /** JSON by default. Select ndjson() for two-phase partial responses. */
   transport?: PartialTransport;
+  /** Optional response classification and failure reporting, before HTTP/HTML fallback. */
+  responsePolicy?: RouteResponsePolicy;
   /** Deadline for the whole partial response, including deferred state. */
   timeoutMs?: number;
   /** Optional compiler-authored pending/error presentation. */

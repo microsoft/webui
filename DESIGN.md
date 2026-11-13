@@ -361,6 +361,11 @@ JSON-only navigation does not import that record reader. Cache tags, mutation in
 pending/error components, and speculative preloading are optional router
 features, not dependencies of the SSR handler.
 
+Applications can opt into response classification before route decoding or
+document fallback, retaining the current document for manual recovery.
+Rejected or incomplete responses are failures, not successful refreshes;
+cancellation prevents obsolete navigation work from presenting recovery UI.
+
 ### Optional component assets
 
 Builds without route directives may request stand-alone component asset roots.

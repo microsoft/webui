@@ -29,6 +29,7 @@ import { isStateful } from './types.js';
 import type { RouterConfig, NavigationEvent } from './types.js';
 import { ResourceRequest, resourceHeaders, validateTimeout, DEFAULT_TIMEOUT_MS } from './request.js';
 import { jsonTransport } from './transport.js';
+import { cancelResponse, inspectResponse } from './response-policy.js';
 import { readStreamingPartial } from './streaming.js';
 import { acceptInventory, acceptStyleInventory, clearInventory, inventoryEpoch } from './inventory.js';
 import { loadRuntimeBootstrap } from './runtime-bootstrap.js';
@@ -93,6 +94,8 @@ interface PartialReadResult {
 interface PartialReadOptions {
   speculative?: boolean;
   epoch?: number;
+  prepared?: boolean;
+  responseInfo?: import('./types.js').RouteResponseInfo;
 }
 
 export class WebUIRouter {
@@ -126,6 +129,8 @@ export class WebUIRouter {
   /** True when the host grants `NavigateEvent.intercept()`; see fallback-navigation.ts. */
   private nativeInterception = false;
   private startupNavigation: Promise<void> | null = null;
+  private navigationController: AbortController | null = null;
+  private navigationCleanup: (() => void) | null = null;
 
   /** The component tag of the currently active leaf route. */
   get activeComponent(): string {
@@ -153,6 +158,20 @@ export class WebUIRouter {
       this.releasePartialRequest(controller);
     }
     this.partialControllers.clear();
+  }
+
+  private navigationSignal(external?: AbortSignal): AbortSignal {
+    const previous = this.navigationController;
+    const cleanup = this.navigationCleanup;
+    const controller = new AbortController();
+    this.navigationController = controller;
+    const abort = (): void => controller.abort(external?.reason);
+    if (external?.aborted) abort();
+    else external?.addEventListener('abort', abort, { once: true });
+    this.navigationCleanup = () => external?.removeEventListener('abort', abort);
+    previous?.abort();
+    cleanup?.();
+    return controller.signal;
   }
 
   private releasePartialRequest(controller: AbortController): void {
@@ -270,9 +289,11 @@ export class WebUIRouter {
         }
         event.intercept({
           handler: async () => {
+            const responsePolicy = this.config.responsePolicy;
             try {
               await this.handleNavigation(buildNavigationTarget(url, this.basePath), event.signal);
             } catch (err) {
+              if (responsePolicy) throw err;
               if (err instanceof DOMException && err.name === 'AbortError') return;
               console.error('[Router] Navigation error:', err);
             }
@@ -327,6 +348,12 @@ export class WebUIRouter {
       throw new Error('[Router] Select routeActions() in start().');
     if (config.transport && (typeof config.transport.read !== 'function' || !config.transport.accept))
       throw new Error('[Router] Select a valid partial transport in start().');
+    if (config.responsePolicy && (
+      typeof config.responsePolicy.inspect !== 'function' ||
+      typeof config.responsePolicy.onError !== 'function' ||
+      (config.responsePolicy.redirect !== undefined &&
+        !['follow', 'manual', 'error'].includes(config.responsePolicy.redirect))
+    )) throw new Error('[Router] Select a responsePolicy with inspect(), onError(), and a valid redirect mode.');
   }
 
   /** Navigate to a new path. */
@@ -458,6 +485,10 @@ export class WebUIRouter {
 
   /** Tear down. */
   destroy(): void {
+    this.navigationController?.abort();
+    this.navigationController = null;
+    this.navigationCleanup?.();
+    this.navigationCleanup = null;
     this.loaderPromises.clear();
     this.loadPromises.clear();
     this.loaders = {};
@@ -528,10 +559,15 @@ export class WebUIRouter {
 
       this.config.diagnostics?.(this.activeChain);
     } else {
+      const thisGen = ++this.navGeneration;
+      if (this.config.responsePolicy) signal = this.navigationSignal(signal);
+      if (thisGen !== this.navGeneration) {
+        signal?.throwIfAborted();
+        return;
+      }
       this.clearSsrPreloads();
       this.actionController?.abort();
       this.actionController = null;
-      const thisGen = ++this.navGeneration;
       const boundaryGen = this.invalidateBoundaryState();
       if (boundaryGen === null) return;
 
@@ -575,6 +611,9 @@ export class WebUIRouter {
             ?? await this.fetchPartial(requestPath, signal);
 
           if (!partialData && !signal?.aborted && thisGen === this.navGeneration) {
+            if (this.config.responsePolicy) {
+              throw new Error(`[Router] Navigation did not produce a partial response for: ${requestPath}`);
+            }
             const errorBoundary = this.config.boundaries?.error(this.activeChain, requestPath);
             if (errorBoundary) {
               const errorBoundaryGen = this.invalidateBoundaryState(boundaryGen);
@@ -608,6 +647,9 @@ export class WebUIRouter {
             await cancelDeferredStream(partialData);
           }
           this.preparedPreload?.release(requestPath);
+          if (this.config.responsePolicy) {
+            throw signal?.reason ?? new DOMException('Navigation superseded', 'AbortError');
+          }
           return;
         }
 
@@ -618,6 +660,9 @@ export class WebUIRouter {
             this.invalidateBoundaryState(boundaryGen);
             await cancelDeferredStream(partialData);
             this.preparedPreload?.release(requestPath);
+            if (this.config.responsePolicy) {
+              throw new Error(`[Router] Response path mismatch for: ${requestPath}`);
+            }
             return;
           }
         }
@@ -648,9 +693,26 @@ export class WebUIRouter {
           this.invalidateBoundaryState(boundaryGen);
           await cancelDeferredStream(partialData);
           if (!cached) navCache?.evict(requestPath);
+          if (this.config.responsePolicy) {
+            throw signal?.reason ?? new Error(`[Router] Navigation did not commit for: ${requestPath}`);
+          }
           return;
         }
-        startDeferredStream(partialData);
+        const deferred = startDeferredStream(partialData);
+        if (this.config.responsePolicy && deferred) {
+          await deferred;
+          if (signal?.aborted || thisGen !== this.navGeneration) {
+            throw signal?.reason ?? new DOMException('Navigation superseded', 'AbortError');
+          }
+        }
+      } catch (error) {
+        if (!signal?.aborted && thisGen === this.navGeneration && this.config.responsePolicy) {
+          this.config.responsePolicy.onError(error, {
+            path: requestPath,
+            signal: signal ?? new AbortController().signal,
+          });
+        }
+        throw error;
       } finally {
         this.invalidateBoundaryState(boundaryGen);
       }
@@ -683,11 +745,14 @@ export class WebUIRouter {
     this.trackPartialRequest(requestController, request.dispose);
     const requestSignal = request.signal;
     let hasDeferredReader = false;
+    let response: Response | undefined;
 
     try {
-      const resp = await fetch(fullPath, { headers, signal: requestSignal });
+      response = await fetch(fullPath, {
+        headers, signal: requestSignal, redirect: this.config.responsePolicy?.redirect,
+      });
       const result = await this.readPartialResponse(
-        resp,
+        response,
         requestPath,
         requestController,
         requestSignal,
@@ -697,7 +762,8 @@ export class WebUIRouter {
       return result.data;
     } catch (error) {
       requestController.abort(error);
-      if (signal?.aborted) throw error;
+      if (response) await cancelResponse(response, error);
+      if (signal?.aborted || (!speculative && this.config.responsePolicy)) throw error;
       return null;
     } finally {
       if (!hasDeferredReader) this.releasePartialRequest(requestController);
@@ -713,6 +779,7 @@ export class WebUIRouter {
       requestPath,
       window.__webui!.inventory!,
       signal,
+      this.config.responsePolicy,
     );
     if (!raw) return null;
 
@@ -738,15 +805,16 @@ export class WebUIRouter {
         requestPath,
         requestController,
         requestSignal,
-        { speculative: true, epoch },
+        { prepared: true, epoch, responseInfo: raw.responseInfo },
       );
       hasDeferredReader = result.hasDeferredReader;
       if (!result.data) this.preparedPreload?.release(requestPath);
       return result.data;
     } catch (error) {
       requestController.abort(error);
+      await cancelResponse(raw.response, error);
       this.preparedPreload?.release(requestPath);
-      if (signal?.aborted) throw error;
+      if (signal?.aborted || this.config.responsePolicy) throw error;
       return null;
     } finally {
       if (!hasDeferredReader) this.releasePartialRequest(requestController);
@@ -760,18 +828,28 @@ export class WebUIRouter {
     signal: AbortSignal,
     options: PartialReadOptions = {},
   ): Promise<PartialReadResult> {
+    const policy = this.config.responsePolicy;
+    if (policy) {
+      await inspectResponse(
+        policy, options.responseInfo ?? response, requestPath, signal, options.speculative === true,
+      );
+    }
+    signal.throwIfAborted();
     if (!response.ok) {
+      if (policy) {
+        throw new Error(`[Router] Partial request failed with HTTP ${response.status} for: ${requestPath}`);
+      }
       requestController.abort();
       return { data: null, hasDeferredReader: false };
     }
     const contentType = response.headers.get('content-type') ?? '';
     if (!contentType.includes('json') && !contentType.includes('ndjson')) {
-      if (!options.speculative && !signal.aborted) this.navigateDocument(requestPath);
+      if (!options.speculative && !options.prepared && !signal.aborted) this.navigateDocument(requestPath);
       requestController.abort();
       return { data: null, hasDeferredReader: false };
     }
     const data = await readStreamingPartial(
-      response, requestPath, this.streamingContext(requestController, options.epoch),
+      response, requestPath, this.streamingContext(requestController, options.epoch, options.speculative),
       signal, this.config.transport ?? jsonTransport,
     );
     return {
@@ -831,10 +909,15 @@ export class WebUIRouter {
 
   // ── Helpers ─────────────────────────────────────────────────────
 
-  private streamingContext(requestController?: AbortController, epoch = inventoryEpoch()): StreamingContext {
+  private streamingContext(
+    requestController?: AbortController,
+    epoch = inventoryEpoch(),
+    speculative = false,
+  ): StreamingContext {
     const self = this;
     let trackedReader: Promise<void> | null = null;
     return {
+      propagateErrors: !speculative && this.config.responsePolicy !== undefined,
       get navGeneration() { return self.navGeneration; },
       get currentRequestPath() { return self.currentRequestPath; },
       get activeChain() { return self.activeChain; },

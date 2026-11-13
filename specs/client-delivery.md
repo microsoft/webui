@@ -101,6 +101,28 @@ The same preload policy is adopted at router startup, replacing the early
 listener with the selected active policy. Destruction releases both stages.
 After startup the router uses its explicitly selected transport.
 
+An optional response policy selects Fetch redirect behavior and classifies
+response metadata before HTTP status rejection, content-type fallback, or
+decoding. Inspection owns no body; the transport remains its sole reader.
+Inspection rejection aborts and releases the body without publishing resources,
+changing route state, or choosing document fallback. Its async lifetime is
+abortable and bounded by the same request deadline. Only the current navigation
+generation reports errors to the application; speculation and superseded
+requests cannot present recovery UI.
+
+Early preparation uses the same policy object as router startup or is discarded
+at adoption. Prepared responses retain original response metadata for inspection
+at adoption, even though their bounded body has been rewrapped. Speculative
+classification cannot silently consume an error response as a cached success.
+Default behavior stays unchanged when the policy is absent.
+
+Policy-selected Navigation API interception propagates failure instead of
+fulfilling against stale state. It awaits the deferred task owned by that
+specific partial, not a router-global last reader, before reporting success.
+Post-commit stream failure cannot restore the preceding DOM. The fallback
+history implementation uses the same application error notification without
+adding a promise-returning navigate API.
+
 The independent `NdjsonReader` retains one transport chunk plus a reusable
 record buffer. Its default limit is 256 KiB of UTF-8 record bytes, excluding LF.
 Limits apply to each record, not to the sum of coalesced records in one network
@@ -127,6 +149,21 @@ held for a pending commit.
 Resource work can be shared; navigation generations and request cancellation
 are consumer-owned. Cancelling one reader does not cancel a shared stylesheet
 preparation promise.
+
+Node's public complete partial output may be application-framed as route NDJSON:
+preserve the generated metadata record and move the returned top-level state
+into positional state records with the same chain order. The current Node
+producer emits only top-level state, never per-entry chain state. That projection
+is shared across the matched tree, not split by route level. Hosts choose which
+level owns which state: broadcasting a leaf ViewModel can overwrite retained
+parent properties, whereas null parent slots preserve their state. The public
+Node browser fixture asserts this producer invariant and verifies a leaf-only
+tail preserves a parent-local value even when the leaf VM has a colliding key.
+This is a buffered producer, not an asynchronous route-state session. Preparing metadata with
+placeholder state is not equivalent: state-selected lazy resources and projected
+state must agree with the real render input. A genuinely metadata-first Node
+producer would require a separately defined native ownership/projection boundary,
+not reuse of progressive HTML sessions or application-generated compiler data.
 
 ## Lazy template bodies
 

@@ -15,6 +15,7 @@ export default defineConfig({
   },
   use: {
     baseURL: `http://127.0.0.1:${port}`,
+    channel: process.env.WEBUI_TEST_BROWSER_CHANNEL,
     trace: 'on-first-retry',
   },
   webServer: {

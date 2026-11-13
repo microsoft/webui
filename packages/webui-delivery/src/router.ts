@@ -15,5 +15,6 @@ export type { RoutePreload } from './preload.js';
 export type {
   RouterConfig, NavigationEvent, RouteLoaderContext, CacheConfig,
   RouteActionContext, RouteActionResult, ActionCompleteEvent, StatefulElement,
+  RouteResponsePolicy, RouteResponseInfo, RouteResponseContext, RouteNavigationContext,
 } from './types.js';
 export type { PartialResponse, RouteChainEntry } from './cache.js';

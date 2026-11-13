@@ -24,7 +24,7 @@ interface BrowserGlobals {
     body: { children: never[]; appendChild(): void };
     createDocumentFragment(): { appendChild(): void };
     startViewTransition: undefined;
-    head: { appendChild(): void };
+    head: { appendChild(): void; querySelectorAll(): unknown[] };
   };
   window: typeof globalThis;
   addEventListener(type: string, listener: EventListenerOrEventListenerObject): void;
@@ -75,7 +75,7 @@ if (typeof document === 'undefined') {
     body: { children: [], appendChild() {} },
     createDocumentFragment: () => ({ appendChild() {} }),
     startViewTransition: undefined,
-    head: { appendChild() {} },
+    head: { appendChild() {}, querySelectorAll: () => [] },
   };
 }
 if (typeof window === 'undefined') {

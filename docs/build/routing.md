@@ -190,6 +190,86 @@ API when available. Define transition styles in CSS; do not wrap
 `router.navigate()` in another view transition. Navigation does not wait for the
 animation to finish.
 
+### Response classification and manual recovery
+
+Select `responsePolicy` when navigation failures must leave the current document
+available for application-owned recovery:
+
+```typescript
+import { WebUIRouter } from '@microsoft/webui-delivery/router.js';
+import type { RouteResponsePolicy } from '@microsoft/webui-delivery/router.js';
+
+const responsePolicy: RouteResponsePolicy = {
+  redirect: 'manual',
+  inspect(response, { signal }) {
+    signal.throwIfAborted();
+    if (response.type === 'opaqueredirect' ||
+        response.status === 401 || response.status === 403 ||
+        response.headers.get('content-type')?.includes('text/html')) {
+      throw new Error('Sign in manually, then retry navigation.');
+    }
+  },
+  onError(error, { path, signal }) {
+    if (!signal.aborted) showRecovery(error, path); // Application-owned state/UI.
+  },
+};
+
+const router = new WebUIRouter();
+router.start({ responsePolicy });
+```
+
+`RouteResponsePolicy` is exported from `router.js`:
+
+| Member | Contract |
+| --- | --- |
+| `redirect?: RequestRedirect` | Fetch redirect mode, default `"follow"`. `"manual"` allows the browser to return `type: "opaqueredirect"`; its status is `0`, not the original redirect status. |
+| `inspect(response, context): void \| Promise<void>` | Runs before status handling, content-type fallback, and transport decoding. `response` exposes `status`, `statusText`, `ok`, `headers`, `type`, `url`, and `redirected`. Return normally to continue; throw or reject to stop. Do not consume the body. |
+| `onError(error, context): void` | Synchronous notification for failed active navigations, including network, classification, decoding, and deferred-state failures. It does not convert failure to success. |
+
+Both contexts contain `path` (including query, relative to the base) and
+`signal`. Inspection also receives `speculative`. Classify speculative
+responses, but do not show recovery UI from inspection: rejected preloads are
+discarded without `onError`. Async inspection is bounded by the request timeout
+and cancellation; honor its signal and recheck it before side effects.
+Superseded or destroyed navigations do not call `onError`.
+
+Throwing from inspection prevents route/resource mutation and document fallback
+for that response, preserving the existing document and edits. The URL may
+already have committed; the router does not roll back history. Returning
+normally allows ordinary processing, including document fallback for HTML.
+With a policy selected, unhandled non-success HTTP responses also fail rather
+than reporting stale content as success. Failure presentation is owned by
+`onError`, not the route error component.
+
+For intercepted Navigation API requests, `navigation.navigate(url).finished`
+rejects on failure. With `ndjson()` it waits for the deferred state tail as well
+as the route commit. `webui:route:navigated` is then emitted only on completion.
+A tail failure cannot undo an already committed route; handle it through
+`onError`. Without the Navigation API, `onError` remains the failure signal:
+`router.navigate()` returns `void`, not a completion promise. There is no
+`router.refresh()` method, and the fallback router does not navigate the
+already-current URL.
+
+The policy applies to partial route requests, not mutation actions or
+`ensureLoaded()`. Cache hits reuse already accepted data without a new HTTP
+inspection. For intent preparation before router startup, share the **same
+policy object**:
+
+```typescript
+import { routePreload, navigationCache } from '@microsoft/webui-delivery/router.js';
+
+const preload = routePreload({ responsePolicy });
+preload.prepare();
+// Later, after the application is ready:
+router.start({ responsePolicy, preload, cache: navigationCache() });
+```
+
+Prepared responses are inspected speculatively, then again when adopted for a
+navigation. A different policy causes fresh navigation fetches instead of using
+responses requested with incompatible redirect or classification rules.
+Without `responsePolicy`, existing redirect, fallback, error-boundary, and
+completion behavior is unchanged.
+
 ## Nested Routes
 
 Routes nest to any depth. Each parent component uses `<outlet />` where its child route renders:
@@ -757,7 +837,7 @@ that response by hand.
 
 | Header | Value | Purpose |
 |--------|-------|---------|
-| `Accept` | `application/x-ndjson, application/json` | Requests NDJSON streaming or JSON partial instead of HTML |
+| `Accept` | `application/json` by default; `application/x-ndjson, application/json` with `ndjson()` | Requests a partial instead of HTML |
 | `X-WebUI-Inventory` | Hex bitmask | Component template and style metadata the client already has - server skips re-sending it |
 
 ### Full HTML (initial load)
@@ -806,6 +886,58 @@ const partialJson = protocol.renderPartial(
   inventoryHex,
 );
 ```
+
+### Node-owned NDJSON framing
+
+Node's `renderPartial()` produces a **complete JSON response**. Returning it as
+`application/json` is the simplest and least costly path, including for a client
+that selected `ndjson()`. `renderStream()` and `streamResponse()` produce HTML,
+not route NDJSON.
+
+A Node host may frame the public `renderPartial()` result into NDJSON without
+reconstructing compiler-owned metadata. The Node producer returns top-level
+`state`, not `chain[*].state`. Keep all generated fields of the first record
+except that top-level `state`. Send state afterward in positional `states`
+slots chosen by the application's state ownership. For a **leaf-owned ViewModel
+with already-mounted parents**:
+
+```javascript
+import { once } from 'node:events';
+
+const partial = JSON.parse(
+  protocol.renderPartial(state, 'index.html', requestPath, inventoryHex),
+);
+const { state: projectedState, ...resources } = partial;
+res.setHeader('Content-Type', 'application/x-ndjson');
+if (!res.write(JSON.stringify(resources) + '\n')) await once(res, 'drain');
+res.end(JSON.stringify({
+  states: resources.chain.map((_entry, level) =>
+    level === resources.chain.length - 1 ? projectedState : null),
+}) + '\n');
+```
+
+The first record preserves the framework-produced route order, templates,
+styles, inventory, build identity, and other metadata. Each later `states`
+position corresponds to that same chain level; an object applies state and
+`null` skips that level. The example updates only the leaf, leaving retained
+parents' transient state alone. If a parent needs server state, supply the
+intended state in its slot, including when a new parent is mounted.
+
+The returned top-level state is a shared projection across the matched tree,
+not automatic per-level ViewModels. Sending it to every slot reproduces the
+complete JSON response's broadcast semantics and can overwrite matching
+properties in retained parents. Do not broadcast a leaf ViewModel when parent
+preferences are client-owned. Mapping application state to the generated chain
+does not authorize reconstructing templates, styles, inventory, or route metadata.
+Keep records within the client's configured size bound and terminate each record
+with LF. The host must also handle disconnects and errors while writing.
+
+This is **buffered state with separately paced delivery**, not asynchronous
+state production. It adds JSON parsing/serialization. Do not call `renderPartial({})` to manufacture an early
+resource record: resources may depend on the actual state, including active
+lazy content. The Node API does not currently expose a route-metadata session
+that can safely precede unresolved state. No additional helper is needed for
+framing an already complete result.
 
 ### Express Example
 

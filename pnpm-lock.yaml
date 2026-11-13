@@ -625,6 +625,9 @@ importers:
 
   packages/webui-delivery:
     devDependencies:
+      '@microsoft/webui':
+        specifier: workspace:*
+        version: link:../webui
       '@microsoft/webui-delivery':
         specifier: workspace:*
         version: 'link:'

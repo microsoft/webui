@@ -1073,6 +1073,15 @@ destroy before restarting.
 See [selecting router capabilities](/build/routing#selecting-router-capabilities)
 for the import/configuration pairs.
 
+For manual authentication/error recovery, select the public
+[`responsePolicy`](/build/routing#response-classification-and-manual-recovery):
+inspect response metadata before fallback, throw to preserve the document,
+and handle active failures in `onError`. Use `redirect: 'manual'` when opaque
+redirect classification is needed. There is no `router.refresh()` API.
+Node `renderPartial()` returns complete JSON; application-owned NDJSON framing
+can pace delivery but does not make state production asynchronous. See the
+[Node framing contract](/build/routing#node-owned-ndjson-framing).
+
 Route loaders (`static loader({ params, query, signal })`) and actions
 (`static action({ formData, params, signal })`, enabled by
 `router.start({ actions: routeActions() })`) live on the component class.

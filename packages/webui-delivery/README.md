@@ -58,5 +58,21 @@ The request deadline defaults to 10 seconds, including a deferred state tail.
 `ndjson(maxRecordBytes?)` defaults to 256 KiB per record. JSON-only applications
 do not ship the decoder when bundled with tree-shaking.
 
+## Manual response recovery
+
+Select `responsePolicy: { redirect?, inspect, onError }` in `start()` to
+classify response metadata before decoding or document fallback. Throw from
+`inspect` to preserve the document; `onError` reports active navigation failures,
+not rejected speculation or cancellation. `redirect: 'manual'` exposes opaque
+redirects without changing the unconfigured default.
+
+With this policy, intercepted Navigation API `finished` promises reject on
+failure and wait for NDJSON state completion. Fallback navigation reports errors
+through `onError`; `router.navigate()` still returns `void`. Share the same
+response policy with `routePreload({ responsePolicy })` when calling `prepare()`
+before router startup. See
+[response classification](https://microsoft.github.io/webui/build/routing#response-classification-and-manual-recovery)
+for the exact public types, cancellation rules, and recovery example.
+
 See the [Routing guide](https://microsoft.github.io/webui/build/routing)
 for HTML declarations, initialization ordering, server APIs, and cancellation.

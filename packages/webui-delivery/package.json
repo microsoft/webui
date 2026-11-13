@@ -1,6 +1,7 @@
 {
   "description": "Renderer-independent resource and state delivery for WebUI routing.",
   "devDependencies": {
+    "@microsoft/webui": "workspace:*",
     "@microsoft/webui-framework": "workspace:*",
     "@microsoft/webui-delivery": "workspace:*",
     "@playwright/test": "catalog:",

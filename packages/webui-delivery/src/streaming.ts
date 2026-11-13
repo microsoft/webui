@@ -25,6 +25,7 @@ export type { StreamingPartialResponse } from './partial-response.js';
 
 /** Route-specific ownership and commit policy for a two-phase partial. */
 export interface StreamingContext {
+  readonly propagateErrors?: boolean;
   readonly navGeneration: number;
   readonly currentRequestPath: string;
   readonly activeChain: RouteChainEntry[];
@@ -94,6 +95,7 @@ export async function readStreamingPartial(
         const pending = continueDeferredRead(
           records, data, requestPath, { context, generation, signal, receivedState },
         ).catch((error: unknown) => {
+          if (context.propagateErrors) throw error;
           if (!signal?.aborted && generation === context.navGeneration) {
             console.warn('[Router] Deferred state reader failed:', error);
           }
@@ -102,6 +104,7 @@ export async function readStreamingPartial(
           context.setDeferredReader(null);
         });
         context.setDeferredReader(pending);
+        return pending;
       },
     });
     return data;

@@ -128,6 +128,11 @@ Bun.serve({
 | `protocol.tokens()` | Return CSS token names in build order |
 | `inspect(protocol)` | Convert protocol to JSON for debugging |
 
+`renderPartial()` is the route-navigation producer. A host may
+[frame its complete output as NDJSON](/build/routing#node-owned-ndjson-framing),
+preserving framework-generated resources and route order. This buffers state
+first; neither `renderStream()` nor `streamResponse()` is a route NDJSON producer.
+
 ### RenderOptions
 
 | Field | Type | Default | Description |
