@@ -16,8 +16,12 @@
  * without the Navigation API at all take the same path.
  */
 
+import { admitsNavigation } from './navigation-admission.js';
+import type { RouteAdmission } from './types.js';
+
 export interface FallbackNavigationContext {
   readonly excludePaths: readonly string[];
+  readonly shouldIntercept?: RouteAdmission;
   /** Run a same-document navigation for `url`, honoring `signal`. */
   navigate(url: URL, signal: AbortSignal): Promise<void>;
 }
@@ -59,13 +63,6 @@ export function canInterceptNavigations(): boolean {
   return protocol === 'https:' || protocol === 'http:';
 }
 
-function isExcluded(pathname: string, excludePaths: readonly string[]): boolean {
-  for (let i = 0; i < excludePaths.length; i++) {
-    if (pathname.startsWith(excludePaths[i])) return true;
-  }
-  return false;
-}
-
 /**
  * Decide whether a link click becomes a same-document navigation.
  *
@@ -77,6 +74,7 @@ export function resolveLinkNavigation(
   link: LinkIntent,
   currentHref: string,
   excludePaths: readonly string[],
+  shouldIntercept?: RouteAdmission,
 ): URL | null {
   // Modified clicks and non-primary buttons are the user asking the host to
   // handle the link (new tab, download, context menu).
@@ -95,7 +93,7 @@ export function resolveLinkNavigation(
     return null;
   }
   if (!sameNavigationOrigin(url, current)) return null;
-  if (isExcluded(url.pathname, excludePaths)) return null;
+  if (!admitsNavigation(url, excludePaths, shouldIntercept)) return null;
   // Pure fragment changes stay with the browser so it can scroll.
   if (url.hash && url.pathname === current.pathname && url.search === current.search) return null;
   return url;
@@ -158,6 +156,7 @@ export function setupFallbackNavigation(context: FallbackNavigationContext): () 
       },
       location.href,
       context.excludePaths,
+      context.shouldIntercept,
     );
     if (!url) return;
 
@@ -169,7 +168,10 @@ export function setupFallbackNavigation(context: FallbackNavigationContext): () 
 
   const onPopState = (): void => {
     const url = new URL(location.href);
-    if (isExcluded(url.pathname, context.excludePaths)) return;
+    if (!admitsNavigation(url, context.excludePaths, context.shouldIntercept)) {
+      location.href = url.href;
+      return;
+    }
     run(url);
   };
 
@@ -185,8 +187,17 @@ export function setupFallbackNavigation(context: FallbackNavigationContext): () 
 }
 
 /** Programmatic push navigation for the fallback path. */
-export function fallbackPush(href: string): void {
+export function fallbackPush(
+  href: string,
+  excludePaths: readonly string[] = [],
+  shouldIntercept?: RouteAdmission,
+): void {
   const url = new URL(href, location.href);
+  if (!sameNavigationOrigin(url, new URL(location.href)) ||
+      !admitsNavigation(url, excludePaths, shouldIntercept)) {
+    location.href = url.href;
+    return;
+  }
   if (url.href === location.href) return;
   history.pushState(null, '', url.href);
   window.dispatchEvent(new PopStateEvent('popstate'));

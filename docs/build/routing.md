@@ -190,6 +190,65 @@ API when available. Define transition styles in CSS; do not wrap
 `router.navigate()` in another view transition. Navigation does not wait for the
 animation to finish.
 
+### Document ownership and explicit reloads
+
+Use `shouldIntercept` to admit only the URLs owned by the native router.
+Returning `false` leaves a real document navigation to the browser, without
+first requesting or classifying a partial:
+
+```typescript
+import { WebUIRouter, routePreload, navigationCache } from '@microsoft/webui-delivery/router.js';
+import type { RouteAdmission } from '@microsoft/webui-delivery/router.js';
+
+const shouldIntercept: RouteAdmission = url =>
+  url.pathname === '/settings/performance';
+
+const router = new WebUIRouter();
+router.start({ shouldIntercept });
+```
+
+Here `/settings` and `/settings/profile` remain document-owned, while
+`/settings/performance` uses partial navigation. This selects **ownership**,
+not components: the server still matches the route and returns its chain.
+Existing `excludePaths` prefixes take precedence. External links and pure
+fragment changes retain normal browser behavior.
+
+The callback must be synchronous and side-effect-free. It receives a parsed
+absolute `URL`, including the deployment prefix, query, and hash. Account for
+your `<base>` prefix explicitly, for example `/app/settings/performance`;
+use `searchParams` only if query values affect ownership. Do not change the
+callback or its ownership rules while the router is running.
+
+Admission applies to Navigation API navigation, fallback clicks/history,
+`router.navigate()`, and speculative route requests. Document-owned intent is
+not fetched, decoded, classified, or cached. When preparing intent before
+router startup, share the same admission function:
+
+```typescript
+const preload = routePreload({ shouldIntercept });
+preload.prepare();
+// Later, when ready:
+router.start({ shouldIntercept, preload, cache: navigationCache() });
+```
+
+Include the same `responsePolicy` in both configurations when using response
+classification. Incompatible prepared work is discarded rather than bypassing
+the active ownership rule.
+
+**Explicit reload means a document request.** `location.reload()` and Navigation
+API `navigation.reload()` are not converted into partial revalidation. Use this
+for an intentional manual authentication recovery. The browser runs its normal
+`beforeunload` handling; canceling it leaves the installed router and current
+components usable. Do not destroy the router before requesting a document
+reload or document-owned crossing.
+
+For a soft refresh on browsers with Navigation API interception, use
+`navigation.navigate(location.href)` and observe its `finished` promise as
+described below. It remains a partial request for an admitted URL. Fallback
+`router.navigate()` still does nothing for the exact current URL; a changed
+query/path navigates normally. Actual document reloads are browser-owned in
+both modes, including when no admission predicate is configured.
+
 ### Response classification and manual recovery
 
 Select `responsePolicy` when navigation failures must leave the current document
@@ -267,8 +326,8 @@ router.start({ responsePolicy, preload, cache: navigationCache() });
 Prepared responses are inspected speculatively, then again when adopted for a
 navigation. A different policy causes fresh navigation fetches instead of using
 responses requested with incompatible redirect or classification rules.
-Without `responsePolicy`, existing redirect, fallback, error-boundary, and
-completion behavior is unchanged.
+Without `responsePolicy`, partial-response redirect, fallback, error-boundary,
+and completion behavior is unchanged.
 
 ## Nested Routes
 

@@ -7,7 +7,7 @@ import {
 } from './navigation-path.js';
 import { pointerPreloadPath } from './preload-path.js';
 import { cancelResponse, inspectResponse } from './response-policy.js';
-import type { RouteResponseInfo, RouteResponsePolicy } from './types.js';
+import type { RouteAdmission, RouteResponseInfo, RouteResponsePolicy } from './types.js';
 
 const PRELOAD_TTL_MS = 5_000;
 const MAX_PRELOAD_BYTES = 2_000_000;
@@ -25,6 +25,8 @@ export interface PreparedRoutePreloadOptions {
   readonly excludePaths?: readonly string[];
   /** Use the same policy object in router.start() when preparing before startup. */
   readonly responsePolicy?: RouteResponsePolicy;
+  /** Use the same admission function in router.start() and early preparation. */
+  readonly shouldIntercept?: RouteAdmission;
   /** Begin deferred application work after a valid internal link intent. */
   readonly onIntent?: () => void | Promise<unknown>;
 }
@@ -47,11 +49,13 @@ export class PreparedRoutePreload {
   private expiryTimer: ReturnType<typeof setTimeout> | null = null;
   private listening = true;
   private readonly responsePolicy: RouteResponsePolicy | undefined;
+  private readonly shouldIntercept: RouteAdmission | undefined;
 
   constructor(options: PreparedRoutePreloadOptions = {}) {
     this.excludePaths = options.excludePaths ?? [];
     this.onIntent = options.onIntent;
     this.responsePolicy = options.responsePolicy;
+    this.shouldIntercept = options.shouldIntercept;
     document.addEventListener('pointermove', this.onPointerMove);
   }
 
@@ -91,10 +95,11 @@ export class PreparedRoutePreload {
     inventory: string,
     signal?: AbortSignal,
     responsePolicy?: RouteResponsePolicy,
+    shouldIntercept?: RouteAdmission,
   ): Promise<RawPreloadedPartial | null> {
     if (this.path !== requestPath || !this.pending) return null;
     // A prepared response must not bypass the active router's redirect/classification policy.
-    if (responsePolicy !== this.responsePolicy) {
+    if (responsePolicy !== this.responsePolicy || shouldIntercept !== this.shouldIntercept) {
       this.destroy();
       return null;
     }
@@ -132,6 +137,7 @@ export class PreparedRoutePreload {
       event,
       this.basePath,
       this.excludePaths,
+      this.shouldIntercept,
     );
     if (
       !requestPath

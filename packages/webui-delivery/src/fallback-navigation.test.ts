@@ -166,6 +166,25 @@ describe('resolveLinkNavigation', () => {
     );
     assert.equal(url?.href, 'http://localhost:3000/favorites');
   });
+
+  test('admits an exact native leaf without claiming its document-owned parent or sibling', () => {
+    const admission = (url: URL) => url.pathname === '/app/settings/performance';
+    const current = 'https://example.test/app/settings/performance';
+    const target = (path: string) => link(path, { resolved: new URL(path, current).href });
+    for (const path of ['/app/settings', '/app/settings/profile']) {
+      assert.equal(resolveLinkNavigation(click(), target(path), current, [], admission), null);
+    }
+    const url = resolveLinkNavigation(
+      click(), target('/app/settings/performance?tab=memory#chart'), current, [], admission,
+    );
+    assert.equal(url?.href, 'https://example.test/app/settings/performance?tab=memory#chart');
+  });
+
+  test('exclusions and external origins win without consulting route admission', () => {
+    const admission = () => { assert.fail('document-owned URLs must not reach admission'); };
+    assert.equal(resolveLinkNavigation(click(), link('/auth/login'), CURRENT, ['/auth'], admission), null);
+    assert.equal(resolveLinkNavigation(click(), link('https://other.test/'), CURRENT, [], admission), null);
+  });
 });
 
 describe('canInterceptNavigations', () => {

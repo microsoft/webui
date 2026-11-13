@@ -365,6 +365,10 @@ Applications can opt into response classification before route decoding or
 document fallback, retaining the current document for manual recovery.
 Rejected or incomplete responses are failures, not successful refreshes;
 cancellation prevents obsolete navigation work from presenting recovery UI.
+An application can separately admit URLs to partial routing without taking
+ownership of document routes in another UI stack. That decision is shared with
+speculation. Explicit reloads remain browser-owned document operations, and a
+canceled unload leaves the existing router and view intact.
 
 ### Optional component assets
 

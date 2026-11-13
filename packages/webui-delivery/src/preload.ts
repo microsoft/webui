@@ -9,6 +9,7 @@
 import { pointerPreloadPath } from './preload-path.js';
 import { PreparedRoutePreload, type PreparedRoutePreloadOptions } from './prepared-preload.js';
 import type { PartialResponse } from './cache.js';
+import type { RouteAdmission } from './types.js';
 import type { StreamingPartialResponse } from './streaming.js';
 import { cancelDeferredStream, startDeferredStream } from './partial-response.js';
 
@@ -50,6 +51,7 @@ export function routePreload(options: PreparedRoutePreloadOptions = {}): RoutePr
 export interface PreloadContext {
   readonly basePath: string;
   readonly excludePaths: string[];
+  readonly shouldIntercept?: RouteAdmission;
   readonly currentRequestPath: string;
   readonly inventory: string;
   hasCache(requestPath: string): boolean;
@@ -74,7 +76,7 @@ export function setupPreloadListeners(ctx: PreloadContext): () => void {
   let preloadPath: string | null = null;
 
   const onPointerMove = (e: PointerEvent): void => {
-    const requestPath = pointerPreloadPath(e, ctx.basePath, ctx.excludePaths);
+    const requestPath = pointerPreloadPath(e, ctx.basePath, ctx.excludePaths, ctx.shouldIntercept);
     if (!requestPath || requestPath === preloadPath) return;
 
     // Skip if already on this path or already cached for it

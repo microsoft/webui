@@ -280,10 +280,35 @@ test('speculative errors do not present recovery and are retried on actual navig
   assert.equal(errors.length, 1);
 });
 
+test('prepared work from another admission function is not adopted', async t => {
+  const { routePreload, navigationCache } = await import('@microsoft/webui-delivery/router.js');
+  let pointer: ((event: PointerEvent) => void) | undefined;
+  t.mock.method(document, 'addEventListener', (type: string, handler: typeof pointer) => {
+    if (type === 'pointermove') pointer = handler;
+  });
+  const policy: RouteResponsePolicy = {
+    inspect(_response, context) {
+      if (!context.speculative) throw new Error('fresh admitted request');
+    },
+    onError() {},
+  };
+  const fetch = t.mock.method(globalThis, 'fetch', async () => Response.json({ chain: [] }));
+  const preload = routePreload({ responsePolicy: policy, shouldIntercept: () => true });
+  preload.prepare();
+  pointer?.(pointerEvent('/next'));
+  const navigate = await navigationHarness(t, {
+    responsePolicy: policy, shouldIntercept: () => true,
+    preload, cache: navigationCache(),
+  });
+  await assert.rejects(navigate(), /fresh admitted request/);
+  assert.equal(fetch.mock.callCount(), 2);
+});
+
 function pointerEvent(pathname: string): PointerEvent {
   return {
     composedPath: () => [{
       tagName: 'A', origin: location.origin, pathname, search: '',
+      href: new URL(pathname, location.href).href,
       getAttribute: (name: string) => name === 'href' ? pathname : null,
     }],
     pointerType: 'mouse',

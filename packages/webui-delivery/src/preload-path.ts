@@ -2,12 +2,15 @@
 // Licensed under the MIT license.
 
 import { stripBaseFromPathname } from './navigation-path.js';
+import { isNavigationExcluded } from './navigation-admission.js';
+import type { RouteAdmission } from './types.js';
 
 /** Resolve one internal mouse-link intent to its request path. */
 export function pointerPreloadPath(
   event: PointerEvent,
   basePath: string,
   excludePaths: readonly string[],
+  shouldIntercept?: RouteAdmission,
 ): string | null {
   if (event.pointerType !== 'mouse') return null;
 
@@ -25,9 +28,8 @@ export function pointerPreloadPath(
   if (!href || href.startsWith('#') || anchor.origin !== location.origin) {
     return null;
   }
-  for (let i = 0; i < excludePaths.length; i++) {
-    if (anchor.pathname.startsWith(excludePaths[i])) return null;
-  }
+  if (isNavigationExcluded(anchor.pathname, excludePaths)) return null;
+  if (shouldIntercept && !shouldIntercept(new URL(anchor.href))) return null;
 
   const stripped = stripBaseFromPathname(anchor.pathname, basePath);
   return (stripped + anchor.search) || '/';

@@ -92,6 +92,9 @@ export interface RouteResponsePolicy {
   onError(error: unknown, context: RouteNavigationContext): void;
 }
 
+/** Decide whether a same-origin URL belongs to partial navigation. */
+export type RouteAdmission = (url: URL) => boolean;
+
 /** Configure and select routing capabilities once in `WebUIRouter.start()`. */
 export interface RouterConfig {
   /**
@@ -181,6 +184,13 @@ export interface RouterConfig {
    * ```
    */
   excludePaths?: string[];
+  /**
+   * Synchronous, side-effect-free admission of a same-origin URL to partial
+   * navigation. False leaves navigation to the browser as a document request.
+   * The URL includes the deployment base, query, and hash. Prefix exclusions
+   * still win. Share this function with pre-start routePreload preparation.
+   */
+  shouldIntercept?: RouteAdmission;
 
   /**
    * Navigation cache configuration. When enabled, partial responses are

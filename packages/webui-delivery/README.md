@@ -60,6 +60,14 @@ do not ship the decoder when bundled with tree-shaking.
 
 ## Manual response recovery
 
+`shouldIntercept(url)` selects partial-navigation ownership independently from
+response classification. It can admit a native leaf without claiming its
+document-owned parent or siblings, including during intent preloading.
+Explicit `location.reload()` / `navigation.reload()` remain document requests;
+canceling `beforeunload` does not tear down the router. Same-URL
+`navigation.navigate()` remains a partial refresh for admitted URLs.
+See [document ownership](https://microsoft.github.io/webui/build/routing#document-ownership-and-explicit-reloads).
+
 Select `responsePolicy: { redirect?, inspect, onError }` in `start()` to
 classify response metadata before decoding or document fallback. Throw from
 `inspect` to preserve the document; `onError` reports active navigation failures,

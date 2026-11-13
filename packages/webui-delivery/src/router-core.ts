@@ -20,6 +20,7 @@
  */
 
 import { buildNavigationTarget, prependBasePath } from './navigation-path.js';
+import { admitsNavigation } from './navigation-admission.js';
 import {
   canInterceptNavigations,
   fallbackPush,
@@ -280,13 +281,10 @@ export class WebUIRouter {
           this.documentNavigationUrl = null;
           return;
         }
-        if (!event.canIntercept || event.hashChange) return;
+        if (!event.canIntercept || event.hashChange || event.navigationType === 'reload') return;
         const url = new URL(event.destination.url);
         if (url.origin !== location.origin) return;
-        const pathname = url.pathname;
-        for (let i = 0; i < this.excludePaths.length; i++) {
-          if (pathname.startsWith(this.excludePaths[i])) return;
-        }
+        if (!admitsNavigation(url, this.excludePaths, this.config.shouldIntercept)) return;
         event.intercept({
           handler: async () => {
             const responsePolicy = this.config.responsePolicy;
@@ -306,6 +304,7 @@ export class WebUIRouter {
       const self = this;
       this.cleanupFns.push(setupFallbackNavigation({
         get excludePaths() { return self.excludePaths; },
+        get shouldIntercept() { return self.config.shouldIntercept; },
         navigate: (url, signal) =>
           this.handleNavigation(buildNavigationTarget(url, this.basePath), signal),
       }));
@@ -317,6 +316,7 @@ export class WebUIRouter {
       this.cleanupFns.push(config.preload.install({
           basePath: this.basePath,
           excludePaths: this.excludePaths,
+          shouldIntercept: this.config.shouldIntercept,
           get currentRequestPath() { return self.currentRequestPath; },
           get inventory() { return window.__webui!.inventory!; },
           hasCache: (p) => cache.has(p) || this.preparedPreload?.has(p) === true,
@@ -340,6 +340,8 @@ export class WebUIRouter {
   }
 
   private validateCapabilities(config: RouterConfig): void {
+    if (config.shouldIntercept !== undefined && typeof config.shouldIntercept !== 'function')
+      throw new Error('[Router] shouldIntercept must be a synchronous URL admission function.');
     if (config.cache && typeof config.cache.lookup !== 'function')
       throw new Error('[Router] Select a configured navigationCache() in start().');
     if (config.preload && (!config.cache || typeof config.preload.install !== 'function'))
@@ -362,7 +364,7 @@ export class WebUIRouter {
     if (this.nativeInterception) {
       window.navigation.navigate(fullPath);
     } else {
-      fallbackPush(fullPath);
+      fallbackPush(fullPath, this.excludePaths, this.config.shouldIntercept);
     }
   }
 
@@ -780,6 +782,7 @@ export class WebUIRouter {
       window.__webui!.inventory!,
       signal,
       this.config.responsePolicy,
+      this.config.shouldIntercept,
     );
     if (!raw) return null;
 

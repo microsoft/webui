@@ -21,6 +21,15 @@ guides; `DESIGN.md` owns the high-level browser boundaries.
   policies once; action/preload listeners and selected transports are ready
   before it returns. Reconfiguration while active is rejected. No singleton,
   constructor/start duplication, or hidden optional dynamic import remains.
+- URL admission selects document versus partial ownership, not the compiled
+  route chain. Prefix exclusions and same-origin checks precede the optional
+  synchronous predicate. Native events, fallback clicks/history/programmatic
+  navigation, and active/early intent preparation share that ownership decision.
+  Prepared work from another predicate is not adopted. Document crossings do
+  not run partial response classification or mutate the active chain before
+  the browser admits unload. Explicit reload events remain document-owned,
+  while same-URL push navigation can still revalidate a partial. Canceling
+  beforeunload does not require reconstructing or restarting the router.
 - Lazy regions are not a delivery consumer. The framework's optional `lazy.js`
   runtime fetches static template packs and registers them through the renderer
   bridge; it imports no router, transport, or NDJSON reader. Region component

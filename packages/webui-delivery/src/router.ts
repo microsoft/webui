@@ -16,5 +16,6 @@ export type {
   RouterConfig, NavigationEvent, RouteLoaderContext, CacheConfig,
   RouteActionContext, RouteActionResult, ActionCompleteEvent, StatefulElement,
   RouteResponsePolicy, RouteResponseInfo, RouteResponseContext, RouteNavigationContext,
+  RouteAdmission,
 } from './types.js';
 export type { PartialResponse, RouteChainEntry } from './cache.js';

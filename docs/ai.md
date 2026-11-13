@@ -1082,6 +1082,15 @@ Node `renderPartial()` returns complete JSON; application-owned NDJSON framing
 can pace delivery but does not make state production asynchronous. See the
 [Node framing contract](/build/routing#node-owned-ndjson-framing).
 
+For mixed document/native routing, configure
+[`shouldIntercept(url)`](/build/routing#document-ownership-and-explicit-reloads)
+once: `false` leaves the destination to a full document request, without a
+partial fetch. Share it with pre-start `routePreload()` preparation.
+Use `location.reload()` for an explicit document reload; canceled
+`beforeunload` keeps the router installed. On Navigation API browsers,
+`navigation.navigate(location.href)` remains a partial refresh for admitted
+URLs. Do not use `destroy()` as a reload workaround.
+
 Route loaders (`static loader({ params, query, signal })`) and actions
 (`static action({ formData, params, signal })`, enabled by
 `router.start({ actions: routeActions() })`) live on the component class.

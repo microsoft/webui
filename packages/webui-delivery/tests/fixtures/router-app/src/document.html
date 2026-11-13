@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <base href="{{basePath}}">
+  <title>Document ownership fixture</title>
+</head>
+<body>
+  <route path="/" component="route-shell">
+    <route path="alpha" component="page-alpha" exact />
+    <route path="beta" component="page-beta" exact />
+    <route path="settings" component="page-alpha" exact />
+    <route path="settings/profile" component="page-alpha" exact />
+    <route path="settings/performance" component="page-beta" exact />
+  </route>
+  <script type="module" src="/document-entry.js"></script>
+</body>
+</html>
