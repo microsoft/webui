@@ -219,6 +219,14 @@ export interface CacheConfig {
    * @default 50
    */
   maxEntries?: number;
+  /**
+   * Maximum estimated decoded response bytes retained by the cache.
+   * Counts UTF-16 strings and value slots, not exact JavaScript heap usage.
+   * Oversized responses still navigate normally but are not cached.
+   * Zero disables retention, including speculative and incomplete responses.
+   * @default 4194304 (4 MiB)
+   */
+  maxBytes?: number;
 }
 
 /**

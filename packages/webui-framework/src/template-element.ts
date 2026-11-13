@@ -135,6 +135,8 @@ import type {
   ScopeFrame,
   TemplateInstance,
   TextBinding,
+  PathBindingTypes,
+  PathBindings,
 } from './element/types.js';
 // Type-only import: erased at compile time, so it never creates a runtime edge
 // to the diagnostic module. That module's runtime code is reached solely through
@@ -161,6 +163,7 @@ declare const __WEBUI_DEV__: boolean;
 
 /** Encoded next marker boundary per text slot, built once per template. */
 const textMarkerBoundaryCache = new WeakMap<TemplateBlockMeta, ArrayLike<number>>();
+const flatPathPlans = new WeakMap<TemplateBlockMeta, string>();
 const RAW_MARKER_BOUNDARY_BASE = 0x40000000;
 
 /**
@@ -209,18 +212,11 @@ function slotKey(slot: TemplateSlot, orderOffset = 0): string {
   return `${slot[0]},${slot[1]},${(slot[2] ?? 0) + orderOffset}`;
 }
 
-function appendPathBinding<Kind extends keyof PathBindingTypes>(
-  entry: Record<Kind, PathBindingTypes[Kind][]>,
-  kind: Kind,
-  binding: PathBindingTypes[Kind],
-): void {
-  const bindings = entry[kind];
-  if (bindings.length === 0) {
-    entry[kind] = [binding];
-    return;
-  }
+function appendPathBinding<T>(bindings: T[], binding: T): T[] {
+  if (bindings === EMPTY_ARR) return [binding];
   // One binding's paths are processed together, so only the tail can duplicate it.
   if (bindings[bindings.length - 1] !== binding) bindings.push(binding);
+  return bindings;
 }
 
 /**
@@ -267,7 +263,7 @@ function getTextMarkerBoundaries(meta: TemplateBlockMeta, texts: CompiledTextRun
 
 // ── Sentinels ───────────────────────────────────────────────────
 
-const EMPTY_ARR: readonly never[] = [];
+const EMPTY_ARR: never[] = [];
 const EMPTY_SET: ReadonlySet<string> = new Set<string>();
 /** Branded single-key state writer used by framework bindings, not public duck typing. */
 const WEBUI_SET_STATE_KEY = Symbol.for('microsoft.webui.setStateKey');
@@ -289,20 +285,14 @@ interface SSRHydrationContext {
   readonly stale: Node[];
 }
 
-interface PathBindingTypes {
-  texts: TextBinding;
-  attrs: AttrBinding;
-  conds: CondBinding;
-  repeats: RepeatBinding;
-}
-
-type PathBindings = { [Kind in keyof PathBindingTypes]: PathBindingTypes[Kind][] };
-
 const pendingParentStateByElement = new WeakMap<Element, PendingParentState>();
 
-function bindingArray<T>(count: number): T[] {
-  return count > 0 ? new Array<T>(count) : EMPTY_ARR as unknown as T[];
-}
+const FLAT_BINDINGS: PathBindings = {
+  texts: EMPTY_ARR,
+  attrs: EMPTY_ARR,
+  conds: EMPTY_ARR,
+  repeats: EMPTY_ARR,
+};
 
 function createTemplateInstance(
   root: Node,
@@ -310,13 +300,14 @@ function createTemplateInstance(
   nodes: Node[],
   scope?: ScopeFrame,
 ): TemplateInstance {
-  const instance: TemplateInstance = {
-    scope, container: root as ParentNode & Node, nodes,
-    texts: bindingArray<TextBinding>(meta.tx?.length ?? 0),
-    attrs: bindingArray<AttrBinding>(meta.a?.length ?? 0),
-    conds: bindingArray<CondBinding>(meta.c?.length ?? 0),
-    repeats: bindingArray<RepeatBinding>(meta.r?.length ?? 0),
-  };
+  const instance = Object.create(FLAT_BINDINGS) as TemplateInstance;
+  instance.scope = scope;
+  instance.container = root as ParentNode & Node;
+  instance.nodes = nodes;
+  if (meta.tx?.length) instance.texts = new Array<TextBinding>(meta.tx.length);
+  if (meta.a?.length) instance.attrs = new Array<AttrBinding>(meta.a.length);
+  if (meta.c?.length) instance.conds = new Array<CondBinding>(meta.c.length);
+  if (meta.r?.length) instance.repeats = new Array<RepeatBinding>(meta.r.length);
   const fragment = lazyBlockOwner(meta, instance);
   if (fragment) instance.fragment = fragment;
   return instance;
@@ -379,9 +370,7 @@ function childNodesArray(parent: Node): Node[] {
 /** Snapshot the siblings strictly between two block range boundaries. */
 function rangeNodesArray(start: Node, end: Node | null): Node[] {
   const result: Node[] = [];
-  for (let node = start.nextSibling; node !== null && node !== end; node = node.nextSibling) {
-    result.push(node);
-  }
+  for (let node = start.nextSibling; node && node !== end; node = node.nextSibling) result.push(node);
   return result;
 }
 
@@ -492,7 +481,7 @@ export class TemplateElement extends HTMLElement {
    *  so their update loop skips the walk entirely. */
   private $hasUnknownScopes = false;
   private $templateState: Record<string, unknown> | null = null;
-  private $dirtyPaths: Set<string> | null = null;
+  private $dirtyPaths: string | Set<string> | null = null;
   [RENDER_PENDING] = 0;
   /** Observable paths written while connected but before hydration finished
    *  (constructor, `@observable` field initializer, or before
@@ -511,7 +500,7 @@ export class TemplateElement extends HTMLElement {
   declare private $resolver:
     | ((path: string, scope?: unknown) => unknown)
     | undefined;
-  private $pathIndex?: Map<string, PathBindings>;
+  private $pathIndex?: Map<string, PathBindings> | string;
   /** Bindings that reference non-observable paths — updated on every flush. */
   private $wildcardBindings?: PathBindings | null;
 
@@ -1553,14 +1542,10 @@ export class TemplateElement extends HTMLElement {
       return;
     }
 
-    // Lazy-build path index on first update (deferred from hydration)
-    if (!this.$pathIndex) this.$buildPathIndex();
-
     if (path) {
-      if (this.$pathIndex?.has(path) || this.$wildcardBindings) {
+      if (this.$pathBindings(path) || this.$wildcardBindings) {
         // Batch path-specific updates via microtask coalescing.
-        if (!this.$dirtyPaths) this.$dirtyPaths = new Set();
-        this.$dirtyPaths.add(path);
+        this.$markDirty(path);
         enqueueRender(this);
       }
       return;
@@ -1590,15 +1575,18 @@ export class TemplateElement extends HTMLElement {
     (this.$deferredWrites ??= new Set()).add(root);
   }
 
+  private $markDirty(path: string): void {
+    const dirty = this.$dirtyPaths;
+    if (!dirty || dirty === path) this.$dirtyPaths = path;
+    else if (typeof dirty === 'string') this.$dirtyPaths = new Set<string>().add(dirty).add(path);
+    else dirty.add(path);
+  }
+
   private $replayDeferredWrites(): void {
     const writes = this.$deferredWrites;
     if (!writes) return;
     this.$deferredWrites = undefined;
-    if (this.$dirtyPaths) {
-      for (const path of writes) this.$dirtyPaths.add(path);
-    } else {
-      this.$dirtyPaths = writes;
-    }
+    for (const path of writes) this.$markDirty(path);
     enqueueRender(this);
     this[RENDER](true);
   }
@@ -1637,6 +1625,17 @@ export class TemplateElement extends HTMLElement {
       !this.$deferredClientMount && this.isConnected;
   }
 
+  private $pathBindings(path: string): PathBindings | null | undefined {
+    if (!this.$pathIndex) this.$buildPathIndex();
+    const index = this.$pathIndex;
+    return index === path ? this.$root : typeof index === 'object' ? index.get(path) : undefined;
+  }
+
+  private $updatePath(path: string, known: boolean): void {
+    const entry = this.$pathBindings(path);
+    if (entry) this.$updateInstance(entry, known);
+  }
+
   /** Flush all queued path updates. Handles re-entrant setter calls. */
   [RENDER](
     requireKnownState = this.$guardUnknownState === true,
@@ -1648,28 +1647,24 @@ export class TemplateElement extends HTMLElement {
       return;
     }
     try {
-      if (!this.$pathIndex) this.$buildPathIndex();
-      if (!this.$pathIndex) return;
-
-      while (this.$dirtyPaths && this.$dirtyPaths.size > 0) {
-        // Snapshot and clear so re-entrant setters get a fresh set.
+      while (this.$dirtyPaths) {
+        // Detach the current batch so re-entrant writes are not consumed by it.
         const dirty = this.$dirtyPaths;
         this.$dirtyPaths = null;
 
-        const paths = dirty.values();
-        try {
-          for (const path of paths) {
-            if (!this.$pathIndex) this.$buildPathIndex();
-            const entry = this.$pathIndex?.get(path);
-            if (entry) {
-              this.$updateInstance(entry, requireKnownState);
+        if (typeof dirty === 'string') {
+          this.$updatePath(dirty, requireKnownState);
+        } else {
+          const paths = dirty.values();
+          try {
+            for (const path of paths) {
+              this.$updatePath(path, requireKnownState);
             }
+          } catch (error) {
+            // Preserve only the unprocessed tail alongside re-entrant writes.
+            for (const path of paths) this.$markDirty(path);
+            throw error;
           }
-        } catch (error) {
-          // The Set iterator is past the rejected path. Preserve only its
-          // unprocessed tail, alongside writes queued by re-entrant setters.
-          for (const path of paths) (this.$dirtyPaths ??= new Set()).add(path);
-          throw error;
         }
         // Update wildcard bindings once per flush (not per dirty path)
         if (!this.$pathIndex) this.$buildPathIndex();
@@ -1677,7 +1672,6 @@ export class TemplateElement extends HTMLElement {
           const wc = this.$wildcardBindings;
           this.$updateInstance(wc, requireKnownState);
         }
-        if (!this.$pathIndex) this.$buildPathIndex();
       }
     } catch (error) {
       renderWork?.fail(this, error);
@@ -1686,7 +1680,7 @@ export class TemplateElement extends HTMLElement {
       // A rejected sink still propagates its error. Release scheduling and keep
       // unprocessed and re-entrant writes, without retrying the failed path.
       finishRender(this);
-      if (this.$dirtyPaths?.size) {
+      if (this.$dirtyPaths) {
         enqueueRender(this);
       }
     }
@@ -1726,7 +1720,7 @@ export class TemplateElement extends HTMLElement {
       };
       const tag = this.tagName.toLowerCase();
       void import('./hydration-mismatch.js').then((m) =>
-        m.reportHydrationMismatch(tag, writes, index, ctx),
+        m.reportHydrationMismatch(tag, writes, index, ctx, this.$root ?? undefined),
       );
     }
   }
@@ -1888,9 +1882,10 @@ export class TemplateElement extends HTMLElement {
         if (!parent || (parent.nodeType !== 1 && parent.nodeType !== 11)) continue;
         const anchor = ownerDocument.createComment('');
         const binding: RepeatBinding = {
-          markerId: i, collection, itemVar, blockIndex,
-          container: parent as ParentNode & Node, start: anchor, end: null,
+          collection, itemVar, blockIndex,
+          container: parent as ParentNode & Node, start: anchor,
           scope, owner: instance, instances: [],
+          fixed: !hasRootStructuralSlot(this.$block(blockIndex, instance.fragment)),
         };
         if (keyPath !== undefined) {
           binding.keyState = createRepeatKeyState(keyPath);
@@ -1996,7 +1991,7 @@ export class TemplateElement extends HTMLElement {
           };
           if (
             (!scope || scopeIsKnown(scope))
-            && this.$textStateIsKnown(binding)
+            && this.$bindingStateIsKnown(binding)
           ) {
             binding.rawValue = this.$resolveParts(parts, scope);
           }
@@ -2160,11 +2155,12 @@ export class TemplateElement extends HTMLElement {
       const count = blockMeta && anchor.parentNode ? itemMarkers.length : 0;
       const instances = new Array<TemplateInstance>(count);
       const binding: RepeatBinding = {
-        markerId: i, collection, itemVar, blockIndex,
+        collection, itemVar, blockIndex,
         container,
-        start: anchor, end: null,
+        start: anchor,
         scope, owner: instance, instances,
         synced: hasCollectionState,
+        fixed: !hasRootStructuralSlot(blockMeta),
       };
       if (blockMeta && count > 0) {
         if (!this.$activatingDeferredSSR && hasCollectionState && count !== items.length) {
@@ -2227,7 +2223,7 @@ export class TemplateElement extends HTMLElement {
         if (
           primeSSRComplexProperties &&
           binding.kind === ATTR_KIND_COMPLEX &&
-          this.$attrStateIsKnown(binding)
+          this.$bindingStateIsKnown(binding)
         ) {
           const element = binding.element;
           const value = this.$resolveValue(binding.path!, binding.scope);
@@ -2255,8 +2251,18 @@ export class TemplateElement extends HTMLElement {
   // ═══════════════════════════════════════════════════════════════
 
   private $buildPathIndex(): void {
-    if (!this.$root) return;
+    const instance = this.$root;
+    if (!instance) return;
     const observableNames = this.$observableNames();
+    const meta = this.$meta;
+    const flat = meta && !instance.conds.length && !instance.repeats.length &&
+      instance.texts.length === (meta.tx?.length ?? 0) &&
+      instance.attrs.length === (meta.a?.length ?? 0);
+    const plan = flat && flatPathPlans.get(meta);
+    if (plan && (observableNames.has(plan) || this.$usesTemplateState(plan))) {
+      this.$pathIndex = plan;
+      return;
+    }
     const index = new Map<string, PathBindings>();
 
     const append = <Kind extends keyof PathBindingTypes>(
@@ -2268,40 +2274,34 @@ export class TemplateElement extends HTMLElement {
       const key = observableNames.has(root) || this.$usesTemplateState(root) ? root : '*';
       let entry = index.get(key);
       if (!entry) {
-        entry = {
-          texts: bindingArray<TextBinding>(0),
-          attrs: bindingArray<AttrBinding>(0),
-          conds: bindingArray<CondBinding>(0),
-          repeats: bindingArray<RepeatBinding>(0),
-        };
+        entry = Object.create(FLAT_BINDINGS) as PathBindings;
         index.set(key, entry);
       }
-      appendPathBinding(entry, kind, binding);
+      const bucket: Record<Kind, PathBindingTypes[Kind][]> = entry;
+      bucket[kind] = appendPathBinding(bucket[kind], binding);
+    };
+
+    const collect = <Kind extends keyof PathBindingTypes>(
+      binding: PathBindingTypes[Kind] & {
+        path?: string; parts?: CompiledAttrPart[]; condition?: CompiledCondition;
+      },
+      kind: Kind,
+    ): void => {
+      if (binding.path) append(binding.path, kind, binding);
+      else if (binding.parts) {
+        for (const part of binding.parts) {
+          if (typeof part !== 'string') append(part[0], kind, binding);
+        }
+      } else if (binding.condition) {
+        for (const path of binding.condition[1]) append(path, kind, binding);
+      }
     };
 
     const visit = (instance: TemplateInstance): void => {
-      for (const t of instance.texts) {
-        if (t.parts) {
-          for (const p of t.parts) {
-            if (typeof p !== 'string') append(p[0], 'texts', t);
-          }
-        } else if (t.path) append(t.path, 'texts', t);
-      }
-      for (const a of instance.attrs) {
-        if (a.path) append(a.path, 'attrs', a);
-        if (a.parts) {
-          for (const p of a.parts) {
-            if (typeof p !== 'string') append(p[0], 'attrs', a);
-          }
-        }
-        if (a.condition) {
-          for (const p of a.condition[1]) append(p, 'attrs', a);
-        }
-      }
+      for (const text of instance.texts) collect(text, 'texts');
+      for (const attr of instance.attrs) collect(attr, 'attrs');
       for (const c of instance.conds) {
-        for (const p of c.condition[1]) {
-          append(p, 'conds', c);
-        }
+        collect(c, 'conds');
         if (c.instance) visit(c.instance);
         else if (c.instance === undefined) {
           // A true text-only SSR body can serialize to an empty marker range.
@@ -2322,16 +2322,22 @@ export class TemplateElement extends HTMLElement {
         }
       }
     };
-    visit(this.$root);
+    visit(instance);
 
     // Store wildcard bindings separately — avoids duplicating them into every path
     const wc = index.get('*');
     if (wc) {
       index.delete('*');
-      this.$wildcardBindings = wc;
-    } else {
-      this.$wildcardBindings = null;
+    } else if (flat && index.size === 1) {
+      for (const [path, entry] of index) {
+        if (entry.texts.length === instance.texts.length && entry.attrs.length === instance.attrs.length) {
+          flatPathPlans.set(meta, path);
+          this.$pathIndex = path;
+          return;
+        }
+      }
     }
+    this.$wildcardBindings = wc ?? null;
     this.$pathIndex = index;
   }
 
@@ -2343,8 +2349,8 @@ export class TemplateElement extends HTMLElement {
     // Fast path: with no client-absent SSR scopes (every authored component and
     // every fully-hydrated host) the walk is unnecessary, so skip it per binding.
     const gated = this.$hasUnknownScopes;
-    updateBindings(this, bindings.texts, this.$patchText, requireKnownState ? this.$textStateIsKnown : undefined, gated);
-    updateBindings(this, bindings.attrs, this.$patchAttr, requireKnownState ? this.$attrStateIsKnown : undefined, gated);
+    updateBindings(this, bindings.texts, this.$patchText, requireKnownState ? this.$bindingStateIsKnown : undefined, gated);
+    updateBindings(this, bindings.attrs, this.$patchAttr, requireKnownState ? this.$bindingStateIsKnown : undefined, gated);
     updateBindings(this, bindings.conds, this.$toggleCond, requireKnownState ? this.$condStateIsKnown : undefined, gated);
     updateBindings(this, bindings.repeats, updateRepeat, requireKnownState ? this.$repeatStateIsKnown : undefined, gated);
   }
@@ -2357,28 +2363,20 @@ export class TemplateElement extends HTMLElement {
     return this.$hasStateRoot(binding.collection, binding.scope);
   }
 
-  private $textStateIsKnown(binding: TextBinding): boolean {
-    if (binding.parts) return this.$partsAreKnown(binding.parts, binding.scope);
-    return !binding.path || this.$hasStateRoot(binding.path, binding.scope);
-  }
-  private $attrStateIsKnown(binding: AttrBinding): boolean {
+  private $bindingStateIsKnown(binding: {
+    path?: string; parts?: CompiledAttrPart[]; condition?: CompiledCondition; scope?: ScopeFrame;
+  }): boolean {
     if (binding.path && !this.$hasStateRoot(binding.path, binding.scope)) return false;
-    if (binding.parts && !this.$partsAreKnown(binding.parts, binding.scope)) return false;
+    if (binding.parts && !this.$pathsAreKnown(binding.parts, binding.scope, true)) return false;
     return !binding.condition
       || this.$pathsAreKnown(binding.condition[1], binding.scope);
   }
 
-  private $partsAreKnown(parts: CompiledAttrPart[], scope?: ScopeFrame): boolean {
-    for (let i = 0; i < parts.length; i++) {
-      const part = parts[i];
-      if (typeof part !== 'string' && !this.$hasStateRoot(part[0], scope)) return false;
-    }
-    return true;
-  }
-
-  private $pathsAreKnown(paths: string[], scope?: ScopeFrame): boolean {
-    for (let i = 0; i < paths.length; i++) {
-      if (!this.$hasStateRoot(paths[i], scope)) return false;
+  private $pathsAreKnown(paths: CompiledAttrPart[], scope?: ScopeFrame, parts = false): boolean {
+    for (const path of paths) {
+      if (typeof path === 'string') {
+        if (!parts && !this.$hasStateRoot(path, scope)) return false;
+      } else if (!this.$hasStateRoot(path[0], scope)) return false;
     }
     return true;
   }
@@ -2557,18 +2555,18 @@ export class TemplateElement extends HTMLElement {
 
   $createBlockInstance(
     blockIndex: TemplateBlockReference,
-    scope?: ScopeFrame,
-    parent?: TemplateInstance,
-    container?: ParentNode & Node,
+    scope: ScopeFrame | undefined,
+    parent: TemplateInstance,
+    container: ParentNode & Node,
   ): TemplateInstance | null {
     const bm = typeof blockIndex === 'number'
-      ? this.$block(blockIndex, parent?.fragment)
+      ? this.$block(blockIndex, parent.fragment)
       : requireLazyFragment(blockIndex, this.localName);
     if (!bm && typeof blockIndex === 'number' && blockIndex < 0) {
       throw new Error('[WebUI] Missing lazy block. Reload matching resources.');
     }
     if (!bm) return null;
-    const context = container?.nodeType === 1 ? container as Element : undefined;
+    const context = container.nodeType === 1 ? container as Element : undefined;
     const wrapper = createTemplateContainer(this.ownerDocument, context);
     this.$stageTemplate(wrapper, bm);
     const inst = this.$wire(wrapper, bm, scope);
@@ -2576,8 +2574,8 @@ export class TemplateElement extends HTMLElement {
     this.$updateInstance(inst);
     if (inst.repeats.length !== 0 || inst.conds.length !== 0) {
       inst.nodes = childNodesArray(wrapper);
-      replaceInstanceContainer(inst, wrapper, container ?? null);
-    } else if (container) {
+      replaceInstanceContainer(inst, wrapper, container);
+    } else {
       inst.container = container;
     }
     inst.parent = parent;
@@ -2589,10 +2587,8 @@ export class TemplateElement extends HTMLElement {
   }
 
   private $disposeInstance(root: TemplateInstance, removeNodes: boolean, retainFragments = false): void {
-    const stack: TemplateInstance[] = [root];
-    while (stack.length > 0) {
-      const instance = stack.pop();
-      if (!instance) continue;
+    const stack: TemplateInstance[] = [];
+    for (let instance: TemplateInstance | undefined = root; instance; instance = stack.pop()) {
       if (retainFragments && instance.fragment) {
         (this.$retainedFragments ??= new Set()).add(instance.fragment);
       }
@@ -2694,7 +2690,6 @@ function clearRepeatBinding(repeat: RepeatBinding): void {
   repeat.instances.length = 0;
   repeat.container = null;
   repeat.start = null;
-  repeat.end = null;
   if (repeat.keyState) clearRepeatKeyState(repeat.keyState);
 }
 
@@ -2704,10 +2699,10 @@ function clearInstance(instance: TemplateInstance): void {
   instance.container = null;
   instance.nodes.length = 0;
   if (instance.fragment) instance.fragment = undefined;
-  if (instance.texts.length > 0) instance.texts.length = 0;
-  if (instance.attrs.length > 0) instance.attrs.length = 0;
-  if (instance.conds.length > 0) instance.conds.length = 0;
-  if (instance.repeats.length > 0) instance.repeats.length = 0;
+  instance.texts.length = 0;
+  instance.attrs.length = 0;
+  instance.conds.length = 0;
+  instance.repeats.length = 0;
 }
 
 function hydrateAnchor(
@@ -2824,24 +2819,15 @@ function replaceInstanceContainer(
   }
 }
 
-function hasRootStructuralSlot(meta: TemplateBlockMeta): boolean {
+function hasRootStructuralSlot(meta: TemplateBlockMeta | undefined): boolean {
   // Index 0 is the section root. Nodes a nested block later inserts there
   // can be missing from this block's node snapshot, so owners compact after
   // removing it.
-  if (meta.c) {
-    for (let i = 0; i < meta.c.length; i++) {
-      if (meta.c[i][2][0] === 0) return true;
-    }
-  }
-  if (meta.r) {
-    for (let i = 0; i < meta.r.length; i++) {
-      if (meta.r[i][3][0] === 0) return true;
-    }
-  }
-  if (meta.tx) {
-    for (let i = 0; i < meta.tx.length; i++) {
-      if (meta.tx[i][2] === 1 && meta.tx[i][0][0] === 0) return true;
-    }
+  if (!meta) return true;
+  for (const binding of meta.c ?? EMPTY_ARR) if (binding[2][0] === 0) return true;
+  for (const binding of meta.r ?? EMPTY_ARR) if (binding[3][0] === 0) return true;
+  for (const binding of meta.tx ?? EMPTY_ARR) {
+    if (binding[2] === 1 && binding[0][0] === 0) return true;
   }
   return false;
 }

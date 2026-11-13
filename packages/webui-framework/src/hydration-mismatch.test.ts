@@ -233,8 +233,8 @@ describe('condDiffersFromDom', () => {
 
 function repeat(collection: string, instanceCount: number): RepeatBinding {
   return {
-    markerId: 0, collection, itemVar: 'item', blockIndex: 0,
-    container: null, start: null, end: null,
+    collection, itemVar: 'item', blockIndex: 0,
+    container: null, start: null,
     owner: {} as unknown as TemplateInstance,
     instances: Array.from({ length: instanceCount }, () => ({})) as unknown as RepeatBinding['instances'],
   };

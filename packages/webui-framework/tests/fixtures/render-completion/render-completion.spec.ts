@@ -173,6 +173,35 @@ test('slotted descendant updates are included', async ({ page }) => {
   expect(result).toEqual({ slotted: true, value: '31' });
 });
 
+for (const mode of ['open', 'closed'] as const) {
+  test(`a late ${mode} shadow root participates in overlapping completion scopes`, async ({ page }) => {
+    await page.goto('/render-completion/fixture.html');
+    const result = await page.evaluate(async mode => {
+      const host = document.createElement('test-completion-leaf') as RenderHost;
+      document.body.appendChild(host);
+      await host.$whenRendered();
+      const outer = host.$whenRendered();
+      const shadow = host.attachShadow({ mode });
+      const child = document.createElement('test-completion-child') as RenderHost;
+      shadow.appendChild(child);
+      child.captureInChanged = true;
+      child.value = '105';
+      const inner = child.$whenRendered();
+      await Promise.all([outer, inner, child.pending]);
+      const value = child.shadowRoot!.querySelector('.action')!.textContent;
+      child.value = '106';
+      const moving = host.$whenRendered();
+      document.body.appendChild(child);
+      let rejected = false;
+      try { await moving; } catch (error) {
+        rejected = error instanceof DOMException && error.name === 'AbortError';
+      }
+      return { value, rejected };
+    }, mode);
+    expect(result).toEqual({ value: '106', rejected: true });
+  });
+}
+
 test('nested light descendants and slot fallback retain rendered ownership', async ({ page }) => {
   await page.goto('/render-completion/fixture.html');
   const values = await page.evaluate(async () => {

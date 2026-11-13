@@ -98,6 +98,11 @@ enrollment open until one explicit microtask checkpoint so requests from a
 Changed callback include the setter's trailing update. Jobs that run before
 that checkpoint must still be accounted for.
 
+Each observation captures its root's visible ShadowRoot (or the root itself)
+as a positive containment hint. The hint never proves exclusion: live shadow
+host and assigned-slot traversal still determines ownership after movement,
+redistribution, or a late `attachShadow`. No child ancestry is cached.
+
 After enrollment closes, propagate membership only through synchronous work
 executing in captured renders and explicitly carried mount continuations.
 Coalesced writes are inseparable from their captured job; new independent
@@ -113,7 +118,9 @@ wrapper objects or eager promises. Blocked targets use weak
 references and retain no copied state or strong subtree ownership. Initial
 discovery scales with outstanding work and ancestry depth, not just affected
 bindings. Waiter membership exists only for requested boundaries: jobs share a
-single observer set unless requests overlap. Release membership on settlement,
+single observer set unless requests overlap; allocate that set only when the
+first job enrolls. The opening set also owns the enrollment checkpoint rather
+than a second per-observation flag. Release membership on settlement,
 and bypass observer-scope bookkeeping when no boundary is requested. Allocate
 observation indexes on demand and weakly cache idle machinery so collection
 does not retain completed observer callbacks or lose pending mounts and tasks.
@@ -519,7 +526,13 @@ After hydration, every dynamic value is connected to a direct DOM-node reference
 
 ### Path index
 
-`$buildPathIndex` (called lazily on the first update) walks every binding in the component and groups them by the observable property names they depend on:
+`$buildPathIndex` runs lazily on the first path-specific update. Flat sections
+whose bindings all depend on the same reactive root share a metadata-keyed
+root name instead of retaining a per-instance map. The proof requires complete
+binding coverage and is checked against each host's reactive surface.
+Live bindings and repeat scopes remain instance-owned. Multi-root sections,
+structural sections, and wildcard dependencies use instance
+buckets grouped by the observable property names they depend on:
 
 ```text
 'count'  → { texts: [t1, t2], attrs: [], conds: [c1], repeats: [] }
@@ -548,6 +561,10 @@ this.count = 5
 ```
 
 Updates are coalesced via `queueMicrotask`. Multiple synchronous setter calls inside a single tick produce one DOM pass.
+One dirty path is stored directly; a second distinct path promotes the batch
+to a set. The current batch is detached before applying it, so reentrant writes
+form a subsequent batch. A failed binding preserves only unprocessed paths and
+new writes, not an automatic retry of the failing path.
 
 The public `$whenRendered()` completion boundary waits for the finite affected
 rendering batch, including activated lazy regions and affected descendants.
@@ -558,7 +575,7 @@ Internal synchronous flushing remains private to framework coordination.
 - `$pathIndex.get(name)` is an O(1) `Map` lookup.
 - Each binding holds a direct `Text`/`Element` reference resolved during hydration. No selectors run on update.
 - Skipping unrelated bindings means a 200-binding component pays the cost of the 3 bindings that actually depend on `count`.
-- No tree walk, no diff, no allocation per update beyond the `Set<string>` of dirty paths.
+- Single-path dirty tracking needs no collection allocation.
 
 ---
 
@@ -593,6 +610,18 @@ validates the complete next key set before changing DOM, scopes, or instances.
 Stable order, append, and truncate use the positional/prefix fast path. A real
 order change fills one reusable map from old keys to instances, reorders the
 instances, and then clears the map and scratch arrays.
+Every key is read on every reconciliation, including in-place mutations.
+An unchanged prefix inherits its prior uniqueness proof without populating the
+scratch map. Compiler metadata also proves when a row's top-level nodes cannot
+change; those rows need no placement check in an unchanged positional prefix.
+Root-level conditionals, repeats, and raw ranges retain general placement.
+
+Instances inherit shared empty binding arrays and own only populated arrays.
+Repeat records retain no consumed marker ordinal or closing marker. Wiring and
+relocation always supply the live container; disposal clears it rather than
+rediscovering ownership from historical nodes.
+Disposal clears all owned nodes, bindings, effects, and scopes; it
+does not retain previous row generations.
 
 Duplicate, invalid, or throwing key reads clear established identity, warn
 once, and use positional reconciliation. A later valid update first reconciles

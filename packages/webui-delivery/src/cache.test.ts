@@ -3,7 +3,7 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, test } from 'node:test';
-import { NavigationCache, type PartialResponse } from './cache.js';
+import { NavigationCache, navigationCache, type PartialResponse } from './cache.js';
 
 function response(staleTime?: number, tags: string[] = []): PartialResponse {
   return {
@@ -34,6 +34,135 @@ describe('completed navigation response ownership', () => {
     assert.equal(owner.lookup('/items/1'), null);
     now = 999;
     assert.equal(owner.lookup('/items/1'), null, 'clock rollback cannot restore discarded data');
+  });
+
+  describe('navigation response byte budget', () => {
+    test('rejects invalid budgets and zero retains neither preloads nor streams', () => {
+      for (const maxBytes of [-1, NaN, Infinity, 1.5]) {
+        assert.throws(() => navigationCache({ maxBytes }), RangeError);
+      }
+      const owner = navigationCache({ maxBytes: 0, staleTime: 60_000 });
+      for (const preload of [false, true]) {
+        for (const streaming of [false, true]) {
+          owner.store('/items/1', response(), preload, streaming);
+          assert.equal(owner.has('/items/1'), false);
+        }
+      }
+    });
+
+    test('evicts by bytes in LRU order and releases accounting on invalidation and clear', () => {
+      const sizing = cache(60_000);
+      sizing.store('/a', response());
+      const size = sizing.getEntry('/a')!.bytes;
+      const owner = navigationCache({ staleTime: 60_000, maxBytes: size * 2 });
+      const first = response();
+      owner.store('/a', first);
+      owner.store('/b', response());
+      assert.equal(owner.lookup('/a'), first);
+      owner.store('/c', response());
+      assert.equal(owner.has('/b'), false);
+      assert.equal(owner.has('/a'), true);
+      owner.invalidate('/a');
+      owner.store('/d', response());
+      assert.equal(owner.has('/c'), true);
+      owner.clear();
+      owner.store('/e', response());
+      owner.store('/f', response());
+      assert.equal(owner.has('/e'), true);
+    });
+
+    test('an oversized response does not displace unrelated entries or leave stale replacement tags', () => {
+      const owner = navigationCache({ staleTime: 60_000, maxBytes: 2_000 });
+      owner.store('/a', response(60_000, ['old']));
+      owner.store('/b', response());
+      const large = response(60_000, ['new']);
+      large.state = { text: 'x'.repeat(2_000) };
+      owner.store('/a', large, true);
+      assert.equal(owner.has('/a'), false);
+      assert.equal(owner.has('/b'), true);
+      const tags = owner['tagIndex'];
+      assert.equal(tags.has('old'), false);
+      assert.equal(tags.has('new'), false);
+    });
+
+    test('growing stream state is evicted before completion without affecting a replacement', () => {
+      const owner = navigationCache({ staleTime: 60_000, maxBytes: 2_000 });
+      const first = response();
+      owner.store('/a', first, true, true);
+      first.state = { text: 'x'.repeat(2_000) };
+      owner.refreshStream('/a', first);
+      assert.equal(owner.has('/a'), false);
+      const replacement = response();
+      owner.store('/a', replacement, true, true);
+      owner.refreshStream('/a', first);
+      owner.settleStream('/a', first, true);
+      assert.equal(owner.getEntry('/a')?.data, replacement);
+      assert.equal(owner.getEntry('/a')?.complete, false);
+      replacement.state = { text: 'y'.repeat(2_000) };
+      owner.settleStream('/a', replacement, true);
+      assert.equal(owner.has('/a'), false);
+    });
+
+    test('lookup does not rescan or serialize cached state and zero freshness never measures it', () => {
+      let reads = 0;
+      const data = response();
+      data.state = { get text() { reads++; return 'value'; } };
+      data.state.self = data.state;
+      const owner = cache(60_000);
+      owner.store('/a', data);
+      assert.equal(reads, 1);
+      for (let i = 0; i < 10; i++) assert.equal(owner.lookup('/a'), data);
+      assert.equal(reads, 1);
+      cache().store('/a', data);
+      assert.equal(reads, 1);
+    });
+
+    test('multiple state records never revisit immutable metadata or unchanged route states', () => {
+      let metadataReads = 0;
+      let parentReads = 0;
+      const data = response();
+      data.templates = { get template() { metadataReads++; return 'x'.repeat(100_000); } };
+      data.chain = [
+        { component: 'parent-view', path: '/', params: {}, state: {
+          get retained() { parentReads++; return 'parent'; },
+        } },
+        { component: 'child-view', path: '/child', params: {} },
+      ];
+      const owner = navigationCache({ staleTime: 60_000 });
+      owner.store('/child', data, false, true);
+      const baseBytes = owner.getEntry('/child')!.bytes;
+      for (let i = 0; i < 50; i++) {
+        const state = { value: 'new'.repeat(i + 1) };
+        data.chain[1].state = state;
+        owner.refreshStream('/child', data, [null, state]);
+      }
+      assert.equal(metadataReads, 1);
+      assert.equal(parentReads, 1);
+      assert.ok(owner.getEntry('/child')!.bytes > baseBytes);
+      owner.settleStream('/child', data, true, true);
+      assert.equal(metadataReads, 1, 'settlement of already accounted records does not rescan');
+      assert.equal(parentReads, 1);
+      assert.equal(owner.getEntry('/child')!.stateBytes, undefined);
+      assert.equal(owner.lookup('/child'), data);
+    });
+
+    test('incremental replacements release old bytes and skip null state slots', () => {
+      const owner = navigationCache({ staleTime: 60_000, maxBytes: 2_000 });
+      const data = response();
+      data.chain = [{ component: 'test-view', path: '/', params: {}, state: { text: 'a'.repeat(300) } }];
+      owner.store('/', data, true, true);
+      const full = owner.getEntry('/')!.bytes;
+      const small = { text: 'b' };
+      data.chain[0].state = small;
+      owner.refreshStream('/', data, [small]);
+      assert.equal(owner.getEntry('/')!.bytes, full - 598);
+      owner.refreshStream('/', data, [null]);
+      assert.equal(owner.getEntry('/')!.bytes, full - 598);
+      const large = { text: 'c'.repeat(2_000) };
+      data.chain[0].state = large;
+      owner.refreshStream('/', data, [large]);
+      assert.equal(owner.has('/'), false);
+    });
   });
 
   test('positive server freshness overrides zero configuration', t => {

@@ -171,4 +171,34 @@ for (const mode of ['hydrated', 'client-created'] as const) {
     expect(retained).toBe(0);
     expect(await assigned(panel.locator('#nested'))).toEqual(['', ...Array(40).fill('Text'), '']);
   });
+
+  test(`${mode} compact text rows keep private bindings through truncation and reuse`, async ({ page }) => {
+    const panel = await hydrate(page, mode);
+    await update(panel, { items: [{ value: 'A' }, { value: 'B' }] });
+    const result = await panel.evaluate(async element => {
+      const host = element as DetailsPanel;
+      const root = host['$root']!;
+      const repeat = root.repeats.find(binding =>
+        binding.container === host.shadowRoot!.querySelector('#repeat'))!;
+      const [first, removed] = repeat.instances;
+      const node = first.texts[0].node;
+      const compact = !Object.hasOwn(first, 'attrs') &&
+        !Object.hasOwn(first, 'conds') && !Object.hasOwn(first, 'repeats');
+      host.items = [{ value: '' }];
+      await host.$whenRendered();
+      const released = removed.nodes.length === 0 && removed.texts.length === 0 &&
+        removed.scope === undefined;
+      host.items = [{ value: 'Changed' }, { value: 'New' }];
+      await host.$whenRendered();
+      return {
+        compact, released, same: repeat.instances[0].texts[0].node === node,
+        values: repeat.instances.map(instance => instance.texts[0].node.data),
+        independent: repeat.instances[0].texts !== repeat.instances[1].texts,
+      };
+    });
+    expect(result).toEqual({
+      compact: true, released: true, same: true,
+      values: ['Changed', 'New'], independent: true,
+    });
+  });
 }

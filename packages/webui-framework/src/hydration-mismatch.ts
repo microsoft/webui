@@ -38,6 +38,7 @@ import {
   type RepeatBinding,
   type ScopeFrame,
   type TextBinding,
+  type TemplateInstance,
 } from './element/types.js';
 
 /**
@@ -75,13 +76,15 @@ export interface PathBindings {
 export function reportHydrationMismatch(
   tag: string,
   writes: ReadonlySet<string>,
-  index: ReadonlyMap<string, PathBindings>,
+  index: ReadonlyMap<string, PathBindings> | string,
   ctx: MismatchContext,
+  root?: TemplateInstance,
 ): void {
   const mismatched: string[] = [];
   for (const path of writes) {
-    const entry = index.get(path);
-    if (entry && bindingsDisagreeWithDom(entry, ctx)) mismatched.push(path);
+    const entry = typeof index === 'string' ? index === path ? root : undefined : index.get(path);
+    if (!entry) continue;
+    if (bindingsDisagreeWithDom(entry, ctx)) mismatched.push(path);
   }
   if (mismatched.length !== 0) warnHydrationMismatch(tag, mismatched);
 }

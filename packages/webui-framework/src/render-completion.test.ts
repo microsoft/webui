@@ -76,6 +76,36 @@ test('a native render-root containment proof avoids repeated parent reads', () =
   assert.equal(probes, 1);
 });
 
+test('one observation captures the render-root hint once without caching child ownership', async () => {
+  const root = new Host();
+  const child = new Host();
+  child.parent = root;
+  let reads = 0;
+  Object.defineProperty(root, 'shadowRoot', { get() { reads++; return null; } });
+  queueRenderWork(child, UPDATE_WORK);
+  const waiting = whenRendered(root);
+  const rejected = assert.rejects(waiting, { name: 'AbortError' });
+  await Promise.resolve();
+  child.parent = null;
+  finish(child);
+  await rejected;
+  assert.equal(reads, 1, 'enrollment, entry and detach share only the root hint');
+  child.parent = root;
+  queueRenderWork(child, UPDATE_WORK);
+  const next = whenRendered(root);
+  finish(child);
+  await next;
+  assert.equal(reads, 2, 'a new observation captures its own root');
+});
+
+test('render-root discovery failure rejects without retaining an observer', async () => {
+  const root = new Host();
+  const failure = new Error('root lookup failed');
+  Object.defineProperty(root, 'shadowRoot', { get() { throw failure; } });
+  await assert.rejects(whenRendered(root), error => error === failure);
+  assert.equal(observingRender, false);
+});
+
 async function collectAfterTurn(): Promise<void> {
   const { setFlagsFromString } = await import('node:v8');
   const { runInNewContext } = await import('node:vm');

@@ -97,6 +97,17 @@ export interface TemplateInstance {
   listeners?: TemplateEventListener[];
 }
 
+export interface PathBindingTypes {
+  texts: TextBinding;
+  attrs: AttrBinding;
+  conds: CondBinding;
+  repeats: RepeatBinding;
+}
+
+export type PathBindings = {
+  [Kind in keyof PathBindingTypes]: PathBindingTypes[Kind][];
+};
+
 /** A removable direct listener; the listener record is also its DOM callback. */
 export interface TemplateEventListener extends EventListenerObject {
   readonly target: EventTarget;
@@ -126,17 +137,17 @@ export interface RepeatKeyState {
 
 /** Repeat block tracking. */
 export interface RepeatBinding {
-  markerId: number;
   collection: string;
   itemVar: string;
   blockIndex: TemplateBlockReference;
   container: (ParentNode & Node) | null;
   start: Comment | null;
-  end: Comment | null;
   scope?: ScopeFrame;
   owner: TemplateInstance;
   instances: TemplateInstance[];
   keyState?: RepeatKeyState;
+  /** Compiled row topology has no top-level structural or raw-HTML ranges. */
+  fixed?: boolean;
   /** Set to true once the collection has been explicitly set by client code. */
   synced?: boolean;
 }
@@ -154,9 +165,9 @@ export interface RepeatHost {
   /** Create, wire, and perform the first binding pass while detached. */
   $createBlockInstance(
     blockIndex: TemplateBlockReference,
-    scope?: ScopeFrame,
-    parent?: TemplateInstance,
-    container?: ParentNode & Node,
+    scope: ScopeFrame | undefined,
+    parent: TemplateInstance,
+    container: ParentNode & Node,
   ): TemplateInstance | null;
   $updateInstance(instance: TemplateInstance): void;
   $removeInstance(instance: TemplateInstance): void;

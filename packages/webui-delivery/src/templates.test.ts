@@ -20,7 +20,7 @@ import {
   registerTemplatesAndStyles,
   waitForTemplateReadiness,
 } from './templates.js';
-import type { PartialResponse } from './cache.js';
+import { navigationCache, type PartialResponse } from './cache.js';
 
 test('injected stylesheet links resolve against the runtime asset base', t => {
   const appended: { rel?: string; href?: string }[] = [];
@@ -105,6 +105,78 @@ function readStreamingPartial(
   response.headers.set('content-type', 'application/x-ndjson');
   return readPartial(response, path, context, signal, ndjson());
 }
+
+test('deferred state releases an over-budget cache entry before the stream closes', async () => {
+  const cache = navigationCache({ staleTime: 60_000, maxBytes: 2_000 });
+  let stream!: ReadableStreamDefaultController<Uint8Array>;
+  let deferred: Promise<void> | null = null;
+  const accounted = Promise.withResolvers<void>();
+  const context: StreamingContext = {
+    navGeneration: 1, currentRequestPath: '/budget', activeChain: [],
+    nonce: '', injectedCss: new Set(),
+    setDeferredReader(reader) { if (reader) deferred = reader; },
+    setDeferredGeneration() {}, updateInventory() {},
+    refreshCacheStream(path, data, states) {
+      cache.refreshStream(path, data, states);
+      accounted.resolve();
+    },
+    settleCacheStream(path, data, completed, accounted) { cache.settleStream(path, data, completed, accounted); },
+  };
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      stream = controller;
+      controller.enqueue(new TextEncoder().encode(
+        '{"path":"/budget","chain":[{"component":"test-budget","path":"/budget","params":{}}],"templates":{}}\n',
+      ));
+    },
+  });
+  const data = await readStreamingPartial(new Response(body), '/budget', context);
+  assert.ok(data);
+  cache.store('/budget', data, true, true);
+  assert.equal(cache.has('/budget'), true);
+  startDeferredStream(data);
+  stream.enqueue(new TextEncoder().encode(JSON.stringify({ states: [{ text: 'x'.repeat(2_000) }] }) + '\n'));
+  await accounted.promise;
+  assert.equal(cache.has('/budget'), false);
+  assert.equal(data.chain?.[0].state?.text, 'x'.repeat(2_000), 'eviction must not discard navigation state');
+  stream.close();
+  await deferred;
+});
+
+test('a stream context without incremental accounting measures grown state at settlement', async () => {
+  const cache = navigationCache({ staleTime: 60_000, maxBytes: 2_000 });
+  let stream!: ReadableStreamDefaultController<Uint8Array>;
+  let deferred: Promise<void> | null = null;
+  let accountingClaim: boolean | undefined;
+  const context: StreamingContext = {
+    navGeneration: 1, currentRequestPath: '/fallback', activeChain: [],
+    nonce: '', injectedCss: new Set(),
+    setDeferredReader(reader) { if (reader) deferred = reader; },
+    setDeferredGeneration() {}, updateInventory() {},
+    settleCacheStream(path, data, completed, accounted) {
+      accountingClaim = accounted;
+      cache.settleStream(path, data, completed, accounted);
+    },
+  };
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      stream = controller;
+      controller.enqueue(new TextEncoder().encode(
+        '{"path":"/fallback","chain":[{"component":"test-budget","path":"/fallback","params":{}}],"templates":{}}\n',
+      ));
+    },
+  });
+  const data = await readStreamingPartial(new Response(body), '/fallback', context);
+  assert.ok(data);
+  cache.store('/fallback', data, true, true);
+  startDeferredStream(data);
+  stream.enqueue(new TextEncoder().encode(JSON.stringify({ states: [{ text: 'x'.repeat(2_000) }] }) + '\n'));
+  stream.close();
+  await deferred;
+  assert.equal(accountingClaim, false);
+  assert.equal(cache.has('/fallback'), false);
+  assert.equal(data.chain?.[0].state?.text, 'x'.repeat(2_000));
+});
 
 test('template registration waits for synchronous runtime readiness', async () => {
   let release!: () => void;

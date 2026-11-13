@@ -1072,6 +1072,9 @@ second constructor configuration. Do not mutate configuration while running;
 destroy before restarting.
 See [selecting router capabilities](/build/routing#selecting-router-capabilities)
 for the import/configuration pairs.
+Navigation caching defaults to a 4 MiB estimated decoded-data budget.
+Configure `maxBytes` through [cache options](/build/routing#tagged-cache);
+`maxBytes: 0` disables retention, including preloads.
 
 Route loaders (`static loader({ params, query, signal })`) and actions
 (`static action({ formData, params, signal })`, enabled by

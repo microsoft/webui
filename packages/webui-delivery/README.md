@@ -52,6 +52,11 @@ active is an error; use `destroy()` before restarting. Do not mutate loader maps
 after startup. For pre-hydration intent loading, call a preload policy's
 `prepare()` before activation and pass the same policy to `start()`.
 
+`navigationCache({ maxBytes })` defaults to a 4 MiB estimated decoded-data
+budget in addition to its entry limit. This is not exact heap usage. It covers
+preloads and streamed state; oversized responses render without being cached.
+`maxBytes: 0` disables retention, including preloads.
+
 ## Transports
 
 The request deadline defaults to 10 seconds, including a deferred state tail.
