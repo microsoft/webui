@@ -117,6 +117,45 @@ describe('completed navigation response ownership', () => {
       assert.equal(reads, 1);
     });
 
+    test('primitive children need no traversal stack and retain exact admission boundaries', () => {
+      const shared = { label: 'shared' };
+      const values: unknown[] = Array.from({ length: 256 }, (_, index) => index % 2 ? index : 'row');
+      delete values[5];
+      values[0] = shared;
+      values[1] = shared;
+      values[2] = values;
+      values[3] = null;
+      values[4] = undefined;
+      values[6] = false;
+      Object.assign(values, { extra: '\u2713\ud83d\ude42' });
+      const data = response();
+      data.state = { values, shared };
+      const owner = cache(60_000);
+      const push = Array.prototype.push;
+      let primitivePushes = 0;
+      try {
+        Array.prototype.push = function (...children: unknown[]): number {
+          for (const child of children) {
+            if (child === null || typeof child !== 'object') primitivePushes++;
+          }
+          return Reflect.apply(push, this, children) as number;
+        };
+        owner.store('/mixed', data);
+      } finally {
+        Array.prototype.push = push;
+      }
+      const bytes = owner.getEntry('/mixed')!.bytes;
+      assert.equal(primitivePushes, 0, 'only object children require later traversal');
+      assert.equal(bytes, 3_350, 'sparse, custom, shared and cyclic content keeps the prior charge');
+      const exact = navigationCache({ staleTime: 60_000, maxBytes: bytes });
+      exact.store('/mixed', data);
+      assert.equal(exact.lookup('/mixed'), data);
+      assert.equal(exact.getEntry('/mixed')!.bytes, bytes);
+      const tooSmall = navigationCache({ staleTime: 60_000, maxBytes: bytes - 1 });
+      tooSmall.store('/mixed', data);
+      assert.equal(tooSmall.has('/mixed'), false);
+    });
+
     test('multiple state records never revisit immutable metadata or unchanged route states', () => {
       let metadataReads = 0;
       let parentReads = 0;

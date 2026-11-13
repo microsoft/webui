@@ -246,11 +246,14 @@ export class NavigationCache {
         seen.add(value);
         bytes += 24;
         const keys = Object.keys(value);
+        const array = Array.isArray(value);
         for (const key of keys) {
           if (key === 'state' && stateOwners?.includes(value as RouteChainEntry)) continue;
-          bytes += 8 + (Array.isArray(value) ? 0 : key.length * 2);
+          bytes += 8 + (array ? 0 : key.length * 2);
           if (bytes > this.config.maxBytes) return bytes;
-          stack.push((value as Record<string, unknown>)[key]);
+          const child = (value as Record<string, unknown>)[key];
+          if (typeof child === 'string') bytes += child.length * 2;
+          else if (child !== null && typeof child === 'object') stack.push(child);
         }
       }
     }
