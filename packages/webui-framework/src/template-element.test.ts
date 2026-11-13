@@ -342,6 +342,48 @@ test('body-only writes can reach a text-only conditional with an empty SSR range
   assert.equal(host['$pathBindings']('probe'), undefined);
 });
 
+test('provisional body paths do not imply a conditional presence mismatch', async (t) => {
+  const { reportHydrationMismatch } = await import('./hydration-mismatch.js');
+  const root: TemplateInstance = {
+    container: null, nodes: [], texts: [], attrs: [], conds: [], repeats: [],
+  };
+  root.conds.push({
+    condition: [() => true, []], blockIndex: 0,
+    anchor: null, owner: root, instance: undefined,
+  }, {
+    condition: [() => true, ['show.enabled']], blockIndex: 1,
+    anchor: null, owner: root, instance: undefined,
+  });
+  const host = new TemplateElement();
+  Object.defineProperties(host, {
+    $root: { value: root },
+    $observableNames: { value: () => new Set(['details', 'show']) },
+    $meta: { value: {
+      v: 3, h: '', b: [
+        { h: '', tx: [[[0, 0], [['details']]]] },
+        { h: '<span></span>' },
+      ],
+    } satisfies TemplateMeta },
+  });
+  host['$buildPathIndex']();
+  assert.deepEqual(host['$pathBindings']('details')?.conds, [root.conds[0]]);
+  const warnings: string[] = [];
+  t.mock.method(console, 'warn', (message: string) => { warnings.push(message); });
+  const ctx = { resolver: () => '', resolveValue: () => '', resolveParts: () => '' };
+  reportHydrationMismatch('test-empty-ssr-body', new Set(['details']), host['$pathIndex']!, ctx);
+  assert.deepEqual(warnings, [], 'an empty body write cannot prove a presence mismatch');
+  assert.equal(root.conds[0].instance, undefined, 'diagnostics must not reconcile the view');
+
+  reportHydrationMismatch('test-ssr-presence', new Set(['show']), host['$pathIndex']!, ctx);
+  assert.equal(warnings.length, 1, 'writes to condition dependencies must still report missing content');
+  assert.match(warnings[0], /"show"/);
+  warnings.length = 0;
+  root.texts.push({ node: { data: 'server' } as Text, path: 'details' });
+  host['$buildPathIndex']();
+  reportHydrationMismatch('test-ssr-text', new Set(['details']), host['$pathIndex']!, ctx);
+  assert.equal(warnings.length, 1, 'a provisional condition must not hide a real text mismatch');
+});
+
 test('SSR text without a neighboring dynamic marker allocates no topology array', () => {
   const original = globalThis.Int32Array;
   const text = { nodeType: 3, previousSibling: null, nextSibling: null };

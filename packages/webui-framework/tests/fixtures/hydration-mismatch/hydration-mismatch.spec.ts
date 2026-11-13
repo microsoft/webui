@@ -289,4 +289,15 @@ test.describe('hydration-mismatch (#379)', () => {
     expect(await page.locator('mismatch-seeded .box').getAttribute('data-value')).toBe('3');
     expect(warningsFor('mismatch-seeded')).toHaveLength(0);
   });
+
+  test('an empty true SSR body stays silent and reacts to later body-only writes', async ({ page }) => {
+    await expect.poll(() => warnings.filter((warning) => warning.includes(MISMATCH)).length).toBe(3);
+    await expect(page.locator('mismatch-seeded .empty-body')).toHaveText('');
+    expect(warningsFor('mismatch-seeded')).toHaveLength(0);
+    await page.locator('mismatch-seeded').evaluate((host) => {
+      (host as HTMLElement & { emptyDetails: string }).emptyDetails = 'updated';
+    });
+    await expect(page.locator('mismatch-seeded .empty-body')).toHaveText('updated');
+    expect(warningsFor('mismatch-seeded')).toHaveLength(0);
+  });
 });

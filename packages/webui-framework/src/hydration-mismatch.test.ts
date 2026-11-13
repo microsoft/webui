@@ -392,6 +392,27 @@ describe('reportHydrationMismatch', () => {
     assert.equal(calls.length, 0);
   });
 
+  test('compact root plans report only their own real binding mismatches', () => {
+    resetHydrationMismatchWarnings();
+    const root: TemplateInstance = {
+      ...disagreeingEntry(), container: null, nodes: [],
+    };
+    const unrelated = captureWarn(() => {
+      reportHydrationMismatch('x-compact', new Set(['other']), 'value', makeCtx({ value: '3' }), root);
+    });
+    assert.deepEqual(unrelated, []);
+    const mismatch = captureWarn(() => {
+      reportHydrationMismatch('x-compact', new Set(['value']), 'value', makeCtx({ value: '3' }), root);
+    });
+    assert.equal(mismatch.length, 1);
+    assert.match(mismatch[0], /"value"/);
+    root.attrs = agreeingEntry().attrs;
+    const matching = captureWarn(() => {
+      reportHydrationMismatch('x-compact-agree', new Set(['value']), 'value', makeCtx({ value: '3' }), root);
+    });
+    assert.deepEqual(matching, []);
+  });
+
   test('stays silent when there are no recorded writes', () => {
     resetHydrationMismatchWarnings();
     const index = new Map<string, PathBindings>([['value', disagreeingEntry()]]);
