@@ -224,7 +224,7 @@ export class NavigationCache {
 
   private measure(path: string, data: PartialResponse, sizes?: number[]): number {
     const chain = sizes ? data.chain : undefined;
-    let bytes = path.length * 2 + this.measureValue(data, chain);
+    let bytes = path.length * 2 + this.measureValue(data, chain ? new Set(chain) : undefined);
     if (chain && sizes) {
       for (let i = 0; i < chain.length && bytes <= this.config.maxBytes; i++) {
         sizes[i] = STATE_PROPERTY_BYTES + this.measureValue(chain[i].state);
@@ -234,7 +234,7 @@ export class NavigationCache {
     return bytes;
   }
 
-  private measureValue(data: unknown, stateOwners?: RouteChainEntry[]): number {
+  private measureValue(data: unknown, stateOwners?: ReadonlySet<object>): number {
     let bytes = 8;
     const stack: unknown[] = [data];
     const seen = new Set<object>();
@@ -248,7 +248,7 @@ export class NavigationCache {
         const keys = Object.keys(value);
         const array = Array.isArray(value);
         for (const key of keys) {
-          if (key === 'state' && stateOwners?.includes(value as RouteChainEntry)) continue;
+          if (key === 'state' && stateOwners?.has(value)) continue;
           bytes += 8 + (array ? 0 : key.length * 2);
           if (bytes > this.config.maxBytes) return bytes;
           const child = (value as Record<string, unknown>)[key];

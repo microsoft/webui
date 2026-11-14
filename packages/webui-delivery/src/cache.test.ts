@@ -209,6 +209,38 @@ describe('completed navigation response ownership', () => {
       assert.equal(owner.lookup('/child'), data);
     });
 
+    test('buffered state-bearing route chains are accounted with linear owner lookups', () => {
+      const count = 512;
+      let entryReads = 0;
+      const chain = new Proxy(Array.from({ length: count }, (_, index) => ({
+        component: 'route-view', path: '/' + index, params: {},
+        state: { value: index, nested: { state: 'payload' } },
+      })), {
+        get(target, key, receiver) {
+          if (typeof key === 'string' && Number.isInteger(Number(key))) entryReads++;
+          return Reflect.get(target, key, receiver);
+        },
+      });
+      const data = response(60_000);
+      data.chain = chain;
+      const owner = navigationCache();
+      owner.store('/chain', data, true, true);
+      assert.ok(entryReads <= count * 4, `expected linear chain access, got ${entryReads} reads`);
+      const entry = owner.getEntry('/chain')!;
+      assert.equal(entry.stateBytes?.length, count);
+      const bytes = entry.bytes;
+      entryReads = 0;
+      owner.refreshStream('/chain', data);
+      assert.ok(entryReads <= count * 4, `expected linear recount, got ${entryReads} reads`);
+      assert.equal(entry.bytes, bytes);
+      const exact = navigationCache({ maxBytes: bytes });
+      exact.store('/chain', data, true, true);
+      assert.equal(exact.getEntry('/chain')!.bytes, bytes);
+      const undersized = navigationCache({ maxBytes: bytes - 1 });
+      undersized.store('/chain', data, true, true);
+      assert.equal(undersized.has('/chain'), false);
+    });
+
     test('incremental replacements release old bytes and skip null state slots', () => {
       const owner = navigationCache({ staleTime: 60_000, maxBytes: 2_000 });
       const data = response();
