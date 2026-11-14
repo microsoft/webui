@@ -779,12 +779,6 @@ importers:
 
   packages/webui-win32-x64: {}
 
-  target/pr-build-temp/webui-ai-reference-N7csZg/app:
-    dependencies:
-      '@microsoft/webui':
-        specifier: file:reference.tgz
-        version: file:target/pr-build-temp/webui-ai-reference-N7csZg/app/reference.tgz
-
 packages:
 
   '@codemirror/autocomplete@6.20.3':
@@ -1026,12 +1020,6 @@ packages:
 
   '@microsoft/fast-element@3.0.3':
     resolution: {integrity: sha512-MkkJhDFARqCiQ3OqT0c/QAezlbfMFXiUqTLEXRFy/aZOVKhPreLg3A5Onx+avXP4NOZ+ahVh5z4fCu6xjPBekg==}
-
-  '@microsoft/webui@file:target/pr-build-temp/webui-ai-reference-N7csZg/app/reference.tgz':
-    resolution: {integrity: sha512-b3iV2HoY7MHIGElQKfHVJKWjOPXzOuBozDMw95uvNjjH9EJwnPvPBiw0KEe1K2mqfF2wqdzFAjmOpnlA6j9aVA==, tarball: file:target/pr-build-temp/webui-ai-reference-N7csZg/app/reference.tgz}
-    version: 3.1.2
-    engines: {node: '>=18'}
-    hasBin: true
 
   '@playwright/test@1.63.0':
     resolution: {integrity: sha512-oxMK4vllB9RK5NQ2l1pq1IfOf2AvnEuj/vYGDj0H2nMtmtZpKtCwt/l00GEO6xjGfpBNAvjovvYdCm50dRQkpQ==}
@@ -1538,7 +1526,7 @@ packages:
     engines: {node: '>= 18'}
 
   typescript@6.0.3:
-    resolution: {integrity: sha1-kCUdwAeRbpcnhsuU100VsYVXfSE=, tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/typescript/-/typescript-6.0.3.tgz}
+    resolution: {integrity: sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw==}
     engines: {node: '>=14.17'}
     hasBin: true
 
@@ -1807,8 +1795,6 @@ snapshots:
   '@marijn/find-cluster-break@1.0.4': {}
 
   '@microsoft/fast-element@3.0.3': {}
-
-  '@microsoft/webui@file:target/pr-build-temp/webui-ai-reference-N7csZg/app/reference.tgz': {}
 
   '@playwright/test@1.63.0':
     dependencies:
