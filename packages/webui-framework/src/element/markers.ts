@@ -30,6 +30,13 @@ export const MARKER_RAW_START = 'w';
 export const MARKER_RAW_END = '/w';
 
 const MARKER_REPEAT_ITEM = 'wi';
+const EMPTY: never[] = [];
+
+export interface SSRRepeatRange {
+  start: Comment;
+  items: Comment[];
+  end: Comment | null;
+}
 
 /** Build the paired marker data for a client-created raw binding. */
 export function rawMarker(index: number, closing = false): string {
@@ -51,29 +58,9 @@ function isRawStartMarker(data: string): boolean {
  * Walks siblings from the repeat start marker to the repeat end marker.
  * Returns an array of <!--wi--> comment nodes that delineate items.
  */
-export function collectItemMarkers(repeatStart: Comment): { items: Comment[]; end: Comment | null } {
+export function collectItemMarkers(repeatStart: Comment): SSRRepeatRange {
   const items: Comment[] = [];
-  let end: Comment | null = null;
-  let depth = 1;
-  let node: Node | null = repeatStart.nextSibling;
-  while (node) {
-    if (node.nodeType === 8 /* COMMENT_NODE */) {
-      const data = (node as Comment).data;
-      if (data === MARKER_REPEAT_START) {
-        depth++;
-      } else if (data === MARKER_REPEAT_END) {
-        depth--;
-        if (depth === 0) {
-          end = node as Comment;
-          break;
-        }
-      } else if (data === MARKER_REPEAT_ITEM && depth === 1) {
-        items.push(node as Comment);
-      }
-    }
-    node = node.nextSibling;
-  }
-  return { items, end };
+  return { start: repeatStart, items, end: findBlockEnd(repeatStart, MARKER_REPEAT_START, items) };
 }
 
 /**
@@ -83,7 +70,7 @@ export function collectItemMarkers(repeatStart: Comment): { items: Comment[]; en
  * depth tracking over same-type markers so nested blocks of the same kind are
  * consumed as part of the range. Returns `null` when the range is unterminated.
  */
-export function findBlockEnd(start: Comment, data: string): Comment | null {
+export function findBlockEnd(start: Comment, data: string, items?: Comment[]): Comment | null {
   const endTag = data === MARKER_COND_START
     ? MARKER_COND_END
     : isRawStartMarker(data)
@@ -96,6 +83,7 @@ export function findBlockEnd(start: Comment, data: string): Comment | null {
       const d = (node as Comment).data;
       if (d === data) depth++;
       else if (d === endTag && --depth === 0) return node as Comment;
+      else if (items && depth === 1 && d === MARKER_REPEAT_ITEM) items.push(node as Comment);
     }
     node = node.nextSibling;
   }
@@ -161,13 +149,15 @@ export function collectTemplateElements(root: Node): Array<Node | undefined> {
  * A resolved view of one SSR subtree, built in a single pre-order pass.
  *
  * `elements` holds the server-rendered element for each compiled pre-order
- * index. Block markers and raw HTML ranges are listed in document order.
+ * index. Temporary block boundaries and repeat items are captured while
+ * skipping their ranges, then reused by hydration without a second scan.
  */
 export interface SSRIndex {
   /** Server-rendered elements by pre-order index; `0` is the section root. */
   elements: Array<Node | undefined>;
-  conds: Comment[];
-  repeats: Comment[];
+  /** Alternating conditional start/end markers; only unterminated ends are null. */
+  conds: Array<Comment | null>;
+  repeats: SSRRepeatRange[];
   raws: Array<[Comment, Comment]>;
 }
 
@@ -213,8 +203,9 @@ export function buildSSRIndex(
   rangeEnd: Node | null = null,
 ): SSRIndex {
   const elements: Array<Node | undefined> = [ssrRoot];
-  const conds: Comment[] = [];
-  const repeats: Comment[] = [];
+  if (!needMarkers && shape.length === 1) return { elements, conds: EMPTY, repeats: EMPTY, raws: EMPTY };
+  const conds: Array<Comment | null> = [];
+  const repeats: SSRRepeatRange[] = [];
   const raws: Array<[Comment, Comment]> = [];
   // Only the root frame is bounded.  A block range shares its parent with the
   // following item or block, so an unbounded frame would run past the range's
@@ -236,25 +227,13 @@ export function buildSSRIndex(
       const type = s.nodeType;
       if (type === 8 /* COMMENT_NODE */) {
         const data = (s as Comment).data;
-        if (data === MARKER_COND_START) {
-          conds.push(s as Comment);
-          s = skipBlockRange(s as Comment, data);
-          continue;
-        }
-        if (data === MARKER_REPEAT_START) {
-          repeats.push(s as Comment);
-          s = skipBlockRange(s as Comment, data);
-          continue;
-        }
-        if (isRawStartMarker(data)) {
-          const start = s as Comment;
-          const end = findBlockEnd(start, data);
-          if (end) {
-            raws.push([start, end]);
-            s = end.nextSibling;
-          } else {
-            s = null;
-          }
+        if (data === MARKER_COND_START || data === MARKER_REPEAT_START || isRawStartMarker(data)) {
+          const items: Comment[] | undefined = data === MARKER_REPEAT_START ? [] : undefined;
+          const end = findBlockEnd(s as Comment, data, items);
+          if (items) repeats.push({ start: s as Comment, items, end });
+          else if (data === MARKER_COND_START) conds.push(s as Comment, end);
+          else if (end) raws.push([s as Comment, end]);
+          s = end ? end.nextSibling : null;
           continue;
         }
       } else if (type === 1 /* ELEMENT_NODE */) {

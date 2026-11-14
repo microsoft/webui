@@ -397,9 +397,18 @@ router.start({
     staleTime: 30_000,   // ms before refetch (default: 0 = disabled)
     gcTime: 300_000,     // ms before eviction from memory (default: 5 min)
     maxEntries: 50,      // LRU cap (default: 50)
+    maxBytes: 4 * 1024 * 1024, // decoded-data budget (default: 4 MiB)
   }),
 });
 ```
+
+The cache evicts least-recently-used entries when either limit is reached.
+`maxBytes` accounts for decoded string content and value slots; it is an
+estimate, not a limit on total JavaScript heap or compressed network bytes.
+It also bounds speculative preloads and growing streamed state. An oversized
+response still renders normally but is not retained for reuse. Set `maxBytes`
+to `0` to disable all cache retention, including preloads; `staleTime: 0`
+alone still permits the preload freshness window.
 
 Declare cache tags on routes as HTML attributes. Placeholders like `{threadId}` reference route path parameters and are resolved at render time:
 

@@ -128,13 +128,11 @@ function repeatBinding(
   instances: TemplateInstance[],
 ): RepeatBinding {
   return {
-    markerId: 0,
     collection: 'items',
     itemVar: 'item',
     blockIndex: 0,
     container: { childNodes: [] } as unknown as ParentNode & Node,
     start: null,
-    end: null,
     owner: emptyInstance(),
     instances: items.map((_value, index) => instances[index]),
     synced: true,
@@ -155,6 +153,35 @@ function keyedRepeatBinding(
 }
 
 describe('syncRepeat', () => {
+  test('stable keyed rows re-read mutated values without uniqueness maps or placement checks', t => {
+    const items = [{ id: 'a', value: 1 }, { id: 'b', value: 2 }];
+    const instances = items.map(itemInstance);
+    const repeat = keyedRepeatBinding(items, instances, 'id', ['a', 'b']);
+    repeat.fixed = true;
+    const updated: TemplateInstance[] = [];
+    const inserted: TemplateInstance[] = [];
+    const host = repeatHost(items, [], updated, [], inserted);
+    const writes = t.mock.method(repeat.keyState!.map, 'set');
+    items[0].value = 3;
+    syncRepeat(host, repeat);
+    assert.deepEqual(updated, instances);
+    assert.equal(instances[0].scope?.value, items[0]);
+    assert.equal(writes.mock.callCount(), 0);
+    assert.deepEqual(inserted, []);
+
+    items.push({ id: 'c', value: 4 });
+    syncRepeat(host, repeat);
+    assert.equal(inserted.length, 1, 'only a new tail needs placement');
+    items[1].id = 'a';
+    const warn = t.mock.method(console, 'warn', () => {});
+    syncRepeat(host, repeat);
+    assert.equal(warn.mock.callCount(), 1);
+    assert.deepEqual(repeat.keyState!.keys, [], 'in-place duplicate keys lose identity');
+    items[1].id = 'b';
+    syncRepeat(host, repeat);
+    assert.deepEqual(repeat.keyState!.keys, ['a', 'b', 'c']);
+  });
+
   test('reuses entries by position when item attributes are duplicated', () => {
     const oldItems = [
       { label: 'one', className: 'same' },

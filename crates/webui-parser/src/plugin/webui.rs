@@ -80,6 +80,7 @@ use webui_protocol::{condition_expr, ConditionExpr, WebUIElementData};
 
 mod lazy_templates;
 mod named_repeats;
+mod reactive_plan;
 mod ssr_layout;
 mod template_dependencies;
 use named_repeats::CompileBlocks;
@@ -895,6 +896,10 @@ fn emit_compiled_template_payload(
     out.push('{');
 
     emit_json_template_section(&meta.root, &mut out, &mut conditions, lazy_plan.as_ref());
+    if let Some(root) = reactive_plan::single_root(&meta.root, &build_meta.roots) {
+        out.push_str(",\"rp\":");
+        emit_js_string(root, &mut out);
+    }
 
     // sd: shadow DOM flag — tells the client runtime to use shadow root
     if options.shadow_dom {
@@ -4250,6 +4255,31 @@ mod tests {
 
         assert!(result.contains(r#","tr":["displayValue","readOnly"]"#));
         assert!(result.contains(r#","ta":["display-value","readonly"]"#));
+    }
+
+    #[test]
+    fn single_root_plan_requires_complete_flat_binding_coverage() {
+        for template in [
+            "<span>{{value.name}} {{value.label}}</span>",
+            r#"<input value="{{value.name}}" ?disabled="{{!value.ready}}" />"#,
+            r#"<span title="Hello {{value.name}}">{{{value.html}}}</span>"#,
+            r#"<button ?disabled="{{value.count > 2 && value.active}}">{{value.label}}</button>"#,
+        ] {
+            let result = generate_compiled_template("test-plan", template);
+            assert!(result.contains(r#","rp":"value""#), "{template}");
+            assert!(result.contains(r#","tr":["value"]"#), "{template}");
+        }
+        for template in [
+            "<span>{{first}} {{second}}</span>",
+            r#"<input ?disabled="{{true}}" value="{{value}}" />"#,
+            r#"<input ?disabled="{{!false}}" value="{{value}}" />"#,
+            r#"<if condition="value"><span>{{value}}</span></if>"#,
+            r#"<for each="item in value"><span>{{item}}</span></for>"#,
+            "<span>Static</span>",
+        ] {
+            let result = generate_compiled_template("test-plan", template);
+            assert!(!result.contains(r#","rp":"#), "{template}");
+        }
     }
 
     #[test]

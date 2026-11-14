@@ -62,6 +62,18 @@ function cond(fn: (resolve: (p: string, s?: unknown) => unknown) => boolean): Co
 
 const emptyEntry: PathBindings = { texts: [], attrs: [], conds: [], repeats: [] };
 
+function captureWarn(fn: () => void): string[] {
+  const original = console.warn;
+  const calls: string[] = [];
+  console.warn = (msg?: unknown) => { calls.push(String(msg)); };
+  try {
+    fn();
+  } finally {
+    console.warn = original;
+  }
+  return calls;
+}
+
 // ── textDiffersFromDom ──────────────────────────────────────────
 
 describe('textDiffersFromDom', () => {
@@ -233,8 +245,8 @@ describe('condDiffersFromDom', () => {
 
 function repeat(collection: string, instanceCount: number): RepeatBinding {
   return {
-    markerId: 0, collection, itemVar: 'item', blockIndex: 0,
-    container: null, start: null, end: null,
+    collection, itemVar: 'item', blockIndex: 0,
+    container: null, start: null,
     owner: {} as unknown as TemplateInstance,
     instances: Array.from({ length: instanceCount }, () => ({})) as unknown as RepeatBinding['instances'],
   };
@@ -294,18 +306,6 @@ describe('formatHydrationMismatch', () => {
 // ── warnHydrationMismatch (per-tag dedup) ───────────────────────
 
 describe('warnHydrationMismatch', () => {
-  function captureWarn(fn: () => void): string[] {
-    const original = console.warn;
-    const calls: string[] = [];
-    console.warn = (msg?: unknown) => { calls.push(String(msg)); };
-    try {
-      fn();
-    } finally {
-      console.warn = original;
-    }
-    return calls;
-  }
-
   test('warns once per (tag, path-set) even when called repeatedly', () => {
     resetHydrationMismatchWarnings();
     const calls = captureWarn(() => {
@@ -346,18 +346,6 @@ describe('warnHydrationMismatch', () => {
 // ── reportHydrationMismatch (dynamic-import entry point) ─────────
 
 describe('reportHydrationMismatch', () => {
-  function captureWarn(fn: () => void): string[] {
-    const original = console.warn;
-    const calls: string[] = [];
-    console.warn = (msg?: unknown) => { calls.push(String(msg)); };
-    try {
-      fn();
-    } finally {
-      console.warn = original;
-    }
-    return calls;
-  }
-
   function disagreeingEntry(): PathBindings {
     return {
       ...emptyEntry,
@@ -390,6 +378,27 @@ describe('reportHydrationMismatch', () => {
       reportHydrationMismatch('x-agree', new Set(['value']), index, makeCtx({ value: '3' }));
     });
     assert.equal(calls.length, 0);
+  });
+
+  test('compact root plans report only their own real binding mismatches', () => {
+    resetHydrationMismatchWarnings();
+    const root: TemplateInstance = {
+      ...disagreeingEntry(), container: null, nodes: [],
+    };
+    const unrelated = captureWarn(() => {
+      reportHydrationMismatch('x-compact', new Set(['other']), 'value', makeCtx({ value: '3' }), root);
+    });
+    assert.deepEqual(unrelated, []);
+    const mismatch = captureWarn(() => {
+      reportHydrationMismatch('x-compact', new Set(['value']), 'value', makeCtx({ value: '3' }), root);
+    });
+    assert.equal(mismatch.length, 1);
+    assert.match(mismatch[0], /"value"/);
+    root.attrs = agreeingEntry().attrs;
+    const matching = captureWarn(() => {
+      reportHydrationMismatch('x-compact-agree', new Set(['value']), 'value', makeCtx({ value: '3' }), root);
+    });
+    assert.deepEqual(matching, []);
   });
 
   test('stays silent when there are no recorded writes', () => {

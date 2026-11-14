@@ -84,6 +84,17 @@ freshness, loaded route instances, or unloadable JavaScript modules.
 
 Application state is never inferred from inventory. Route cache freshness,
 component instance state, and resource retention have distinct owners.
+An optional navigation cache enforces both entry and estimated decoded-data
+budgets. Accounting is a UTF-16 string/value-slot proxy, not compressed response
+bytes or exact heap usage. Admission walks data without cloning or serializing;
+reads only update LRU order. Oversize entries do not displace unrelated entries.
+Incomplete streams account for their immutable metadata once and keep
+per-route state sizes until completion. Each deferred record reaccounts only
+replaced state slots; null slots preserve their prior state and charge.
+Settlement can reuse that accounting after the adapter has applied and
+accounted every record. A stale stream cannot charge, evict, or complete a
+replacement entry. Eviction releases cache ownership without cancelling the
+navigation's own response or discarding its state.
 
 ## Partial records and cancellation
 

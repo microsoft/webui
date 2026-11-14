@@ -6,7 +6,6 @@
 import type {
   RepeatBinding,
   RepeatHost,
-  RepeatKey,
   RepeatKeyState,
   ScopeFrame,
   TemplateInstance,
@@ -50,8 +49,8 @@ export function seedHydratedRepeatKeys(
 ): void {
   const state = rep.keyState;
   if (!state || items.length !== rep.instances.length) return;
-  if (!collectRepeatKeys(items, state)) return;
-  commitKeyIdentity(state);
+  if (collectRepeatKeys(items, state)) commitKeyIdentity(state);
+  else clearRepeatKeyState(state);
 }
 
 function setItemScope(instance: TemplateInstance, item: unknown): void {
@@ -95,7 +94,12 @@ function syncPositional(
   const removed = oldLength > reuseCount;
 
   let cursor: Node | null = rep.start;
-  for (let i = 0; i < instances.length; i += 1) {
+  const placed = rep.fixed ? reuseCount : 0;
+  if (placed) {
+    const nodes = instances[placed - 1].nodes;
+    cursor = nodes[nodes.length - 1] ?? cursor;
+  }
+  for (let i = placed; i < instances.length; i += 1) {
     cursor = host.$insertInstanceAfter(cursor, container, instances[i]);
   }
   for (let i = 0; i < reuseCount; i += 1) {
@@ -104,50 +108,41 @@ function syncPositional(
   if (created || removed) host.$changeStructure(removed ? rep.owner : undefined);
 }
 
-function readRepeatKey(item: unknown, path: string): unknown {
-  if (path.length === 0) return item;
-  return dotWalk(item, path, 0);
-}
-
-function isRepeatKey(value: unknown): value is RepeatKey {
-  return (
-    typeof value === 'string' ||
-    (typeof value === 'number' && Number.isFinite(value))
-  );
-}
-
-function collectRepeatKeys(items: unknown[], state: RepeatKeyState): boolean {
+function collectRepeatKeys(items: unknown[], state: RepeatKeyState): 0 | 1 | 2 {
   const keys = state.nextKeys;
   const seen = state.map;
+  const path = state.path;
   keys.length = items.length;
   seen.clear();
+  let sharedOrder = true;
 
-  for (let i = 0; i < items.length; i += 1) {
-    let value: unknown;
-    try {
-      value = readRepeatKey(items[i], state.path);
-    } catch {
-      keys.length = 0;
-      seen.clear();
-      return false;
+  try {
+    for (let i = 0; i < items.length; i += 1) {
+      const value = path ? dotWalk(items[i], path, 0) : items[i];
+      if (typeof value !== 'string' && (typeof value !== 'number' || !Number.isFinite(value))) {
+        return 0;
+      }
+      keys[i] = value;
+      if (i < state.keys.length && value !== state.keys[i]) sharedOrder = false;
     }
-    if (!isRepeatKey(value) || seen.has(value)) {
-      keys.length = 0;
-      seen.clear();
-      return false;
-    }
-    keys[i] = value;
-    seen.set(value, null);
+  } catch {
+    return 0;
   }
-  seen.clear();
-  return true;
+  // An unchanged prefix inherits its uniqueness proof, but not its values.
+  if (!sharedOrder || items.length > state.keys.length) {
+    for (const key of keys) seen.set(key, null);
+    const unique = seen.size === keys.length;
+    seen.clear();
+    if (!unique) return 0;
+  }
+  return sharedOrder ? 1 : 2;
 }
 
 function commitKeyIdentity(state: RepeatKeyState): void {
   const oldKeys = state.keys;
   state.keys = state.nextKeys;
   state.nextKeys = oldKeys;
-  state.nextKeys.length = 0;
+  oldKeys.length = 0;
 }
 
 /** Release retained keys and scratch indexes when a repeat loses its identity. */
@@ -160,9 +155,7 @@ export function clearRepeatKeyState(state: RepeatKeyState): void {
 function warnKeyFallback(rep: RepeatBinding, state: RepeatKeyState): void {
   if (state.warned) return;
   state.warned = true;
-  const key = state.path.length === 0
-    ? rep.itemVar
-    : `${rep.itemVar}.${state.path}`;
+  const key = state.path ? `${rep.itemVar}.${state.path}` : rep.itemVar;
   console.warn(
     `[webui] repeat "${rep.collection}" produced duplicate or invalid values for child key="${key}"; using positional reconciliation`,
   );
@@ -233,19 +226,15 @@ function syncKeyed(
   container: ParentNode & Node,
   state: RepeatKeyState,
 ): void {
-  if (!collectRepeatKeys(items, state)) {
+  const order = collectRepeatKeys(items, state);
+  if (!order) {
     warnKeyFallback(rep, state);
     clearRepeatKeyState(state);
     syncPositional(host, rep, items, container);
     return;
   }
 
-  let sharedOrder = true;
-  const sharedLength = Math.min(state.keys.length, state.nextKeys.length);
-  for (let i = 0; sharedOrder && i < sharedLength; i += 1) {
-    sharedOrder = state.keys[i] === state.nextKeys[i];
-  }
-  if (state.keys.length !== rep.instances.length || sharedOrder) {
+  if (state.keys.length !== rep.instances.length || order === 1) {
     syncPositional(host, rep, items, container);
     if (rep.instances.length === items.length) {
       commitKeyIdentity(state);
@@ -276,12 +265,9 @@ export function syncRepeat(
   const resolved = host.$resolveValue(rep.collection, rep.scope);
   const items = Array.isArray(resolved) ? resolved : [];
 
-  // Locate the container once and cache it.
-  const container = (rep.container
-    ?? rep.start?.parentNode
-    ?? rep.owner.nodes[0]?.parentNode) as (ParentNode & Node) | null;
+  // Wiring and relocation own the live container; disposal clears it.
+  const container = rep.container;
   if (!container) return;
-  rep.container = container;
 
   // Preserve SSR children until the collection root is explicitly supplied.
   // An explicit [] must still remove them, so root presence - not length -

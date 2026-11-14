@@ -76,10 +76,17 @@ export interface CacheEntry {
   preload?: boolean;
   /** Whether both streaming chunks have been received. */
   complete: boolean;
+  /** Estimated decoded response size, including its request-path string. */
+  bytes: number;
+  /** Per-route state accounting exists only while a streamed response is incomplete. */
+  stateBytes?: number[];
 }
 
 /** Maximum age (ms) for a preloaded partial before it's considered stale. */
 const PRELOAD_TTL = 5_000;
+const DEFAULT_MAX_BYTES = 4 * 1024 * 1024;
+// UTF-16 "state" property name and its reference slot, separate from the value.
+const STATE_PROPERTY_BYTES = 18;
 
 /** Select and configure a navigation response cache. Resource inventories remain separate. */
 export function navigationCache(config: CacheConfig = {}): NavigationCache {
@@ -96,9 +103,14 @@ export class NavigationCache {
   private cache = new Map<string, CacheEntry>();
   private tagIndex = new Map<string, Set<string>>();
   private config: Required<CacheConfig>;
+  private bytes = 0;
 
-  constructor(config: Required<CacheConfig>) {
-    this.config = config;
+  constructor(config: Required<Omit<CacheConfig, 'maxBytes'>> & Pick<CacheConfig, 'maxBytes'>) {
+    const maxBytes = config.maxBytes ?? DEFAULT_MAX_BYTES;
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
+      throw new RangeError('[WebUI] Cache maxBytes must be a nonnegative safe integer.');
+    }
+    this.config = { ...config, maxBytes };
   }
 
   /** Look up a cache entry. Returns null if missing, stale, or incomplete. */
@@ -135,9 +147,13 @@ export class NavigationCache {
     this.evict(requestPath);
 
     if (!streaming && !preload && (staleTime ?? this.config.staleTime) === 0) return;
+    if (streaming && data.chain && data.chain.length > this.config.maxBytes / (STATE_PROPERTY_BYTES + 8)) return;
+    const stateBytes = streaming && data.chain ? new Array<number>(data.chain.length) : undefined;
+    const bytes = this.measure(requestPath, data, stateBytes);
+    if (bytes > this.config.maxBytes) return;
 
     // Evict LRU entries if at capacity
-    while (this.cache.size >= this.config.maxEntries) {
+    while (this.cache.size >= this.config.maxEntries || this.bytes + bytes > this.config.maxBytes) {
       const oldest = this.cache.keys().next().value;
       if (oldest !== undefined) {
         this.evict(oldest);
@@ -148,8 +164,9 @@ export class NavigationCache {
 
     this.cache.set(requestPath, {
       data, tags, ts: Date.now(), staleTime, preload,
-      complete: !streaming,
+      complete: !streaming, bytes, stateBytes,
     });
+    this.bytes += bytes;
 
     // Build reverse tag index
     for (const tag of tags) {
@@ -163,14 +180,84 @@ export class NavigationCache {
   }
 
   /** Settle only the stream that owns this entry, releasing ordinary zero-freshness data. */
-  settleStream(requestPath: string, data: PartialResponse, completed: boolean): void {
+  settleStream(requestPath: string, data: PartialResponse, completed: boolean, accounted = false): void {
+    if (!accounted) this.refreshStream(requestPath, data);
     const entry = this.cache.get(requestPath);
     if (!entry || entry.data !== data) return;
     if (!entry.preload && (entry.staleTime ?? this.config.staleTime) === 0) {
       this.evict(requestPath);
     } else if (completed) {
       entry.complete = true;
+      entry.stateBytes = undefined;
     }
+  }
+
+  /** Reaccount a growing stream only while it still owns the cached entry. */
+  refreshStream(
+    requestPath: string, data: PartialResponse,
+    states?: readonly (Record<string, unknown> | null)[],
+  ): void {
+    const entry = this.cache.get(requestPath);
+    if (!entry || entry.data !== data) return;
+    const sizes = entry.stateBytes;
+    let bytes = entry.bytes;
+    if (states && sizes) {
+      for (let i = 0; i < states.length && i < sizes.length; i++) {
+        if (states[i] === null) continue;
+        const next = STATE_PROPERTY_BYTES + this.measureValue(states[i]);
+        bytes += next - sizes[i];
+        sizes[i] = next;
+      }
+    } else bytes = this.measure(requestPath, data, sizes);
+    if (bytes > this.config.maxBytes) {
+      this.evict(requestPath);
+      return;
+    }
+    this.bytes += bytes - entry.bytes;
+    entry.bytes = bytes;
+    while (this.bytes > this.config.maxBytes) {
+      const oldest = this.cache.keys().next().value;
+      if (oldest === undefined) break;
+      this.evict(oldest);
+    }
+  }
+
+  private measure(path: string, data: PartialResponse, sizes?: number[]): number {
+    const chain = sizes ? data.chain : undefined;
+    let bytes = path.length * 2 + this.measureValue(data, chain ? new Set(chain) : undefined);
+    if (chain && sizes) {
+      for (let i = 0; i < chain.length && bytes <= this.config.maxBytes; i++) {
+        sizes[i] = STATE_PROPERTY_BYTES + this.measureValue(chain[i].state);
+        bytes += sizes[i];
+      }
+    }
+    return bytes;
+  }
+
+  private measureValue(data: unknown, stateOwners?: ReadonlySet<object>): number {
+    let bytes = 8;
+    const stack: unknown[] = [data];
+    const seen = new Set<object>();
+    while (stack.length && bytes <= this.config.maxBytes) {
+      const value = stack.pop();
+      if (typeof value === 'string') {
+        bytes += value.length * 2;
+      } else if (value !== null && typeof value === 'object' && !seen.has(value)) {
+        seen.add(value);
+        bytes += 24;
+        const keys = Object.keys(value);
+        const array = Array.isArray(value);
+        for (const key of keys) {
+          if (key === 'state' && stateOwners?.has(value)) continue;
+          bytes += 8 + (array ? 0 : key.length * 2);
+          if (bytes > this.config.maxBytes) return bytes;
+          const child = (value as Record<string, unknown>)[key];
+          if (typeof child === 'string') bytes += child.length * 2;
+          else if (child !== null && typeof child === 'object') stack.push(child);
+        }
+      }
+    }
+    return bytes;
   }
 
   /** Evict a single cache entry and clean up its tag index references. */
@@ -178,6 +265,7 @@ export class NavigationCache {
     const entry = this.cache.get(requestPath);
     if (!entry) return;
     this.cache.delete(requestPath);
+    this.bytes -= entry.bytes;
     for (const tag of entry.tags) {
       const paths = this.tagIndex.get(tag);
       if (paths) {
@@ -202,6 +290,7 @@ export class NavigationCache {
   clear(): void {
     this.cache.clear();
     this.tagIndex.clear();
+    this.bytes = 0;
   }
 
   /** Invalidate all cache entries whose tags overlap with the given tags. */
@@ -224,9 +313,7 @@ export class NavigationCache {
     if (path) {
       this.evict(path);
     } else {
-      for (const key of [...this.cache.keys()]) {
-        this.evict(key);
-      }
+      this.clear();
     }
   }
 

@@ -280,6 +280,9 @@ test('path indexes share empty buckets without sharing populated binding arrays'
   const first = indexed();
   const second = indexed();
   const index = first['$pathIndex']!;
+  const secondIndex = second['$pathIndex']!;
+  assert.ok(index instanceof Map);
+  assert.ok(secondIndex instanceof Map);
   const a = index.get('first')!;
   const b = index.get('second')!;
   assert.deepEqual(a.texts, [firstText]);
@@ -292,9 +295,9 @@ test('path indexes share empty buckets without sharing populated binding arrays'
   assert.equal(b.conds, b.attrs);
   assert.equal(b.conds, a.repeats);
   assert.equal(b.conds, first['$wildcardBindings']!.conds);
-  assert.equal(b.conds, second['$pathIndex']!.get('second')!.attrs);
-  assert.notEqual(a.texts, second['$pathIndex']!.get('first')!.texts);
-  assert.notEqual(a.attrs, second['$pathIndex']!.get('first')!.attrs);
+  assert.equal(b.conds, secondIndex.get('second')!.attrs);
+  assert.notEqual(a.texts, secondIndex.get('first')!.texts);
+  assert.notEqual(a.attrs, secondIndex.get('first')!.attrs);
   assert.equal(b.conds.length, 0, 'populating another bucket never mutates the shared empty array');
 });
 
@@ -329,14 +332,14 @@ test('body-only writes can reach a text-only conditional with an empty SSR range
     } satisfies TemplateMeta },
   });
   host['$buildPathIndex']();
-  assert.deepEqual(host['$pathIndex']?.get('details')?.conds, [root.conds[0]]);
-  assert.equal(host['$pathIndex']?.has('unmounted'), false);
-  assert.equal(host['$pathIndex']?.has('staticBody'), false);
-  assert.deepEqual(host['$pathIndex']?.get('probe')?.conds, [root.conds[2]]);
+  assert.deepEqual(host['$pathBindings']('details')?.conds, [root.conds[0]]);
+  assert.equal(host['$pathBindings']('unmounted'), undefined);
+  assert.equal(host['$pathBindings']('staticBody'), undefined);
+  assert.deepEqual(host['$pathBindings']('probe')?.conds, [root.conds[2]]);
   host['$toggleCond'](root.conds[2]);
   assert.equal(root.conds[2].instance, null);
   host['$buildPathIndex']();
-  assert.equal(host['$pathIndex']?.has('probe'), false);
+  assert.equal(host['$pathBindings']('probe'), undefined);
 });
 
 test('provisional body paths do not imply a conditional presence mismatch', async (t) => {
@@ -363,7 +366,7 @@ test('provisional body paths do not imply a conditional presence mismatch', asyn
     } satisfies TemplateMeta },
   });
   host['$buildPathIndex']();
-  assert.deepEqual(host['$pathIndex']?.get('details')?.conds, [root.conds[0]]);
+  assert.deepEqual(host['$pathBindings']('details')?.conds, [root.conds[0]]);
   const warnings: string[] = [];
   t.mock.method(console, 'warn', (message: string) => { warnings.push(message); });
   const ctx = { resolver: () => '', resolveValue: () => '', resolveParts: () => '' };
@@ -554,6 +557,126 @@ test('a rejected binding releases the flush gate and preserves re-entrant update
   } finally {
     globalThis.queueMicrotask = originalQueue;
   }
+});
+
+test('single dirty paths allocate no collection and promotion preserves reentrant writes', () => {
+  const element = new TemplateElement();
+  const applied: string[] = [];
+  Object.defineProperties(element, {
+    $ready: { value: true },
+    $root: { value: {} },
+    $pathIndex: { value: new Map(['first', 'second'].map(path =>
+      [path, { texts: [path], attrs: [], conds: [], repeats: [] }])) },
+    $updateInstance: { value({ texts: [path] }: { texts: string[] }) {
+      applied.push(path);
+      if (applied.length === 1) element[REQUEST_UPDATE]('first');
+    } },
+  });
+  element[REQUEST_UPDATE]('first');
+  element[REQUEST_UPDATE]('first');
+  assert.equal(element['$dirtyPaths'], 'first');
+  element[REQUEST_UPDATE]('second');
+  assert.deepEqual(element['$dirtyPaths'], new Set(['first', 'second']));
+  element[FLUSH_UPDATES]();
+  assert.deepEqual(applied, ['first', 'second', 'first']);
+  assert.equal(element['$dirtyPaths'], null);
+});
+
+test('flat reactive plans are shared without allocating instance indexes', () => {
+  const meta: TemplateMeta = {
+    v: 3, h: '', tx: [[[0, 0], [['value']]]], tr: ['value'], rp: 'value',
+  };
+  const make = (value: string) => {
+    const element = Object.assign(new TemplateElement(), { value });
+    const node = { data: '' } as CharacterData;
+    Object.defineProperties(element, {
+      $meta: { value: meta },
+      $ready: { value: true },
+      $root: { value: {
+        container: null, nodes: [node], texts: [{ node, parts: meta.tx![0][1] }],
+        attrs: [], conds: [], repeats: [],
+      } },
+      $observableNames: { value: () => new Set(['value']) },
+    });
+    element[REQUEST_UPDATE]('value');
+    element[FLUSH_UPDATES]();
+    return { element, node };
+  };
+  const OriginalMap = globalThis.Map;
+  let allocations = 0;
+  let first: ReturnType<typeof make>;
+  let second: ReturnType<typeof make>;
+  try {
+    globalThis.Map = new Proxy(OriginalMap, {
+      construct(target, args) {
+        allocations++;
+        return Reflect.construct(target, args);
+      },
+    });
+    first = make('first');
+    second = make('second');
+  } finally {
+    globalThis.Map = OriginalMap;
+  }
+  assert.equal(allocations, 0);
+  assert.equal(first.element['$pathIndex'], second.element['$pathIndex']);
+  assert.equal(first.node.data, 'first');
+  assert.equal(second.node.data, 'second');
+  second.element.value = 'changed';
+  second.element[REQUEST_UPDATE]('value');
+  second.element[FLUSH_UPDATES]();
+  assert.equal(first.node.data, 'first');
+  assert.equal(second.node.data, 'changed');
+});
+
+test('a compiled single-root plan preserves wildcard updates for an authored non-observable value', () => {
+  const element = Object.assign(new TemplateElement(), { computed: 'derived' });
+  const node = { data: '' } as CharacterData;
+  const meta: TemplateMeta = {
+    v: 3, h: '', tx: [[[0, 0], [['computed']]]], tr: ['computed'], rp: 'computed',
+  };
+  Object.defineProperties(element, {
+    $meta: { value: meta },
+    $ready: { value: true },
+    $root: { value: {
+      container: null, nodes: [node], texts: [{ node, parts: meta.tx![0][1] }],
+      attrs: [], conds: [], repeats: [],
+    } },
+    $observableNames: { value: () => new Set(['trigger']) },
+  });
+  element[REQUEST_UPDATE]('trigger');
+  element[FLUSH_UPDATES]();
+  assert.equal(node.data, 'derived');
+  assert.ok(element['$pathIndex'] instanceof Map);
+  assert.equal(element['$wildcardBindings']?.texts.length, 1);
+});
+
+test('a shared plan stops when a binding destroys its current root', () => {
+  const element = Object.assign(new TemplateElement(), { value: 'changed' });
+  const first = { data: '' } as CharacterData;
+  const second = { data: '' } as CharacterData;
+  const parts: [string][] = [['value']];
+  const root: TemplateInstance = {
+    container: null, nodes: [first, second],
+    texts: [{ node: first, parts }, { node: second, parts }],
+    attrs: [], conds: [], repeats: [],
+  };
+  Object.defineProperties(element, {
+    $meta: { value: { v: 3, h: '', tx: [[[0, 0], parts], [[0, 1], parts]], tr: ['value'], rp: 'value' } },
+    $ready: { value: true },
+    $root: { value: root, writable: true },
+    $observableNames: { value: () => new Set(['value']) },
+  });
+  Object.defineProperty(first, 'data', {
+    get: () => '',
+    set() {
+      element['$root'] = null;
+      root.texts.length = 0;
+    },
+  });
+  element[REQUEST_UPDATE]('value');
+  assert.doesNotThrow(() => element[FLUSH_UPDATES]());
+  assert.equal(second.data, '');
 });
 
 for (const paths of [

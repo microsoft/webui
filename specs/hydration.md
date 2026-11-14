@@ -98,6 +98,11 @@ enrollment open until one explicit microtask checkpoint so requests from a
 Changed callback include the setter's trailing update. Jobs that run before
 that checkpoint must still be accounted for.
 
+Each observation captures its root's visible ShadowRoot (or the root itself)
+as a positive containment hint. The hint never proves exclusion: live shadow
+host and assigned-slot traversal still determines ownership after movement,
+redistribution, or a late `attachShadow`. No child ancestry is cached.
+
 After enrollment closes, propagate membership only through synchronous work
 executing in captured renders and explicitly carried mount continuations.
 Coalesced writes are inseparable from their captured job; new independent
@@ -113,7 +118,9 @@ wrapper objects or eager promises. Blocked targets use weak
 references and retain no copied state or strong subtree ownership. Initial
 discovery scales with outstanding work and ancestry depth, not just affected
 bindings. Waiter membership exists only for requested boundaries: jobs share a
-single observer set unless requests overlap. Release membership on settlement,
+single observer set unless requests overlap; allocate that set only when the
+first job enrolls. The opening set also owns the enrollment checkpoint rather
+than a second per-observation flag. Release membership on settlement,
 and bypass observer-scope bookkeeping when no boundary is requested. Allocate
 observation indexes on demand and weakly cache idle machinery so collection
 does not retain completed observer callbacks or lose pending mounts and tasks.
@@ -455,7 +462,11 @@ tracking for nested blocks), because that content belongs to the block's own
 metadata. This is why closing markers must survive the whole hydration pass:
 they delimit the regions to skip.
 
-The same pass collects `<!--wc-->` and `<!--wr-->` markers in document order.
+The same pass captures conditional end markers and repeat item/end boundaries
+in document order. Block hydration consumes those temporary records instead
+of scanning the same range again; the records do not survive hydration.
+Sections without static elements or structural/raw markers only index their
+root and do not traverse siblings.
 The compiler emits `c` / `r` in source order and the server renders in source
 order, so the two line up by index - which is what makes each block's anchor
 unambiguous.
@@ -519,7 +530,16 @@ After hydration, every dynamic value is connected to a direct DOM-node reference
 
 ### Path index
 
-`$buildPathIndex` (called lazily on the first update) walks every binding in the component and groups them by the observable property names they depend on:
+`$buildPathIndex` runs lazily on the first path-specific update. The compiler
+emits a shared root name in `rp` only when every text and attribute binding depends
+on that root. Constant-only bindings and structural sections do not
+qualify. The browser checks that root against the host's reactive surface, then
+retains the shared root name instead of constructing a per-instance map.
+Older metadata without the proof uses the general index; authored non-observable
+members still use wildcard buckets.
+Live bindings and repeat scopes remain instance-owned. Multi-root sections,
+structural sections, and wildcard dependencies use instance
+buckets grouped by the observable property names they depend on:
 
 ```text
 'count'  → { texts: [t1, t2], attrs: [], conds: [c1], repeats: [] }
@@ -548,6 +568,10 @@ this.count = 5
 ```
 
 Updates are coalesced via `queueMicrotask`. Multiple synchronous setter calls inside a single tick produce one DOM pass.
+One dirty path is stored directly; a second distinct path promotes the batch
+to a set. The current batch is detached before applying it, so reentrant writes
+form a subsequent batch. A failed binding preserves only unprocessed paths and
+new writes, not an automatic retry of the failing path.
 
 The public `$whenRendered()` completion boundary waits for the finite affected
 rendering batch, including activated lazy regions and affected descendants.
@@ -558,7 +582,7 @@ Internal synchronous flushing remains private to framework coordination.
 - `$pathIndex.get(name)` is an O(1) `Map` lookup.
 - Each binding holds a direct `Text`/`Element` reference resolved during hydration. No selectors run on update.
 - Skipping unrelated bindings means a 200-binding component pays the cost of the 3 bindings that actually depend on `count`.
-- No tree walk, no diff, no allocation per update beyond the `Set<string>` of dirty paths.
+- Single-path dirty tracking needs no collection allocation.
 
 ---
 
@@ -593,6 +617,23 @@ validates the complete next key set before changing DOM, scopes, or instances.
 Stable order, append, and truncate use the positional/prefix fast path. A real
 order change fills one reusable map from old keys to instances, reorders the
 instances, and then clears the map and scratch arrays.
+Every key is read on every reconciliation, including in-place mutations.
+An unchanged prefix inherits its prior uniqueness proof without populating the
+scratch map. Compiler metadata also proves when a row's top-level nodes cannot
+change; those rows need no placement check in an unchanged positional prefix.
+Root-level conditionals, repeats, and raw ranges retain general placement.
+
+Instances use stable binding-field shapes and share empty binding arrays.
+Single-node adopted ranges retain an exactly sized node array rather than a
+growable backing store.
+Client wiring captures its node list after inserting binding slots. Its caller
+performs the initial binding pass, including conditional creation, once while
+detached; structural reconciliation refreshes the owned range afterward.
+Repeat records retain no consumed marker ordinal or closing marker. Wiring and
+relocation always supply the live container; disposal clears it rather than
+rediscovering ownership from historical nodes.
+Disposal clears all owned nodes, bindings, effects, and scopes; it
+does not retain previous row generations.
 
 Duplicate, invalid, or throwing key reads clear established identity, warn
 once, and use positional reconciliation. A later valid update first reconciles

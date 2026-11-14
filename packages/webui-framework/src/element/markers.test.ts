@@ -565,6 +565,16 @@ describe('buildSSRIndex', () => {
     assert.strictEqual(index.elements[2], ssrB);
   });
 
+  test('a text-only section needs no sibling traversal to index its root', () => {
+    const root = el('ROOT');
+    const first = txt();
+    Object.defineProperty(first, 'nextSibling', {
+      get() { throw new Error('Text slot indexing must not scan siblings'); },
+    });
+    const index = buildSSRIndex([1], root as unknown as Node, false, first as unknown as ChildNode);
+    assert.deepEqual(index, { elements: [root], conds: [], repeats: [], raws: [] });
+  });
+
   test('skips a compiler-emitted style fallback the template never contained', () => {
     // Inline-CSS components render a `<style data-webui-resource>` into the
     // render root that `meta.h` has no counterpart for. Counting it shifts
@@ -652,7 +662,23 @@ describe('buildSSRIndex', () => {
 
     const index = build(tpl, ssr);
 
-    assert.deepStrictEqual(index.conds, [markerA, markerC, markerB]);
+    assert.deepStrictEqual(index.conds, [markerA, endA, markerC, endC, markerB, endB]);
+  });
+
+  test('retains the item boundaries from the same pass that skips a repeat range', () => {
+    const start = cmt('wr');
+    const first = cmt('wi');
+    const second = cmt('wi');
+    const nestedItem = cmt('wi');
+    const end = cmt('/wr');
+    const after = el('A');
+    const ssr = el(
+      'ROOT', start, first, txt(), second,
+      cmt('wr'), nestedItem, txt(), cmt('/wr'), end, after,
+    );
+    const index = build(el('ROOT', el('A')), ssr);
+    assert.deepEqual(index.repeats, [{ start, items: [first, second], end }]);
+    assert.equal(index.elements[1], after);
   });
 
   test('collects raw ranges and excludes their elements from static pairing', () => {
@@ -721,9 +747,10 @@ describe('buildSSRIndex', () => {
     const tplUl = el('UL');
     const tpl = el('ROOT', tplUl);
     const marker = cmt('wr');
-    const ssr = el('ROOT', el('UL', marker, cmt('/wr')));
+    const end = cmt('/wr');
+    const ssr = el('ROOT', el('UL', marker, end));
 
-    assert.deepStrictEqual(build(tpl, ssr).repeats, [marker]);
+    assert.deepStrictEqual(build(tpl, ssr).repeats, [{ start: marker, end, items: [] }]);
     // Sections without blocks skip that descent entirely.
     assert.deepStrictEqual(build(tpl, ssr, false).repeats, []);
   });
@@ -751,11 +778,12 @@ describe('buildSSRIndex', () => {
     const tpl = el('ROOT', el('A'));
     const firstItem = cmt('wi');
     const firstCond = cmt('wc');
+    const firstEnd = cmt('/wc');
     const firstA = el('A');
     const secondItem = cmt('wi');
     const secondCond = cmt('wc');
     const ssr = el(
-      'ROOT', firstItem, firstCond, cmt('/wc'), firstA,
+      'ROOT', firstItem, firstCond, firstEnd, firstA,
       secondItem, secondCond, cmt('/wc'), el('A'), cmt('/wr'),
     );
 
@@ -764,6 +792,6 @@ describe('buildSSRIndex', () => {
     // The section root is the live parent the range belongs to.
     assert.strictEqual(index.elements[0], ssr);
     assert.strictEqual(index.elements[1], firstA);
-    assert.deepStrictEqual(index.conds, [firstCond], 'must not claim the next item marker');
+    assert.deepStrictEqual(index.conds, [firstCond, firstEnd], 'must not claim the next item marker');
   });
 });

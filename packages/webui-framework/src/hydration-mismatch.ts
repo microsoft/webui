@@ -38,7 +38,10 @@ import {
   type RepeatBinding,
   type ScopeFrame,
   type TextBinding,
+  type TemplateInstance,
+  type PathBindings,
 } from './element/types.js';
+export type { PathBindings } from './element/types.js';
 
 /**
  * The slice of `TemplateElement` the comparators need to evaluate a binding's
@@ -54,14 +57,6 @@ export interface MismatchContext {
   resolveValue: (path: string, scope?: ScopeFrame) => unknown;
 }
 
-/** Bindings for one observable root, grouped by kind (the path-index entry). */
-export interface PathBindings {
-  texts: TextBinding[];
-  attrs: AttrBinding[];
-  conds: CondBinding[];
-  repeats: RepeatBinding[];
-}
-
 /**
  * Entry point invoked by `TemplateElement` through a dynamic `import()`.
  *
@@ -75,13 +70,15 @@ export interface PathBindings {
 export function reportHydrationMismatch(
   tag: string,
   writes: ReadonlySet<string>,
-  index: ReadonlyMap<string, PathBindings>,
+  index: ReadonlyMap<string, PathBindings> | string,
   ctx: MismatchContext,
+  root?: TemplateInstance,
 ): void {
   const mismatched: string[] = [];
   for (const path of writes) {
-    const entry = index.get(path);
-    if (entry && bindingsDisagreeWithDom(entry, ctx, path)) mismatched.push(path);
+    const entry = typeof index === 'string' ? index === path ? root : undefined : index.get(path);
+    if (!entry) continue;
+    if (bindingsDisagreeWithDom(entry, ctx, path)) mismatched.push(path);
   }
   if (mismatched.length !== 0) warnHydrationMismatch(tag, mismatched);
 }

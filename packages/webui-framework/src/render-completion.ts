@@ -19,13 +19,13 @@ type Work = WorkElement | RenderTask;
 
 interface Completion {
   readonly root: Element;
+  renderRoot: Node;
   readonly jobs: Set<Work>;
-  readonly group: Set<Completion>;
+  group?: Set<Completion>;
   readonly resolve: () => void;
   readonly reject: (error: unknown) => void;
   tasks: number;
   blockers?: Set<BlockedTarget>;
-  open: boolean;
 }
 
 export interface RenderTask {
@@ -61,9 +61,10 @@ function retireRenderObserver(): void {
   if (!observingRender) renderState = undefined;
 }
 
-export function inScope(element: Element, root: Node): boolean {
+export function inScope(
+  element: Element, root: Node, renderRoot = (root as Element).shadowRoot ?? root,
+): boolean {
   // Native containment proves inclusion, not exclusion through assigned slots.
-  const renderRoot = (root as Element).shadowRoot ?? root;
   let node: Node | null = element;
   while (node) {
     if (node === root || renderRoot.contains(node)) return true;
@@ -77,6 +78,10 @@ export function inScope(element: Element, root: Node): boolean {
       (node.nodeType === 11 ? (node as ShadowRoot).host ?? null : null);
   }
   return false;
+}
+
+function within(element: Element, completion: Completion): boolean {
+  return inScope(element, completion.root, completion.renderRoot);
 }
 
 function invalidState(element: Element, reason: string): DOMException {
@@ -127,7 +132,7 @@ export function enterRenderTask(task: RenderTask): Set<Completion> | undefined {
   const observers = state.observers.get(task);
   if (observers) {
     for (const completion of observers) {
-      if (!task.element.isConnected || !inScope(task.element, completion.root)) {
+      if (!task.element.isConnected || !within(task.element, completion)) {
         state.abort(completion);
       }
     }
@@ -295,12 +300,12 @@ function createRenderObserver() {
   }
 
   function settle(completion: Completion): void {
-    if (completion.open || completion.jobs.size) return;
+    if (completion.jobs.size || opening.has(completion)) return;
     if (completion.blockers) {
       for (const reference of completion.blockers) {
         const element = reference.deref();
         const state = element && blockedByElement.get(element);
-        if (element && state === reference && inScope(element, completion.root)) {
+        if (element && state === reference && within(element, completion)) {
           release(completion, { value: invalidState(element, state.reason) });
           return;
         }
@@ -311,10 +316,10 @@ function createRenderObserver() {
 
   function include(element: WorkElement, completion: Completion, work: Work = element): void {
     if (completion.jobs.has(work) ||
-        !completions.has(completion) || !inScope(element, completion.root)) return;
+        !completions.has(completion) || !within(element, completion)) return;
     let observers = observersByWork.get(work);
     if (!observers) {
-      observers = completion.group;
+      observers = completion.group ??= new Set<Completion>().add(completion);
       observersByWork.set(work, observers);
     } else if (!observers.has(completion)) {
       // A single observer is shared across its jobs; only overlaps need a copy.
@@ -369,7 +374,7 @@ function createRenderObserver() {
     observersByWork.delete(element);
     for (const completion of work) {
       completion.jobs.delete(element);
-      if ((!element.isConnected || !inScope(element, completion.root)) &&
+      if ((!element.isConnected || !within(element, completion)) &&
           !expected?.has(completion)) {
         abortRenderScope(completion);
       } else {
@@ -389,7 +394,7 @@ function createRenderObserver() {
       const work = observersByWork.get(element);
       if (work) {
         for (const completion of work) {
-          if (!element.isConnected || !inScope(element, completion.root)) {
+          if (!element.isConnected || !within(element, completion)) {
             if (!expectedRemovals?.get(element)?.has(completion)) {
               abortRenderScope(completion);
             }
@@ -430,7 +435,7 @@ function createRenderObserver() {
       for (const completion of work) release(completion, { value: error });
     }
     for (const completion of opening) {
-      if (inScope(element, completion.root)) release(completion, { value: error });
+      if (within(element, completion)) release(completion, { value: error });
     }
   }
 
@@ -526,20 +531,20 @@ function createRenderObserver() {
     const promise = new Promise<void>((resolve, reject) => {
       completion = {
         root: element,
+        renderRoot: element,
         jobs: new Set(),
-        group: new Set(),
         resolve,
         reject,
         tasks: 0,
-        open: true,
       };
     });
-    completion.group.add(completion);
     completions.add(completion);
     observingRender = true;
     observeRender(renderObserver);
     opening.add(completion);
     try {
+      // Only a positive containment shortcut; live ancestry remains authoritative.
+      completion.renderRoot = element.shadowRoot ?? element;
       retryTasks?.(element);
       for (const node of pendingRenders) {
         if (node) include(node, completion);
@@ -556,13 +561,12 @@ function createRenderObserver() {
           blocked.delete(reference);
           continue;
         }
-        if (inScope(target, element)) {
+        if (within(target, completion)) {
           blockCompletion(completion, reference, target);
           if (!completions.has(completion)) return promise;
         }
       }
       queueMicrotask(() => {
-        completion.open = false;
         opening.delete(completion);
         settle(completion);
       });
@@ -607,11 +611,11 @@ function createRenderObserver() {
 
   function observeBlocked(element: Element, state: BlockedTarget): void {
     for (const completion of opening) {
-      if (inScope(element, completion.root)) blockCompletion(completion, state, element);
+      if (within(element, completion)) blockCompletion(completion, state, element);
     }
     if (active) {
       for (const completion of active) {
-        if (inScope(element, completion.root)) blockCompletion(completion, state, element);
+        if (within(element, completion)) blockCompletion(completion, state, element);
         else (completion.blockers ??= new Set()).add(state);
       }
     }

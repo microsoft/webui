@@ -33,7 +33,12 @@ export interface StreamingContext {
   setDeferredReader(reader: Promise<void> | null): void;
   setDeferredGeneration(gen: number): void;
   updateInventory(inv: string, styleInventory?: string): void;
-  settleCacheStream(requestPath: string, data: StreamingPartialResponse, completed: boolean): void;
+  settleCacheStream(requestPath: string, data: StreamingPartialResponse, completed: boolean, accounted?: boolean): void;
+  /** Reaccount retained state as each deferred record arrives, without delaying rendering. */
+  refreshCacheStream?(
+    requestPath: string, data: StreamingPartialResponse,
+    states: readonly (Record<string, unknown> | null)[],
+  ): void;
 }
 
 /**
@@ -82,7 +87,7 @@ export async function readStreamingPartial(
         try {
           await records.cancel();
         } finally {
-          context.settleCacheStream(requestPath, data, false);
+          context.settleCacheStream(requestPath, data, false, true);
           context.setDeferredReader(null);
         }
       },
@@ -153,6 +158,7 @@ async function continueDeferredRead(
   const { context, generation, signal } = options;
   let receivedState = options.receivedState;
   let completed = false;
+  let accounted = true;
   try {
     if (signal?.aborted || generation !== context.navGeneration) return;
     await records.drain(value => {
@@ -160,8 +166,16 @@ async function continueDeferredRead(
         throw new DOMException('Navigation superseded', 'AbortError');
       }
       const states = readStates(value);
+      accounted = false;
       persistDeferredStates(data, states);
-      applyDeferredStates(states, requestPath, context);
+      try {
+        applyDeferredStates(states, requestPath, context);
+      } finally {
+        if (context.refreshCacheStream) {
+          context.refreshCacheStream(requestPath, data, states);
+          accounted = true;
+        }
+      }
       receivedState = true;
     });
     if (signal?.aborted || generation !== context.navGeneration) return;
@@ -171,7 +185,7 @@ async function continueDeferredRead(
     try {
       await records.cancel();
     } finally {
-      context.settleCacheStream(requestPath, data, completed);
+      context.settleCacheStream(requestPath, data, completed, accounted);
     }
   }
 }
