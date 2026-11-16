@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { copyFile, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
-import { createServer } from 'node:net';
+import { createConnection, createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -122,8 +122,22 @@ test('a fresh generated Go app imports the staged official module and runs witho
     assert.equal(await head.text(), '');
     assert.equal((await fetch(origin, { method: 'POST' })).status, 405);
     server.kill('SIGTERM');
-    const [code] = await closed;
-    assert.equal(code, 0, output);
+    const [code, signal] = await closed;
+    if (process.platform === 'win32') {
+      // Node uses TerminateProcess, not a Go signal handler, on Windows.
+      // The generated Go suite separately verifies real cancellation/draining.
+      assert.equal(code, null, output);
+      assert.equal(signal, 'SIGTERM', output);
+    } else {
+      assert.equal(code, 0, output);
+    }
+    const probe = createConnection({ host: '127.0.0.1', port });
+    probe.setTimeout(1000, () => probe.destroy(new Error('Listener close probe timed out')));
+    try {
+      await assert.rejects(once(probe, 'connect'), { code: 'ECONNREFUSED' });
+    } finally {
+      probe.destroy();
+    }
   } finally {
     if (server && server.exitCode === null && server.signalCode === null) {
       server.kill('SIGTERM');
