@@ -124,8 +124,12 @@ fn all_hosts_generate_offline_with_one_shared_frontend() -> Result<()> {
     let mut entry = None;
     for (server, host_file) in [
         ("rust", "server/src/main.rs"),
+        ("dotnet", "server/Program.cs"),
+        ("c", "server/main.c"),
+        ("cpp", "server/main.cpp"),
         ("node", "server/main.mjs"),
         ("bun", "server/main.ts"),
+        ("go", "server/main.go"),
     ] {
         let root = temp.path().join(format!("app-{server}"));
         let output = init(&root, &["--server", server, "--no-interactive"])?;
@@ -146,7 +150,38 @@ fn all_hosts_generate_offline_with_one_shared_frontend() -> Result<()> {
             "{server} host missing"
         );
         assert!(files.iter().any(|file| file == "README.md"));
-        assert!(!files.iter().any(|file| file == "scripts/sdk.mjs"));
+        assert_eq!(
+            files.iter().any(|file| file == "scripts/sdk.mjs"),
+            matches!(server, "c" | "cpp" | "go")
+        );
+        if matches!(server, "c" | "cpp") {
+            assert!(files.iter().any(|file| file == "server/host.h"));
+            assert!(files.iter().any(|file| file == "server/native.cmake"));
+        }
+        if server == "go" {
+            assert!(!files.iter().any(|file| file == "server/webui.go"));
+            let source = fs::read_to_string(root.join("server/main.go"))?;
+            let module_path = concat!(
+                "github.com/microsoft/webui/go/v",
+                env!("CARGO_PKG_VERSION_MAJOR")
+            );
+            assert!(source.contains(module_path));
+            assert!(!source.contains("import \"C\""));
+            let module = fs::read_to_string(root.join("server/go.mod"))?;
+            let native = env!("CARGO_PKG_VERSION");
+            let version = if let Some((base, number)) = native.split_once("-hotfix.") {
+                let (prefix, patch) = base.rsplit_once('.').context("release patch")?;
+                let patch = patch
+                    .parse::<u64>()?
+                    .checked_add(1)
+                    .context("Go hotfix patch overflow")?;
+                format!("{prefix}.{patch}-0.hotfix.{number}")
+            } else {
+                native.to_owned()
+            };
+            assert!(module.contains(&format!("require {module_path} v{version}")));
+            assert!(!module.contains("replace"));
+        }
         if server == "rust" {
             assert!(files.iter().any(|file| file == "server/Cargo.toml"));
             assert!(!root.join("server/Cargo.toml.template").exists());
@@ -171,10 +206,23 @@ fn all_hosts_generate_offline_with_one_shared_frontend() -> Result<()> {
             assert!(!text.contains("__WEBUI_VERSION__"), "{path}");
             assert!(!text.contains("__APP_NAME__"), "{path}");
             assert!(!text.contains("__RUST_VERSION__"), "{path}");
+            assert!(!text.contains("__WEBUI_GO_MODULE__"), "{path}");
+            assert!(!text.contains("__WEBUI_GO_VERSION__"), "{path}");
             assert!(!text.contains("__SERVER__"), "{path}");
             assert!(!text.contains("workspace:*"), "{path}");
         }
     }
+    Ok(())
+}
+
+#[test]
+fn go_named_application_has_a_valid_nonreserved_module_path() -> Result<()> {
+    let temp = temp()?;
+    let root = temp.path().join("go");
+    let output = init(&root, &["--server", "go", "--no-interactive"])?;
+    assert!(output.status.success());
+    let module = fs::read_to_string(root.join("server/go.mod"))?;
+    assert!(module.starts_with("module example.com/go\n"));
     Ok(())
 }
 

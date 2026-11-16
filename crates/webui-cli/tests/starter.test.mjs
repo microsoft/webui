@@ -95,8 +95,8 @@ function launch(t, root, script, args = [], env = {}) {
   return { child, ended, output: () => output };
 }
 
-test('all three hosts have build commands and runtime-only start commands', async () => {
-  for (const host of ['rust', 'node', 'bun']) {
+test('all seven hosts have build commands and runtime-only async start commands', async () => {
+  for (const host of ['rust', 'dotnet', 'c', 'cpp', 'go', 'node', 'bun']) {
     const commands = hostCommands(host);
     assert.ok(Array.isArray(commands.build));
     assert.equal(typeof commands.start, 'function');
@@ -107,9 +107,7 @@ test('all three hosts have build commands and runtime-only start commands', asyn
       assert.ok(!JSON.stringify(start).includes('sdk.mjs'));
     }
   }
-  for (const host of ['dotnet', 'c', 'cpp', 'go', 'unknown']) {
-    assert.throws(() => hostCommands(host), /Unknown server/);
-  }
+  assert.throws(() => hostCommands('unknown'), /Unknown server/);
 });
 
 test('request paths and per-page states reject document and traversal ambiguity', () => {
@@ -288,6 +286,46 @@ test('dev runs edited frontend build scripts in fresh processes', async t => {
   assert.ok(pids.every(pid => !running(pid)));
   await shutdown(host.child);
   assert.equal((await host.ended)[0], 0, host.output());
+});
+
+test('native builds preserve ordinary tool output instead of parsing it as Cargo metadata', async t => {
+  const root = await fixture(t, 'dotnet');
+  await writeFile(path.join(root, 'scripts/build.mjs'), '');
+  const loader = path.join(root, 'native-build-probe.mjs');
+  await writeFile(loader, `
+    import childProcess from 'node:child_process';
+    import { syncBuiltinESMExports } from 'node:module';
+    const original = childProcess.spawn;
+    childProcess.spawn = (command, args, options) => command === 'dotnet'
+      ? original(process.execPath, ['-e', 'console.log("Native build output is not JSON");'], options)
+      : original(command, args, options);
+    syncBuiltinESMExports();
+  `);
+  const build = launch(t, root, 'scripts/app.mjs', ['build'], {
+    NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import ${JSON.stringify(pathToFileURL(loader).href)}`,
+    WEBUI_SDK_DIR: path.join(root, 'missing-sdk'),
+  });
+  const [code] = await build.ended;
+  assert.equal(code, 0, build.output());
+  assert.match(build.output(), /Native build output is not JSON/);
+});
+
+test('.NET start uses restored assets without consulting a standalone SDK override', async t => {
+  const root = await fixture(t, 'dotnet');
+  const bin = path.join(root, 'tools');
+  const output = path.join(root, 'server/bin/Release/net8.0');
+  await mkdir(bin);
+  await mkdir(output, { recursive: true });
+  await symlink(process.execPath, path.join(bin, process.platform === 'win32' ? 'dotnet.exe' : 'dotnet'), 'file');
+  await writeFile(path.join(output, 'package.json'), '{"type":"commonjs"}');
+  await writeFile(path.join(output, 'App.dll'), "console.log('MANAGED_HOST_READY');");
+  const managed = launch(t, root, 'scripts/app.mjs', ['start'], {
+    PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+    WEBUI_SDK_DIR: path.join(root, 'missing-sdk'),
+  });
+  const [code] = await managed.ended;
+  assert.equal(code, 0, managed.output());
+  assert.match(managed.output(), /MANAGED_HOST_READY/);
 });
 
 test('dev coalesces edits, rebuilds before restarting the selected host, and recovers after failure', async t => {

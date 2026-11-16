@@ -44,24 +44,39 @@ pub(crate) struct InitArgs {
 pub(crate) enum Server {
     #[default]
     Rust,
+    Dotnet,
+    C,
+    Cpp,
     Node,
     Bun,
+    Go,
 }
 
 impl Server {
     pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Rust => "rust",
+            Self::Dotnet => "dotnet",
+            Self::C => "c",
+            Self::Cpp => "cpp",
             Self::Node => "node",
             Self::Bun => "bun",
+            Self::Go => "go",
         }
     }
 
     fn prerequisites(self) -> &'static str {
         match self {
             Self::Rust => "Node.js and Rust (Cargo)",
+            Self::Dotnet => "Node.js, .NET SDK, and an approved Microsoft.WebUI package source",
+            Self::C | Self::Cpp => {
+                "Node.js, CMake, a C/C++ toolchain, and the matching standalone WebUI native SDK"
+            }
             Self::Node => "Node.js",
             Self::Bun => "Node.js (build tools) and Bun (server)",
+            Self::Go => {
+                "Node.js, Go, a cgo C toolchain, and the matching standalone WebUI native SDK"
+            }
         }
     }
 }

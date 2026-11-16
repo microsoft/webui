@@ -859,6 +859,7 @@ impl Step {
                 &[
                     "--test",
                     "crates/webui-cli/tests/starter.test.mjs",
+                    "crates/webui-cli/tests/sdk.test.mjs",
                     "scripts/tag-release.test.mjs",
                 ],
                 None,

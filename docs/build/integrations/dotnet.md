@@ -17,6 +17,21 @@ pipeline, but automatic NuGet.org publishing is not enabled pending an approved
 signing path. Obtain matching packages from an available release or approved
 feed; the command below requires that feed to be configured.
 
+[`webui init`](/reference/cli/#webui-init) with `--server dotnet` creates
+an ASP.NET Core app pinned to the compiler's WebUI version. Configure an
+approved source for that version. Alternatively, download the managed
+`Microsoft.WebUI` `.nupkg` and all six `Microsoft.WebUI.Runtime.*` `.nupkg`
+files from the same [official release](https://github.com/microsoft/webui/releases)
+into one directory, then restore from the app root:
+
+```bash
+dotnet restore server/App.csproj --source /path/to/release-packages
+```
+
+The generated build uses restored NuGet native runtime assets, not npm or
+`WEBUI_SDK_DIR`. It does not configure global feeds, fall back to an older
+package, or change package publication policy.
+
 ```bash
 dotnet add package Microsoft.WebUI
 ```

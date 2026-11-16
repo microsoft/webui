@@ -39,6 +39,12 @@ Consumers supply explicit include, link, and loader paths through their native
 toolchain and deployment configuration. SDK acquisition is explicit; the
 binding does not install compilers or mutate global search paths.
 
+Generated C/C++/Go apps resolve an explicit `WEBUI_SDK_DIR` authoritatively,
+otherwise only the project-local `.webui/sdk`. Validation covers the release,
+target, OS, architecture, libc, exact inventory, and hashes before build/start.
+There is no npm discovery or implicit acquisition. Generated .NET hosts use
+restored NuGet runtime assets independently of this standalone SDK helper.
+
 Deployed hosts load the compiled protocol once, keep handles alive through
 active requests, and dispose results through the C ABI's designated functions.
 Only public browser assets are HTTP resources. The protocol, SDK, source files,

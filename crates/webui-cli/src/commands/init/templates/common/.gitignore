@@ -2,4 +2,7 @@ node_modules/
 dist/
 .webui/
 server/target/
+server/build/
+server/bin/
+server/obj/
 .DS_Store

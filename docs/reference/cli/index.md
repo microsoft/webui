@@ -148,7 +148,7 @@ webui init my-app --server bun --no-interactive
 | Argument or option | Description | Default |
 | --- | --- | --- |
 | `PATH` | New or empty destination; existing `.git` metadata is allowed | `.` |
-| `--server <SERVER>` | `rust`, `node`, or `bun` | `rust` |
+| `--server <SERVER>` | `rust`, `dotnet`, `c`, `cpp`, `node`, `bun`, or `go` | `rust` |
 | `--package-manager <MANAGER>` | `npm`, `pnpm`, `yarn`, or `bun`; independent of the server | `npm` |
 | `--install` | Install the generated package dependencies | Off |
 | `--ai-skill` | Run the existing project-local WebUI reference skill installer | Off |
@@ -187,10 +187,16 @@ npm run dev
 
 The generated `README.md` describes the selected server's prerequisites and
 commands. Node.js 22 or newer builds the client and protocol. Rust also needs
-Cargo; the Bun host needs Bun with Node-API support. Selecting a host does not
+Cargo; the Bun host needs Bun with Node-API support. C/C++ need CMake 3.24+
+and a native toolchain; Go needs Go 1.25+ and a cgo C compiler. These three
+hosts require the [standalone native SDK](/build/integrations/ffi#standalone-native-sdk)
+at `.webui/sdk` or the explicit `WEBUI_SDK_DIR` location, not in `node_modules`.
+.NET needs the .NET 8 SDK and an approved source for matching
+[Microsoft.WebUI NuGet packages](/build/integrations/dotnet).
+Selecting a host does not
 install these system tools. Use `check` for TypeScript checks, `build` for
 production output, and `start` to run it without compiling templates. Rust
-production servers render without a JavaScript runtime; Node and Bun use
+and C/C++/Go/.NET production servers render without a JavaScript runtime; Node and Bun use
 the native addon. Only Home loads the counter's JavaScript; About remains
 scriptless. See [server integrations](/build/integrations/).
 Rust starter builds use the app-owned `server/target/` directory rather than

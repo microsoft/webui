@@ -10,6 +10,7 @@ import { pathToFileURL } from 'node:url';
 import { watchSources } from './watch.mjs';
 
 const server = '__SERVER__';
+const executable = process.platform === 'win32' ? 'webui-app.exe' : 'webui-app';
 const rustArtifact = '.webui/server-executable.json';
 
 export function hostCommands(host = server) {
@@ -29,6 +30,27 @@ export function hostCommands(host = server) {
         },
       };
     }
+    case 'dotnet': return {
+      build: [['dotnet', ['build', 'server/App.csproj', '--configuration', 'Release']]],
+      async start() { return ['dotnet', ['server/bin/Release/net8.0/App.dll']]; },
+    };
+    case 'c':
+    case 'cpp': return {
+      build: [
+        ['cmake', ['-S', 'server', '-B', 'server/build', '-DCMAKE_BUILD_TYPE=Release']],
+        ['cmake', ['--build', 'server/build', '--config', 'Release']],
+      ],
+      async start() {
+        return [path.resolve('server/build', ...(process.platform === 'win32' ? ['Release'] : []), executable), []];
+      },
+    };
+    case 'go': return {
+      build: [
+        ['go', ['mod', 'download', 'all'], 'server'],
+        ['go', ['build', '-o', path.resolve('server/build', executable), '.'], 'server'],
+      ],
+      async start() { return [path.resolve('server/build', executable), []]; },
+    };
     case 'node': return { build: [], async start() { return [process.execPath, ['server/main.mjs']]; } };
     case 'bun': return { build: [], async start() { return ['bun', ['server/main.ts']]; } };
     default: throw new Error(`Unknown server: ${host}`);
@@ -90,7 +112,12 @@ export async function main(mode) {
     throw new Error('Usage: node scripts/app.mjs <dev|build|start|check>');
   }
   const commands = hostCommands();
-  const environment = process.env;
+  let environment = process.env;
+  if (mode !== 'check' && ['c', 'cpp', 'go'].includes(server)) {
+    const { provisionSdk, sdkEnvironment } = await import('./sdk.mjs');
+    environment = sdkEnvironment(await provisionSdk());
+  }
+  if (server === 'go') environment = { ...environment, WEBUI_APP_ROOT: process.cwd() };
   let child;
   let sources;
   let quitting = false;
@@ -112,11 +139,11 @@ export async function main(mode) {
     await run([process.execPath, ['scripts/build.mjs', ...(development ? ['--development'] : [])]]);
     let executable;
     for (const command of commands.build) {
-      await run(command, line => {
+      await run(command, server === 'rust' ? line => {
         const artifact = JSON.parse(line);
         if (artifact.reason === 'compiler-artifact' && artifact.target.name === 'webui-app'
           && artifact.target.kind.includes('bin') && artifact.executable) executable = artifact.executable;
-      });
+      } : undefined);
     }
     if (server === 'rust' && !quitting) {
       if (!executable) throw new Error('Cargo did not report the webui-app executable.');
