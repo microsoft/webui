@@ -1,0 +1,23 @@
+[package]
+name = "__APP_NAME__"
+version = "0.1.0"
+edition = "2021"
+rust-version = "__RUST_VERSION__"
+publish = false
+
+[[bin]]
+name = "webui-app"
+path = "src/main.rs"
+
+[dependencies]
+microsoft-webui-handler = "=__WEBUI_VERSION__"
+actix-web = { version = "=4.18.2", default-features = false, features = ["macros"] }
+serde_json = "=1.0.151"
+percent-encoding = "=2.3.2"
+tokio = { version = "=1.53.3", features = ["fs", "io-util"] }
+futures-util = "=0.3.33"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

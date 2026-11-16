@@ -529,6 +529,12 @@ Press and desktop are opt-in native command sidecars. The Rust CLI discovers
 their installed binaries, verifies compatible versions, and launches them
 directly rather than loading their dependencies into the core CLI. Package
 installation can use Node, but command dispatch has no JavaScript wrapper.
+Application initialization is also owned by the Rust CLI. It emits ordinary
+editable source files from embedded templates without requiring a network or
+host toolchain. One frontend/build contract is shared by the Rust, Node, and
+Bun server adapters; dependency and agent-skill installation are separate,
+explicit onboarding steps. Generated production hosts load compiled artifacts
+rather than retaining the scaffolder or compiling templates at request time.
 Native C ABI SDKs are language-neutral standalone release archives, separate
 from npm packages. Release staging owns their version, target identity, and
 integrity inventory. Platform libraries must remain relocatable rather than

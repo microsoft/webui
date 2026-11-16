@@ -166,6 +166,10 @@ static HTML still has transfer, parsing, layout, paint, and memory costs.
 
 ## Project structure
 
+Use [`webui init`](/reference/cli/#webui-init) to create a small two-page app
+with a Rust (default), Node, or Bun server and one interactive island. It can
+optionally invoke the existing project-local reference-skill installer.
+
 ```
 my-app/
 |- src/

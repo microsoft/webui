@@ -153,6 +153,12 @@ impl CliError {
 /// (clap already exits with `2` for argument/usage errors before this runs.)
 #[must_use]
 pub fn exit_code(err: &anyhow::Error) -> i32 {
+    if let Some(init) = err
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<crate::commands::init::InitError>())
+    {
+        return init.exit_code();
+    }
     if let Some(cli) = err.chain().find_map(|c| c.downcast_ref::<CliError>()) {
         return i32::from(cli.exit_code());
     }
