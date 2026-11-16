@@ -3,6 +3,7 @@
 
 import { spawn } from 'node:child_process';
 import { readdir, stat } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -13,10 +14,13 @@ const ignored = new Set(['node_modules', 'target', 'build', 'bin', 'obj', '.git'
 
 export function hostCommands(host = server) {
   switch (host) {
-    case 'rust': return {
-      build: [['cargo', ['build', '--release', '--manifest-path', 'server/Cargo.toml']]],
-      start: [path.resolve('server/target/release', executable), []],
-    };
+    case 'rust': {
+      const target = path.resolve('server/target');
+      return {
+        build: [['cargo', ['build', '--release', '--manifest-path', 'server/Cargo.toml', '--target-dir', target]]],
+        start: [path.join(target, 'release', executable), []],
+      };
+    }
     case 'node': return { build: [], start: [process.execPath, ['server/main.mjs']] };
     case 'bun': return { build: [], start: ['bun', ['server/main.ts']] };
     default: throw new Error(`Unknown server: ${host}`);
@@ -101,7 +105,10 @@ export async function main(mode) {
   }
   try {
     if (mode === 'check') {
-      await run([process.execPath, ['node_modules/typescript/bin/tsc', '--project', 'tsconfig.json']]);
+      const require = createRequire(import.meta.url);
+      const manifest = require.resolve('typescript/package.json');
+      const compiler = path.resolve(path.dirname(manifest), require(manifest).bin.tsc);
+      await run([process.execPath, [compiler, '--project', 'tsconfig.json']]);
     } else if (mode === 'build') {
       await build(false);
     } else if (mode === 'start') {

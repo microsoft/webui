@@ -187,7 +187,7 @@ fn installers_are_opt_in_and_keep_machine_output_clean() -> Result<()> {
     let temp = temp()?;
     let bin = temp.path().join("bin");
     fs::create_dir(&bin)?;
-    for program in ["npm", "npx"] {
+    for program in ["npm", "npx", "yarn"] {
         let file = bin.join(program);
         fs::write(&file, "#!/bin/sh\nprintf '%s\\n' \"$PWD\" \"$@\"\n")?;
         fs::set_permissions(&file, fs::Permissions::from_mode(0o755))?;
@@ -214,6 +214,25 @@ fn installers_are_opt_in_and_keep_machine_output_clean() -> Result<()> {
     assert!(commands.contains("webui-reference"));
     assert!(!commands.contains("--global"));
     assert!(commands.contains("--yes"));
+
+    let yarn_root = temp.path().join("yarn-app");
+    let output = Command::new(env!("CARGO_BIN_EXE_webui"))
+        .args(["--format=json", "init"])
+        .arg(&yarn_root)
+        .args(["--package-manager", "yarn", "--install", "--no-interactive"])
+        .env("PATH", &bin)
+        .stdin(Stdio::null())
+        .output()?;
+    assert!(output.status.success());
+    let report: Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(report["package_manager"], "yarn");
+    assert_eq!(report["dependencies"], "installed");
+    assert_eq!(report["next_commands"][0], "yarn run dev");
+    assert_eq!(
+        fs::read_to_string(yarn_root.join(".yarnrc.yml"))?,
+        "nodeLinker: node-modules\n"
+    );
+    assert!(String::from_utf8(output.stderr)?.contains(&yarn_root.display().to_string()));
 
     fs::write(bin.join("npm"), "#!/bin/sh\nexit 23\n")?;
     let failed = temp.path().join("failed-install");

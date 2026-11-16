@@ -185,6 +185,10 @@ production output, and `start` to run it without compiling templates. Rust
 production servers render without a JavaScript runtime; Node and Bun use
 the native addon. Only Home loads the counter's JavaScript; About remains
 scriptless. See [server integrations](/build/integrations/).
+Rust starter builds use the app-owned `server/target/` directory rather than
+an inherited `CARGO_TARGET_DIR`. Yarn starters select the `node-modules`
+linker in a project-local `.yarnrc.yml` for the native TypeScript compiler,
+without changing global Yarn settings.
 
 JSON output includes the destination, selected server and package manager,
 created files, dependency/skill installation outcomes, prerequisites, and next

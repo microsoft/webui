@@ -73,6 +73,56 @@ test('request paths and per-page states reject document and traversal ambiguity'
   assert.equal(pageState('/missing'), null);
 });
 
+test('Rust build and start agree when CARGO_TARGET_DIR selects a different directory', async t => {
+  const root = await fixture(t, 'rust');
+  await writeFile(path.join(root, 'scripts/build.mjs'), 'export async function buildFrontend() {}');
+  await writeFile(path.join(root, 'server/Cargo.toml'), `
+    [package]
+    name = "webui-app"
+    version = "0.1.0"
+    edition = "2021"
+    [[bin]]
+    name = "webui-app"
+    path = "main.rs"
+    [workspace]
+  `);
+  await writeFile(path.join(root, 'server/main.rs'), 'fn main() { println!("FRESH_RUST_HOST"); }');
+  const env = { CARGO_TARGET_DIR: path.join(root, 'custom target') };
+  const build = launch(t, root, 'scripts/app.mjs', ['build'], env);
+  const [built] = await build.ended;
+  assert.equal(built, 0, build.output());
+  const start = launch(t, root, 'scripts/app.mjs', ['start'], env);
+  const [started] = await start.ended;
+  assert.equal(started, 0, start.output());
+  assert.match(start.output(), /FRESH_RUST_HOST/);
+});
+
+test('check resolves and launches the compiler declared by the package resolver', async t => {
+  const root = await fixture(t);
+  const typescript = path.join(root, '.yarn/typescript');
+  await mkdir(typescript, { recursive: true });
+  await writeFile(path.join(typescript, 'package.json'), '{"bin":{"tsc":"compiler.cjs"}}');
+  await writeFile(path.join(typescript, 'compiler.cjs'), `
+    require('node:assert/strict').deepEqual(process.argv.slice(2), ['--project', 'tsconfig.json']);
+    console.log('RESOLVED_TYPESCRIPT_CHECK');
+  `);
+  const loader = path.join(root, '.pnp.cjs');
+  await writeFile(loader, `
+    const Module = require('node:module');
+    const resolve = Module._resolveFilename;
+    Module._resolveFilename = function(specifier, ...args) {
+      if (specifier === 'typescript/package.json') return require('node:path').join(__dirname, '.yarn/typescript/package.json');
+      return resolve.call(this, specifier, ...args);
+    };
+  `);
+  const check = launch(t, root, 'scripts/app.mjs', ['check'], {
+    NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --require ${JSON.stringify(loader)}`,
+  });
+  const [checked] = await check.ended;
+  assert.equal(checked, 0, check.output());
+  assert.match(check.output(), /RESOLVED_TYPESCRIPT_CHECK/);
+});
+
 test('start works without compiler dependencies and orderly shutdown stops its child', async t => {
   const root = await fixture(t);
   await writeFile(path.join(root, 'server/main.mjs'), `
