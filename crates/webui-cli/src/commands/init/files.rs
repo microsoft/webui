@@ -131,6 +131,13 @@ pub(super) fn generate(root: &Path, name: &str, args: &InitArgs) -> Result<Vec<S
         let content = content
             .replace("__WEBUI_VERSION__", env!("CARGO_PKG_VERSION"))
             .replace("__RUST_VERSION__", env!("CARGO_PKG_RUST_VERSION"))
+            .replace(
+                "__WEBUI_GO_MODULE__",
+                concat!(
+                    "github.com/microsoft/webui/go/v",
+                    env!("CARGO_PKG_VERSION_MAJOR")
+                ),
+            )
             .replace("__APP_NAME__", name)
             .replace("__SERVER__", args.server.name())
             .replace("__PACKAGE_MANAGER__", args.package_manager.name());
@@ -158,12 +165,28 @@ fn template_files(server: &str) -> Result<Vec<(String, String)>> {
             for file in directory.files() {
                 let relative = file.path().strip_prefix(prefix)?;
                 let relative = relative.to_string_lossy().replace('\\', "/");
+                if relative == "scripts/sdk.mjs" && !matches!(server, "c" | "cpp" | "go") {
+                    continue;
+                }
                 let relative = relative.strip_suffix(".template").unwrap_or(&relative);
                 let text = file
                     .contents_utf8()
                     .context("starter template is not UTF-8")?;
                 files.push((relative.to_owned(), text.to_owned()));
             }
+        }
+    }
+    if server == "cpp" {
+        for relative in ["server/host.h", "server/native.cmake"] {
+            let file = TEMPLATES
+                .get_file(format!("c/{relative}"))
+                .context("embedded shared C/C++ transport template is missing")?;
+            files.push((
+                relative.to_owned(),
+                file.contents_utf8()
+                    .context("shared C/C++ template is not UTF-8")?
+                    .to_owned(),
+            ));
         }
     }
     Ok(files)

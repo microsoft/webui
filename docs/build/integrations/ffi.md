@@ -17,6 +17,12 @@ the lower-level ownership contract.
 
 ## Standalone native SDK
 
+[`webui init`](/reference/cli/#webui-init) scaffolds C and C++ HTTP servers
+using a checksum-pinned CivetWeb transport, or a Go `net/http` server importing
+the [official Go module](./go). Use `--server c`, `--server cpp`, or
+`--server go`. C/C++ require CMake 3.24+ and a compatible native toolchain.
+Go requires Go 1.25+ and a cgo C compiler.
+
 Download the release-matched `webui-sdk-<version>-<platform>.tar.gz` and its
 adjacent `.sha256` file from the
 [release assets](https://github.com/microsoft/webui/releases).
@@ -31,6 +37,13 @@ supported. Use the same WebUI version for the compiler, protocol, and native
 library. Configure include, link, and runtime loader paths with your native
 toolchain; the [Go setup guide](./go#installation) shows platform examples.
 Deployed renderers do not require npm or the template compiler.
+
+Generated apps resolve only `WEBUI_SDK_DIR` (when explicitly set) or their
+project-local `.webui/sdk` directory. Extract the archive's SDK root there,
+without an extra wrapper directory. The generated build helper validates
+the release version, target, operating system, architecture, libc, complete
+inventory, and file hashes. An invalid override fails without fallback.
+It never downloads or builds an SDK or discovers one through npm.
 
 ## Building the Shared Library
 

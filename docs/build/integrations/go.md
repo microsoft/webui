@@ -146,3 +146,18 @@ the native diagnostic. Use `errors.Is(err, webui.ErrClosed)` or
 Invalid JSON and UTF-8 return errors. Embedded NUL in state bytes, entry,
 request path, or nonce is rejected rather than silently truncating a C string.
 JSON's escaped `\u0000` remains valid.
+
+## Scaffold an application
+
+[`webui init`](/reference/cli/#webui-init) creates a `net/http` application
+that imports the official module at the compiler's matching release:
+
+```bash
+webui init my-app --server go
+```
+
+Install the standalone SDK into `.webui/sdk`, or set `WEBUI_SDK_DIR` to its
+root. The build downloads the pinned source module through your configured Go
+proxy before compiling; commit the generated `server/go.sum`. No local
+replacement or app-private binding is needed. Browser build tooling uses Node;
+the module and deployed Go renderer do not.

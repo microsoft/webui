@@ -21,13 +21,14 @@ counter and no client router.
 webui init my-app --server rust
 ```
 
-Servers: `rust` (default), `node`, or `bun`.
+Servers: `rust` (default), `dotnet`, `c`, `cpp`, `node`, `bun`, or `go`.
 Generation is offline and never replaces existing files. Optional
 `--install` and `--ai-skill` run dependency installation and the existing
 project-local reference skill installer. Use `--no-interactive` for automation
 and `--package-manager npm|pnpm|yarn|bun` to select package tooling.
 See the [init reference](https://microsoft.github.io/webui/reference/cli/#webui-init)
-and generated README for toolchain prerequisites.
+and generated README for native toolchain, standalone SDK, and approved
+package-source prerequisites.
 
 ### `webui build`
 

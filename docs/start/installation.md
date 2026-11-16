@@ -20,7 +20,8 @@ npm install
 npm run dev
 ```
 
-Rust is the default server. Other choices are `node` and `bun`; install the
+Rust is the default server. Other choices are `dotnet`, `c`, `cpp`, `go`,
+`node`, and `bun`; install the
 selected host's toolchain separately. The starter includes server-rendered
 Home and About pages, native links, and one interactive counter. About needs
 no JavaScript. No UI kit, database, authentication, or client router is added.
@@ -29,7 +30,8 @@ File generation is offline once the CLI is installed. Init never overwrites
 existing application files. In a terminal it offers dependency installation
 and installation of the [existing AI reference skill](#ai-coding-agents);
 both are optional. If you accept dependency installation, skip the separate
-`npm install` above. Toolchain prerequisites are described in the generated README.
+`npm install` above. Native toolchain, standalone SDK, and approved package-source
+prerequisites are described in the generated README.
 
 See [`webui init`](/reference/cli/#webui-init) for automation flags, package
 manager selection, and machine-readable output. To follow the lessons instead,

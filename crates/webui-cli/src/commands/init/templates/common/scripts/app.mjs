@@ -19,6 +19,25 @@ export function hostCommands(host = server) {
         start: [path.join(target, 'release', executable), []],
       };
     }
+    case 'dotnet': return {
+      build: [['dotnet', ['build', 'server/App.csproj', '--configuration', 'Release']]],
+      start: ['dotnet', ['server/bin/Release/net8.0/App.dll']],
+    };
+    case 'c':
+    case 'cpp': return {
+      build: [
+        ['cmake', ['-S', 'server', '-B', 'server/build', '-DCMAKE_BUILD_TYPE=Release']],
+        ['cmake', ['--build', 'server/build', '--config', 'Release']],
+      ],
+      start: [path.resolve('server/build', ...(process.platform === 'win32' ? ['Release'] : []), executable), []],
+    };
+    case 'go': return {
+      build: [
+        ['go', ['mod', 'download', 'all'], 'server'],
+        ['go', ['build', '-o', path.resolve('server/build', executable), '.'], 'server'],
+      ],
+      start: [path.resolve('server/build', executable), []],
+    };
     case 'node': return { build: [], start: [process.execPath, ['server/main.mjs']] };
     case 'bun': return { build: [], start: ['bun', ['server/main.ts']] };
     default: throw new Error(`Unknown server: ${host}`);
@@ -79,7 +98,12 @@ export async function main(mode) {
     throw new Error('Usage: node scripts/app.mjs <dev|build|start|check>');
   }
   const commands = hostCommands();
-  const environment = process.env;
+  let environment = process.env;
+  if (mode !== 'check' && ['c', 'cpp', 'go'].includes(server)) {
+    const { provisionSdk, sdkEnvironment } = await import('./sdk.mjs');
+    environment = sdkEnvironment(await provisionSdk());
+  }
+  if (server === 'go') environment = { ...environment, WEBUI_APP_ROOT: process.cwd() };
   let child;
   let sources;
   let quitting = false;
