@@ -128,11 +128,13 @@ test('selected SDK include, link and loader paths precede inherited toolchain pa
   const root = path.resolve('SDK with spaces');
   const environment = sdkEnvironment(root, {
     CGO_CFLAGS: '-I/stale/include -O2',
+    CGO_CPPFLAGS: '-I/stale/preprocessor -DKEEP_ME',
     CGO_LDFLAGS: '-L/stale/lib',
     PATH: '/tools', DYLD_LIBRARY_PATH: '/old', LD_LIBRARY_PATH: '/old',
   });
   const quote = value => JSON.stringify(value.replaceAll('\\', '/'));
   assert.equal(environment.CGO_CFLAGS, `${quote(`-I${path.join(root, 'include')}`)} -I/stale/include -O2`);
+  assert.equal(environment.CGO_CPPFLAGS, `${quote(`-I${path.join(root, 'include')}`)} -I/stale/preprocessor -DKEEP_ME`);
   assert.equal(environment.CGO_LDFLAGS, `${quote(`-L${path.join(root, 'lib')}`)} -L/stale/lib`);
   const loader = process.platform === 'win32' ? 'PATH'
     : process.platform === 'darwin' ? 'DYLD_LIBRARY_PATH' : 'LD_LIBRARY_PATH';

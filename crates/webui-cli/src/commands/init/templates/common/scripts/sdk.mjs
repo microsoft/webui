@@ -91,6 +91,7 @@ export function sdkEnvironment(sdkRoot, baseEnv = process.env) {
     ...baseEnv,
     WEBUI_SDK_DIR: root,
     CGO_ENABLED: '1',
+    CGO_CPPFLAGS: [quote(`-I${path.join(root, 'include')}`), baseEnv.CGO_CPPFLAGS].filter(Boolean).join(' '),
     CGO_CFLAGS: [quote(`-I${path.join(root, 'include')}`), baseEnv.CGO_CFLAGS].filter(Boolean).join(' '),
     CGO_LDFLAGS: [
       quote(`-L${lib}`),
