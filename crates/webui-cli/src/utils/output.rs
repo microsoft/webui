@@ -126,16 +126,19 @@ fn error_json(err: &anyhow::Error) -> serde_json::Value {
             map.insert("help".into(), str_or_null(diag.help_text()));
         }
         None => {
+            let init = err
+                .chain()
+                .find_map(|cause| cause.downcast_ref::<crate::commands::init::InitError>());
             // Keep the same key set as the structured branch so `--format json`
             // has one stable shape; fields that don't apply are null.
             map.insert("severity".into(), Value::from("error"));
-            map.insert("code".into(), Value::Null);
+            map.insert("code".into(), str_or_null(init.map(|error| error.code())));
             map.insert("message".into(), Value::from(err.to_string()));
             map.insert("file".into(), Value::Null);
             map.insert("line".into(), Value::Null);
             map.insert("column".into(), Value::Null);
             map.insert("snippet".into(), Value::Null);
-            map.insert("help".into(), Value::Null);
+            map.insert("help".into(), str_or_null(init.map(|error| error.help())));
         }
     }
     map.insert("chain".into(), Value::Array(chain));
@@ -164,6 +167,12 @@ pub fn error(err: &anyhow::Error) {
     );
     for cause in err.chain().skip(1) {
         eprintln!("  {} {cause}", console::style("caused by:").dim());
+    }
+    if let Some(init) = err
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<crate::commands::init::InitError>())
+    {
+        eprintln!("  {} {}", console::style("help:").yellow(), init.help());
     }
 }
 
@@ -438,6 +447,19 @@ mod tests {
         );
         assert!(message.contains("--> file-card:3:5"));
         assert!(message.contains("[invalid-component-source]"));
+    }
+
+    #[test]
+    fn init_errors_keep_machine_readable_codes_and_help() {
+        let err = anyhow::Error::new(crate::commands::init::InitError::Conflict("my-app".into()))
+            .context("cannot create application");
+        let value = error_json(&err);
+        assert_eq!(value["code"], "init-directory-not-empty");
+        assert!(value["help"]
+            .as_str()
+            .is_some_and(|text| text.contains("never replaced")));
+        assert!(!value.to_string().contains('\u{1b}'));
+        assert_eq!(value["chain"].as_array().map(Vec::len), Some(2));
     }
 
     #[test]

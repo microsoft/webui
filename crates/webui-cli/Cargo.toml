@@ -39,6 +39,7 @@ memchr = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 log = { workspace = true }
+include_dir = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true }
