@@ -2,15 +2,13 @@
 // Licensed under the MIT license.
 
 import { spawn } from 'node:child_process';
-import { readdir, stat } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { setTimeout as sleep } from 'node:timers/promises';
+import { watchSources } from './watch.mjs';
 
 const server = '__SERVER__';
 const executable = process.platform === 'win32' ? 'webui-app.exe' : 'webui-app';
-const ignored = new Set(['node_modules', 'target', 'build', 'bin', 'obj', '.git']);
 
 export function hostCommands(host = server) {
   switch (host) {
@@ -35,12 +33,23 @@ function launch([command, args, cwd = '.'], env) {
     child.once('error', reject);
     child.once('exit', (code, signal) => resolve({ code, signal }));
   });
+  child.started = new Promise((resolve, reject) => {
+    child.once('spawn', resolve);
+    child.once('error', reject);
+  });
   // Attach a rejection handler immediately, including while dev is rebuilding.
   child.completion.catch(() => {});
+  child.started.catch(() => {});
   return child;
 }
 
-async function stop(child) {
+function stop(child) {
+  if (!child) return Promise.resolve();
+  return child.stopping ??= terminate(child);
+}
+
+async function terminate(child) {
+  await child.started;
   if (!child?.pid || child.exitCode !== null || child.signalCode !== null) return;
   if (process.platform === 'win32') {
     const taskkill = spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
@@ -65,21 +74,6 @@ async function stop(child) {
   await child.completion;
 }
 
-async function snapshot() {
-  const pending = ['src', 'server', 'scripts', 'tsconfig.json', 'package.json'];
-  const files = [];
-  while (pending.length) {
-    const file = pending.pop();
-    const info = await stat(file);
-    if (info.isDirectory()) {
-      for (const entry of await readdir(file, { withFileTypes: true })) {
-        if (!entry.isSymbolicLink() && !ignored.has(entry.name)) pending.push(path.join(file, entry.name));
-      }
-    } else files.push(`${file}:${info.mtimeMs}:${info.size}`);
-  }
-  return files.sort().join('\n');
-}
-
 export async function main(mode) {
   if (!['dev', 'build', 'start', 'check'].includes(mode)) {
     throw new Error('Usage: node scripts/app.mjs <dev|build|start|check>');
@@ -87,8 +81,9 @@ export async function main(mode) {
   const commands = hostCommands();
   const environment = process.env;
   let child;
+  let sources;
   let quitting = false;
-  const shutdown = () => { quitting = true; void stop(child).catch(console.error); };
+  const shutdown = () => { quitting = true; sources?.close(); void stop(child).catch(console.error); };
   process.once('SIGINT', shutdown);
   process.once('SIGTERM', shutdown);
   async function run(command) {
@@ -114,37 +109,28 @@ export async function main(mode) {
     } else if (mode === 'start') {
       await run(commands.start);
     } else {
-      // One polling loop: no unbounded event queue, overlapping build, or server
-      // restart. Edits arriving during a build coalesce into the next snapshot.
-      let previous;
+      sources = watchSources();
       while (!quitting) {
-        let current;
-        try { current = await snapshot(); } catch (error) {
-          console.error(`Cannot watch sources: ${error.message}`);
-          await sleep(500);
-          continue;
+        const version = sources.version;
+        await stop(child);
+        child = undefined;
+        try {
+          await build(true);
+          if (!quitting && sources.version === version) child = launch(commands.start, environment);
+        } catch (error) {
+          if (!quitting) console.error(`Build failed; fix the source to retry.\n${error.message}`);
         }
-        if (current !== previous) {
-          await stop(child);
-          child = undefined;
-          previous = current;
-          try {
-            await build(true);
-            if (!quitting) child = launch(commands.start, environment);
-          } catch (error) {
-            if (!quitting) console.error(`Build failed; fix the source to retry.\n${error.message}`);
-          }
-        }
-        if (child) {
-          if (child.exitCode !== null || child.signalCode !== null) {
-            throw new Error('Development server exited. Fix the error and run dev again.');
-          }
-          // Propagate spawn errors without leaving an unhandled rejection.
-          await Promise.race([child.completion.then(() => {}), sleep(500)]);
-        } else await sleep(500);
+        if (quitting) break;
+        await Promise.race([
+          sources.wait(version),
+          ...(child ? [child.completion.then(() => {
+            if (!quitting) throw new Error('Development server exited. Fix the error and run dev again.');
+          })] : []),
+        ]);
       }
     }
   } finally {
+    sources?.close();
     await stop(child);
     process.removeListener('SIGINT', shutdown);
     process.removeListener('SIGTERM', shutdown);

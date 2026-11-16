@@ -25,6 +25,10 @@ pub(super) fn destination(input: &Path) -> Result<PathBuf> {
                 return Err(InitError::Destination(absolute.display().to_string()).into());
             }
             Component::CurDir => continue,
+            Component::Prefix(prefix) => {
+                path.push(prefix.as_os_str());
+                continue;
+            }
             other => path.push(other.as_os_str()),
         }
         check_directory(&path)?;
@@ -175,6 +179,9 @@ fn write_new(root: &Path, relative: &str, bytes: &[u8]) -> Result<()> {
             "starter path escapes destination"
         );
         current.push(part.as_os_str());
+        if matches!(part, Component::Prefix(_)) {
+            continue;
+        }
         check_directory(&current)?;
         if !current.exists() {
             fs::create_dir(&current)
