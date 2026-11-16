@@ -2,13 +2,13 @@
 // Licensed under the MIT license.
 
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { mkdir, readFile, readdir } from "node:fs/promises";
 import { createServer } from "node:net";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { chromium, expect } from "@playwright/test";
+import { shutdown, spawnFixture } from "./starter-process.mjs";
 
 const root = path.resolve(process.argv[2] ?? "");
 assert.ok(process.argv[2], "Pass an independently installed and built generated app directory.");
@@ -20,15 +20,10 @@ const port = reservation.address().port;
 await new Promise((resolve, reject) => reservation.close(error => error ? reject(error) : resolve()));
 const origin = `http://127.0.0.1:${port}`;
 let output = "";
-const server = spawn(process.execPath, ["scripts/app.mjs", "start"], {
-  cwd: root,
-  env: { ...process.env, PORT: String(port), HOST: "127.0.0.1" },
-  stdio: ["ignore", "pipe", "pipe"],
-});
+const server = spawnFixture(root, "scripts/app.mjs", ["start"], { PORT: String(port), HOST: "127.0.0.1" });
 server.stdout.on("data", chunk => { output += chunk; });
 server.stderr.on("data", chunk => { output += chunk; });
 server.on("error", error => { output += error.message; });
-const stopped = once(server, "exit");
 let browser;
 try {
   let ready = false;
@@ -46,13 +41,21 @@ try {
   const home = await (await fetch(origin)).text();
   assert.match(home, /Hello|WebUI/);
   assert.match(home, /app-counter/);
-  assert.match(home, /disabled/);
   const about = await (await fetch(`${origin}/about`)).text();
   assert.doesNotMatch(about, /<script[^>]+(?:src=|type=["']module)/i);
   for (const target of ["/missing", "/protocol.bin", "/dist/protocol.bin", "/server/main.mjs",
     "/assets/../protocol.bin", "/assets/%2e%2e%2fprotocol.bin"]) {
     const response = await fetch(origin + target);
     assert.ok(response.status >= 400, `${target} exposed a private or nonexistent resource`);
+  }
+  for (const target of ["/assets/index.js/missing.css", "/assets/index.js/missing/deep.css",
+    `/assets/${"x".repeat(256)}.css`]) {
+    for (const method of ["GET", "HEAD"]) {
+      const response = await fetch(origin + target, { method });
+      assert.equal(response.status, 404, `${method} ${target}`);
+      if (method === "HEAD") assert.equal(await response.text(), "");
+      else await response.arrayBuffer();
+    }
   }
   const head = await fetch(origin, { method: "HEAD" });
   assert.equal(head.status, 200);
@@ -104,7 +107,10 @@ try {
   const plain = await noJs.newPage();
   await plain.goto(origin);
   assert.ok(await plain.getByRole("heading", { level: 1 }).isVisible());
-  assert.equal(await plain.locator("app-counter button").first().isDisabled(), true);
+  const plainCounter = plain.locator("app-counter");
+  await expect(plainCounter.getByRole("button", { name: "Increment" })).toBeVisible();
+  await plainCounter.getByRole("button", { name: "Increment" }).click();
+  await expect(plainCounter.getByRole("status")).toHaveText("0");
   await plain.getByRole("link", { name: /^about$/i }).first().click();
   await plain.waitForURL(`${origin}/about`);
   assert.ok(await plain.getByRole("heading", { level: 1 }).isVisible());
@@ -119,10 +125,5 @@ try {
   }
   console.log(JSON.stringify({ app: root, javascriptBytes, screenshots, http: "passed", browser: "passed" }));
 } finally {
-  await browser?.close();
-  if (server.exitCode === null) {
-    server.kill("SIGTERM");
-    const timer = setTimeout(() => server.kill("SIGKILL"), 10_000);
-    try { await stopped; } finally { clearTimeout(timer); }
-  }
+  try { await browser?.close(); } finally { await shutdown(server); }
 }

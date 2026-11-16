@@ -42,7 +42,7 @@ TypeScript compiler; no global Yarn settings are changed.
 - `server/` - request state and native rendering.
 
 Navigation uses ordinary document links. Without JavaScript, both pages work
-and the counter stays disabled. On Home, hydration enables its native button.
+and the counter remains static. On Home, hydration wires its native button.
 
 ## Build and start
 
@@ -57,7 +57,10 @@ __PACKAGE_MANAGER__ run start
 private; only `dist/public/` is served at `/assets/`. Run from the app root.
 Rust needs its built server binary. Node/Bun need the installed WebUI native addon.
 Rust builds explicitly use the app-owned `server/target/` directory, even when
-`CARGO_TARGET_DIR` is set, so build, dev, and start always share the same binary.
+`CARGO_TARGET_DIR` is set. Cargo's reported executable is recorded in
+`.webui/server-executable.json`, so build, dev, and start share the same binary
+even with a configured Cargo target. Keep that metadata when deploying the Rust
+app; start does not require Cargo.
 
 The default listener is loopback on port 3000. Set `PORT` and `HOST` using your
 deployment environment to change it. Binding a public interface is an explicit

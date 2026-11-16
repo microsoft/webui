@@ -3,6 +3,7 @@
 
 import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
 import { minify } from 'terser';
 import { prepareBuild } from '@microsoft/webui';
@@ -93,4 +94,11 @@ export async function buildFrontend(development = false) {
     throw error;
   }
   await rm(backup, { recursive: true, force: true });
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+  buildFrontend(process.argv.includes('--development')).catch(error => {
+    console.error(error.message);
+    process.exitCode = 1;
+  });
 }

@@ -5,14 +5,9 @@ import { WebUIElement, observable } from '@microsoft/webui-framework';
 
 export class AppCounter extends WebUIElement {
   @observable count = 0;
-  @observable ready = false;
-
-  override hydratedCallback(): void {
-    this.ready = true;
-  }
 
   increment(): void {
-    if (this.ready) this.count += 1;
+    this.count += 1;
   }
 }
 

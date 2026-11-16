@@ -57,6 +57,67 @@ fn initializes_drive_and_verbatim_destinations_without_inspecting_bare_prefixes(
     Ok(())
 }
 
+#[cfg(windows)]
+#[test]
+fn windows_cmd_installers_keep_the_project_cwd_and_report_failures() -> Result<()> {
+    let temp = temp()?;
+    let bin = temp.path().join("bin");
+    fs::create_dir(&bin)?;
+    for program in ["npm", "npx"] {
+        fs::write(
+            bin.join(format!("{program}.cmd")),
+            format!("@echo off\r\necho %*\r\n>{program}-cwd.txt echo installed\r\n"),
+        )?;
+    }
+    let system = std::env::var_os("SystemRoot").context("Windows system directory")?;
+    let path = std::env::join_paths([bin.clone(), Path::new(&system).join("System32")])?;
+    let run = |root: &Path, args: &[&str]| -> Result<Output> {
+        Command::new(env!("CARGO_BIN_EXE_webui"))
+            .args(["--format=json", "init"])
+            .arg(root)
+            .args(args)
+            .env("PATH", &path)
+            .stdin(Stdio::null())
+            .output()
+            .context("running webui init through Windows cmd.exe")
+    };
+    let skipped = temp.path().join("skipped-app");
+    let output = run(&skipped, &["--no-interactive"])?;
+    assert!(output.status.success());
+    assert!(!skipped.join("npm-cwd.txt").exists());
+    assert!(!skipped.join("npx-cwd.txt").exists());
+
+    let root = temp.path().join("installed-app");
+    let output = run(&root, &["--install", "--ai-skill", "--no-interactive"])?;
+    anyhow::ensure!(
+        output.status.success(),
+        "{} {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(report["dependencies"], "installed");
+    assert_eq!(report["ai_skill"], "installed");
+    assert!(root.join("npm-cwd.txt").is_file());
+    assert!(root.join("npx-cwd.txt").is_file());
+    assert!(String::from_utf8(output.stderr)?.contains("webui-reference"));
+
+    fs::write(bin.join("npm.cmd"), "@echo off\r\nexit /b 23\r\n")?;
+    let failed = temp.path().join("failed-app");
+    let output = run(&failed, &["--install", "--no-interactive"])?;
+    assert_eq!(output.status.code(), Some(1));
+    let records = String::from_utf8(output.stdout)?;
+    let records: Vec<Value> = records
+        .lines()
+        .map(serde_json::from_str)
+        .collect::<Result<_, _>>()?;
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0]["dependencies"], "failed");
+    assert_eq!(records[1]["code"], "init-install-failed");
+    assert!(failed.join("package.json").is_file());
+    Ok(())
+}
+
 #[test]
 fn all_hosts_generate_offline_with_one_shared_frontend() -> Result<()> {
     let temp = temp()?;
@@ -151,6 +212,60 @@ fn normalizes_names_without_injecting_paths_into_project_files() -> Result<()> {
     let output = init(&invalid, &[])?;
     assert_eq!(output.status.code(), Some(2));
     assert!(!invalid.exists());
+    Ok(())
+}
+
+#[test]
+fn rejected_names_explain_normalization_limits() -> Result<()> {
+    let temp = temp()?;
+    for name in ["123".to_owned(), "node_modules".to_owned(), "a".repeat(65)] {
+        let root = temp.path().join(name);
+        let output = init(&root, &["--no-interactive"])?;
+        assert_eq!(output.status.code(), Some(2));
+        let error: Value = serde_json::from_slice(&output.stdout)?;
+        assert_eq!(error["code"], "init-invalid-name");
+        let help = error["help"].as_str().context("name correction help")?;
+        for restriction in [
+            "ASCII",
+            "normalize",
+            "letter",
+            "64",
+            "con",
+            "prn",
+            "aux",
+            "nul",
+            "com1",
+            "com9",
+            "lpt1",
+            "lpt9",
+            "node-modules",
+        ] {
+            assert!(help.contains(restriction), "{help}");
+        }
+        assert!(!root.exists());
+    }
+    Ok(())
+}
+
+#[test]
+fn rejected_file_components_and_roots_explain_destination_rules() -> Result<()> {
+    let temp = temp()?;
+    let file = temp.path().join("regular-file");
+    fs::write(&file, "preserved")?;
+    let filesystem_root = temp.path().ancestors().last().context("filesystem root")?;
+    for root in [file.clone(), file.join("app"), filesystem_root.to_owned()] {
+        let output = init(&root, &["--no-interactive"])?;
+        assert_eq!(output.status.code(), Some(2));
+        let error: Value = serde_json::from_slice(&output.stdout)?;
+        assert_eq!(error["code"], "init-unsafe-destination");
+        let help = error["help"]
+            .as_str()
+            .context("destination correction help")?;
+        for restriction in ["root", "file", "symlink", "'..'"] {
+            assert!(help.contains(restriction), "{help}");
+        }
+    }
+    assert_eq!(fs::read_to_string(file)?, "preserved");
     Ok(())
 }
 

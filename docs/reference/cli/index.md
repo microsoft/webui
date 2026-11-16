@@ -155,9 +155,12 @@ webui init my-app --server bun --no-interactive
 | `--no-interactive` | Do not ask onboarding questions | Off |
 
 Generation is offline and does not require the selected server toolchain.
-Existing files are never replaced. Choose a directory without symlink
-ancestors or `..` path segments; names use ASCII letters, numbers, spaces,
-underscores, or hyphens and must normalize to a letter-prefixed project name.
+Existing files are never replaced. Choose a non-root directory without
+regular-file or symlink path components or `..` path segments. Names use ASCII
+letters, numbers, spaces, underscores, or hyphens and normalize to lowercase
+with hyphen separators. The normalized name must start with a letter, contain
+at most 64 characters, and not be `con`, `prn`, `aux`, `nul`, `com1` through
+`com9`, `lpt1` through `lpt9`, or `node-modules`.
 
 In a terminal, init offers dependency installation and installation of the
 existing `webui-reference` skill separately. Both default to No. There are no
@@ -170,6 +173,11 @@ prompts. Explicit `--install` and `--ai-skill` still run their requested steps.
 The skill installer uses its noninteractive mode when no interaction is allowed.
 Its loader reads the reference bundled with the installed `@microsoft/webui`,
 not an independently copied documentation snapshot.
+On Windows, installation from a UNC destination is rejected before running
+either installer because `cmd.exe` cannot retain that working directory.
+The generated app is preserved; move it to a local drive or map the share
+to a drive letter before installing. Offline generation on a UNC share is
+still supported.
 
 ```bash
 cd my-app
@@ -1230,6 +1238,7 @@ The process exit code follows the BSD `sysexits.h` conventions so scripts and CI
 | `65` | Template or authoring error (`EX_DATAERR`) |
 | `66` | Missing input: app folder, `--state` file, `--servedir`, or entry file (`EX_NOINPUT`) |
 | `69` | Requested `--port` is already in use (`EX_UNAVAILABLE`) |
+| `73` | Nonempty `webui init` destination (`EX_CANTCREAT`) |
 | `74` | I/O error reading or writing files (`EX_IOERR`) |
 
 ## App Folder Structure

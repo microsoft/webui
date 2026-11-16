@@ -111,9 +111,9 @@ impl InitError {
 
     pub(crate) fn help(&self) -> &'static str {
         match self {
-            Self::Destination(_) => "Choose a directory with no symlink ancestors or '..' segments.",
+            Self::Destination(_) => "Choose a non-root directory with no regular-file or symlink path components and no '..' segments.",
             Self::Conflict(_) => "Choose a new or empty directory; existing files are never replaced.",
-            Self::Name(_) => "Use a directory name with ASCII letters, numbers, spaces, '_' or '-'.",
+            Self::Name(_) => "Use ASCII letters, numbers, spaces, '_' or '-'; normalized names (lowercase with '-' separators) must start with a letter, contain at most 64 characters, and not be reserved (con, prn, aux, nul, com1-com9, lpt1-lpt9, node-modules).",
             Self::Install(_) => "The generated app is preserved. Resolve the reported error and rerun the printed command from its directory.",
         }
     }

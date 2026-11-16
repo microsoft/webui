@@ -66,6 +66,19 @@ fn confirm(question: &str) -> Result<bool> {
 
 fn execute(program: &str, arguments: &[&str], directory: &Path) -> Result<()> {
     let display = format!("{program} {}", arguments.join(" "));
+    #[cfg(windows)]
+    if matches!(
+        directory.components().next(),
+        Some(std::path::Component::Prefix(prefix))
+            if matches!(prefix.kind(), std::path::Prefix::UNC(..) | std::path::Prefix::VerbatimUNC(..))
+    ) {
+        return Err(InitError::Install(format!(
+            "cannot run {display} in UNC directory {}; cmd.exe requires a drive-letter directory. \
+             Move the app to a local drive or map the share to a drive letter",
+            directory.display()
+        ))
+        .into());
+    }
     let mut command = command(program);
     command.args(arguments);
     if matches!(output::format(), OutputFormat::Json) || !io::stdin().is_terminal() {
@@ -94,4 +107,34 @@ fn command(program: &str) -> Command {
     let mut command = Command::new("cmd.exe");
     command.args(["/d", "/c", program]);
     command
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn refuses_unc_installers_before_launching_cmd() -> Result<()> {
+        for directory in [
+            r"\\webui-nonexistent-host\share\my-app",
+            r"\\?\UNC\webui-nonexistent-host\share\my-app",
+        ] {
+            let error = execute("echo", &["installer-must-not-run"], Path::new(directory))
+                .err()
+                .context("UNC installer must be rejected before cmd.exe can fall back")?;
+            let init = error
+                .downcast_ref::<InitError>()
+                .context("typed installation failure")?;
+            assert_eq!(init.code(), "init-install-failed");
+            assert_eq!(init.exit_code(), 1);
+            let message = init.to_string();
+            assert!(message.contains("UNC directory"), "{message}");
+            assert!(
+                message.contains("map the share to a drive letter"),
+                "{message}"
+            );
+            assert!(message.contains(directory), "{message}");
+        }
+        Ok(())
+    }
 }

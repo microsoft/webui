@@ -109,9 +109,7 @@ async fn request(request: HttpRequest, runtime: web::Data<Runtime>) -> HttpRespo
         return text(StatusCode::NOT_FOUND, "Not found");
     }
     let state = match pathname.as_ref() {
-        "/" => {
-            Some(serde_json::json!({"title":"Hello WebUI","count":0,"ready":false,"isHome":true}))
-        }
+        "/" => Some(serde_json::json!({"title":"Hello WebUI","count":0,"isHome":true})),
         "/about" => Some(serde_json::json!({"title":"About WebUI","isHome":false})),
         _ => None,
     };
@@ -137,7 +135,14 @@ async fn request(request: HttpRequest, runtime: web::Data<Runtime>) -> HttpRespo
     match asset(&runtime, &pathname).await {
         Ok(Some(response)) => response,
         Ok(None) => text(StatusCode::NOT_FOUND, "Not found"),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::NotFound
+                    | io::ErrorKind::NotADirectory
+                    | io::ErrorKind::InvalidFilename
+            ) =>
+        {
             text(StatusCode::NOT_FOUND, "Not found")
         }
         Err(error) => {
