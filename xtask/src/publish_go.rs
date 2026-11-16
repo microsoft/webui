@@ -19,15 +19,16 @@ fn proxy_at(output: &Path) -> PathBuf {
     output.join(MODULE).join("@v")
 }
 
-fn check_version(version: &str) -> Result<(), String> {
-    if crate::release_version::ReleaseVersion::parse(version).is_none()
-        || !version.starts_with("3.")
-    {
+fn check_version(version: &str) -> Result<String, String> {
+    let parsed = crate::release_version::ReleaseVersion::parse(version);
+    if parsed.is_none() || !version.starts_with("3.") {
         return Err(format!(
             "Go module {MODULE} requires a release-aligned v3 version, got {version}"
         ));
     }
-    Ok(())
+    parsed
+        .and_then(crate::release_version::ReleaseVersion::go_version)
+        .ok_or_else(|| format!("Go hotfix mapping requires a patch below u64::MAX: {version}"))
 }
 
 pub(super) fn stage(root: &Path, version: &str) -> Result<(), String> {
@@ -35,7 +36,7 @@ pub(super) fn stage(root: &Path, version: &str) -> Result<(), String> {
 }
 
 pub(super) fn stage_at(root: &Path, version: &str, output: &Path) -> Result<(), String> {
-    check_version(version)?;
+    let go_version = check_version(version)?;
     let root = fs::canonicalize(root).map_err(|e| e.to_string())?;
     let destination = proxy_at(output);
     // Do not retain earlier proxy artifacts after a failed source validation.
@@ -52,6 +53,7 @@ pub(super) fn stage_at(root: &Path, version: &str, output: &Path) -> Result<(), 
         .arg(root.join("LICENSE"))
         .arg(temporary.path().join("proxy"))
         .arg(version)
+        .arg(go_version)
         .env("GOWORK", "off")
         .env("GOTOOLCHAIN", "local")
         .env("GOFLAGS", "")
@@ -74,7 +76,7 @@ pub(super) fn validate_release(root: &Path, version: &str) -> Result<(), String>
 }
 
 fn validate_at(output: &Path, version: &str) -> Result<(), String> {
-    check_version(version)?;
+    let version = check_version(version)?;
     let output = proxy_at(output);
     if super::count_regular_files(&output) != 4 {
         return Err("expected Go proxy .mod, .info, .zip and list artifacts".to_string());

@@ -111,6 +111,9 @@ fn check_external_consumer(
     proxy: &Path,
 ) -> Result<(), String> {
     let version = crate::version::workspace_package_version(workspace)?;
+    let module_version = crate::release_version::ReleaseVersion::parse(&version)
+        .and_then(crate::release_version::ReleaseVersion::go_version)
+        .ok_or_else(|| format!("cannot map native SDK version {version} to a Go module version"))?;
     let staging = root.join("release");
     let header = staging.join("crates/webui-ffi/include");
     fs::create_dir_all(&header).map_err(|error| error.to_string())?;
@@ -144,7 +147,7 @@ fn check_external_consumer(
     fs::write(
         app.join("go.mod"),
         format!(
-            "module consumer\n\ngo 1.25\n\nrequire github.com/microsoft/webui/go/v3 v{version}\n"
+            "module consumer\n\ngo 1.25\n\nrequire github.com/microsoft/webui/go/v3 v{module_version}\n"
         ),
     )
     .map_err(|error| error.to_string())?;
@@ -168,7 +171,9 @@ fn check_external_consumer(
         .env("GOMODCACHE", root.join("module-cache"));
     let result = checked(&mut build, "build external Go module consumer").and_then(|()| {
         let sum = fs::read_to_string(app.join("go.sum")).map_err(|error| error.to_string())?;
-        if !sum.contains(&format!("github.com/microsoft/webui/go/v3 v{version} h1:")) {
+        if !sum.contains(&format!(
+            "github.com/microsoft/webui/go/v3 v{module_version} h1:"
+        )) {
             return Err("external consumer did not checksum the staged module".to_owned());
         }
         let mut consumer = Command::new(executable);
@@ -236,8 +241,8 @@ fn configure_environment(
         .env("GOTOOLCHAIN", "local")
         .env("GOWORK", "off")
         .env("WEBUI_GO_TEST_PROTOCOL", protocol)
-        .env("CGO_CFLAGS", append_flag("CGO_CFLAGS", "-I", include)?)
-        .env("CGO_LDFLAGS", append_flag("CGO_LDFLAGS", "-L", library)?);
+        .env("CGO_CFLAGS", prepend_flag("CGO_CFLAGS", "-I", include)?)
+        .env("CGO_LDFLAGS", prepend_flag("CGO_LDFLAGS", "-L", library)?);
     let loader = if cfg!(windows) {
         "PATH"
     } else if cfg!(target_os = "macos") {
@@ -256,7 +261,7 @@ fn configure_environment(
     Ok(())
 }
 
-fn append_flag(variable: &str, prefix: &str, path: &Path) -> Result<OsString, String> {
+fn prepend_flag(variable: &str, prefix: &str, path: &Path) -> Result<OsString, String> {
     let path = path
         .to_str()
         .ok_or("Go compiler paths must be valid UTF-8")?;
@@ -269,11 +274,11 @@ fn append_flag(variable: &str, prefix: &str, path: &Path) -> Result<OsString, St
     };
     let flag =
         serde_json::to_string(&format!("{prefix}{path}")).map_err(|error| error.to_string())?;
-    let mut value = std::env::var_os(variable).unwrap_or_default();
-    if !value.is_empty() {
+    let mut value = OsString::from(flag);
+    if let Some(previous) = std::env::var_os(variable).filter(|previous| !previous.is_empty()) {
         value.push(" ");
+        value.push(previous);
     }
-    value.push(flag);
     Ok(value)
 }
 
@@ -285,6 +290,7 @@ mod tests {
     fn file_proxy_urls_preserve_spaces_and_windows_paths() -> Result<(), String> {
         for (path, expected) in [
             ("/tmp/Go proxy#1%", "file:///tmp/Go%20proxy%231%25"),
+            ("/proxy,comma|pipe", "file:///proxy%2Ccomma%7Cpipe"),
             (r"\\?\C:\Go proxy", "file:///C:/Go%20proxy"),
             (r"\\?\UNC\server\Go proxy", "file://server/Go%20proxy"),
         ] {
@@ -295,14 +301,63 @@ mod tests {
     }
 
     #[test]
+    fn selected_sdk_flags_precede_inherited_flags() -> Result<(), String> {
+        const CHILD: &str = "WEBUI_TEST_INHERITED_CGO_FLAGS";
+        if std::env::var_os(CHILD).is_none() {
+            let output = Command::new(std::env::current_exe().map_err(|error| error.to_string())?)
+                .args([
+                    "--exact",
+                    "go_tests::tests::selected_sdk_flags_precede_inherited_flags",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .env("CGO_CFLAGS", "\"-Istale SDK/include\" -DKEEP=1")
+                .env("CGO_LDFLAGS", "\"-Lstale SDK/lib\" -lm")
+                .output()
+                .map_err(|error| error.to_string())?;
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return Ok(());
+        }
+        let mut command = Command::new("go");
+        configure_environment(
+            &mut command,
+            Path::new("selected SDK/include"),
+            Path::new("selected SDK/lib"),
+            Path::new("fixture/protocol.bin"),
+        )?;
+        for (variable, expected) in [
+            (
+                "CGO_CFLAGS",
+                "\"-Iselected SDK/include\" \"-Istale SDK/include\" -DKEEP=1",
+            ),
+            (
+                "CGO_LDFLAGS",
+                "\"-Lselected SDK/lib\" \"-Lstale SDK/lib\" -lm",
+            ),
+        ] {
+            let actual = command
+                .get_envs()
+                .find(|(key, _)| *key == variable)
+                .and_then(|(_, value)| value);
+            assert_eq!(actual, Some(std::ffi::OsStr::new(expected)));
+        }
+        Ok(())
+    }
+
+    #[test]
     fn compiler_flags_normalize_windows_verbatim_paths() -> Result<(), String> {
-        let flag = append_flag(
+        let flag = prepend_flag(
             "WEBUI_UNUSED_TEST_FLAGS",
             "-I",
             Path::new(r"\\?\C:\SDK folder\include"),
         )?;
         assert_eq!(flag, "\"-IC:/SDK folder/include\"");
-        let flag = append_flag(
+        let flag = prepend_flag(
             "WEBUI_UNUSED_TEST_FLAGS",
             "-L",
             Path::new(r"\\?\UNC\server\SDK folder\lib"),

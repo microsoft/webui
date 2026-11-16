@@ -35,7 +35,7 @@ func main() {
 }
 
 func pack() error {
-	source, license, output, version := os.Args[1], os.Args[2], os.Args[3], "v"+os.Args[4]
+	source, license, output, version := os.Args[1], os.Args[2], os.Args[3], "v"+os.Args[5]
 	manifest, err := os.ReadFile(filepath.Join(source, "go.mod"))
 	if err != nil {
 		return err

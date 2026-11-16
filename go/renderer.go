@@ -34,12 +34,17 @@ func (e *NativeError) Error() string {
 	return e.Operation + ": " + e.Message
 }
 
-// RenderOptions selects the document entry and request route.
+// RenderOptions selects the document entry, request route, and CSP nonce.
 type RenderOptions struct {
 	// Entry is the compiled entry identifier; empty means "index.html".
 	Entry string
-	// RequestPath is the request route; empty means "/".
+	// RequestPath is the encoded request route; empty means "/".
+	// For net/http requests, use request.URL.EscapedPath().
 	RequestPath string
+	// Nonce is the response's CSP nonce for generated scripts and preload hints.
+	// Empty disables nonce emission. Use a fresh, unpredictable nonce per response
+	// and include the same value in the Content-Security-Policy header.
+	Nonce string
 }
 
 // Renderer owns a loaded native protocol and its WebUI hydration handler.
@@ -104,6 +109,9 @@ func (r *Renderer) Render(state []byte, options RenderOptions) ([]byte, error) {
 	if strings.IndexByte(options.RequestPath, 0) >= 0 {
 		return nil, errors.New("webui: request path contains an embedded NUL; remove it")
 	}
+	if strings.IndexByte(options.Nonce, 0) >= 0 {
+		return nil, errors.New("webui: nonce contains an embedded NUL; remove it")
+	}
 	if options.Entry == "" {
 		options.Entry = "index.html"
 	}
@@ -121,9 +129,20 @@ func (r *Renderer) Render(state []byte, options RenderOptions) ([]byte, error) {
 	cEntry, cPath := C.CString(options.Entry), C.CString(options.RequestPath)
 	defer C.free(unsafe.Pointer(cEntry))
 	defer C.free(unsafe.Pointer(cPath))
-	result := C.webui_handler_render(s.handler, s.protocol, (*C.char)(cState), cEntry, cPath)
+	var result unsafe.Pointer
+	operation := "webui_handler_render"
+	if options.Nonce == "" {
+		result = C.webui_handler_render(s.handler, s.protocol, (*C.char)(cState), cEntry, cPath)
+	} else {
+		cNonce := C.CString(options.Nonce)
+		defer C.free(unsafe.Pointer(cNonce))
+		nativeOptions := C.webui_render_options_t{entry_id: cEntry, request_path: cPath, nonce: cNonce}
+		operation = "webui_handler_render_with_options"
+		// SAFETY: Options contain only C-owned strings, borrowed for this call.
+		result = C.webui_handler_render_with_options(s.handler, s.protocol, (*C.char)(cState), &nativeOptions)
+	}
 	if result == nil {
-		return nil, nativeError("webui_handler_render")
+		return nil, nativeError(operation)
 	}
 	defer C.webui_render_free(result)
 	var length C.uintptr_t

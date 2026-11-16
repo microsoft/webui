@@ -78,11 +78,16 @@ function success(output) {
   assert.equal(output.status, 0, `${output.stdout}\n${output.stderr}`);
 }
 
-for (const version of ['v3.1.2', 'v3.1.2-hotfix.4']) {
+for (const [version, goVersion] of [
+  ['v3.1.2', 'v3.1.2'],
+  ['v3.1.2-hotfix.4', 'v3.1.3-0.hotfix.4'],
+  ['v3.1.9-hotfix.12', 'v3.1.10-0.hotfix.12'],
+  ['v3.1.18446744073709551614-hotfix.1', 'v3.1.18446744073709551615-0.hotfix.1'],
+]) {
   test(`creates exact annotated root and Go tags for ${version}`, t => {
     const f = fixture(t);
     success(f.run({ RELEASE_TAG: version }));
-    for (const tag of [version, `go/${version}`]) {
+    for (const tag of [version, `go/${goVersion}`]) {
       assert.equal(f.remoteTag(tag), f.commit);
       assert.equal(f.remoteGit(['cat-file', '-t', `refs/tags/${tag}`]), 'tag');
     }
@@ -136,7 +141,7 @@ for (const racing of ['v3.1.2', 'go/v3.1.2']) {
       } else {
         assert.notEqual(output.status, 0);
         assert.match(output.stderr, /concurrent .*points to/);
-        if (racing === 'v3.1.2') assert.equal(f.remoteTag('go/v3.1.2'), null);
+        assert.equal(f.remoteTag(racing === 'v3.1.2' ? 'go/v3.1.2' : 'v3.1.2'), null);
       }
       assert.equal(f.remoteTag(racing), target);
     });
@@ -148,6 +153,31 @@ test('historical no-Go commit creates root only despite Go being present in chec
   success(f.run({ RELEASE_COMMIT: f.historical }));
   assert.equal(f.remoteTag('v3.1.2'), f.historical);
   assert.equal(f.remoteTag('go/v3.1.2'), null);
+});
+
+test('a concurrent publisher creating both expected tags is revalidated successfully', t => {
+  const f = fixture(t);
+  mkdirSync(join(f.work, '.git/hooks'));
+  writeFileSync(join(f.work, '.git/hooks/pre-push'), [
+    '#!/bin/sh',
+    'set -eu',
+    'rm -- "$0"',
+    'git --git-dir="$TAG_RACE_REMOTE" update-ref refs/tags/v3.1.2 "$TAG_RACE_COMMIT"',
+    'git --git-dir="$TAG_RACE_REMOTE" update-ref refs/tags/go/v3.1.2 "$TAG_RACE_COMMIT"',
+    '',
+  ].join('\n'), { mode: 0o755 });
+  success(f.run({ TAG_RACE_REMOTE: f.remote, TAG_RACE_COMMIT: f.commit }));
+  assert.equal(f.remoteTag('v3.1.2'), f.commit);
+  assert.equal(f.remoteTag('go/v3.1.2'), f.commit);
+});
+
+test('overflowing the Go hotfix patch fails before creating either tag', t => {
+  const f = fixture(t);
+  const version = 'v3.1.18446744073709551615-hotfix.1';
+  const output = f.run({ RELEASE_TAG: version });
+  assert.notEqual(output.status, 0);
+  assert.match(output.stderr, /patch below u64::MAX/);
+  assert.equal(f.remoteTag(version), null);
 });
 
 test('wrong module identity and module major version fail before creating tags', t => {
@@ -186,19 +216,76 @@ test('divergent local tag cannot be pushed when remote tag is absent', t => {
   assert.equal(f.remoteTag('go/v3.1.2'), null);
 });
 
-test('Azure artifact handoffs retain SDK checksums and the complete Go proxy tree', () => {
+test('a divergent local Go tag fails before publishing the root tag', t => {
+  const f = fixture(t);
+  f.git(['tag', 'go/v3.1.2', f.historical]);
+  const output = f.run();
+  assert.notEqual(output.status, 0);
+  assert.match(output.stderr, /local go\/v3.1.2 points to/);
+  assert.equal(f.remoteTag('v3.1.2'), null);
+  assert.equal(f.remoteTag('go/v3.1.2'), null);
+});
+
+test('a rejected Go ref cannot leave a partial root release', t => {
+  const f = fixture(t);
+  mkdirSync(join(f.remote, 'hooks'));
+  writeFileSync(join(f.remote, 'hooks/update'), [
+    '#!/bin/sh',
+    'test "$1" != refs/tags/go/v3.1.2',
+    '',
+  ].join('\n'), { mode: 0o755 });
+  assert.notEqual(f.run().status, 0);
+  assert.equal(f.remoteTag('v3.1.2'), null);
+  assert.equal(f.remoteTag('go/v3.1.2'), null);
+});
+
+test('a remote without atomic push support fails without publishing any tag', t => {
+  const f = fixture(t);
+  f.remoteGit(['config', 'receive.advertiseAtomic', 'false']);
+  assert.notEqual(f.run().status, 0);
+  assert.equal(f.remoteTag('v3.1.2'), null);
+  assert.equal(f.remoteTag('go/v3.1.2'), null);
+});
+
+test('Azure selected-build detection gates SDK and Go independently, including historical builds', () => {
+  const detector = fileURLToPath(new URL('../.ado/release-distributions.py', import.meta.url));
+  const python = process.platform === 'win32' ? 'python' : 'python3';
+  for (const names of [[], ['standalone_sdk_archives'], ['go_module_proxy'], ['standalone_sdk_archives', 'go_module_proxy']]) {
+    const output = spawnSync(python, [detector], {
+      input: JSON.stringify({ value: names.map(name => ({ name })) }),
+      encoding: 'utf8',
+    });
+    success(output);
+    for (const [artifact, variable, pattern] of [
+      ['standalone_sdk_archives', 'sdkAvailable', 'sdk/*.tar.gz.sha256'],
+      ['go_module_proxy', 'goAvailable', 'go/webui-go-proxy-*.tar.gz'],
+    ]) {
+      assert.ok(output.stdout.includes(`variable=${variable};isOutput=true]${names.includes(artifact)}`));
+      assert.equal(output.stdout.includes(pattern), names.includes(artifact));
+    }
+  }
+  assert.notEqual(spawnSync(python, [detector], {
+    input: '{"error":"denied"}',
+    encoding: 'utf8',
+  }).status, 0);
+});
+
+test('Azure optional distributions share the historical standalone handoff without unconditional inputs', () => {
   const build = readFileSync(new URL('../.ado/pipelines/azure-pipelines-build.yml', import.meta.url), 'utf8');
   const cd = readFileSync(new URL('../.ado/pipelines/azure-pipelines-cd.yml', import.meta.url), 'utf8');
-  for (const [directory, artifact] of [['sdk', 'standalone_sdk_archives'], ['go', 'go_module_proxy']]) {
+  for (const [directory, artifact, variable] of [['sdk', 'standalone_sdk_archives', 'sdkAvailable'], ['go', 'go_module_proxy', 'goAvailable']]) {
     assert.ok(build.includes(`targetPath: '$(Build.SourcesDirectory)/publish/${directory}'\n        artifactName: ${artifact}`));
     assert.ok(cd.includes(`artifact: ${artifact}`));
     assert.ok(cd.includes(`SourceFolder: $(Pipeline.Workspace)/releaseBuild/${artifact}\n            Contents: '**'`));
-    assert.ok(cd.includes(`targetPath: '$(Build.SourcesDirectory)/publish_artifacts_${directory}'\n            artifactName: ${artifact}`));
-    assert.ok(cd.includes(`artifactName: ${artifact}\n              targetPath: $(Build.SourcesDirectory)/publish_artifacts_${directory}`));
+    assert.ok(cd.includes(`TargetFolder: $(Build.SourcesDirectory)/publish_artifacts_standalone/${directory}`));
+    assert.equal(cd.split(`condition: and(succeeded(), eq(variables['distributions.${variable}'], 'true'))`).length - 1, 2);
+    assert.ok(!cd.includes(`artifactName: ${artifact}`), 'optional artifacts must not become unconditional handoffs');
   }
+  assert.ok(cd.includes('${RELEASE_BUILD_ID}/artifacts?api-version=7.1'));
+  assert.ok(cd.includes('RELEASE_BUILD_ID: $(resources.pipeline.releaseBuild.runID)'));
+  assert.ok(cd.includes("distributionAssets: $[ stageDependencies.SignArtifacts.StagePythonAndStandalone.outputs['distributions.releaseAssets'] ]"));
+  assert.ok(cd.includes('                $(distributionAssets)'));
   assert.ok(build.includes('tar -czf "$AGENT_TEMPDIRECTORY/$proxy_archive" -C publish/go github.com'));
-  assert.ok(cd.includes('$(Build.SourcesDirectory)/publish_artifacts_sdk/*.tar.gz.sha256'));
-  assert.ok(cd.includes('$(Build.SourcesDirectory)/publish_artifacts_go/webui-go-proxy-*.tar.gz'));
   assert.ok(cd.includes("- ${{ if eq(parameters.validationMode, 'false') }}:\n      - stage: TagRelease"));
   assert.ok(cd.includes('filePath: $(Build.SourcesDirectory)/scripts/tag-release.sh'));
   assert.ok(cd.includes('VALIDATION_MODE: ${{ parameters.validationMode }}'));

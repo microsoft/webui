@@ -19,18 +19,18 @@ use std::ffi::{c_void, CStr, CString};
 // against the rlib and call the `pub extern "C"` functions.
 use webui_ffi::{
     webui_free, webui_handler_create, webui_handler_create_with_plugin, webui_handler_destroy,
-    webui_handler_render, webui_handler_set_nonce, webui_last_error, webui_protocol_create,
-    webui_protocol_destroy, webui_protocol_render_partial, webui_protocol_tokens,
-    webui_render_bytes, webui_render_free, webui_streaming_session_advance,
-    webui_streaming_session_create, webui_streaming_session_destroy,
-    webui_streaming_session_resume, webui_streaming_session_start, webui_streaming_session_update,
-    webui_streaming_step_boundary_declaration_id, webui_streaming_step_boundary_instance_id,
-    webui_streaming_step_boundary_key_number, webui_streaming_step_boundary_key_string,
-    webui_streaming_step_boundary_key_type, webui_streaming_step_boundary_name,
-    webui_streaming_step_boundary_owner, webui_streaming_step_bytes, webui_streaming_step_destroy,
-    webui_streaming_step_done, webui_streaming_step_has_boundary, WEBUI_BOUNDARY_KEY_NONE,
-    WEBUI_BOUNDARY_KEY_NUMBER, WEBUI_BOUNDARY_KEY_STRING, WEBUI_BOUNDARY_MODE_FINAL,
-    WEBUI_BOUNDARY_MODE_UPDATABLE,
+    webui_handler_render, webui_handler_render_with_options, webui_handler_set_nonce,
+    webui_last_error, webui_protocol_create, webui_protocol_destroy, webui_protocol_render_partial,
+    webui_protocol_tokens, webui_render_bytes, webui_render_free, webui_render_options_t,
+    webui_streaming_session_advance, webui_streaming_session_create,
+    webui_streaming_session_destroy, webui_streaming_session_resume, webui_streaming_session_start,
+    webui_streaming_session_update, webui_streaming_step_boundary_declaration_id,
+    webui_streaming_step_boundary_instance_id, webui_streaming_step_boundary_key_number,
+    webui_streaming_step_boundary_key_string, webui_streaming_step_boundary_key_type,
+    webui_streaming_step_boundary_name, webui_streaming_step_boundary_owner,
+    webui_streaming_step_bytes, webui_streaming_step_destroy, webui_streaming_step_done,
+    webui_streaming_step_has_boundary, WEBUI_BOUNDARY_KEY_NONE, WEBUI_BOUNDARY_KEY_NUMBER,
+    WEBUI_BOUNDARY_KEY_STRING, WEBUI_BOUNDARY_MODE_FINAL, WEBUI_BOUNDARY_MODE_UPDATABLE,
 };
 use webui_protocol::{
     FragmentList, InitialStateStrategy, StateProjectionMode, WebUIFragment, WebUIProtocol,
@@ -575,6 +575,119 @@ fn handler_set_nonce_applies_to_render() {
             "rendered HTML should contain nonce meta tag, got:\n{result}"
         );
 
+        webui_protocol_destroy(prepared);
+        webui_handler_destroy(handler);
+    }
+}
+
+#[test]
+fn handler_render_request_nonce_overrides_without_changing_shared_configuration() {
+    let mut protocol =
+        WebUIProtocol::from_protobuf(&build_protocol_with_body_end()).expect("test protocol");
+    protocol.module_preloads = vec!["/app.js".to_owned()];
+    let bytes = protocol.to_protobuf().expect("serialize protocol");
+    // SAFETY: All handles and C strings remain live through each call and are
+    // released exactly once after rendering.
+    unsafe {
+        let plugin = CString::new("webui").expect("plugin");
+        let handler = webui_handler_create_with_plugin(plugin.as_ptr());
+        let prepared = prepare_protocol(&bytes);
+        let configured = CString::new("configured-nonce").expect("nonce");
+        webui_handler_set_nonce(handler, configured.as_ptr());
+        let data = CString::new("{}").expect("state");
+        let entry = CString::new("index.html").expect("entry");
+        let path = CString::new("/").expect("path");
+        for nonce in ["first-response", "second-response", "", "configured-nonce"] {
+            let nonce_c = CString::new(nonce).expect("nonce");
+            let options = webui_render_options_t {
+                entry_id: entry.as_ptr(),
+                request_path: path.as_ptr(),
+                nonce: if nonce == "configured-nonce" {
+                    std::ptr::null()
+                } else {
+                    nonce_c.as_ptr()
+                },
+            };
+            let result =
+                webui_handler_render_with_options(handler, prepared, data.as_ptr(), &options);
+            assert!(!result.is_null(), "{:?}", last_error_string());
+            let html = take_rendered_document(result);
+            if nonce.is_empty() {
+                assert!(!html.contains("nonce="), "{html}");
+                assert!(!html.contains("webui-nonce"), "{html}");
+            } else {
+                assert!(
+                    html.contains(&format!(
+                        r#"<link rel="modulepreload" href="/app.js" nonce="{nonce}">"#
+                    )),
+                    "{html}"
+                );
+                assert!(
+                    html.contains(&format!(r#"<meta name="webui-nonce" content="{nonce}">"#)),
+                    "{html}"
+                );
+            }
+        }
+        let legacy = webui_handler_render(
+            handler,
+            prepared,
+            data.as_ptr(),
+            entry.as_ptr(),
+            path.as_ptr(),
+        );
+        assert!(!legacy.is_null());
+        assert!(take_rendered_document(legacy).contains(r#"nonce="configured-nonce""#));
+        webui_protocol_destroy(prepared);
+        webui_handler_destroy(handler);
+    }
+}
+
+#[test]
+fn handler_render_request_options_reject_nulls_and_invalid_nonce_utf8() {
+    let bytes = build_protocol_with_body_end();
+    // SAFETY: All non-null handles and strings are live and correctly terminated.
+    unsafe {
+        let handler = webui_handler_create();
+        let prepared = prepare_protocol(&bytes);
+        let data = CString::new("{}").expect("state");
+        let entry = CString::new("index.html").expect("entry");
+        let path = CString::new("/").expect("path");
+        assert!(webui_handler_render_with_options(
+            handler,
+            prepared,
+            data.as_ptr(),
+            std::ptr::null(),
+        )
+        .is_null());
+        assert!(last_error_string().is_some());
+        let bad_nonce = [0xff_u8, 0];
+        let mut options = webui_render_options_t {
+            entry_id: entry.as_ptr(),
+            request_path: path.as_ptr(),
+            nonce: bad_nonce.as_ptr().cast(),
+        };
+        assert!(
+            webui_handler_render_with_options(handler, prepared, data.as_ptr(), &options).is_null()
+        );
+        assert!(last_error_string()
+            .expect("diagnostic")
+            .contains("UTF-8 in nonce"));
+        options.nonce = std::ptr::null();
+        options.entry_id = std::ptr::null();
+        assert!(
+            webui_handler_render_with_options(handler, prepared, data.as_ptr(), &options).is_null()
+        );
+        assert!(last_error_string()
+            .expect("diagnostic")
+            .contains("entry_id"));
+        options.entry_id = entry.as_ptr();
+        options.request_path = std::ptr::null();
+        assert!(
+            webui_handler_render_with_options(handler, prepared, data.as_ptr(), &options).is_null()
+        );
+        assert!(last_error_string()
+            .expect("diagnostic")
+            .contains("request_path"));
         webui_protocol_destroy(prepared);
         webui_handler_destroy(handler);
     }

@@ -7,6 +7,8 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"runtime"
 	"strings"
@@ -149,6 +151,7 @@ func TestRenderInvalidInput(t *testing.T) {
 		{"state", []byte("{}\x00invalid"), webui.RenderOptions{}},
 		{"entry", []byte(`{}`), webui.RenderOptions{Entry: "index.html\x00bad"}},
 		{"path", []byte(`{}`), webui.RenderOptions{RequestPath: "/\x00bad"}},
+		{"nonce", []byte(`{}`), webui.RenderOptions{Nonce: "nonce\x00bad"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			output, err := r.Render(tc.state, tc.options)
@@ -169,6 +172,51 @@ func TestRenderInvalidInput(t *testing.T) {
 		_, err := r.Render([]byte(`{}`), options)
 		requireNativeError(t, err, "webui_handler_render", "UTF-8")
 	}
+	_, err = r.Render([]byte(`{}`), webui.RenderOptions{Nonce: string([]byte{0xff})})
+	requireNativeError(t, err, "webui_handler_render_with_options", "UTF-8")
+}
+
+func TestRenderHTTPNonce(t *testing.T) {
+	r := newRenderer(t)
+	server := http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		nonce := request.URL.Query().Get("nonce")
+		html, err := r.Render([]byte(`{}`), webui.RenderOptions{Nonce: nonce})
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		w.Header().Set("Content-Security-Policy", "script-src 'nonce-"+nonce+"'")
+		_, _ = w.Write(html)
+	})
+	var wg sync.WaitGroup
+	for worker := 0; worker < 24; worker++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			nonce := fmt.Sprintf("request-%d", worker)
+			for iteration := 0; iteration < 10; iteration++ {
+				response := httptest.NewRecorder()
+				server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/?nonce="+nonce, nil))
+				html := response.Body.String()
+				if got := response.Header().Get("Content-Security-Policy"); got != "script-src 'nonce-"+nonce+"'" {
+					t.Errorf("wrong CSP header: %s", got)
+				}
+				for _, want := range []string{
+					`<script nonce="` + nonce + `">`,
+					`<meta name="webui-nonce" content="` + nonce + `">`,
+				} {
+					if !strings.Contains(html, want) {
+						t.Errorf("CSP response missing %q in %s", want, html)
+					}
+				}
+				withoutNonce, err := r.Render([]byte(`{}`), webui.RenderOptions{})
+				if err != nil || bytes.Contains(withoutNonce, []byte(`nonce=`)) || bytes.Contains(withoutNonce, []byte(`webui-nonce`)) {
+					t.Errorf("request nonce leaked into another render: %s, %v", withoutNonce, err)
+				}
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func TestConcurrentRendersAndThreadLocalErrors(t *testing.T) {

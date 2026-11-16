@@ -57,6 +57,10 @@ Prerequisites:
 
 - Rust toolchain pinned in [`rust-toolchain.toml`](rust-toolchain.toml), with `clippy` and `rustfmt`
 - Node.js 22+ with pnpm
+- Go 1.25+ with `gofmt` and a cgo-compatible C compiler for Go race tests
+- `tar` for native SDK archive tests
+- Git and Bash for release-tag tests (Git for Windows supplies Bash on Windows)
+- Python 3 for release artifact selection tests
 
 Common commands:
 
@@ -65,7 +69,8 @@ Common commands:
 | `cargo xtask check` | Run the full repository quality gate before commits |
 | `cargo xtask fmt` | Check formatting |
 | `cargo xtask clippy` | Run clippy lints |
-| `cargo xtask test` | Run Rust workspace, WebUI Node package, and desktop contract tests |
+| `cargo xtask test` | Run Rust workspace, WebUI Node package, Go binding, release-tag, and desktop contract tests |
+| `cargo xtask test-go` | Check Go formatting, run native race tests and vet, and verify an external SDK consumer |
 | `cargo xtask e2e` | Run browser end-to-end suites |
 | `cargo xtask build` | Build the workspace and examples |
 | `cargo xtask desktop-assets` | Build desktop browser assets into ignored target output |

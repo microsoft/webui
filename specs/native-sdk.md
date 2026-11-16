@@ -53,11 +53,20 @@ remain release gates.
 
 The public `github.com/microsoft/webui/go/v3` source module contains the Go
 binding and source tests, not native libraries or generated protocols. Its
-release version matches the compiler/native SDK. Standard Go module
-publication uses the `go/v<version>` tag prefix for the repository's `go/`
-subdirectory; the root `v<version>` tag does not publish that module.
+`Version` constant matches the compiler/native SDK, including native hotfix
+suffixes. Stable Go module versions match that identity. Native hotfix
+`X.Y.Z-hotfix.N` maps to Go module version `vX.Y.(Z+1)-0.hotfix.N`, which Go
+orders after stable `vX.Y.Z`, before stable `vX.Y.(Z+1)`, and numerically by
+hotfix number. Mapping fails if incrementing the patch would overflow.
+Native SDK selection always uses `Version`, not the mapped module version.
+Standard Go module publication uses the `go/v<Go version>` tag prefix for the
+repository's `go/` subdirectory; the root `v<native version>` tag does not
+publish that module.
 Changing the release's major version requires the corresponding Go module
 path and self-import migration before staging can succeed.
+Root and Go tags are preflighted together and missing refs are pushed
+atomically. Existing remote tags must resolve to the selected release commit,
+including after a concurrent publisher wins a race.
 
 Prepublication staging also emits Go proxy files with the canonical module
 path, semantic version, and zip prefix. These source artifacts support
