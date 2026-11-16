@@ -9,9 +9,30 @@
 typedef void webui_protocol_t;
 
 /**
- * Opaque owned document returned by [`webui_handler_render`].
+ * Opaque owned document returned by the full-document render functions.
  */
 typedef void webui_render_t;
+
+/**
+ * Borrowed options for one full-document render.
+ *
+ * Strings are read only during [`webui_handler_render_with_options`].
+ */
+typedef struct webui_render_options_t {
+  /**
+   * Compiled entry identifier, as a non-null UTF-8 C string.
+   */
+  const char *entry_id;
+  /**
+   * Encoded request path, as a non-null UTF-8 C string.
+   */
+  const char *request_path;
+  /**
+   * Request-local CSP nonce. `NULL` inherits the handler's configured nonce;
+   * an empty UTF-8 C string disables it for this render.
+   */
+  const char *nonce;
+} webui_render_options_t;
 
 /**
  * Opaque C handle for a host-driven progressive response.
@@ -182,6 +203,29 @@ webui_render_t *webui_handler_render(void *handler_ptr,
                                      const char *request_path);
 
 /**
+ * Render a document with request-scoped options, without changing the handler.
+ *
+ * Concurrent calls may use different nonces on the same configured handler
+ * and loaded protocol. The handler and protocol must not be changed or destroyed
+ * while a render is active. Read and release the returned document with
+ * [`webui_render_bytes`] and [`webui_render_free`].
+ *
+ * Returns `NULL` on error; call [`webui_last_error`] for details.
+ *
+ * # Safety
+ *
+ * * Handles must be live pointers returned by their respective create functions.
+ * * `data_json` must be a non-null, null-terminated UTF-8 string.
+ * * `options` must be non-null and point to a readable [`webui_render_options_t`].
+ * * All option strings must satisfy their documented contracts and remain valid
+ *   until this call returns.
+ */
+webui_render_t *webui_handler_render_with_options(void *handler_ptr,
+                                                  const webui_protocol_t *protocol_ptr,
+                                                  const char *data_json,
+                                                  const struct webui_render_options_t *options);
+
+/**
  * Borrow a rendered document and write its length in bytes to `out_len`.
  *
  * The returned UTF-8 bytes are borrowed from `result_ptr`, are not
@@ -196,14 +240,16 @@ webui_render_t *webui_handler_render(void *handler_ptr,
 const uint8_t *webui_render_bytes(const webui_render_t *result_ptr, uintptr_t *out_len);
 
 /**
- * Release a document returned by [`webui_handler_render`].
+ * Release a document returned by [`webui_handler_render`] or
+ * [`webui_handler_render_with_options`].
  *
  * Invalidates the pointer previously returned by [`webui_render_bytes`].
  *
  * # Safety
  *
- * `result_ptr` must be a pointer returned by [`webui_handler_render`],
- * or `NULL` for a no-op. A non-null pointer must not be used after this call.
+ * `result_ptr` must be a pointer returned by either full-document render
+ * function, or `NULL` for a no-op. A non-null pointer must not be used after
+ * this call.
  */
 void webui_render_free(webui_render_t *result_ptr);
 

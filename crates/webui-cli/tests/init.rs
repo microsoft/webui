@@ -107,10 +107,18 @@ fn all_hosts_generate_offline_with_one_shared_frontend() -> Result<()> {
             assert!(source.contains(module_path));
             assert!(!source.contains("import \"C\""));
             let module = fs::read_to_string(root.join("server/go.mod"))?;
-            assert!(module.contains(&format!(
-                "require {module_path} v{}",
-                env!("CARGO_PKG_VERSION")
-            )));
+            let native = env!("CARGO_PKG_VERSION");
+            let version = if let Some((base, number)) = native.split_once("-hotfix.") {
+                let (prefix, patch) = base.rsplit_once('.').context("release patch")?;
+                let patch = patch
+                    .parse::<u64>()?
+                    .checked_add(1)
+                    .context("Go hotfix patch overflow")?;
+                format!("{prefix}.{patch}-0.hotfix.{number}")
+            } else {
+                native.to_owned()
+            };
+            assert!(module.contains(&format!("require {module_path} v{version}")));
             assert!(!module.contains("replace"));
         }
         if server == "rust" {
@@ -138,6 +146,7 @@ fn all_hosts_generate_offline_with_one_shared_frontend() -> Result<()> {
             assert!(!text.contains("__APP_NAME__"), "{path}");
             assert!(!text.contains("__RUST_VERSION__"), "{path}");
             assert!(!text.contains("__WEBUI_GO_MODULE__"), "{path}");
+            assert!(!text.contains("__WEBUI_GO_VERSION__"), "{path}");
             assert!(!text.contains("__SERVER__"), "{path}");
             assert!(!text.contains("workspace:*"), "{path}");
         }

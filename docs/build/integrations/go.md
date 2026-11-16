@@ -13,7 +13,7 @@ request state, and public asset delivery.
 ## Installation
 
 You need Go 1.25 or newer, cgo, a compatible C compiler, and the WebUI native
-SDK matching the Go module's version, operating system, and architecture.
+SDK matching `webui.Version`, your operating system, and architecture.
 
 ```bash
 go get github.com/microsoft/webui/go/v3
@@ -22,6 +22,10 @@ go get github.com/microsoft/webui/go/v3
 Go module versions use the repository's `go/v<version>` tags, independently
 of the root `v<version>` tags. An unpublished version is not available from
 the public Go proxy until that module tag has been published.
+
+Select the native SDK using `webui.Version`, not the Go module version.
+Stable versions match; native `3.1.2-hotfix.1` is published as Go
+`v3.1.3-0.hotfix.1` so Go orders it above `v3.1.2` and below `v3.1.3`.
 
 Download the matching standalone `webui-sdk-<version>-<platform>.tar.gz` and
 its `.sha256` file from the [release assets](https://github.com/microsoft/webui/releases).
@@ -110,9 +114,17 @@ func main() {
 `RenderOptions{}` defaults to entry `index.html` and path `/`.
 `NewRenderer` enables the `webui` hydration plugin. For an HTTP application,
 keep the renderer alive for the server's lifetime, pass each request's JSON
-state and `request.URL.Path`, and write successful results as
+state and `request.URL.EscapedPath()`, and write successful results as
 `text/html; charset=utf-8`. Log rendering failures and return a generic
-server error before committing a response.
+server error before committing a response. Pass the encoded path so WebUI can
+split route segments before decoding parameters such as `a%2Fb` and `100%25`.
+
+For nonce-based Content Security Policy, set `RenderOptions.Nonce` to a fresh,
+cryptographically random nonce for each response and authorize the same value
+in the response's `Content-Security-Policy` header. WebUI applies it to generated
+scripts, module-preload hints, and the router's nonce metadata. An empty nonce
+disables nonce emission. Nonces are request-scoped and safe to vary across
+concurrent renders on the same renderer.
 
 The returned HTML belongs to Go and remains valid after another render or
 `Close`. The protocol input may be reused after construction. Do not mutate
@@ -131,8 +143,8 @@ Its `Operation` identifies the failed C ABI function; `Message` preserves
 the native diagnostic. Use `errors.Is(err, webui.ErrClosed)` or
 `errors.As` with a `*webui.NativeError` to inspect errors.
 
-Invalid JSON and UTF-8 return errors. Embedded NUL in state bytes, entry, or
-request path is rejected rather than silently truncating a C string.
+Invalid JSON and UTF-8 return errors. Embedded NUL in state bytes, entry,
+request path, or nonce is rejected rather than silently truncating a C string.
 JSON's escaped `\u0000` remains valid.
 
 ## Scaffold an application

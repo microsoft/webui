@@ -38,9 +38,23 @@ use render_capacity::RenderCapacityHint;
 #[allow(non_camel_case_types)]
 pub type webui_protocol_t = c_void;
 
-/// Opaque owned document returned by [`webui_handler_render`].
+/// Opaque owned document returned by the full-document render functions.
 #[allow(non_camel_case_types)]
 pub type webui_render_t = c_void;
+
+/// Borrowed options for one full-document render.
+///
+/// Strings are read only during [`webui_handler_render_with_options`].
+#[repr(C)]
+pub struct webui_render_options_t {
+    /// Compiled entry identifier, as a non-null UTF-8 C string.
+    pub entry_id: *const c_char,
+    /// Encoded request path, as a non-null UTF-8 C string.
+    pub request_path: *const c_char,
+    /// Request-local CSP nonce. `NULL` inherits the handler's configured nonce;
+    /// an empty UTF-8 C string disables it for this render.
+    pub nonce: *const c_char,
+}
 
 // ---------------------------------------------------------------------------
 // Thread-local error storage (POSIX dlerror() pattern)
@@ -342,13 +356,46 @@ pub unsafe extern "C" fn webui_handler_render(
     entry_id: *const c_char,
     request_path: *const c_char,
 ) -> *mut webui_render_t {
+    let options = webui_render_options_t {
+        entry_id,
+        request_path,
+        nonce: std::ptr::null(),
+    };
+    // SAFETY: The caller guarantees valid handles and strings, and options
+    // remains alive until the synchronous render returns.
+    unsafe { webui_handler_render_with_options(handler_ptr, protocol_ptr, data_json, &options) }
+}
+
+/// Render a document with request-scoped options, without changing the handler.
+///
+/// Concurrent calls may use different nonces on the same configured handler
+/// and loaded protocol. The handler and protocol must not be changed or destroyed
+/// while a render is active. Read and release the returned document with
+/// [`webui_render_bytes`] and [`webui_render_free`].
+///
+/// Returns `NULL` on error; call [`webui_last_error`] for details.
+///
+/// # Safety
+///
+/// * Handles must be live pointers returned by their respective create functions.
+/// * `data_json` must be a non-null, null-terminated UTF-8 string.
+/// * `options` must be non-null and point to a readable [`webui_render_options_t`].
+/// * All option strings must satisfy their documented contracts and remain valid
+///   until this call returns.
+#[no_mangle]
+pub unsafe extern "C" fn webui_handler_render_with_options(
+    handler_ptr: *mut c_void,
+    protocol_ptr: *const webui_protocol_t,
+    data_json: *const c_char,
+    options: *const webui_render_options_t,
+) -> *mut webui_render_t {
     clear_last_error();
 
     match std::panic::catch_unwind(|| {
         // SAFETY: The caller upholds this function's pointer contract.
-        let Some(mut html) = (unsafe {
-            render_full_document(handler_ptr, protocol_ptr, data_json, entry_id, request_path)
-        }) else {
+        let Some(mut html) =
+            (unsafe { render_full_document(handler_ptr, protocol_ptr, data_json, options) })
+        else {
             return std::ptr::null_mut();
         };
         // A capacity reserved for a much larger earlier render must not stay
@@ -360,7 +407,7 @@ pub unsafe extern "C" fn webui_handler_render(
     }) {
         Ok(ptr) => ptr,
         Err(_) => {
-            set_last_error("panic in webui_handler_render");
+            set_last_error("panic in webui_handler_render_with_options");
             std::ptr::null_mut()
         }
     }
@@ -401,14 +448,16 @@ pub unsafe extern "C" fn webui_render_bytes(
     }
 }
 
-/// Release a document returned by [`webui_handler_render`].
+/// Release a document returned by [`webui_handler_render`] or
+/// [`webui_handler_render_with_options`].
 ///
 /// Invalidates the pointer previously returned by [`webui_render_bytes`].
 ///
 /// # Safety
 ///
-/// `result_ptr` must be a pointer returned by [`webui_handler_render`],
-/// or `NULL` for a no-op. A non-null pointer must not be used after this call.
+/// `result_ptr` must be a pointer returned by either full-document render
+/// function, or `NULL` for a no-op. A non-null pointer must not be used after
+/// this call.
 #[no_mangle]
 pub unsafe extern "C" fn webui_render_free(result_ptr: *mut webui_render_t) {
     clear_last_error();
@@ -430,37 +479,36 @@ pub unsafe extern "C" fn webui_render_free(result_ptr: *mut webui_render_t) {
 ///
 /// # Safety
 ///
-/// Non-null arguments must satisfy [`webui_handler_render`]'s contract.
+/// Non-null arguments must satisfy [`webui_handler_render_with_options`]'s contract.
 unsafe fn render_full_document(
     handler_ptr: *mut c_void,
     protocol_ptr: *const webui_protocol_t,
     data_json: *const c_char,
-    entry_id: *const c_char,
-    request_path: *const c_char,
+    options: *const webui_render_options_t,
 ) -> Option<String> {
-    if handler_ptr.is_null()
-        || protocol_ptr.is_null()
-        || data_json.is_null()
-        || entry_id.is_null()
-        || request_path.is_null()
-    {
+    if handler_ptr.is_null() || protocol_ptr.is_null() || data_json.is_null() || options.is_null() {
         set_last_error("one or more required arguments are null");
         return None;
     }
 
+    // SAFETY: The caller guarantees the options pointer is readable.
+    let options = unsafe { &*options };
+    if options.entry_id.is_null() || options.request_path.is_null() {
+        set_last_error("entry_id and request_path must not be null");
+        return None;
+    }
     // SAFETY: The caller guarantees both opaque pointers are valid.
     let context = unsafe { &*(handler_ptr as *const HandlerContext) };
     let protocol_context = unsafe { &*(protocol_ptr as *const ProtocolContext) };
     // SAFETY: The caller guarantees all string pointers are valid.
-    unsafe { render_decoded_protocol(context, protocol_context, data_json, entry_id, request_path) }
+    unsafe { render_decoded_protocol(context, protocol_context, data_json, options) }
 }
 
 unsafe fn render_decoded_protocol(
     context: &HandlerContext,
     protocol_context: &ProtocolContext,
     data_json: *const c_char,
-    entry_id: *const c_char,
-    request_path: *const c_char,
+    raw_options: &webui_render_options_t,
 ) -> Option<String> {
     // SAFETY: The caller validates all pointers before invoking this helper.
     let data_str = match unsafe { CStr::from_ptr(data_json) }.to_str() {
@@ -471,7 +519,7 @@ unsafe fn render_decoded_protocol(
         }
     };
     // SAFETY: The caller validates all pointers before invoking this helper.
-    let entry_str = match unsafe { CStr::from_ptr(entry_id) }.to_str() {
+    let entry_str = match unsafe { CStr::from_ptr(raw_options.entry_id) }.to_str() {
         Ok(s) => s,
         Err(e) => {
             set_last_error(format!("invalid UTF-8 in entry_id: {e}"));
@@ -479,7 +527,7 @@ unsafe fn render_decoded_protocol(
         }
     };
     // SAFETY: The caller validates all pointers before invoking this helper.
-    let path_str = match unsafe { CStr::from_ptr(request_path) }.to_str() {
+    let path_str = match unsafe { CStr::from_ptr(raw_options.request_path) }.to_str() {
         Ok(s) => s,
         Err(e) => {
             set_last_error(format!("invalid UTF-8 in request_path: {e}"));
@@ -497,7 +545,19 @@ unsafe fn render_decoded_protocol(
 
     // Render
     let mut options = RenderOptions::new(entry_str, path_str);
-    if let Some(ref nonce) = context.nonce {
+    let nonce = if raw_options.nonce.is_null() {
+        context.nonce.as_deref()
+    } else {
+        // SAFETY: The caller guarantees a valid C string for a non-null nonce.
+        match unsafe { CStr::from_ptr(raw_options.nonce) }.to_str() {
+            Ok(nonce) => Some(nonce),
+            Err(error) => {
+                set_last_error(format!("invalid UTF-8 in nonce: {error}"));
+                return None;
+            }
+        }
+    };
+    if let Some(nonce) = nonce {
         options = options.with_nonce(nonce);
     }
 

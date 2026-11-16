@@ -187,6 +187,11 @@ def serve(binary, root, env, host):
         else:
             raise AssertionError("server not ready after 10s")
         verify(port)
+        if host == "go":
+            for path in ["/a%62out", "/%61bout"]:
+                status, _, encoded_about = request(port, path)
+                assert status == 200 and b"About WebUI" in encoded_about, (path, status)
+                assert b'/assets/index.js' not in encoded_about
         if host in ["c", "cpp"]:
             verify_persistent(port)
             verify_idle_clients(port)

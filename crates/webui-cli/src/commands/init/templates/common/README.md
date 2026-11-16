@@ -39,9 +39,12 @@ Build/start validate the version, target, OS, architecture, and file hashes.
 An invalid explicit override fails without fallback. SDKs are never taken
 from npm packages or `node_modules`, downloaded, or built automatically.
 
-The Go host imports `__WEBUI_GO_MODULE__` at the matching WebUI version;
+The Go host imports `__WEBUI_GO_MODULE__` at module version __WEBUI_GO_VERSION__;
 it does not copy a native binding into your app. Build restores the dependency
 through your configured Go proxy; keep the resulting `server/go.sum`.
+Stable module and native versions match. Hotfix module versions sort above
+their base release; `webui.Version` still identifies the exact native SDK
+(__WEBUI_VERSION__), not the mapped module version.
 
 .NET uses restored NuGet native runtime assets, not the standalone SDK.
 Configure an approved source or download `Microsoft.WebUI.__WEBUI_VERSION__.nupkg`

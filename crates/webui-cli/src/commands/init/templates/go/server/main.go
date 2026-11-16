@@ -136,7 +136,7 @@ func appHandler(r *webui.Renderer, assets map[string]asset) http.Handler {
 			if path == "/" {
 				state = `{"title":"Hello WebUI","count":0,"ready":false,"isHome":true}`
 			}
-			bytes, err := r.Render([]byte(state), webui.RenderOptions{RequestPath: path})
+			bytes, err := r.Render([]byte(state), webui.RenderOptions{RequestPath: request.URL.EscapedPath()})
 			if err != nil {
 				log.Printf("WebUI render %s: %v", path, err)
 				reply(500, "text/plain; charset=utf-8", []byte("Internal server error\n"))

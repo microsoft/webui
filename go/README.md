@@ -2,7 +2,10 @@
 
 The official, zero-third-party-dependency Go binding renders compiled WebUI
 templates through the native Rust C ABI. Requires Go 1.25+, cgo, a C compiler,
-and a native WebUI SDK matching the module version, OS, and architecture.
+and a native WebUI SDK matching `webui.Version`, OS, and architecture.
+
+See the [Go integration guide](https://microsoft.github.io/webui/build/integrations/go/)
+for canonical installation, SDK configuration, and HTTP server examples.
 
 ```sh
 go get github.com/microsoft/webui/go/v3
@@ -11,7 +14,8 @@ go get github.com/microsoft/webui/go/v3
 Versions are published through the repository's `go/v<version>` tags.
 The root `v<version>` tags alone do not publish this nested module.
 Use the matching standalone SDK archive and checksum from GitHub Releases;
-npm is not required.
+npm is not required. For hotfixes, the Go module version can differ from the
+native SDK version; select the SDK using `webui.Version`.
 
 ```go
 import webui "github.com/microsoft/webui/go/v3"

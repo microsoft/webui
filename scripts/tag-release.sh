@@ -34,7 +34,32 @@ if git cat-file -e "${RELEASE_COMMIT}:go/go.mod" 2>/dev/null; then
     fail "release go/go.mod declares ${module_path}, expected github.com/microsoft/webui/go/v3."
   [[ "$RELEASE_TAG" == v3.* ]] ||
     fail "the /v3 Go module requires a v3 release tag."
-  tags+=("go/${RELEASE_TAG}")
+  go_tag="$RELEASE_TAG"
+  if [[ "$RELEASE_TAG" =~ ^v3\.([0-9]+)\.([0-9]+)-hotfix\.([0-9]+)$ ]]; then
+    minor="${BASH_REMATCH[1]}"
+    patch="${BASH_REMATCH[2]}"
+    hotfix="${BASH_REMATCH[3]}"
+    [[ "${#patch}" -lt 20 || ( "${#patch}" == 20 && "$patch" < 18446744073709551615 ) ]] ||
+      fail "Go hotfix mapping requires a patch below u64::MAX."
+    # Increment decimal digits without Bash's signed-integer overflow.
+    next_patch=
+    carry=1
+    for (( index=${#patch}-1; index>=0; index-- )); do
+      digit="${patch:index:1}"
+      if [[ "$carry" == 1 ]]; then
+        if [[ "$digit" == 9 ]]; then
+          digit=0
+        else
+          digit=$((digit + 1))
+          carry=0
+        fi
+      fi
+      next_patch="${digit}${next_patch}"
+    done
+    [[ "$carry" == 0 ]] || next_patch="1${next_patch}"
+    go_tag="v3.${minor}.${next_patch}-0.hotfix.${hotfix}"
+  fi
+  tags+=("go/${go_tag}")
 else
   printf 'Release commit has no go/go.mod; ensuring the historical root tag only.\n'
 fi
@@ -78,19 +103,40 @@ for tag in "${missing[@]}"; do
     local_commit=$(git rev-parse --verify "refs/tags/${tag}^{commit}")
     [[ "$local_commit" == "$RELEASE_COMMIT" ]] ||
       fail "local ${tag} points to ${local_commit}, not ${RELEASE_COMMIT}."
-  else
+  fi
+done
+for tag in "${missing[@]}"; do
+  if ! git show-ref --verify --quiet "refs/tags/${tag}"; then
     git -c user.name="Azure Pipelines" -c user.email="azure-pipelines@microsoft.com" \
       -c tag.gpgSign=false tag -a "$tag" "$RELEASE_COMMIT" -m "Release ${tag}"
   fi
-  if git push origin "refs/tags/${tag}:refs/tags/${tag}"; then
-    printf 'Created %s at %s.\n' "$tag" "$RELEASE_COMMIT"
-    continue
+done
+
+while [[ "${#missing[@]}" != 0 ]]; do
+  refspecs=()
+  for tag in "${missing[@]}"; do
+    refspecs+=("refs/tags/${tag}:refs/tags/${tag}")
+  done
+  if git push --atomic origin "${refspecs[@]}"; then
+    printf 'Created release tags atomically at %s.\n' "$RELEASE_COMMIT"
+    exit 0
   fi
-  if raced_commit=$(remote_commit "$tag"); then
-    [[ "$raced_commit" == "$RELEASE_COMMIT" ]] ||
-      fail "concurrent ${tag} points to ${raced_commit}, not ${RELEASE_COMMIT}."
-    printf 'Concurrent release created %s at the expected commit.\n' "$tag"
-  else
-    fail "unable to create or revalidate ${tag} on origin."
+  retry=()
+  for tag in "${missing[@]}"; do
+    if raced_commit=$(remote_commit "$tag"); then
+      [[ "$raced_commit" == "$RELEASE_COMMIT" ]] ||
+        fail "concurrent ${tag} points to ${raced_commit}, not ${RELEASE_COMMIT}."
+      printf 'Concurrent release created %s at the expected commit.\n' "$tag"
+    else
+      status=$?
+      [[ "$status" == 2 ]] || fail "unable to revalidate ${tag} on origin."
+      retry+=("$tag")
+    fi
+  done
+  [[ "${#retry[@]}" -lt "${#missing[@]}" ]] ||
+    fail "unable to atomically create release tags on origin."
+  missing=()
+  if [[ "${#retry[@]}" != 0 ]]; then
+    missing=("${retry[@]}")
   fi
 done

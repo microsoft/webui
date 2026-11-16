@@ -220,16 +220,24 @@ extends:
             targetPath: '$(Build.SourcesDirectory)/publish_artifacts_standalone'
             artifactName: standalone_release_assets
             displayName: Publish standalone release assets
-          - output: pipelineArtifact
-            targetPath: '$(Build.SourcesDirectory)/publish_artifacts_sdk'
-            artifactName: standalone_sdk_archives
-            displayName: Publish standalone SDK archives and checksums
-          - output: pipelineArtifact
-            targetPath: '$(Build.SourcesDirectory)/publish_artifacts_go'
-            artifactName: go_module_proxy
-            displayName: Publish Go module proxy
         steps:
-        - checkout: none
+        - checkout: self
+          clean: true
+
+        - task: Bash@3
+          name: distributions
+          displayName: Detect selected build SDK and Go distributions
+          inputs:
+            targetType: inline
+            script: |
+              set -euo pipefail
+              curl --fail --silent --show-error \
+                --header "Authorization: Bearer $SYSTEM_ACCESSTOKEN" \
+                "${SYSTEM_COLLECTIONURI}${SYSTEM_TEAMPROJECTID}/_apis/build/builds/${RELEASE_BUILD_ID}/artifacts?api-version=7.1" |
+                python3 .ado/release-distributions.py
+          env:
+            SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+            RELEASE_BUILD_ID: $(resources.pipeline.releaseBuild.runID)
 
         - download: releaseBuild
           artifact: unsigned_python_packages
@@ -241,9 +249,11 @@ extends:
         - download: releaseBuild
           artifact: standalone_sdk_archives
           displayName: Download standalone SDK archives and checksums
+          condition: and(succeeded(), eq(variables['distributions.sdkAvailable'], 'true'))
         - download: releaseBuild
           artifact: go_module_proxy
           displayName: Download Go module proxy
+          condition: and(succeeded(), eq(variables['distributions.goAvailable'], 'true'))
 
         - task: CopyFiles@2
           displayName: Stage Python packages
@@ -262,17 +272,19 @@ extends:
             CleanTargetFolder: true
         - task: CopyFiles@2
           displayName: Stage standalone SDK archives and checksums
+          condition: and(succeeded(), eq(variables['distributions.sdkAvailable'], 'true'))
           inputs:
             SourceFolder: $(Pipeline.Workspace)/releaseBuild/standalone_sdk_archives
             Contents: '**'
-            TargetFolder: $(Build.SourcesDirectory)/publish_artifacts_sdk
+            TargetFolder: $(Build.SourcesDirectory)/publish_artifacts_standalone/sdk
             CleanTargetFolder: true
         - task: CopyFiles@2
           displayName: Stage Go module proxy
+          condition: and(succeeded(), eq(variables['distributions.goAvailable'], 'true'))
           inputs:
             SourceFolder: $(Pipeline.Workspace)/releaseBuild/go_module_proxy
             Contents: '**'
-            TargetFolder: $(Build.SourcesDirectory)/publish_artifacts_go
+            TargetFolder: $(Build.SourcesDirectory)/publish_artifacts_standalone/go
             CleanTargetFolder: true
 
     - ${{ if eq(parameters.validationMode, 'false') }}:
@@ -314,6 +326,7 @@ extends:
           releaseMakeLatest: $[ stageDependencies.SignArtifacts.SignNuGet.outputs['release.releaseMakeLatest'] ]
           releaseAddChangelog: $[ stageDependencies.SignArtifacts.SignNuGet.outputs['release.releaseAddChangelog'] ]
           npmDistTag: $[ stageDependencies.SignArtifacts.SignNuGet.outputs['release.npmDistTag'] ]
+          distributionAssets: $[ stageDependencies.SignArtifacts.StagePythonAndStandalone.outputs['distributions.releaseAssets'] ]
         jobs:
         - job: PublishGitHub
           displayName: Publish GitHub Release
@@ -337,12 +350,6 @@ extends:
             - input: pipelineArtifact
               artifactName: standalone_release_assets
               targetPath: $(Build.SourcesDirectory)/publish_artifacts_standalone
-            - input: pipelineArtifact
-              artifactName: standalone_sdk_archives
-              targetPath: $(Build.SourcesDirectory)/publish_artifacts_sdk
-            - input: pipelineArtifact
-              artifactName: go_module_proxy
-              targetPath: $(Build.SourcesDirectory)/publish_artifacts_go
           steps:
           - task: GitHubRelease@1
             displayName: Create GitHub Release
@@ -365,9 +372,7 @@ extends:
                 $(Build.SourcesDirectory)/publish_artifacts_crates/*
                 $(Build.SourcesDirectory)/publish_artifacts_python/*
                 $(Build.SourcesDirectory)/publish_artifacts_standalone/*
-                $(Build.SourcesDirectory)/publish_artifacts_sdk/*.tar.gz
-                $(Build.SourcesDirectory)/publish_artifacts_sdk/*.tar.gz.sha256
-                $(Build.SourcesDirectory)/publish_artifacts_go/webui-go-proxy-*.tar.gz
+                $(distributionAssets)
               assetUploadMode: replace
               isDraft: false
               isPreRelease: $(releasePrerelease)

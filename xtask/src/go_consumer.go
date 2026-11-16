@@ -37,7 +37,7 @@ func run() error {
 	}
 	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		html, err := renderer.Render([]byte(`{"title":"External Go consumer","message":"Go & Rust"}`),
-			webui.RenderOptions{RequestPath: r.URL.Path})
+			webui.RenderOptions{RequestPath: r.URL.EscapedPath()})
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -50,7 +50,12 @@ func run() error {
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(listener) }()
 	defer server.Close()
-	for route, marker := range map[string]string{"/": "home-route", "/about": "about-route"} {
+	for route, marker := range map[string]string{
+		"/":             "home-route",
+		"/about":        "about-route",
+		"/items/a%2Fb":  `"params":{"id":"a/b"}`,
+		"/items/100%25": `"params":{"id":"100%"}`,
+	} {
 		response, err := http.Get("http://" + listener.Addr().String() + route)
 		if err != nil {
 			return err

@@ -110,6 +110,7 @@ pub(super) fn app_name(path: &Path) -> Result<String> {
 }
 
 pub(super) fn generate(root: &Path, name: &str, args: &InitArgs) -> Result<Vec<String>> {
+    let go_version = go_module_version(env!("CARGO_PKG_VERSION"))?;
     let mut files = template_files(args.server.name())?;
     files.push(("package.json".to_owned(), manifest(name, args)?));
     if args.package_manager == PackageManager::Yarn {
@@ -129,6 +130,7 @@ pub(super) fn generate(root: &Path, name: &str, args: &InitArgs) -> Result<Vec<S
     let mut created = Vec::with_capacity(files.len());
     for (relative, content) in files {
         let content = content
+            .replace("__WEBUI_GO_VERSION__", &go_version)
             .replace("__WEBUI_VERSION__", env!("CARGO_PKG_VERSION"))
             .replace("__RUST_VERSION__", env!("CARGO_PKG_RUST_VERSION"))
             .replace(
@@ -151,6 +153,55 @@ pub(super) fn generate(root: &Path, name: &str, args: &InitArgs) -> Result<Vec<S
         created.push(relative);
     }
     Ok(created)
+}
+
+fn go_module_version(version: &str) -> Result<String> {
+    let (core, hotfix) = match version.split_once('-') {
+        Some((core, suffix)) => (
+            core,
+            Some(
+                suffix
+                    .strip_prefix("hotfix.")
+                    .context("Go starters require a stable or hotfix.N WebUI release")?,
+            ),
+        ),
+        None => (version, None),
+    };
+    let mut parts = core.split('.');
+    for _ in 0..3 {
+        release_number(
+            parts
+                .next()
+                .context("WebUI release requires major.minor.patch")?,
+        )?;
+    }
+    anyhow::ensure!(parts.next().is_none(), "invalid WebUI release version");
+    let Some(hotfix) = hotfix else {
+        return Ok(version.to_owned());
+    };
+    anyhow::ensure!(
+        release_number(hotfix)? > 0,
+        "WebUI hotfix number must be positive"
+    );
+    let (prefix, patch) = core
+        .rsplit_once('.')
+        .context("WebUI release requires a patch")?;
+    let patch = release_number(patch)?
+        .checked_add(1)
+        .context("Go hotfix module version would overflow; choose a lower native patch")?;
+    Ok(format!("{prefix}.{patch}-0.hotfix.{hotfix}"))
+}
+
+fn release_number(value: &str) -> Result<u64> {
+    anyhow::ensure!(
+        !value.is_empty()
+            && value.bytes().all(|byte| byte.is_ascii_digit())
+            && (value.len() == 1 || !value.starts_with('0')),
+        "invalid WebUI release version number: {value}"
+    );
+    value
+        .parse()
+        .context("WebUI release version number exceeds u64")
 }
 
 fn template_files(server: &str) -> Result<Vec<(String, String)>> {
@@ -258,4 +309,41 @@ fn manifest(name: &str, args: &InitArgs) -> Result<String> {
     settings.insert("server".into(), Value::from(args.server.name()));
     manifest.insert("webui".into(), settings.into());
     Ok(serde_json::to_string_pretty(&manifest)? + "\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::go_module_version;
+
+    #[test]
+    fn go_requirement_maps_native_hotfixes_without_changing_sdk_identity() -> anyhow::Result<()> {
+        for (native, module) in [
+            ("3.1.2", "3.1.2"),
+            ("3.1.2-hotfix.1", "3.1.3-0.hotfix.1"),
+            ("3.1.2-hotfix.4", "3.1.3-0.hotfix.4"),
+            ("3.1.9-hotfix.12", "3.1.10-0.hotfix.12"),
+            ("12.34.56-hotfix.7", "12.34.57-0.hotfix.7"),
+        ] {
+            assert_eq!(go_module_version(native)?, module);
+            let template = include_str!("templates/go/server/go.mod")
+                .replace("__WEBUI_GO_VERSION__", &go_module_version(native)?);
+            assert!(template.contains(&format!(" v{module}\n")));
+            let sdk = include_str!("templates/common/scripts/sdk.mjs")
+                .replace("__WEBUI_VERSION__", native);
+            assert!(sdk.contains(&format!("const version = '{native}';")));
+        }
+        for invalid in [
+            "3.1.18446744073709551615-hotfix.1",
+            "3.1.2-hotfix.0",
+            "3.1.2-hotfix.01",
+            "3.1.2-alpha.1",
+            "03.1.2",
+            "3.1",
+            "3.1.2.3",
+            "3.1.2+build.1",
+        ] {
+            assert!(go_module_version(invalid).is_err(), "{invalid}");
+        }
+        Ok(())
+    }
 }
