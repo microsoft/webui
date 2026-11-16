@@ -50,6 +50,7 @@ jobs:
       - uses: ./.github/actions/build
         with:
           skip-build: 'true'
+          go: '1.25.x'
 
       - name: Test
         run: cargo xtask test
@@ -89,6 +90,7 @@ jobs:
         with:
           shared-cache-key: ubuntu-build
           skip-build: 'true'
+          go: '1.25.x'
 
       - name: Install desktop contract browsers
         run: pnpm exec playwright install --with-deps chromium firefox webkit
@@ -100,6 +102,9 @@ jobs:
         run: |
           cargo build --workspace --exclude xtask --features microsoft-webui-desktop/cli,contact-book-desktop/source
           cargo xtask build-examples
+
+      - name: Test native Go binding
+        run: cargo xtask test-go
 
       - name: Install native IPC test display
         run: sudo apt-get install -y -qq apparmor dbus-x11 xvfb xauth
@@ -149,6 +154,7 @@ jobs:
       - uses: ./.github/actions/build
         with:
           skip-build: 'true'
+          go: '1.25.x'
 
       - name: Install desktop contract browsers
         run: pnpm exec playwright install --with-deps chromium firefox webkit
@@ -163,6 +169,9 @@ jobs:
 
       - name: Test native dev-server shutdown
         run: cargo test -p microsoft-webui-dev-server -p microsoft-webui-cli -p microsoft-webui-press
+
+      - name: Test native Go binding
+        run: cargo xtask test-go
 
       - name: Test native desktop SDK
         run: |
@@ -200,6 +209,7 @@ jobs:
       - uses: ./.github/actions/build
         with:
           skip-build: 'true'
+          go: '1.25.x'
 
       - name: Install Windows App Runtime 1.8
         shell: pwsh
@@ -248,6 +258,9 @@ jobs:
 
       - name: Test Windows desktop isolation
         run: cargo test -p xtask windows_desktop
+
+      - name: Test native Go binding
+        run: cargo xtask test-go
 
       - name: Fetch native IPC test dependencies
         run: cargo fetch --locked

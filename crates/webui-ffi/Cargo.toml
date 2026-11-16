@@ -11,7 +11,6 @@ homepage.workspace = true
 readme = "README.md"
 keywords = ["webui", "ffi", "c-api", "bindings", "ssr"]
 categories = ["api-bindings", "web-programming"]
-exclude = ["build.rs"]
 
 [lib]
 name = "webui_ffi"

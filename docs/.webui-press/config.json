@@ -106,6 +106,7 @@
           "items": [
             { "text": "Rust", "link": "/build/integrations/rust" },
             { "text": "Node / Bun", "link": "/build/integrations/node" },
+            { "text": "Go", "link": "/build/integrations/go" },
             { "text": "Python", "link": "/build/integrations/python" },
             { "text": ".NET", "link": "/build/integrations/dotnet" },
             { "text": "C / FFI", "link": "/build/integrations/ffi" },

@@ -209,7 +209,7 @@ extends:
             CleanTargetFolder: true
 
       - job: StagePythonAndStandalone
-        displayName: Stage Python and standalone artifacts
+        displayName: Stage Python, standalone SDK, and Go artifacts
         templateContext:
           outputs:
           - output: pipelineArtifact
@@ -220,6 +220,14 @@ extends:
             targetPath: '$(Build.SourcesDirectory)/publish_artifacts_standalone'
             artifactName: standalone_release_assets
             displayName: Publish standalone release assets
+          - output: pipelineArtifact
+            targetPath: '$(Build.SourcesDirectory)/publish_artifacts_sdk'
+            artifactName: standalone_sdk_archives
+            displayName: Publish standalone SDK archives and checksums
+          - output: pipelineArtifact
+            targetPath: '$(Build.SourcesDirectory)/publish_artifacts_go'
+            artifactName: go_module_proxy
+            displayName: Publish Go module proxy
         steps:
         - checkout: none
 
@@ -230,6 +238,12 @@ extends:
         - download: releaseBuild
           artifact: standalone_release_assets
           displayName: Download standalone release assets
+        - download: releaseBuild
+          artifact: standalone_sdk_archives
+          displayName: Download standalone SDK archives and checksums
+        - download: releaseBuild
+          artifact: go_module_proxy
+          displayName: Download Go module proxy
 
         - task: CopyFiles@2
           displayName: Stage Python packages
@@ -245,6 +259,20 @@ extends:
             SourceFolder: $(Pipeline.Workspace)/releaseBuild/standalone_release_assets
             Contents: '**'
             TargetFolder: $(Build.SourcesDirectory)/publish_artifacts_standalone
+            CleanTargetFolder: true
+        - task: CopyFiles@2
+          displayName: Stage standalone SDK archives and checksums
+          inputs:
+            SourceFolder: $(Pipeline.Workspace)/releaseBuild/standalone_sdk_archives
+            Contents: '**'
+            TargetFolder: $(Build.SourcesDirectory)/publish_artifacts_sdk
+            CleanTargetFolder: true
+        - task: CopyFiles@2
+          displayName: Stage Go module proxy
+          inputs:
+            SourceFolder: $(Pipeline.Workspace)/releaseBuild/go_module_proxy
+            Contents: '**'
+            TargetFolder: $(Build.SourcesDirectory)/publish_artifacts_go
             CleanTargetFolder: true
 
     - ${{ if eq(parameters.validationMode, 'false') }}:
@@ -264,41 +292,15 @@ extends:
             persistCredentials: true
 
           - task: Bash@3
-            displayName: Create annotated release tag
+            displayName: Ensure root and Go release tags
             inputs:
-              targetType: inline
-              script: |
-                set -euo pipefail
-                remote_ref="refs/azure-release-tags/${RELEASE_TAG}"
-
-                git fetch --no-tags origin "$RELEASE_COMMIT"
-                if git fetch --force origin "refs/tags/${RELEASE_TAG}:${remote_ref}" 2>/dev/null; then
-                  existing_commit=$(git rev-parse "${remote_ref}^{}")
-                  if [[ "$existing_commit" != "$RELEASE_COMMIT" ]]; then
-                    echo "##vso[task.logissue type=error]${RELEASE_TAG} points to ${existing_commit}, not ${RELEASE_COMMIT}."
-                    exit 1
-                  fi
-                  echo "${RELEASE_TAG} already points to ${RELEASE_COMMIT}."
-                  exit 0
-                fi
-
-                git config user.name "Azure Pipelines"
-                git config user.email "azure-pipelines@microsoft.com"
-                git tag -a "$RELEASE_TAG" "$RELEASE_COMMIT" -m "Release ${RELEASE_TAG}"
-                if git push origin "refs/tags/${RELEASE_TAG}"; then
-                  exit 0
-                fi
-
-                git fetch --force origin "refs/tags/${RELEASE_TAG}:${remote_ref}"
-                raced_commit=$(git rev-parse "${remote_ref}^{}")
-                if [[ "$raced_commit" != "$RELEASE_COMMIT" ]]; then
-                  echo "##vso[task.logissue type=error]Concurrent tag ${RELEASE_TAG} points to ${raced_commit}, not ${RELEASE_COMMIT}."
-                  exit 1
-                fi
-                echo "Concurrent release run created ${RELEASE_TAG} at the expected commit."
+              targetType: filePath
+              filePath: $(Build.SourcesDirectory)/scripts/tag-release.sh
+              workingDirectory: $(Build.SourcesDirectory)
             env:
               RELEASE_TAG: $(releaseTag)
               RELEASE_COMMIT: $(releaseCommit)
+              VALIDATION_MODE: ${{ parameters.validationMode }}
 
       - stage: PublishRelease
         displayName: Publish GitHub and registry release
@@ -335,6 +337,12 @@ extends:
             - input: pipelineArtifact
               artifactName: standalone_release_assets
               targetPath: $(Build.SourcesDirectory)/publish_artifacts_standalone
+            - input: pipelineArtifact
+              artifactName: standalone_sdk_archives
+              targetPath: $(Build.SourcesDirectory)/publish_artifacts_sdk
+            - input: pipelineArtifact
+              artifactName: go_module_proxy
+              targetPath: $(Build.SourcesDirectory)/publish_artifacts_go
           steps:
           - task: GitHubRelease@1
             displayName: Create GitHub Release
@@ -357,6 +365,9 @@ extends:
                 $(Build.SourcesDirectory)/publish_artifacts_crates/*
                 $(Build.SourcesDirectory)/publish_artifacts_python/*
                 $(Build.SourcesDirectory)/publish_artifacts_standalone/*
+                $(Build.SourcesDirectory)/publish_artifacts_sdk/*.tar.gz
+                $(Build.SourcesDirectory)/publish_artifacts_sdk/*.tar.gz.sha256
+                $(Build.SourcesDirectory)/publish_artifacts_go/webui-go-proxy-*.tar.gz
               assetUploadMode: replace
               isDraft: false
               isPreRelease: $(releasePrerelease)

@@ -10,10 +10,27 @@ interop. Load a protocol handle once, reuse it for rendering, and release each
 result with its designated function. Your host must support the target's
 native library and ABI; this does not require a JavaScript SSR engine.
 
-Prefer the managed [Microsoft.WebUI package](./dotnet) for .NET or the native
-[Python package](./python) on its supported targets. The Go and `ctypes`
-examples below demonstrate direct FFI ownership rather than additional
-first-class packages.
+Prefer the official [Go module](./go), managed
+[Microsoft.WebUI package](./dotnet), or native [Python package](./python)
+for those languages. Direct FFI and `ctypes` examples below illustrate
+the lower-level ownership contract.
+
+## Standalone native SDK
+
+Download the release-matched `webui-sdk-<version>-<platform>.tar.gz` and its
+adjacent `.sha256` file from the
+[release assets](https://github.com/microsoft/webui/releases).
+Verify the archive before extraction. Its root contains
+`include/webui_ffi.h`, the shared library in `lib/`, `sdk.json` with target
+identity and file hashes, and license notices. Windows also includes the
+DLL import library.
+
+SDKs are standalone, language-neutral artifacts, not npm package payloads.
+They target Windows, macOS, and GNU/Linux on x64 and ARM64; musl is not
+supported. Use the same WebUI version for the compiler, protocol, and native
+library. Configure include, link, and runtime loader paths with your native
+toolchain; the [Go setup guide](./go#installation) shows platform examples.
+Deployed renderers do not require npm or the template compiler.
 
 ## Building the Shared Library
 
