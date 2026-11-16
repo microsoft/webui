@@ -26,6 +26,37 @@ fn temp() -> Result<TempDir> {
     Ok(tempfile::tempdir_in(root)?)
 }
 
+#[cfg(windows)]
+#[test]
+fn initializes_drive_and_verbatim_destinations_without_inspecting_bare_prefixes() -> Result<()> {
+    let temp = temp()?;
+    let canonical = temp.path().canonicalize()?;
+    let ordinary = canonical.to_str().context("temporary directory is UTF-8")?;
+    let ordinary = if let Some(unc) = ordinary.strip_prefix(r"\\?\UNC\") {
+        std::path::PathBuf::from(format!(r"\\{unc}"))
+    } else {
+        std::path::PathBuf::from(
+            ordinary
+                .strip_prefix(r"\\?\")
+                .context("canonical temporary directory has a verbatim prefix")?,
+        )
+    };
+    for (parent, name) in [(ordinary, "drive-app"), (canonical, "verbatim-app")] {
+        let root = parent.join("new-parent").join(name);
+        let output = init(&root, &["--no-interactive"])?;
+        anyhow::ensure!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert!(root.join("server/Cargo.toml").is_file());
+        assert!(root.join("src/index.html").is_file());
+        let conflict = init(&root, &[])?;
+        assert_eq!(conflict.status.code(), Some(73));
+    }
+    Ok(())
+}
+
 #[test]
 fn all_hosts_generate_offline_with_one_shared_frontend() -> Result<()> {
     let temp = temp()?;

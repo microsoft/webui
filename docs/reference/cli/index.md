@@ -195,6 +195,9 @@ Rust starter builds use the app-owned `server/target/` directory rather than
 an inherited `CARGO_TARGET_DIR`. Yarn starters select the `node-modules`
 linker in a project-local `.yarnrc.yml` for the native TypeScript compiler,
 without changing global Yarn settings.
+Development uses native filesystem events rather than scanning the source
+tree on a timer. Edits coalesce while a build is running; failed builds wait
+for the next source edit, and generated output does not trigger rebuilds.
 
 JSON output includes the destination, selected server and package manager,
 created files, dependency/skill installation outcomes, prerequisites, and next

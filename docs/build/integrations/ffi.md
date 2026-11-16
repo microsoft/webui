@@ -45,6 +45,14 @@ the release version, target, operating system, architecture, libc, complete
 inventory, and file hashes. An invalid override fails without fallback.
 It never downloads or builds an SDK or discovers one through npm.
 
+The C/C++ starters support persistent HTTP/1.1 for requests without bodies.
+Body-bearing requests receive the normal response and close the connection;
+the read-only starter does not accept uploads. The transport caps on-demand
+workers and queued connections at 16 each, expires persistent idle clients
+after 100 ms, and limits request I/O waits to 2 seconds. Tune these limits in
+the generated `server/host.h` for your deployment, particularly slow clients
+or large assets.
+
 ## Building the Shared Library
 
 ```bash

@@ -215,6 +215,7 @@ test('installation keeps first-page setup separate from deep integrations', asyn
   await page.goto(`${server.origin}/webui/start/installation/`);
   const content = page.locator('.doc-content');
   await expect(content.getByRole('heading', { level: 2 })).toHaveText([
+    'Scaffold an application #',
     'Install the CLI #', 'Verify the CLI #', 'Create your first page #',
     'Installation policies #', 'Deep integrations #', 'Add what your app needs #',
     'AI coding agents #',

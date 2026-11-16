@@ -66,7 +66,7 @@ try
 }
 catch (Exception error)
 {
-    Console.Error.WriteLine($"Unable to start WebUI: {error.Message}\nRun the app build first; verify the matching Microsoft.WebUI runtime package is installed.");
+    Console.Error.WriteLine($"Unable to start WebUI: {error}\nRun the app build first; verify the matching Microsoft.WebUI runtime package is installed.");
     return 1;
 }
 

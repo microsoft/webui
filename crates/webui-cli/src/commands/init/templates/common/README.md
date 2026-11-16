@@ -15,7 +15,9 @@ __PACKAGE_MANAGER__ run dev
 
 Open <http://127.0.0.1:3000>. Development watches your source files and runs the
 selected server. Changes rebuild the matching browser assets and protocol
-before restarting it. A failed rebuild stops the server until you fix the
+before restarting it. Native filesystem events watch source directories and
+configuration files; generated output is ignored. Edits during a build
+coalesce into a follow-up build. A failed rebuild stops the server until you fix the
 source. Stop with Ctrl+C.
 
 | Server | Additional prerequisites |
@@ -90,6 +92,13 @@ Rust builds explicitly use the app-owned `server/target/` directory, even when
 The default listener is loopback on port 3000. Set `PORT` and `HOST` using your
 deployment environment to change it. Binding a public interface is an explicit
 deployment choice; terminate TLS at a trusted ingress.
+
+C/C++ reuse HTTP/1.1 connections for bodyless requests, including HEAD and
+error responses. These read-only hosts close body-bearing requests after
+responding instead of consuming uploads. Their transport allows at most 16
+on-demand workers, 16 queued connections, 100 ms between persistent requests,
+and 2 seconds for request I/O. Adjust `server/host.h` for your deployment's
+concurrency and slow-client requirements.
 
 ## AI reference
 

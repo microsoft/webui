@@ -70,12 +70,111 @@ def verify(port):
         assert (b'/assets/index.js' in body) == (i % 2 == 0), "request-local route state leaked"
 
 
-def serve(binary, root, env):
+def verify_persistent(port):
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    try:
+        connection.connect()
+        original = connection.sock
+        for method, path, status in [
+            ("GET", "/", 200), ("HEAD", "/", 200), ("GET", "/about", 200),
+            ("GET", "/missing", 404), ("HEAD", "/missing", 404),
+            ("POST", "/", 405), ("OPTIONS", "/", 405),
+            ("GET", "/assets/host-test.js", 200),
+        ]:
+            connection.request(method, path)
+            response = connection.getresponse()
+            body = response.read()
+            assert response.status == status, (method, path, response.status)
+            assert not response.will_close, (method, path, "connection was closed")
+            assert connection.sock is original, "client silently reconnected"
+            if method == "HEAD":
+                assert not body
+            else:
+                assert len(body) == int(response.getheader("Content-Length"))
+        connection.request("GET", "/", headers={"Connection": "close"})
+        response = connection.getresponse()
+        assert response.status == 200 and response.will_close
+        response.read()
+    finally:
+        connection.close()
+
+    # These read-only hosts do not consume request bodies. They must close
+    # immediately rather than wait for a body or parse it as another request.
+    for method, framing, status in [
+        ("POST", "Content-Length: 1000000\r\n", 405),
+        ("GET", "Content-Length: 1000000\r\n", 200),
+        ("HEAD", "Content-Length: 1000000\r\n", 200),
+        ("POST", "Transfer-Encoding: chunked\r\n", 405),
+        ("POST", "Content-Length: 20\r\nExpect: 100-continue\r\n", 405),
+    ]:
+        with socket.create_connection(("127.0.0.1", port), timeout=5) as client:
+            client.sendall(f"{method} / HTTP/1.1\r\nHost: localhost\r\n{framing}\r\n".encode())
+            response = http.client.HTTPResponse(client, method=method)
+            response.begin()
+            assert response.status == status and response.will_close, (method, framing, response.status)
+            response.read()
+            assert client.recv(1) == b"", "body-bearing request was kept alive"
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as client:
+        client.sendall(b"POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 3\r\n\r\nabc"
+                       b"GET /about HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        response = http.client.HTTPResponse(client)
+        response.begin()
+        assert response.status == 405 and response.will_close
+        response.read()
+        assert client.recv(1) == b"", "unconsumed request body became a second request"
+
+    # Initial requests have a bounded deadline too, independent of keep-alive.
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as client:
+        client.sendall(b"GET / HTTP/1.0\r\n\r\n")
+        response = http.client.HTTPResponse(client)
+        response.begin()
+        assert response.status == 200 and response.will_close
+        response.read()
+
+
+def verify_idle_clients(port):
+    idle = []
+    try:
+        for _ in range(16):
+            connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            connection.request("GET", "/")
+            response = connection.getresponse()
+            assert response.status == 200 and not response.will_close
+            response.read()
+            idle.append(connection)
+        # Idle persistent clients cannot retain all workers indefinitely.
+        assert request(port, "/about")[0] == 200
+        for connection in idle:
+            connection.sock.settimeout(3)
+            assert connection.sock.recv(1) == b"", "idle connection was not evicted"
+    finally:
+        for connection in idle:
+            connection.close()
+    partial = []
+    try:
+        for _ in range(16):
+            client = socket.create_connection(("127.0.0.1", port), timeout=5)
+            client.sendall(b"GET / HTTP/1.1\r\nHost:")
+            partial.append(client)
+        assert request(port, "/")[0] == 200, "incomplete headers starved the worker pool"
+    finally:
+        for client in partial:
+            client.close()
+    # Disconnected writers do not retain render buffers or poison later requests.
+    for _ in range(8):
+        client = socket.create_connection(("127.0.0.1", port), timeout=5)
+        client.sendall(b"GET /assets/host-large.js HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        client.close()
+    assert request(port, "/")[0] == 200
+
+
+def serve(binary, root, env, host):
     with socket.socket() as reservation:
         reservation.bind(("127.0.0.1", 0))
         port = reservation.getsockname()[1]
     env = dict(env, PORT=str(port), HOST="127.0.0.1", WEBUI_APP_ROOT=str(root))
     child = subprocess.Popen(binary, cwd=root, env=env)
+    blocked = []
     try:
         for _ in range(100):
             if child.poll() is not None:
@@ -88,22 +187,41 @@ def serve(binary, root, env):
         else:
             raise AssertionError("server not ready after 10s")
         verify(port)
+        if host in ["c", "cpp"]:
+            verify_persistent(port)
+            verify_idle_clients(port)
+            # Stop with both unread responses and incomplete requests still live.
+            for request_bytes in [
+                b"GET /assets/host-large.js HTTP/1.1\r\nHost: localhost\r\n\r\n",
+                b"GET / HTTP/1.1\r\nHost:",
+            ] * 4:
+                client = socket.create_connection(("127.0.0.1", port), timeout=5)
+                client.sendall(request_bytes)
+                blocked.append(client)
     finally:
+        stopped = time.monotonic()
         child.send_signal(signal.SIGTERM)
         try:
-            code = child.wait(timeout=15)
+            code = child.wait(timeout=5 if host in ["c", "cpp"] else 15)
         except subprocess.TimeoutExpired:
             child.kill()
             child.wait()
             raise AssertionError("server did not stop gracefully")
+        finally:
+            for client in blocked:
+                client.close()
         assert code == 0, f"server exited with {code}"
+        if host in ["c", "cpp"]:
+            assert time.monotonic() - stopped < 5, "blocked clients prevented bounded shutdown"
     # Startup must reject a malformed protocol rather than serve empty HTML.
     protocol = root / "dist/protocol.bin"
     original = protocol.read_bytes()
     try:
         protocol.write_bytes(b"\xff")
-        failed = subprocess.run(binary, cwd=root, env=env, timeout=10)
+        failed = subprocess.run(binary, cwd=root, env=env, timeout=10, capture_output=True, text=True)
         assert failed.returncode != 0, "malformed protocol accepted"
+        if host == "dotnet":
+            assert "WebUIException" in failed.stderr and "   at " in failed.stderr, failed.stderr
     finally:
         protocol.write_bytes(original)
     public = root / "dist/public"
@@ -142,6 +260,7 @@ def main():
             shutil.copytree(dist, root / "dist")
             public = root / "dist/public"
             (public / "host-test.js").write_bytes(b"export{}")
+            (public / "host-large.js").write_bytes(b" " * (4 * 1024 * 1024))
             (public / ".secret.js").write_bytes(b"PRIVATE")
             (public / "source.ts").write_bytes(b"PRIVATE")
             (root / "secret.js").write_bytes(b"PRIVATE")
@@ -177,8 +296,10 @@ def main():
                 runtime_env.pop(loader, None)
                 runtime_env.pop("WEBUI_LIB_PATH", None)
                 runtime_env["WEBUI_SDK_DIR"] = str(root / "intentionally-missing-sdk")
-            serve(binary, root, runtime_env)
+            serve(binary, root, runtime_env, host)
             print(f"PASS {host}: startup, SSR, HEAD, static containment/MIME, 404/405, concurrency, malformed protocol, symlink root, shutdown")
+            if host in ["c", "cpp"]:
+                print(f"PASS {host}: same-socket GET/HEAD/404/405, body framing/close, idle eviction, partial headers, disconnected writes, bounded blocked-client shutdown")
 
 
 if __name__ == "__main__":

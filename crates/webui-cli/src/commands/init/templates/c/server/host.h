@@ -65,19 +65,23 @@ static int host_reply(struct mg_connection *connection, int status, const char *
                       const void *bytes, size_t length, int head) {
     char content_length[32];
     snprintf(content_length, sizeof(content_length), "%zu", length);
-    mg_disable_connection_keep_alive(connection);
     if (mg_response_header_start(connection, status) != 0 ||
         mg_response_header_add(connection, "Content-Type", mime, -1) != 0 ||
         mg_response_header_add(connection, "Content-Length", content_length, -1) != 0 ||
         mg_response_header_add(connection, "X-Content-Type-Options", "nosniff", -1) != 0 ||
-        mg_response_header_add(connection, "Connection", "close", -1) != 0 ||
         (status == 405 && mg_response_header_add(connection, "Allow", "GET, HEAD", -1) != 0) ||
-        mg_response_header_send(connection) != 0) return status;
+        mg_response_header_send(connection) != 0) {
+        mg_disable_connection_keep_alive(connection);
+        return status;
+    }
     if (!head && length) {
         size_t written = 0;
         while (written < length) {
             int amount = mg_write(connection, (const unsigned char *)bytes + written, length - written);
-            if (amount <= 0) break; /* Disconnected clients do not retain the result. */
+            if (amount <= 0) {
+                mg_disable_connection_keep_alive(connection);
+                break;
+            }
             written += (size_t)amount;
         }
     }
@@ -97,6 +101,11 @@ static void host_log_native(const char *operation) {
 static int host_request(struct mg_connection *connection) {
     const struct mg_request_info *request = mg_get_request_info(connection);
     struct host *app = (struct host *)request->user_data;
+    /* No endpoint consumes bodies. Close instead of draining unbounded or
+       incomplete input, or treating leftover body bytes as another request. */
+    if (request->content_length > 0 || mg_get_header(connection, "Transfer-Encoding") ||
+        mg_get_header(connection, "Expect"))
+        mg_disable_connection_keep_alive(connection);
     int head = strcmp(request->request_method, "HEAD") == 0;
     if (!head && strcmp(request->request_method, "GET") != 0) {
         const char message[] = "Method not allowed\n";
@@ -290,8 +299,12 @@ static int host_serve(struct host *app) {
     char address[128];
     int size = snprintf(address, sizeof(address), "%s:%ld", host, number);
     if (size < 0 || (size_t)size >= sizeof(address)) return 1;
-    const char *options[] = {"listening_ports", address, "num_threads", "4",
-        "request_timeout_ms", "10000", "max_request_size", "16384", NULL};
+    /* CivetWeb dedicates a worker to each live connection. Grow on demand,
+       cap admission, and evict idle/partial clients instead of pinning workers. */
+    const char *options[] = {"listening_ports", address, "num_threads", "16",
+        "connection_queue", "16", "listen_backlog", "32", "enable_keep_alive", "yes",
+        "keep_alive_timeout_ms", "100", "request_timeout_ms", "2000",
+        "tcp_nodelay", "1", "max_request_size", "16384", NULL};
     struct mg_callbacks callbacks;
     memset(&callbacks, 0, sizeof(callbacks));
     callbacks.begin_request = host_request;

@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -185,6 +185,190 @@ test('dev coalesces edits, rebuilds before restarting the selected host, and rec
   const [code] = await child.ended;
   assert.equal(code, 0, child.output());
   assert.match(await events(), /BUILD_START\nBUILD_DONE\nHOST_START\nHOST_STOP\n$/);
+});
+
+test('dev watches nested and atomic saves, coalesces build-time edits, and ignores generated output', async t => {
+  const root = await fixture(t);
+  await writeFile(path.join(root, 'scripts/build.mjs'), `
+    import { appendFile } from 'node:fs/promises';
+    import { setTimeout } from 'node:timers/promises';
+    export async function buildFrontend() {
+      await appendFile('events', 'BUILD_START\\n');
+      await setTimeout(200);
+      await appendFile('events', 'BUILD_DONE\\n');
+    }
+  `);
+  await writeFile(path.join(root, 'server/main.mjs'), `
+    import { appendFileSync } from 'node:fs';
+    appendFileSync('events', 'HOST_START\\n');
+    const timer = setInterval(() => {}, 1000);
+    process.once('SIGTERM', () => { appendFileSync('events', 'HOST_STOP\\n'); clearInterval(timer); });
+  `);
+  const process = launch(t, root, 'scripts/app.mjs', ['dev']);
+  const events = () => readFile(path.join(root, 'events'), 'utf8');
+  const starts = async () => (await events()).split('HOST_START').length - 1;
+  await waitFor(async () => await starts() === 1);
+  for (const directory of ['dist/public', '.webui/modules', 'server/target/debug', 'server/build', 'node_modules']) {
+    await mkdir(path.join(root, directory), { recursive: true });
+    await writeFile(path.join(root, directory, 'generated'), 'ignored');
+  }
+  await sleep(650);
+  assert.equal(await starts(), 1);
+  await writeFile(path.join(root, 'src/next.html'), 'atomic');
+  await rename(path.join(root, 'src/next.html'), path.join(root, 'src/index.html'));
+  await waitFor(async () => (await events()).endsWith('BUILD_START\n'));
+  await mkdir(path.join(root, 'src/nested/deep'), { recursive: true });
+  await writeFile(path.join(root, 'src/nested/deep/page.html'), 'during build');
+  await waitFor(async () => (await events()).split('BUILD_DONE').length >= 4 && await starts() >= 2);
+  await sleep(350);
+  const before = await starts();
+  await rename(path.join(root, 'src/nested'), path.join(root, 'src/renamed'));
+  await waitFor(async () => await starts() > before);
+  await sleep(350);
+  const renamed = await starts();
+  await writeFile(path.join(root, 'src/renamed/deep/page.html'), 'nested edit');
+  await waitFor(async () => await starts() > renamed);
+  await writeFile(path.join(root, 'tsconfig.tmp'), '{}');
+  await rename(path.join(root, 'tsconfig.tmp'), path.join(root, 'tsconfig.json'));
+  const count = await starts();
+  await waitFor(async () => await starts() > count);
+  process.child.kill('SIGTERM');
+  const [code] = await process.ended;
+  assert.equal(code, 0, process.output());
+  assert.doesNotMatch(await events(), /BUILD_START\nBUILD_START/);
+});
+
+test('dev performs no idle filesystem scans after startup', async t => {
+  const root = await fixture(t);
+  await writeFile(path.join(root, 'scripts/build.mjs'), 'export async function buildFrontend() {}');
+  await writeFile(path.join(root, 'server/main.mjs'), "console.log('HOST_READY'); setInterval(() => {}, 1000);");
+  await writeFile(path.join(root, 'metrics.mjs'), `
+    import fs from 'node:fs';
+    import promises from 'node:fs/promises';
+    import { syncBuiltinESMExports } from 'node:module';
+    let calls = 0;
+    for (const [object, names] of [[fs, ['lstatSync', 'readdirSync']], [promises, ['stat', 'readdir']]]) {
+      for (const name of names) {
+        const original = object[name];
+        object[name] = (...args) => { calls++; return original(...args); };
+      }
+    }
+    syncBuiltinESMExports();
+    await import('./scripts/app.mjs').then(app => app.main('dev'));
+  `);
+  // The probe runs in the supervisor, not in the server child.
+  const probe = await readFile(path.join(root, 'metrics.mjs'), 'utf8');
+  await writeFile(path.join(root, 'metrics.mjs'), probe.replace("await import(", `
+    setTimeout(() => {
+      const before = calls;
+      setTimeout(() => { console.log('IDLE_SCANS:' + (calls - before)); process.kill(process.pid, 'SIGTERM'); }, 1100);
+    }, 500);
+    await import(`));
+  const process = launch(t, root, 'metrics.mjs');
+  const [code] = await process.ended;
+  assert.equal(code, 0, process.output());
+  assert.match(process.output(), /HOST_READY/);
+  assert.match(process.output(), /IDLE_SCANS:0/);
+});
+
+test('native watcher excludes generated registrations, handles nameless events, and surfaces errors', async t => {
+  const root = await fixture(t);
+  for (const directory of ['server/target/deep', 'server/build/deep', 'server/bin/deep', 'server/obj/deep', 'src/nested']) {
+    await mkdir(path.join(root, directory), { recursive: true });
+  }
+  await writeFile(path.join(root, 'watch-probe.mjs'), `
+    import assert from 'node:assert/strict';
+    import fs from 'node:fs';
+    import path from 'node:path';
+    import { syncBuiltinESMExports } from 'node:module';
+    const registered = [];
+    const original = fs.watch;
+    fs.watch = (...args) => {
+      const watcher = original(...args);
+      registered.push({ directory: args[0], watcher });
+      return watcher;
+    };
+    syncBuiltinESMExports();
+    const { watchSources } = await import('./scripts/watch.mjs');
+    const sources = watchSources();
+    try {
+      assert.deepEqual(registered.map(entry => entry.directory.split(path.sep).join('/')).sort(), ['.', 'scripts', 'server', 'src', 'src/nested']);
+      const version = sources.version;
+      registered[0].watcher.emit('change', 'rename', null);
+      await sources.wait(version);
+      assert.ok(sources.version > version);
+      registered[0].watcher.emit('error', new Error('WATCH_FAILED'));
+      await assert.rejects(sources.wait(sources.version), /WATCH_FAILED/);
+      console.log('WATCH_CONTRACT_PASSED');
+    } finally { sources.close(); }
+  `);
+  const child = launch(t, root, 'watch-probe.mjs');
+  const [code] = await child.ended;
+  assert.equal(code, 0, child.output());
+  assert.match(child.output(), /WATCH_CONTRACT_PASSED/);
+});
+
+test('native watcher recovers deleted Windows handles and registration races without hiding permission failures', async t => {
+  const root = await fixture(t);
+  for (const directory of ['deleted', 'during-register', 'during-read', 'protected']) {
+    await mkdir(path.join(root, 'src', directory));
+  }
+  await writeFile(path.join(root, 'watch-races.mjs'), `
+    import assert from 'node:assert/strict';
+    import fs from 'node:fs';
+    import path from 'node:path';
+    import { syncBuiltinESMExports } from 'node:module';
+    const registered = new Map();
+    const originalWatch = fs.watch;
+    const originalRead = fs.readdirSync;
+    fs.watch = (directory, ...args) => {
+      if (path.basename(directory) === 'during-register') {
+        fs.rmSync(directory, { recursive: true });
+        throw Object.assign(new Error('directory removed before watch'), { code: 'ENOENT' });
+      }
+      const watcher = originalWatch(directory, ...args);
+      registered.set(directory, watcher);
+      return watcher;
+    };
+    fs.readdirSync = (directory, ...args) => {
+      if (path.basename(directory) === 'during-read') {
+        fs.rmSync(directory, { recursive: true });
+        throw Object.assign(new Error('directory removed before read'), { code: 'ENOTDIR' });
+      }
+      return originalRead(directory, ...args);
+    };
+    syncBuiltinESMExports();
+    const { watchSources } = await import('./scripts/watch.mjs');
+    const sources = watchSources();
+    try {
+      const directory = path.join('src', 'deleted');
+      const stale = registered.get(directory);
+      assert.ok(stale);
+      let version = sources.version;
+      fs.rmSync(directory, { recursive: true });
+      stale.emit('error', Object.assign(new Error('Windows deleted directory'), { code: 'EPERM' }));
+      await sources.wait(version);
+      version = sources.version;
+      fs.mkdirSync(directory);
+      await sources.wait(version);
+      const current = registered.get(directory);
+      assert.notEqual(current, stale);
+      stale.emit('error', new Error('retired handle'));
+      version = sources.version;
+      fs.writeFileSync(path.join(directory, 'restored.html'), 'restored');
+      await sources.wait(version);
+      const protectedWatcher = registered.get(path.join('src', 'protected'));
+      protectedWatcher.emit('error', Object.assign(new Error('real permission failure'), { code: 'EPERM' }));
+      await assert.rejects(sources.wait(sources.version), /real permission failure/);
+      sources.close();
+      current.emit('error', new Error('closed handle'));
+      console.log('WATCH_RACES_PASSED');
+    } finally { sources.close(); }
+  `);
+  const child = launch(t, root, 'watch-races.mjs');
+  const [code] = await child.ended;
+  assert.equal(code, 0, child.output());
+  assert.match(child.output(), /WATCH_RACES_PASSED/);
 });
 
 test('Node host HTTP boundary: GET/HEAD/405, private files, traversal, and symlinks', async t => {
