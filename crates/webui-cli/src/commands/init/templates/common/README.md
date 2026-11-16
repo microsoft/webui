@@ -27,6 +27,9 @@ source. Stop with Ctrl+C.
 Keep optional npm platform dependencies enabled. If your package manager blocks
 esbuild's install script, review and approve that package specifically; do not
 globally enable dependency scripts.
+Use your selected package manager's `run` commands. Yarn starters include a
+project-local `.yarnrc.yml` selecting the `node-modules` linker for the native
+TypeScript compiler; no global Yarn settings are changed.
 
 ## Edit
 
@@ -51,6 +54,8 @@ __PACKAGE_MANAGER__ run start
 `start` uses those artifacts without compiling templates. Keep `dist/protocol.bin`
 private; only `dist/public/` is served at `/assets/`. Run from the app root.
 Rust needs its built server binary. Node/Bun need the installed WebUI native addon.
+Rust builds explicitly use the app-owned `server/target/` directory, even when
+`CARGO_TARGET_DIR` is set, so build, dev, and start always share the same binary.
 
 The default listener is loopback on port 3000. Set `PORT` and `HOST` using your
 deployment environment to change it. Binding a public interface is an explicit

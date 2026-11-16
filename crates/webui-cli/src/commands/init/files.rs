@@ -8,7 +8,7 @@ use std::path::{Component, Path, PathBuf};
 use anyhow::{Context, Result};
 use include_dir::{include_dir, Dir};
 
-use super::{InitArgs, InitError};
+use super::{InitArgs, InitError, PackageManager};
 
 static TEMPLATES: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/commands/init/templates");
 
@@ -108,6 +108,12 @@ pub(super) fn app_name(path: &Path) -> Result<String> {
 pub(super) fn generate(root: &Path, name: &str, args: &InitArgs) -> Result<Vec<String>> {
     let mut files = template_files(args.server.name())?;
     files.push(("package.json".to_owned(), manifest(name, args)?));
+    if args.package_manager == PackageManager::Yarn {
+        files.push((
+            ".yarnrc.yml".to_owned(),
+            "nodeLinker: node-modules\n".to_owned(),
+        ));
+    }
     files.sort_unstable_by(|a, b| a.0.cmp(&b.0));
     for pair in files.windows(2) {
         anyhow::ensure!(
