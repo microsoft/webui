@@ -5,7 +5,8 @@
   "description": "WebUI platform-specific binary for macOS x64",
   "files": [
     "bin/webui",
-    "webui.node"
+    "webui.node",
+    "sdk/"
   ],
   "license": "MIT",
   "name": "@microsoft/webui-darwin-x64",

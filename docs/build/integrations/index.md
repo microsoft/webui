@@ -16,9 +16,10 @@ Choose an integration with a compatible runtime and native target:
 | --- | --- |
 | [Rust](./rust) | `microsoft-webui` on crates.io, imported as `webui`; build and render APIs |
 | [Node.js and Bun](./node) | `@microsoft/webui` on npm; requires its platform-specific native addon |
+| [Go](./go) | `github.com/microsoft/webui/go/v3` with cgo and a matching native SDK |
 | [.NET](./dotnet) | `Microsoft.WebUI` NuGet package with matching native runtime packages |
 | [Python](./python) | Native `microsoft-webui` wheels and source distribution on GitHub Releases; not yet on PyPI |
-| [C / FFI](./ffi) | Build the shared library and use its C ABI; includes Go and Python `ctypes` examples |
+| [C / FFI](./ffi) | Use the shared library's C ABI directly; includes Python `ctypes` examples |
 | [WebAssembly](./wasm) | Generated handler-only, parser-only, or combined bundles for browser-hosted use |
 | [Electron](./electron) | Repository example: render a prebuilt app once and serve it through a custom protocol |
 | [Tauri](./tauri) | Repository example: a Rust snapshot viewer, not a full application backend |

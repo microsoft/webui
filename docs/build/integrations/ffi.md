@@ -10,10 +10,44 @@ interop. Load a protocol handle once, reuse it for rendering, and release each
 result with its designated function. Your host must support the target's
 native library and ABI; this does not require a JavaScript SSR engine.
 
-Prefer the managed [Microsoft.WebUI package](./dotnet) for .NET or the native
-[Python package](./python) on its supported targets. The Go and `ctypes`
-examples below demonstrate direct FFI ownership rather than additional
-first-class packages.
+Prefer the official [Go module](./go), managed
+[Microsoft.WebUI package](./dotnet), or native [Python package](./python)
+for those languages. Direct FFI and `ctypes` examples below illustrate
+the lower-level ownership contract.
+
+## Scaffold a native server
+
+[`webui init`](/reference/cli/#webui-init) can create a C, C++, or Go HTTP
+application with the native renderer already wired:
+
+```bash
+webui init my-app --server c
+```
+
+Use `--server cpp` or `--server go` for the other hosts. C/C++ use a pinned
+CivetWeb HTTP transport; Go uses `net/http` and imports the official
+`github.com/microsoft/webui/go/v3` module. Install the selected compiler and
+CMake or Go separately.
+
+The version-matched npm platform package includes an SDK with
+`include/webui_ffi.h`, the native library under `lib/`, license notices, and
+SDK metadata. Windows also includes its import library. The generated
+`scripts/sdk.mjs` verifies the installed SDK before building or starting.
+Keep optional npm dependencies enabled. For an offline SDK, set
+`WEBUI_SDK_DIR` to the complete SDK root; mismatched versions, platforms, or
+file hashes fail explicitly.
+
+Standalone, version-matched SDK archives are also release artifacts and do
+not require npm. They contain the same headers, libraries, metadata, and
+license notices as the platform package's SDK. Verify the archive's adjacent
+SHA-256 file before extracting it; see the [Go setup guide](./go#installation)
+for native compiler and loader paths.
+
+The provided SDK targets Windows, macOS, and GNU/Linux on x64 and ARM64;
+musl is not supported. Use a toolchain compatible with the selected native
+library and ABI. Keep the protocol and native library at matching WebUI
+versions. Production deployment needs the built host, private protocol, public
+assets, and native library; it does not need the template compiler.
 
 ## Building the Shared Library
 

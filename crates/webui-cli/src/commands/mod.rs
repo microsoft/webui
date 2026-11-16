@@ -4,6 +4,7 @@
 pub mod build;
 pub mod common;
 mod component_asset_output;
+pub(crate) mod init;
 pub mod inspect;
 mod metafile;
 pub mod serve;
@@ -21,6 +22,8 @@ pub enum Commands {
     Press(sidecar::SidecarArgs),
     /// Inspect a protocol.bin file and output JSON to stdout
     Inspect(inspect::InspectArgs),
+    /// Create an HTML-first WebUI application
+    Init(init::InitArgs),
     /// Start a development server with live reload
     Serve(serve::ServeArgs),
 }

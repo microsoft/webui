@@ -3,12 +3,14 @@
 
 mod build_examples;
 mod build_wasm;
+mod cargo_artifacts;
 mod desktop_acceptance;
 mod desktop_assets;
 mod desktop_tests;
 mod dev;
 mod e2e;
 mod e2e_approve;
+mod go_tests;
 mod hotfix;
 mod license_headers;
 mod native_ipc;
@@ -68,6 +70,13 @@ fn main() -> ExitCode {
         Some("clippy") => with_desktop_assets(|| run_steps(&[Step::CLIPPY])),
         Some("deny") => run_steps(&[Step::DENY]),
         Some("test") => with_desktop_assets(|| run_steps(&[Step::TEST])),
+        Some("test-go") => match go_tests::run() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("Go binding tests failed: {error}");
+                ExitCode::FAILURE
+            }
+        },
         Some("test-desktop") => with_desktop_assets(|| run_steps(&[Step::TEST_DESKTOP])),
         Some("desktop-acceptance") => with_desktop_assets(|| match desktop_acceptance::run() {
             Ok(()) => ExitCode::SUCCESS,
@@ -115,6 +124,7 @@ fn main() -> ExitCode {
             let extra: Vec<String> = args.iter().skip(2).cloned().collect();
             publish::run_stage(&extra)
         }
+        Some("sdk-stage") => publish::run_sdk(&args[2..]),
         Some("publish-build") => {
             let extra: Vec<String> = args.iter().skip(2).cloned().collect();
             publish::run_build(&extra)
@@ -165,6 +175,7 @@ fn usage() -> ExitCode {
            clippy  Run clippy lints\n  \
            deny    Run cargo-deny license/advisory checks\n  \
            test    Run all tests\n  \
+           test-go  Run native Go binding race tests and vet with a compiled fixture\n  \
            test-desktop  Run desktop SDK feature combinations and isolated Windows native tests\n  \
            desktop-acceptance  Run desktop SDK, binding, and browser contracts\n  \
            native-ipc [--timeout SECONDS] [--fail-fast] [--plan darwin|win32|linux]  Run native IPC source/package and no-IPC contracts\n  \
@@ -184,6 +195,7 @@ fn usage() -> ExitCode {
            version <semver>  Update version across all Cargo.toml and package.json files\n  \
            hotfix <commit> <oldest-tag> [--dry-run] [--support-commit <commit>]  Backport a commit and publish incremented hotfix branches\n  \
            publish-build --target <triple> [--profile release|debug] [--output <dir>] [--native-only|--python-only|--portable-only]  Build, stage, and optionally export one target's native artifacts and Python wheel\n  \
+           sdk-stage [--target <triple|all>]  Stage already-built SDK and Go module artifacts without publishing\n  \
            publish-stage [--target <triple|all>] [--profile release] [--native-only|--pack-only] [--prebuilt-wasm]  Stage release artifacts into publish/\n  \
            build-windows-local [--target all|x64|arm64|<triple>]  Build and stage Windows MSVC artifacts locally with cargo-xwin\n  \
            license-headers [--fix]  Check (or fix) license headers in source files\n  \
@@ -841,6 +853,16 @@ impl Step {
                 None,
             )?;
             node_tests::run()?;
+            go_tests::run()?;
+            run_command_quiet(
+                "node",
+                &[
+                    "--test",
+                    "crates/webui-cli/tests/starter.test.mjs",
+                    "scripts/tag-release.test.mjs",
+                ],
+                None,
+            )?;
             desktop_tests::run()?;
             run_command_quiet(
                 "pnpm",

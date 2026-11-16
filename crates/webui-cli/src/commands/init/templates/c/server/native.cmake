@@ -1,0 +1,51 @@
+# Shared by the C and C++ starters. The CLI emits this as server/native.cmake.
+if(NOT WEBUI_SDK_DIR)
+  if(DEFINED ENV{WEBUI_SDK_DIR} AND NOT "$ENV{WEBUI_SDK_DIR}" STREQUAL "")
+    set(WEBUI_SDK_DIR "$ENV{WEBUI_SDK_DIR}")
+  else()
+    get_filename_component(WEBUI_SDK_DIR "${CMAKE_CURRENT_LIST_DIR}/../.webui/sdk" ABSOLUTE)
+  endif()
+endif()
+get_filename_component(WEBUI_SDK_DIR "${WEBUI_SDK_DIR}" ABSOLUTE)
+if(NOT EXISTS "${WEBUI_SDK_DIR}/include/webui_ffi.h")
+  message(FATAL_ERROR "WebUI SDK missing. Run the app build or set WEBUI_SDK_DIR to the __WEBUI_VERSION__ SDK root.")
+endif()
+if(NOT EXISTS "${WEBUI_SDK_DIR}/sdk.json")
+  message(FATAL_ERROR "WebUI SDK metadata missing: ${WEBUI_SDK_DIR}/sdk.json. Use the complete __WEBUI_VERSION__ SDK.")
+endif()
+file(READ "${WEBUI_SDK_DIR}/sdk.json" WEBUI_SDK_METADATA)
+string(JSON WEBUI_SDK_VERSION ERROR_VARIABLE WEBUI_METADATA_ERROR GET "${WEBUI_SDK_METADATA}" version)
+if(WEBUI_METADATA_ERROR OR NOT WEBUI_SDK_VERSION STREQUAL "__WEBUI_VERSION__")
+  message(FATAL_ERROR "WebUI SDK version mismatch: expected __WEBUI_VERSION__, received ${WEBUI_SDK_VERSION}.")
+endif()
+if(WIN32)
+  set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/Release")
+  find_library(WEBUI_LIBRARY NAMES webui_ffi.dll.lib
+    PATHS "${WEBUI_SDK_DIR}/lib" NO_DEFAULT_PATH REQUIRED)
+else()
+  find_library(WEBUI_LIBRARY NAMES webui_ffi
+    PATHS "${WEBUI_SDK_DIR}/lib" NO_DEFAULT_PATH REQUIRED)
+endif()
+add_library(webui_sdk INTERFACE)
+target_include_directories(webui_sdk INTERFACE "${WEBUI_SDK_DIR}/include")
+target_link_libraries(webui_sdk INTERFACE "${WEBUI_LIBRARY}")
+
+# CivetWeb (MIT), immutable security-fixed 1.17 snapshot + archive SHA-256.
+# The 1.16 release predates CVE-2025-55763/9648 fixes. This revision includes
+# upstream fixes 76e222b/782e189. HTTP/2 is not enabled.
+# Compile only the C transport; no file serving, CGI, TLS, Lua, Duktape,
+# WebSockets, server executable, or optional C++ wrapper.
+include(FetchContent)
+FetchContent_Declare(civetweb_source
+  URL https://codeload.github.com/civetweb/civetweb/tar.gz/3309a6cac05335aa4371a0c3750b42fbe05d3cb4
+  URL_HASH SHA256=b99ad9a02783ae92f6cd17a335fbd07547ac80d195876d348fe1c14d4e12533e
+  SOURCE_SUBDIR webui-transport-only)
+FetchContent_MakeAvailable(civetweb_source)
+find_package(Threads REQUIRED)
+add_library(civetweb STATIC "${civetweb_source_SOURCE_DIR}/src/civetweb.c")
+target_include_directories(civetweb PUBLIC "${civetweb_source_SOURCE_DIR}/include")
+target_compile_definitions(civetweb PRIVATE NO_SSL NO_CGI NO_FILES NO_CACHING)
+target_link_libraries(civetweb PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+if(WIN32)
+  target_link_libraries(civetweb PRIVATE ws2_32)
+endif()

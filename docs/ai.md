@@ -166,6 +166,14 @@ static HTML still has transfer, parsing, layout, paint, and memory costs.
 
 ## Project structure
 
+Use [`webui init`](/reference/cli/#webui-init) to create a small two-page app
+with a selected native server and one interactive island. It can optionally
+invoke the existing project-local reference-skill installer.
+
+Go servers import the [official Go binding](/build/integrations/go) rather
+than copying a cgo adapter into application code. It uses the native SDK and
+does not run JavaScript to render.
+
 ```
 my-app/
 |- src/

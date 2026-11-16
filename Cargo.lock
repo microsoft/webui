@@ -2058,6 +2058,7 @@ dependencies = [
  "console",
  "expand-tilde",
  "futures-util",
+ "include_dir",
  "log",
  "memchr",
  "microsoft-webui",

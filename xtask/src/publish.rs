@@ -12,6 +12,8 @@
 //! - `publish/wasm/`    — WASM modules + JS glue
 //! - `publish/standalone/` — legacy direct-download native and WASM assets
 //! - `publish/python/`  — pre-staged wheels plus the generated source distribution
+//! - `publish/sdk/`     — standalone versioned SDK archives and SHA-256 sidecars
+//! - `publish/go/`      — source-only Go module proxy for offline release testing
 
 use crate::release_version::ReleaseVersion;
 use crate::util::{build_command, run_command, run_command_quiet};
@@ -20,8 +22,14 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 
+#[path = "publish_archives.rs"]
+mod archives;
 #[path = "../../crates/webui-desktop/runtime/deployment.rs"]
 mod desktop_deployment;
+#[path = "publish_go.rs"]
+mod go;
+#[path = "publish_sdk.rs"]
+mod sdk;
 
 // ── Platform mapping ────────────────────────────────────────────────────
 
@@ -125,6 +133,8 @@ const PUBLISH_SUBDIRS: &[&str] = &[
     "wasm",
     "standalone",
     "python",
+    "sdk",
+    "go",
 ];
 
 /// Distribution name used for `microsoft-webui` Python artifact filenames.
@@ -429,6 +439,11 @@ pub fn run_stage(args: &[String]) -> ExitCode {
         }
     }
 
+    if let Err(error) = stage_binding_distributions(&root, &ver) {
+        eprintln!("Failed to stage SDK/Go distributions: {error}");
+        return ExitCode::FAILURE;
+    }
+
     // Phase 2: Stage WASM before packing the main npm package.
     eprintln!(
         "\n{} Staging WASM artifacts",
@@ -581,7 +596,7 @@ fn prepare_publish_dirs(root: &Path, mode: StageMode) -> Result<(), String> {
                     .map_err(|e| format!("failed to create publish/{subdir}: {e}"))?;
             }
 
-            for subdir in ["npm", "nuget", "crates", "wasm", "standalone"] {
+            for subdir in ["npm", "nuget", "crates", "wasm", "standalone", "sdk", "go"] {
                 let path = publish_dir.join(subdir);
                 if path.exists() {
                     fs::remove_dir_all(&path)
@@ -905,6 +920,7 @@ fn export_target(
         .ok_or_else(|| format!("unknown target triple: {triple}"))?;
 
     if mode.includes_native() {
+        archives::export(root, &safe_output_root, platform)?;
         for (source, destination) in [
             (
                 root.join("publish").join("native"),
@@ -1196,6 +1212,16 @@ fn stage_platform_artifacts(
 ) -> bool {
     let mut ok = true;
 
+    if let Err(error) = sdk::stage(root, platform, build_dir)
+        .and_then(|()| archives::stage(root, platform).map(|_| ()))
+    {
+        eprintln!(
+            "  {} Native SDK staging failed: {error}",
+            console::style("✘").red().bold()
+        );
+        ok = false;
+    }
+
     // NuGet: FFI library → dotnet/runtimes/{rid}/native/
     ok &= stage_file(&CopySpec {
         src: &build_dir.join(platform.ffi_lib),
@@ -1303,6 +1329,12 @@ fn desktop_cli_binary(platform: &PlatformEntry) -> &'static str {
 fn pack_npm_tarballs(root: &Path) -> Result<(), String> {
     let packages_dir = root.join("packages");
     let npm_out = root.join("publish").join("npm");
+
+    // Pack-only release jobs consume matrix exports. Missing or stale SDKs must
+    // fail before npm can produce a seemingly valid but unusable native package.
+    for platform in PLATFORMS {
+        sdk::validate_staged(root, platform)?;
+    }
 
     // Build packages that have build scripts first
     for pkg_name in &[
@@ -1989,7 +2021,65 @@ fn validate_release_artifact_counts(root: &Path, version: &str) -> Result<(), St
         20,
         "standalone release assets",
     )?;
-    validate_python_release_artifacts(&publish, &python_version)
+    validate_python_release_artifacts(&publish, &python_version)?;
+    archives::validate_release(root, version)?;
+    go::validate_release(root, version)
+}
+
+/// Stage standalone native SDK archives and a local, source-only Go module proxy.
+///
+/// `sdk-stage [--target <triple|all>]` consumes previously staged package SDKs.
+pub fn run_sdk(args: &[String]) -> ExitCode {
+    let result = (|| {
+        let target = match args {
+            [] => "all",
+            [flag, target] if flag == "--target" => target.as_str(),
+            _ => return Err("usage: sdk-stage [--target <triple|all>]".to_string()),
+        };
+        let root = std::env::current_dir().map_err(|error| error.to_string())?;
+        let version = version::read_version()?;
+        if target == "all" {
+            stage_binding_distributions(&root, &version)
+        } else {
+            let platform = PLATFORMS
+                .iter()
+                .find(|platform| platform.triple == target)
+                .ok_or_else(|| format!("unknown target triple: {target}"))?;
+            archives::validate_version(&root, platform, &version)?;
+            archives::stage(&root, platform)?;
+            go::stage(&root, &version)
+        }
+    })();
+    match result {
+        Ok(()) => {
+            eprintln!(
+                "{} SDK archives staged in publish/sdk/; Go proxy staged in publish/go/",
+                console::style("✔").green()
+            );
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("Failed to stage SDK/Go distributions: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Stage source-only Go artifacts under a caller-owned file GOPROXY root.
+///
+/// Writes `<output>/github.com/microsoft/webui/go/v3/@v/` without touching
+/// the workspace's shared `publish/` directory.
+pub(crate) fn stage_go_proxy(root: &Path, version: &str, output: &Path) -> Result<(), String> {
+    go::stage_at(root, version, output)
+}
+
+fn stage_binding_distributions(root: &Path, version: &str) -> Result<(), String> {
+    for platform in PLATFORMS {
+        archives::validate_version(root, platform, version)?;
+        archives::stage(root, platform)?;
+    }
+    archives::validate_release(root, version)?;
+    stage_go_proxy(root, version, &root.join("publish/go"))
 }
 
 fn validate_artifact_count(actual: u32, expected: u32, kind: &str) -> Result<(), String> {
@@ -2344,6 +2434,7 @@ mod tests {
                 .join(platform.triple)
                 .join("release");
             fs::create_dir_all(&build).expect("build directory");
+            sdk::tests::fixture(root.path(), platform);
             for name in [
                 platform.cli_binary,
                 platform.ffi_lib,
@@ -2427,6 +2518,8 @@ mod tests {
             .iter()
             .find(|platform| platform.triple == "aarch64-pc-windows-msvc")
             .expect("Windows ARM64 target");
+        sdk::tests::fixture(root.path(), platform);
+        fs::write(build_dir.join("webui_ffi.dll.lib"), "import").expect("import library");
         for name in [
             platform.ffi_lib,
             platform.node_addon,
@@ -2516,6 +2609,10 @@ mod tests {
         fs::create_dir_all(&npm).unwrap();
         fs::write(native.join("webui-win32-x64.exe"), "bin").unwrap();
         fs::write(npm.join("stale.tgz"), "stale").unwrap();
+        for directory in ["sdk", "go"] {
+            fs::create_dir_all(publish.join(directory)).expect("binding outputs");
+            fs::write(publish.join(directory).join("stale"), "stale").expect("stale distribution");
+        }
 
         prepare_publish_dirs(dir.path(), StageMode::PackOnly).unwrap();
 
@@ -2525,6 +2622,10 @@ mod tests {
         assert!(publish.join("crates").is_dir());
         assert!(publish.join("wasm").is_dir());
         assert!(publish.join("standalone").is_dir());
+        for directory in ["sdk", "go"] {
+            assert!(publish.join(directory).is_dir());
+            assert!(!publish.join(directory).join("stale").exists());
+        }
     }
 
     #[test]
@@ -2661,10 +2762,11 @@ mod tests {
                     .expect("artifact fixture should be written");
             }
         }
-        write_desktop_npm_fixtures(&publish.join("npm"), "1.2.3-hotfix.4");
-        write_python_release_fixtures(&publish.join("python"), "1.2.3.post4");
+        write_desktop_npm_fixtures(&publish.join("npm"), "3.1.2-hotfix.4");
+        write_python_release_fixtures(&publish.join("python"), "3.1.2.post4");
+        write_binding_release_fixtures(root.path(), "3.1.2-hotfix.4");
 
-        assert!(validate_release_artifact_counts(root.path(), "1.2.3-hotfix.4").is_ok());
+        assert!(validate_release_artifact_counts(root.path(), "3.1.2-hotfix.4").is_ok());
     }
 
     #[test]
@@ -2825,14 +2927,31 @@ mod tests {
                 .expect("publish directory should be created");
         }
         write_numbered_files(root.path().join("publish/npm"), 17, "tgz");
-        write_desktop_npm_fixtures(&root.path().join("publish/npm"), "1.2.3");
+        write_desktop_npm_fixtures(&root.path().join("publish/npm"), "3.1.2");
         write_numbered_files(root.path().join("publish/crates"), 17, "crate");
         write_numbered_files(root.path().join("publish/nuget"), 8, "nupkg");
         write_numbered_files(root.path().join("publish/nuget"), 2, "snupkg");
         write_numbered_files(root.path().join("publish/standalone"), 20, "asset");
-        write_python_release_fixtures(&root.path().join("publish/python"), "1.2.3");
+        write_python_release_fixtures(&root.path().join("publish/python"), "3.1.2");
+        write_binding_release_fixtures(root.path(), "3.1.2");
 
-        assert!(validate_release_artifact_counts(root.path(), "1.2.3").is_ok());
+        assert!(validate_release_artifact_counts(root.path(), "3.1.2").is_ok());
+        fs::remove_file(
+            root.path()
+                .join("publish/go/github.com/microsoft/webui/go/v3/@v/v3.1.2.zip"),
+        )
+        .expect("remove Go artifact");
+        assert!(validate_release_artifact_counts(root.path(), "3.1.2")
+            .expect_err("missing Go archive")
+            .contains("Go proxy"));
+        fs::remove_file(
+            root.path()
+                .join("publish/sdk/webui-sdk-3.1.2-linux-x64.tar.gz"),
+        )
+        .expect("remove SDK artifact");
+        assert!(validate_release_artifact_counts(root.path(), "3.1.2")
+            .expect_err("missing SDK archive")
+            .contains("SDK archives"));
     }
 
     #[test]
@@ -2887,6 +3006,38 @@ mod tests {
             )
             .expect("desktop fixture");
         }
+    }
+
+    fn write_binding_release_fixtures(root: &Path, version: &str) {
+        let build = root.join("build");
+        fs::create_dir_all(&build).expect("build");
+        for platform in PLATFORMS {
+            sdk::tests::fixture(root, platform);
+            fs::write(
+                root.join("packages")
+                    .join(platform.npm_package)
+                    .join("package.json"),
+                serde_json::json!({"name": format!("@microsoft/{}", platform.npm_package),
+                        "version": version})
+                .to_string(),
+            )
+            .expect("versioned package");
+            fs::write(build.join(platform.ffi_lib), "ffi").expect("FFI");
+            fs::write(build.join("webui_ffi.dll.lib"), "import").expect("import");
+            sdk::stage(root, platform, &build).expect("SDK");
+        }
+        fs::create_dir_all(root.join("go")).expect("Go source");
+        fs::write(
+            root.join("go/go.mod"),
+            "module github.com/microsoft/webui/go/v3\n\ngo 1.24\n",
+        )
+        .expect("Go mod");
+        fs::write(
+            root.join("go/webui.go"),
+            format!("package webui\nconst Version = \"{version}\"\n"),
+        )
+        .expect("Go source");
+        stage_binding_distributions(root, version).expect("SDK and Go distributions");
     }
 
     fn write_numbered_files(directory: PathBuf, count: u32, extension: &str) {
@@ -3003,6 +3154,10 @@ mod tests {
             "ffi",
         )
         .expect("runtime fixture should be written");
+        sdk::tests::fixture(root.path(), &PLATFORMS[0]);
+        let build = root.path().join("dotnet/runtimes/linux-x64/native");
+        sdk::stage(root.path(), &PLATFORMS[0], &build).expect("SDK");
+        archives::stage(root.path(), &PLATFORMS[0]).expect("SDK archive");
 
         export_target(
             root.path(),
@@ -3031,6 +3186,14 @@ mod tests {
         assert!(output
             .path()
             .join("dotnet/runtimes/linux-x64/native/libwebui_ffi.so")
+            .is_file());
+        assert!(output
+            .path()
+            .join("publish/sdk/webui-sdk-3.1.2-linux-x64.tar.gz")
+            .is_file());
+        assert!(output
+            .path()
+            .join("publish/sdk/webui-sdk-3.1.2-linux-x64.tar.gz.sha256")
             .is_file());
     }
 

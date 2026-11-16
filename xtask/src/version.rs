@@ -77,6 +77,8 @@ enum UpdateStrategy {
         name: &'static str,
         format: VersionFormat,
     },
+    /// Replace the public Go binding's release version.
+    GoVersion,
 }
 
 /// A single file whose version must be updated.
@@ -158,6 +160,15 @@ fn discover_targets(root: &Path) -> Vec<VersionTarget> {
     }
 
     // crates/*/Cargo.toml - inter-crate dependencies and Python package metadata.
+    let go_version = root.join("go/version.go");
+    if go_version.exists() {
+        targets.push(VersionTarget {
+            path: go_version,
+            strategy: UpdateStrategy::GoVersion,
+            required: true,
+        });
+    }
+
     let python_cargo_manifest = root.join("crates").join("webui-python").join("Cargo.toml");
     for toml in find_crate_cargo_tomls(root) {
         let package_format = (toml == python_cargo_manifest).then_some(VersionFormat::PythonCargo);
@@ -203,6 +214,9 @@ fn execute_update(target: &VersionTarget, versions: &VersionValues) -> Result<bo
         }
         UpdateStrategy::RustConst { name, format } => {
             update_rust_string_const(&target.path, name, versions.get(*format))
+        }
+        UpdateStrategy::GoVersion => {
+            update_quoted_const(&target.path, "const Version = \"", &versions.release)
         }
     }
 }
@@ -596,16 +610,20 @@ fn update_pyproject_version(path: &Path, version: &str) -> Result<bool, String> 
 
 /// Update a `pub(crate) const NAME: &str = "value";` declaration.
 fn update_rust_string_const(path: &Path, name: &str, version: &str) -> Result<bool, String> {
+    let prefix = format!("pub(crate) const {name}: &str = \"");
+    update_quoted_const(path, &prefix, version)
+}
+
+fn update_quoted_const(path: &Path, prefix: &str, version: &str) -> Result<bool, String> {
     let content =
         fs::read_to_string(path).map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
-    let prefix = format!("pub(crate) const {name}: &str = \"");
-    let Some(start) = content.find(&prefix) else {
+    let Some(start) = content.find(prefix) else {
         return Ok(false);
     };
     let value_start = start + prefix.len();
     let Some(end) = content[value_start..].find('"') else {
         return Err(format!(
-            "Could not find the closing quote for {name} in {}",
+            "Could not find the closing quote for {prefix} in {}",
             path.display()
         ));
     };
@@ -1197,6 +1215,29 @@ microsoft-webui-handler = { path = "../webui-handler", version = "0.0.27" }
         assert!(fs::read_to_string(&pyproject)
             .unwrap()
             .contains("version = \"1.2.3.post1\""));
+    }
+
+    #[test]
+    fn bumps_the_go_binding_with_the_workspace_release_version() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        fs::create_dir(root.join("go")).unwrap();
+        fs::write(
+            root.join("go/version.go"),
+            "// Keep package release identity aligned.\npackage webui\n\nconst Version = \"3.1.2\"\n",
+        )
+        .unwrap();
+        let target = discover_targets(root)
+            .into_iter()
+            .find(|target| target.path.ends_with("go/version.go"))
+            .unwrap();
+        let versions = VersionValues::new(ReleaseVersion::parse("3.1.3-hotfix.1").unwrap());
+        assert!(execute_update(&target, &versions).unwrap());
+        let content = fs::read_to_string(root.join("go/version.go")).unwrap();
+        assert!(content.contains("const Version = \"3.1.3-hotfix.1\""));
+        assert!(content.starts_with("// Keep package release identity aligned."));
+        fs::write(root.join("go/version.go"), "package webui\n").unwrap();
+        assert!(apply_update(execute_update(&target, &versions), &target).is_err());
     }
 
     #[test]

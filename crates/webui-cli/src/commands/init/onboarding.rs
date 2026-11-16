@@ -1,0 +1,97 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
+use std::io::{self, IsTerminal, Write};
+use std::path::Path;
+use std::process::{Command, Stdio};
+
+use anyhow::{Context, Result};
+
+use super::{InitArgs, InitError, InitReport};
+use crate::utils::output::{self, OutputFormat};
+
+pub(super) fn run(args: &InitArgs, report: &mut InitReport) -> Result<()> {
+    let interactive = !args.no_interactive
+        && !matches!(output::format(), OutputFormat::Json)
+        && io::stdin().is_terminal()
+        && io::stderr().is_terminal();
+    let install =
+        args.install || (interactive && confirm("Install the generated package dependencies?")?);
+    if install {
+        report.dependencies = "failed";
+        execute(
+            args.package_manager.name(),
+            &["install"],
+            &report.destination,
+        )?;
+        report.dependencies = "installed";
+        report.next_commands.remove(0);
+    }
+    let skill = args.ai_skill
+        || (interactive && confirm("Install the existing WebUI reference skill in this project?")?);
+    if skill {
+        report.ai_skill = "failed";
+        let mut arguments = vec![
+            "--yes",
+            "skills",
+            "add",
+            "microsoft/webui",
+            "--skill",
+            "webui-reference",
+        ];
+        if !interactive {
+            arguments.push("--yes");
+        }
+        execute("npx", &arguments, &report.destination)?;
+        report.ai_skill = "installed";
+        if !install {
+            output::field("Reference", &"Available after installing @microsoft/webui");
+        }
+    }
+    Ok(())
+}
+
+fn confirm(question: &str) -> Result<bool> {
+    eprint!("  {question} [y/N] ");
+    io::stderr().flush()?;
+    let mut input = String::new();
+    io::stdin()
+        .read_line(&mut input)
+        .context("failed to read installation choice; help: rerun with --no-interactive")?;
+    Ok(matches!(
+        input.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
+}
+
+fn execute(program: &str, arguments: &[&str], directory: &Path) -> Result<()> {
+    let display = format!("{program} {}", arguments.join(" "));
+    let mut command = command(program);
+    command.args(arguments);
+    if matches!(output::format(), OutputFormat::Json) || !io::stdin().is_terminal() {
+        command.stdin(Stdio::null());
+    }
+    let status = command
+        .current_dir(directory)
+        .stdout(Stdio::from(io::stderr()))
+        .status()
+        .map_err(|error| InitError::Install(format!("{display}: {error}")))?;
+    if !status.success() {
+        return Err(InitError::Install(format!("{display} exited with {status}")).into());
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn command(program: &str) -> Command {
+    Command::new(program)
+}
+
+#[cfg(windows)]
+fn command(program: &str) -> Command {
+    // Package-manager launchers are .cmd files. Every argument is a fixed
+    // installer token, never a project path or user-provided shell fragment.
+    let mut command = Command::new("cmd.exe");
+    command.args(["/d", "/c", program]);
+    command
+}

@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Test-only API/ownership proof, NOT a distributable runtime package.
+       Release-consumer acceptance must use the approved complete NuGet feed. -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <AssemblyName>Microsoft.WebUI</AssemblyName>
+    <PackageId>Microsoft.WebUI</PackageId>
+    <Version>__WEBUI_VERSION__</Version>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="$(WebUIBindingSource)/*.cs" />
+  </ItemGroup>
+</Project>

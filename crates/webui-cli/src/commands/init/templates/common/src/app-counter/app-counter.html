@@ -1,0 +1,3 @@
+<p>Count: <output aria-live="polite" aria-atomic="true">{{count}}</output></p>
+<button type="button" ?disabled="{{!ready}}" @click="{increment()}">Increment</button>
+<if condition="!ready"><p class="status" role="status">Waiting for interactivity. Navigation is ready.</p></if>

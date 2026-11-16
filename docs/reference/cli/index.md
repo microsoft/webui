@@ -133,6 +133,73 @@ Missing support reports the install command; incompatible
 versions fail explicitly. `WEBUI_PRESS_BINARY_PATH` overrides sidecar discovery.
 See [WebUI Press](/reference/webui-press) for configuration.
 
+### `webui init`
+
+Create a small HTML-first application with server-rendered Home and About
+pages, ordinary document navigation, and one interactive counter. No database,
+authentication, UI kit, or client router is installed.
+
+```bash
+webui init my-app
+webui init my-app --server node
+webui init my-app --server go --no-interactive
+```
+
+| Argument or option | Description | Default |
+| --- | --- | --- |
+| `PATH` | New or empty destination; existing `.git` metadata is allowed | `.` |
+| `--server <SERVER>` | `rust`, `dotnet`, `c`, `cpp`, `node`, `bun`, or `go` | `rust` |
+| `--package-manager <MANAGER>` | `npm`, `pnpm`, `yarn`, or `bun`; independent of the server | `npm` |
+| `--install` | Install the generated package dependencies | Off |
+| `--ai-skill` | Run the existing project-local WebUI reference skill installer | Off |
+| `--no-interactive` | Do not ask onboarding questions | Off |
+
+Generation is offline and does not require the selected server toolchain.
+Existing files are never replaced. Choose a directory without symlink
+ancestors or `..` path segments; names use ASCII letters, numbers, spaces,
+underscores, or hyphens and must normalize to a letter-prefixed project name.
+
+In a terminal, init offers dependency installation and installation of the
+existing `webui-reference` skill separately. Both default to No. There are no
+global installations, automatic toolchain installations, Git initialization,
+or automatic server launches. Package lifecycle scripts remain subject to your
+package manager's approval policy.
+
+Without a terminal, with `--no-interactive`, or with `--format json`, init never
+prompts. Explicit `--install` and `--ai-skill` still run their requested steps.
+The skill installer uses its noninteractive mode when no interaction is allowed.
+Its loader reads the reference bundled with the installed `@microsoft/webui`,
+not an independently copied documentation snapshot.
+
+```bash
+cd my-app
+npm install
+npm run dev
+```
+
+The generated `README.md` describes the selected server's prerequisites and
+commands. Node-compatible tooling builds the client and protocol; native
+production hosts do not require a JavaScript runtime to render. Use `check`
+for TypeScript checks, `build` for production output, and `start` to run it.
+Only Home loads the counter's JavaScript; About remains scriptless.
+
+Native hosts need their documented SDKs: Rust needs Cargo; .NET needs the .NET
+SDK and an approved Microsoft.WebUI package source; C/C++ need CMake, a native
+toolchain, and the matching WebUI SDK; Go needs Go, a cgo toolchain, and that
+SDK. Selecting a host does not install these system tools or bypass a package
+publication approval. See [server integrations](/build/integrations/).
+
+JSON output includes the destination, selected server and package manager,
+created files, dependency/skill installation outcomes, prerequisites, and next
+commands. A failed requested installation leaves the generated app intact,
+reports the failed command, and exits nonzero. Its result record is followed
+by the normal JSON error record.
+
+Init diagnostics use `init-unsafe-destination`, `init-directory-not-empty`,
+`init-invalid-name`, and `init-install-failed`. A nonempty destination exits
+with `73`; invalid names or destinations exit with `2`; installation failures
+exit with `1`; filesystem failures follow the normal I/O exit convention.
+
 ### `webui build`
 
 Build a WebUI application from an app folder.

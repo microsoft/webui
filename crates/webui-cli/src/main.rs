@@ -38,6 +38,7 @@ fn main() {
             commands::sidecar::execute(commands::sidecar::Sidecar::Press, args).map(|()| 0)
         }
         Commands::Inspect(args) => commands::inspect::execute(args).map(|()| 0),
+        Commands::Init(args) => commands::init::execute(args).map(|()| 0),
         Commands::Serve(args) => commands::serve::execute(args),
     };
 
@@ -51,6 +52,39 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn init_defaults_and_server_choices() -> Result<(), clap::Error> {
+        let cli = Cli::try_parse_from(["webui", "init"])?;
+        let Some(Commands::Init(init)) = cli.command else {
+            panic!("expected init command");
+        };
+        assert_eq!(init.server, commands::init::Server::Rust);
+        assert_eq!(init.path, std::path::Path::new("."));
+        assert!(!init.install && !init.ai_skill);
+        for server in ["rust", "dotnet", "c", "cpp", "node", "bun", "go"] {
+            let cli = Cli::try_parse_from([
+                "webui",
+                "init",
+                "my-app",
+                "--server",
+                server,
+                "--no-interactive",
+                "--package-manager",
+                "pnpm",
+            ])?;
+            let Some(Commands::Init(init)) = cli.command else {
+                panic!("expected init command");
+            };
+            assert_eq!(init.server.name(), server);
+            assert!(init.no_interactive);
+            assert_eq!(init.package_manager, commands::init::PackageManager::Pnpm);
+        }
+        assert!(Cli::try_parse_from(["webui", "init", "--server", "python"]).is_err());
+        assert!(Cli::try_parse_from(["webui", "init", "--package-manager", "cargo"]).is_err());
+        assert!(Cli::try_parse_from(["webui", "init", "--force"]).is_err());
+        Ok(())
+    }
 
     #[test]
     fn shutdown_timeout_is_opt_in_and_positive() -> Result<(), clap::Error> {

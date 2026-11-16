@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+use crate::cargo_artifacts::{self, Kind};
 use crate::util::{build_command, run_command_quiet};
-use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -56,42 +56,7 @@ fn run_checked(command: &mut Command, label: &str) -> Result<Output, String> {
 }
 
 fn addon_artifact(output: &[u8]) -> Result<PathBuf, String> {
-    let mut artifact = None;
-    for line in output.split(|byte| *byte == b'\n') {
-        if line.iter().all(u8::is_ascii_whitespace) {
-            continue;
-        }
-        let message: Value = serde_json::from_slice(line)
-            .map_err(|error| format!("Invalid Cargo addon build message: {error}"))?;
-        if message["reason"] != "compiler-artifact"
-            || message["target"]["name"] != "webui_node"
-            || !message["target"]["crate_types"]
-                .as_array()
-                .is_some_and(|types| types.iter().any(|kind| kind == "cdylib"))
-        {
-            continue;
-        }
-        let Some(files) = message["filenames"].as_array() else {
-            continue;
-        };
-        for file in files.iter().filter_map(Value::as_str) {
-            let path = Path::new(file);
-            if !matches!(
-                path.extension().and_then(|extension| extension.to_str()),
-                Some("dll" | "dylib" | "so")
-            ) {
-                continue;
-            }
-            if artifact.is_some() {
-                return Err("Cargo reported multiple WebUI test addons".to_owned());
-            }
-            artifact = Some(path.to_path_buf());
-        }
-    }
-    artifact.ok_or_else(|| {
-        "Cargo did not report the webui_node cdylib; rebuild microsoft-webui-node for the host"
-            .to_owned()
-    })
+    cargo_artifacts::find(output, "webui_node", Kind::Cdylib)
 }
 
 #[cfg(test)]
