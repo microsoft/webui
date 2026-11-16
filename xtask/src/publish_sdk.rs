@@ -166,7 +166,13 @@ pub(super) fn validate_staged(root: &Path, platform: &PlatformEntry) -> Result<(
     for relative in files {
         let path = sdk.join(&relative);
         if !fs::symlink_metadata(&path)
-            .map_err(|e| e.to_string())?
+            .map_err(|error| {
+                format!(
+                    "cannot inspect SDK input {} for {}: {error}; stage this target again",
+                    path.display(),
+                    platform.triple
+                )
+            })?
             .is_file()
         {
             return Err(format!("SDK input must be a regular file: {relative}"));
@@ -197,6 +203,26 @@ pub(super) mod tests {
     use super::*;
     use crate::publish::PLATFORMS;
     use serde_json::json;
+
+    #[test]
+    fn missing_staged_sdk_file_reports_path_target_and_recovery() {
+        let root = tempfile::tempdir_in(".").expect("workspace");
+        let platform = &PLATFORMS[0];
+        fixture(root.path(), platform);
+        let build = root.path().join("build");
+        fs::create_dir_all(&build).expect("build");
+        fs::write(build.join(platform.ffi_lib), "ffi").expect("FFI");
+        stage(root.path(), platform, &build).expect("SDK");
+        let missing = directory(root.path(), platform).join("include/webui_ffi.h");
+        fs::remove_file(&missing).expect("remove staged header");
+        let error = validate_staged(root.path(), platform).expect_err("missing SDK input");
+        assert!(error.contains(&missing.display().to_string()), "{error}");
+        assert!(error.contains(platform.triple), "{error}");
+        assert!(
+            error.contains("stage") && error.contains("again"),
+            "{error}"
+        );
+    }
 
     #[test]
     fn node_hashes_known_vectors_and_reports_missing_files() {

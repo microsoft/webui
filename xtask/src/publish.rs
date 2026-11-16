@@ -1937,7 +1937,7 @@ fn stage_file(spec: &CopySpec<'_>) -> bool {
 
 fn resolve_build_dir(root: &Path, triple: &str, profile: &str) -> PathBuf {
     let cross = root.join("target").join(triple).join(profile);
-    if cross.exists() {
+    if cross.exists() || triple != detect_host_triple() {
         return cross;
     }
     root.join("target").join(profile)
@@ -2084,7 +2084,9 @@ pub(crate) fn go_proxy_url(path: &Path) -> Result<String, String> {
         .replace('%', "%25")
         .replace(' ', "%20")
         .replace('#', "%23")
-        .replace('?', "%3F");
+        .replace('?', "%3F")
+        .replace(',', "%2C")
+        .replace('|', "%7C");
     if let Some(unc) = escaped.strip_prefix("//") {
         Ok(format!("file://{unc}"))
     } else if escaped.starts_with('/') {
@@ -2205,6 +2207,93 @@ fn copy_directory_contents(src_dir: &Path, dest_dir: &Path) -> Result<u32, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn foreign_target_staging_never_packages_host_artifacts() {
+        let root = tempfile::tempdir_in(".").expect("staging workspace");
+        let host = detect_host_triple();
+        let platform = PLATFORMS
+            .iter()
+            .find(|platform| platform.triple.ends_with("-linux-gnu") && platform.triple != host)
+            .expect("foreign Linux target");
+        sdk::tests::fixture(root.path(), platform);
+        let build = root.path().join("target/release");
+        fs::create_dir_all(&build).expect("host build");
+        for name in [
+            platform.ffi_lib,
+            platform.node_addon,
+            platform.cli_binary,
+            press_cli_binary(platform),
+            desktop_cli_binary(platform),
+        ] {
+            fs::write(build.join(name), "host artifact").expect("host artifact");
+        }
+        assert_eq!(
+            stage_one_platform(root.path(), platform.triple, "release"),
+            ExitCode::FAILURE
+        );
+        assert!(!sdk::directory(root.path(), platform)
+            .join("sdk.json")
+            .exists());
+        assert!(!root.path().join("publish/sdk").exists());
+    }
+
+    #[test]
+    fn host_build_directory_fallback_preserves_profile_and_explicit_target() {
+        let root = tempfile::tempdir_in(".").expect("build workspace");
+        let host = detect_host_triple();
+        for profile in ["debug", "release"] {
+            let implicit = root.path().join("target").join(profile);
+            fs::create_dir_all(&implicit).expect("implicit host build");
+            assert_eq!(resolve_build_dir(root.path(), &host, profile), implicit);
+            let explicit = root.path().join("target").join(&host).join(profile);
+            fs::create_dir_all(&explicit).expect("explicit host build");
+            assert_eq!(resolve_build_dir(root.path(), &host, profile), explicit);
+        }
+    }
+
+    #[test]
+    fn go_file_proxy_supports_list_delimiters_in_directory_names() {
+        let root = tempfile::tempdir_in(".").expect("proxy workspace");
+        let root = root.path().canonicalize().expect("absolute workspace");
+        let names = if cfg!(windows) {
+            &["proxy,comma"][..]
+        } else {
+            &["proxy,comma", "proxy|pipe"][..]
+        };
+        for name in names {
+            let proxy = root.join(name);
+            let module = proxy.join("example.com/fixture/@v");
+            fs::create_dir_all(&module).expect("module proxy");
+            fs::write(
+                module.join("v1.0.0.info"),
+                r#"{"Version":"v1.0.0","Time":"2026-01-01T00:00:00Z"}"#,
+            )
+            .expect("module version");
+            fs::write(module.join("v1.0.0.mod"), "module example.com/fixture\n")
+                .expect("module manifest");
+            let output = build_command("go", &["list", "-m", "example.com/fixture@v1.0.0"])
+                .current_dir(&root)
+                .env("GOPROXY", go_proxy_url(&proxy).expect("proxy URL"))
+                .env("GOSUMDB", "off")
+                .env("GONOPROXY", "")
+                .env("GOPRIVATE", "")
+                .env("GOWORK", "off")
+                .env("GOFLAGS", "")
+                .env("GOMODCACHE", root.join(format!("{name}-cache")))
+                .output()
+                .expect("Go module lookup");
+            assert!(
+                output.status.success(),
+                "{name}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout).trim(),
+                "example.com/fixture v1.0.0"
+            );
+        }
+    }
 
     fn parse_build(args: &[&str]) -> Result<BuildOptions, String> {
         let args = args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();

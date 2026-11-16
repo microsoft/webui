@@ -86,6 +86,14 @@ Loaded protocol handles are thread-safe. Handler instances are safe for
 concurrent renders as long as configuration such as the nonce is not mutated
 concurrently.
 
+For per-response CSP nonces, use `webui_handler_render_with_options` with a
+`webui_render_options_t` containing the entry, encoded request path, and nonce.
+The options and strings are borrowed only during the call. A null nonce inherits
+the handler's configured nonce; an empty string disables it for that response.
+This does not mutate the handler, so concurrent requests can use different
+nonces. Authorize the same nonce in the response's CSP header and release the
+result with `webui_render_free`.
+
 ## Lazy template packs
 
 [Lazy bodies](/learn/lazy) need no C API. `webui build` writes their

@@ -307,6 +307,7 @@ Each guide covers installation, protocol lifetime, and server integration.
 | Node.js and Bun | [Use the native addon](/build/integrations/node) |
 | .NET | [Integrate with ASP.NET](/build/integrations/dotnet) |
 | Python | [Integrate with WSGI or ASGI](/build/integrations/python) |
+| Go | [Use the native Go binding](/build/integrations/go) |
 | C and other languages | [Use the C ABI](/build/integrations/ffi) |
 | WebAssembly | [Render in a browser host](/build/integrations/wasm) |
 
