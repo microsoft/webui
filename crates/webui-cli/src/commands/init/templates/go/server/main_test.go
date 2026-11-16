@@ -4,15 +4,92 @@
 package main
 
 import (
+	"context"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	webui "__WEBUI_GO_MODULE__"
 )
+
+func TestShutdownDrainsActiveRequests(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	entered, release, shutdown := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	defer unblock()
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(entered)
+		<-release
+		if _, err := io.WriteString(w, "drained"); err != nil {
+			t.Errorf("write active response: %v", err)
+		}
+	})}
+	defer server.Close()
+	server.RegisterOnShutdown(func() { close(shutdown) })
+	served := make(chan error, 1)
+	go func() { served <- serve(ctx, server, listener) }()
+	client := &http.Client{Timeout: 5 * time.Second}
+	defer client.CloseIdleConnections()
+	response := make(chan error, 1)
+	go func() {
+		result, err := client.Get("http://" + listener.Addr().String())
+		if err == nil {
+			defer result.Body.Close()
+			var body []byte
+			body, err = io.ReadAll(result.Body)
+			if err == nil && (result.StatusCode != 200 || string(body) != "drained") {
+				err = fmt.Errorf("active response lost during shutdown: status %d, body %q", result.StatusCode, body)
+			}
+		}
+		response <- err
+	}()
+	await := func(event <-chan struct{}, label string) {
+		t.Helper()
+		select {
+		case <-event:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("timed out waiting for %s", label)
+		}
+	}
+	await(entered, "active request")
+	cancel()
+	await(shutdown, "shutdown admission close")
+	select {
+	case err := <-served:
+		t.Fatalf("server returned before draining active request: %v", err)
+	default:
+	}
+	if connection, err := net.DialTimeout("tcp", listener.Addr().String(), time.Second); err == nil {
+		connection.Close()
+		t.Fatal("shutdown still accepts new connections")
+	}
+	unblock()
+	for _, result := range []<-chan error{response, served} {
+		select {
+		case err := <-result:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("shutdown did not finish after the active request completed")
+		}
+	}
+}
 
 func TestPublicSnapshot(t *testing.T) {
 	directory, err := filepath.EvalSymlinks(t.TempDir())

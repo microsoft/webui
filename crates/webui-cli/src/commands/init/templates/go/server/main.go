@@ -151,7 +151,7 @@ func appHandler(r *webui.Renderer, assets map[string]asset) http.Handler {
 	})
 }
 
-func run() error {
+func run(ctx context.Context) error {
 	// go run . runs in server/. The launcher supplies WEBUI_APP_ROOT so a built
 	// binary can instead be started from the app root without changing behavior.
 	root := os.Getenv("WEBUI_APP_ROOT")
@@ -192,13 +192,15 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	return serve(ctx, server, listener)
+}
+
+func serve(ctx context.Context, server *http.Server, listener net.Listener) error {
 	result := make(chan error, 1)
 	go func() { result <- server.Serve(listener) }()
 	log.Printf("WebUI listening on http://%s", server.Addr)
 	select {
-	case err = <-result:
+	case err := <-result:
 		if !errors.Is(err, http.ErrServerClosed) {
 			return err
 		}
@@ -214,7 +216,10 @@ func run() error {
 }
 
 func main() {
-	if err := run(); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	err := run(ctx)
+	stop()
+	if err != nil {
 		log.Printf("Unable to start WebUI: %v", err)
 		os.Exit(1)
 	}
