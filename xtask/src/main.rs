@@ -854,7 +854,15 @@ impl Step {
             )?;
             node_tests::run()?;
             go_tests::run()?;
-            run_command_quiet("node", &["--test", "scripts/tag-release.test.mjs"], None)?;
+            run_command_quiet(
+                "node",
+                &[
+                    "--test",
+                    "crates/webui-cli/tests/starter.test.mjs",
+                    "scripts/tag-release.test.mjs",
+                ],
+                None,
+            )?;
             desktop_tests::run()?;
             run_command_quiet(
                 "pnpm",

@@ -12,6 +12,23 @@ This installs the `webui` binary.
 
 ## Commands
 
+### `webui init`
+
+Create a small server-rendered Home/About application with one interactive
+counter and no client router.
+
+```bash
+webui init my-app --server rust
+```
+
+Servers: `rust` (default), `node`, or `bun`.
+Generation is offline and never replaces existing files. Optional
+`--install` and `--ai-skill` run dependency installation and the existing
+project-local reference skill installer. Use `--no-interactive` for automation
+and `--package-manager npm|pnpm|yarn|bun` to select package tooling.
+See the [init reference](https://microsoft.github.io/webui/reference/cli/#webui-init)
+and generated README for toolchain prerequisites.
+
 ### `webui build`
 
 Build a WebUI application into a compiled protocol and CSS files.

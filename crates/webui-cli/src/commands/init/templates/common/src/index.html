@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{title}}</title>
+  </head>
+  <body>
+    <route path="/" component="app-shell">
+      <route path="" component="home-page" exact />
+      <route path="about" component="about-page" exact />
+    </route>
+    <if condition="isHome">
+      <script type="module" src="/assets/index.js"></script>
+    </if>
+  </body>
+</html>

@@ -133,6 +133,85 @@ Missing support reports the install command; incompatible
 versions fail explicitly. `WEBUI_PRESS_BINARY_PATH` overrides sidecar discovery.
 See [WebUI Press](/reference/webui-press) for configuration.
 
+### `webui init`
+
+Create a small HTML-first application with server-rendered Home and About
+pages, ordinary document navigation, and one interactive counter. No database,
+authentication, UI kit, or client router is installed.
+
+```bash
+webui init my-app
+webui init my-app --server node
+webui init my-app --server bun --no-interactive
+```
+
+| Argument or option | Description | Default |
+| --- | --- | --- |
+| `PATH` | New or empty destination; existing `.git` metadata is allowed | `.` |
+| `--server <SERVER>` | `rust`, `node`, or `bun` | `rust` |
+| `--package-manager <MANAGER>` | `npm`, `pnpm`, `yarn`, or `bun`; independent of the server | `npm` |
+| `--install` | Install the generated package dependencies | Off |
+| `--ai-skill` | Run the existing project-local WebUI reference skill installer | Off |
+| `--no-interactive` | Do not ask onboarding questions | Off |
+
+Generation is offline and does not require the selected server toolchain.
+Existing files are never replaced. Choose a non-root directory without
+regular-file or symlink path components or `..` path segments. Names use ASCII
+letters, numbers, spaces, underscores, or hyphens and normalize to lowercase
+with hyphen separators. The normalized name must start with a letter, contain
+at most 64 characters, and not be `con`, `prn`, `aux`, `nul`, `com1` through
+`com9`, `lpt1` through `lpt9`, or `node-modules`.
+
+In a terminal, init offers dependency installation and installation of the
+existing `webui-reference` skill separately. Both default to No. There are no
+global installations, automatic toolchain installations, Git initialization,
+or automatic server launches. Package lifecycle scripts remain subject to your
+package manager's approval policy.
+
+Without a terminal, with `--no-interactive`, or with `--format json`, init never
+prompts. Explicit `--install` and `--ai-skill` still run their requested steps.
+The skill installer uses its noninteractive mode when no interaction is allowed.
+Its loader reads the reference bundled with the installed `@microsoft/webui`,
+not an independently copied documentation snapshot.
+On Windows, installation from a UNC destination is rejected before running
+either installer because `cmd.exe` cannot retain that working directory.
+The generated app is preserved; move it to a local drive or map the share
+to a drive letter before installing. Offline generation on a UNC share is
+still supported.
+
+```bash
+cd my-app
+npm install
+npm run dev
+```
+
+The generated `README.md` describes the selected server's prerequisites and
+commands. Node.js 22 or newer builds the client and protocol. Rust also needs
+Cargo; the Bun host needs Bun with Node-API support. Selecting a host does not
+install these system tools. Use `check` for TypeScript checks, `build` for
+production output, and `start` to run it without compiling templates. Rust
+production servers render without a JavaScript runtime; Node and Bun use
+the native addon. Only Home loads the counter's JavaScript; About remains
+scriptless. See [server integrations](/build/integrations/).
+Rust starter builds use the app-owned `server/target/` directory rather than
+an inherited `CARGO_TARGET_DIR`. Yarn starters select the `node-modules`
+linker in a project-local `.yarnrc.yml` for the native TypeScript compiler,
+without changing global Yarn settings.
+Development uses native filesystem events rather than scanning the source
+tree on a timer. Edits coalesce while a build is running; failed builds wait
+for the next source edit, and generated output does not trigger rebuilds.
+
+JSON output includes the destination, selected server and package manager,
+created files, dependency/skill installation outcomes, prerequisites, and next
+commands. A failed requested installation leaves the generated app intact,
+reports the failed command, and exits nonzero. Its result record is followed
+by the normal JSON error record.
+
+Init diagnostics use `init-unsafe-destination`, `init-directory-not-empty`,
+`init-invalid-name`, and `init-install-failed`. A nonempty destination exits
+with `73`; invalid names or destinations exit with `2`; installation failures
+exit with `1`; filesystem failures follow the normal I/O exit convention.
+
 ### `webui build`
 
 Build a WebUI application from an app folder.
@@ -1159,6 +1238,7 @@ The process exit code follows the BSD `sysexits.h` conventions so scripts and CI
 | `65` | Template or authoring error (`EX_DATAERR`) |
 | `66` | Missing input: app folder, `--state` file, `--servedir`, or entry file (`EX_NOINPUT`) |
 | `69` | Requested `--port` is already in use (`EX_UNAVAILABLE`) |
+| `73` | Nonempty `webui init` destination (`EX_CANTCREAT`) |
 | `74` | I/O error reading or writing files (`EX_IOERR`) |
 
 ## App Folder Structure

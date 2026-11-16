@@ -1,0 +1,34 @@
+:host {
+  display: block;
+  font: inherit;
+  color: inherit;
+}
+
+p {
+  margin-block: 0 1rem;
+}
+
+output {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+button {
+  min-height: 2.75rem;
+  padding: 0.6rem 1.25rem;
+  border: 1px solid #244bc5;
+  border-radius: 0.4rem;
+  font: inherit;
+  font-weight: 600;
+  color: #fff;
+  background: #244bc5;
+  cursor: pointer;
+}
+button:hover {
+  background: #193ca6;
+}
+
+button:focus-visible {
+  outline: 3px solid #244bc5;
+  outline-offset: 4px;
+}

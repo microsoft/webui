@@ -147,12 +147,19 @@ impl CliError {
 ///   (see [`CliError::exit_code`]).
 /// - `65` (`EX_DATAERR`) — a template authoring or parse error (the source is
 ///   malformed).
+/// - `73` (`EX_CANTCREAT`) - a nonempty `init` destination.
 /// - `74` (`EX_IOERR`) — an I/O failure reading or writing files.
 /// - `1` — any other failure.
 ///
 /// (clap already exits with `2` for argument/usage errors before this runs.)
 #[must_use]
 pub fn exit_code(err: &anyhow::Error) -> i32 {
+    if let Some(init) = err
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<crate::commands::init::InitError>())
+    {
+        return init.exit_code();
+    }
     if let Some(cli) = err.chain().find_map(|c| c.downcast_ref::<CliError>()) {
         return i32::from(cli.exit_code());
     }
