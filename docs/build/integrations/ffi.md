@@ -10,10 +10,27 @@ interop. Load a protocol handle once, reuse it for rendering, and release each
 result with its designated function. Your host must support the target's
 native library and ABI; this does not require a JavaScript SSR engine.
 
-Prefer the managed [Microsoft.WebUI package](./dotnet) for .NET or the native
-[Python package](./python) on its supported targets. The Go and `ctypes`
-examples below demonstrate direct FFI ownership rather than additional
-first-class packages.
+Prefer the official [Go module](./go), managed
+[Microsoft.WebUI package](./dotnet), or native [Python package](./python)
+for those languages. Direct FFI and `ctypes` examples below illustrate
+the lower-level ownership contract.
+
+## Standalone native SDK
+
+Download the release-matched `webui-sdk-<version>-<platform>.tar.gz` and its
+adjacent `.sha256` file from the
+[release assets](https://github.com/microsoft/webui/releases).
+Verify the archive before extraction. Its root contains
+`include/webui_ffi.h`, the shared library in `lib/`, `sdk.json` with target
+identity and file hashes, and license notices. Windows also includes the
+DLL import library.
+
+SDKs are standalone, language-neutral artifacts, not npm package payloads.
+They target Windows, macOS, and GNU/Linux on x64 and ARM64; musl is not
+supported. Use the same WebUI version for the compiler, protocol, and native
+library. Configure include, link, and runtime loader paths with your native
+toolchain; the [Go setup guide](./go#installation) shows platform examples.
+Deployed renderers do not require npm or the template compiler.
 
 ## Building the Shared Library
 
@@ -68,6 +85,14 @@ webui_handler_destroy(handler);
 Loaded protocol handles are thread-safe. Handler instances are safe for
 concurrent renders as long as configuration such as the nonce is not mutated
 concurrently.
+
+For per-response CSP nonces, use `webui_handler_render_with_options` with a
+`webui_render_options_t` containing the entry, encoded request path, and nonce.
+The options and strings are borrowed only during the call. A null nonce inherits
+the handler's configured nonce; an empty string disables it for that response.
+This does not mutate the handler, so concurrent requests can use different
+nonces. Authorize the same nonce in the response's CSP header and release the
+result with `webui_render_free`.
 
 ## Lazy template packs
 

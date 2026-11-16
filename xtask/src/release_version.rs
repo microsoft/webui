@@ -79,6 +79,18 @@ impl ReleaseVersion {
         }
     }
 
+    pub(crate) fn go_version(self) -> Option<String> {
+        match self.hotfix {
+            Some(number) => Some(format!(
+                "{}.{}.{}-0.hotfix.{number}",
+                self.major,
+                self.minor,
+                self.patch.checked_add(1)?
+            )),
+            None => Some(self.to_string()),
+        }
+    }
+
     pub(crate) fn python_cargo_version(self) -> String {
         match self.hotfix {
             Some(number) => format!("{}.{}.{}-post.{number}", self.major, self.minor, self.patch),
@@ -179,6 +191,21 @@ mod tests {
             ReleaseVersion::parse("1.2.3").map(ReleaseVersion::npm_dist_tag),
             Some("latest".to_string())
         );
+    }
+
+    #[test]
+    fn maps_go_hotfixes_above_the_native_base_release() {
+        for (release, expected) in [
+            ("3.1.2", Some("3.1.2")),
+            ("3.1.2-hotfix.4", Some("3.1.3-0.hotfix.4")),
+            ("3.1.9-hotfix.12", Some("3.1.10-0.hotfix.12")),
+            ("3.1.18446744073709551615-hotfix.1", None),
+        ] {
+            assert_eq!(
+                ReleaseVersion::parse(release).and_then(ReleaseVersion::go_version),
+                expected.map(str::to_owned)
+            );
+        }
     }
 
     #[test]

@@ -1464,7 +1464,7 @@ hand-built browser record format.
 | Design tokens and theming | [/learn/css-tokens](/learn/css-tokens) |
 | CLI flags, diagnostics, exit codes | [/reference/cli/](/reference/cli/) |
 | WebUI Press named regions | [/reference/webui-press](/reference/webui-press) |
-| Rust, Node, Python, WASM, FFI, Electron, Tauri | [/build/integrations/](/build/integrations/) |
+| Rust, Node, Go, Python, WASM, FFI, Electron, Tauri | [/build/integrations/](/build/integrations/) |
 | Render a first page | [/start/first-page/](/start/first-page/) |
 | Add a scriptless component | [/start/first-component/](/start/first-component/) |
 | Add browser behavior | [/start/add-interactivity/](/start/add-interactivity/) |

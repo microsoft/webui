@@ -2,6 +2,12 @@
 // Licensed under the MIT license.
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Use the target, not the build host: release aggregation must copy an
+    // already-relocatable dylib without modifying its bytes or code signature.
+    if std::env::var("CARGO_CFG_TARGET_OS")? == "macos" {
+        println!("cargo:rustc-cdylib-link-arg=-Wl,-install_name,@rpath/libwebui_ffi.dylib");
+    }
+
     #[cfg(feature = "regenerate-header")]
     {
         extern crate cbindgen;

@@ -509,12 +509,17 @@ non-streaming output does not acquire streaming markers or state.
 | --- | --- |
 | `webui` Rust library and CLI | Build/inspect protocols, render requests, and serve development apps. Watch rebuilds replace the served artifact only after a successful build. |
 | `@microsoft/webui` | Node build API and native-addon runtime; its projection subpath is build-only. Browser framework and router are separate packages. |
-| C FFI, .NET, Python, WASM | Load a protocol once and expose the same logical rendering, partial, token, and streaming capabilities with host-native ownership and errors. WASM can also build protocols when its parser feature is selected. |
+| C FFI, .NET, Go, Python, WASM | Load a protocol once and expose rendering through host-native ownership and errors. Binding-specific APIs expose partial, token, and streaming operations where supported. WASM can also build protocols when its parser feature is selected. |
 | `webui-press` | Convert Markdown/site templates to WebUI page inputs, resolve nested site regions and theme-family styles at build time, and share a validated client projection across page builds. |
 | `webui-desktop` | Run a compiled artifact through a native webview and Rust host, or opt into a native window for an existing loopback HTTP host without rendering its artifact again. |
 
 FFI uses opaque handles and explicit ownership; .NET wraps those lifetimes in
 safe handles, Python uses a direct PyO3 binding, and Node uses a native addon.
+The Go module wraps the C ABI with shared, explicitly closed ownership:
+concurrent renders borrow an immutable loaded protocol, closure waits for
+active calls, thread-local errors are copied on their calling OS thread, and
+returned HTML belongs to Go. The module does not compile templates, acquire
+native libraries, or own an HTTP server.
 Owned streaming sessions are single-driver even when loaded protocols are
 shared across concurrent requests. Host bindings must preserve the same
 render and state semantics without silently falling back to a different
@@ -524,6 +529,12 @@ Press and desktop are opt-in native command sidecars. The Rust CLI discovers
 their installed binaries, verifies compatible versions, and launches them
 directly rather than loading their dependencies into the core CLI. Package
 installation can use Node, but command dispatch has no JavaScript wrapper.
+Native C ABI SDKs are language-neutral standalone release archives, separate
+from npm packages. Release staging owns their version, target identity, and
+integrity inventory. Platform libraries must remain relocatable rather than
+retaining build-machine paths. Go source modules are distributed independently
+of those libraries, with a matching release identity and Go's subdirectory
+module tags. Neither Go consumers nor deployed native renderers require npm.
 Press's optional browser appearance layer owns document preferences and native
 theme transitions, independently of control presentation. Pre-paint restoration
 uses a build-generated, shared same-origin script loaded before stylesheet
@@ -656,6 +667,7 @@ engineering another; they are not public application-authoring guides.
 | Desktop website data ownership | [`specs/desktop-website-data.md`](specs/desktop-website-data.md); `crates/webui-desktop/src/local_server.rs`, `crates/webui-desktop/src/macos/website_data.rs` |
 | Desktop app and window APIs | `docs/build/desktop.md`, `crates/webui-desktop/src/` |
 | Host APIs and examples | `docs/build/integrations/`, `docs/reference/cli/`, package READMEs, `examples/` |
+| Native SDK distribution and compatibility | [`specs/native-sdk.md`](specs/native-sdk.md), `xtask/src/publish_sdk.rs` |
 
 Tests at each boundary are the executable compatibility checks. Add focused
 tests when behavior changes, including producer/consumer parity for binary

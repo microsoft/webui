@@ -151,6 +151,10 @@ stages:
     steps:
     - checkout: self
       clean: true
+    - task: GoTool@0
+      displayName: Use Go 1.25
+      inputs:
+        version: '1.25.0'
     - task: Cache@2
       displayName: Restore Cargo cache
       inputs:
@@ -277,6 +281,10 @@ stages:
     steps:
     - checkout: self
       clean: true
+    - task: GoTool@0
+      displayName: Use Go 1.25
+      inputs:
+        version: '1.25.0'
     - task: UsePythonVersion@0
       displayName: Use Python 3.11
       inputs:
@@ -421,6 +429,10 @@ stages:
     steps:
     - checkout: self
       clean: true
+    - task: GoTool@0
+      displayName: Use Go 1.25
+      inputs:
+        version: '1.25.0'
     - task: UsePythonVersion@0
       displayName: Use Python 3.11
       inputs:
@@ -493,6 +505,10 @@ stages:
     steps:
     - checkout: self
       clean: true
+    - task: GoTool@0
+      displayName: Use Go 1.25
+      inputs:
+        version: '1.25.0'
     - task: UsePythonVersion@0
       displayName: Use Python 3.11
       inputs:
@@ -596,6 +612,10 @@ stages:
     steps:
     - checkout: self
       clean: true
+    - task: GoTool@0
+      displayName: Use Go 1.25
+      inputs:
+        version: '1.25.0'
     - task: Cache@2
       displayName: Restore Cargo cache
       inputs:
@@ -711,6 +731,11 @@ stages:
             --pack-only \
             --prebuilt-wasm \
             --profile release
+          # Preserve the standards-compliant proxy tree as a downloadable
+          # release asset as well as an unpacked Azure pipeline artifact.
+          proxy_archive="webui-go-proxy-${RELEASE_VERSION}.tar.gz"
+          tar -czf "$AGENT_TEMPDIRECTORY/$proxy_archive" -C publish/go github.com
+          mv "$AGENT_TEMPDIRECTORY/$proxy_archive" "publish/go/$proxy_archive"
           python crates/webui-python/tests/validate_artifacts.py \
             "publish/python/microsoft_webui-${PYTHON_VERSION}-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" \
             "publish/python/microsoft_webui-${PYTHON_VERSION}-cp311-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl" \
@@ -766,6 +791,16 @@ stages:
       inputs:
         targetPath: '$(Build.SourcesDirectory)/publish/standalone'
         artifactName: standalone_release_assets
+    - task: PublishPipelineArtifact@1
+      displayName: Upload standalone SDK archives and checksums
+      inputs:
+        targetPath: '$(Build.SourcesDirectory)/publish/sdk'
+        artifactName: standalone_sdk_archives
+    - task: PublishPipelineArtifact@1
+      displayName: Upload Go module proxy
+      inputs:
+        targetPath: '$(Build.SourcesDirectory)/publish/go'
+        artifactName: go_module_proxy
     - task: PublishPipelineArtifact@1
       displayName: Upload release metadata
       inputs:
