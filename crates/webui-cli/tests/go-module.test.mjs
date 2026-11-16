@@ -57,6 +57,7 @@ test('a fresh generated Go app imports the staged official module and runs witho
     env = sdkEnvironment(await provisionSdk(app), {
       ...env,
       CGO_CFLAGS: `${JSON.stringify(`-I${stale.replaceAll('\\', '/')}`)} ${env.CGO_CFLAGS ?? ''}`,
+      CGO_CPPFLAGS: `${JSON.stringify(`-I${stale.replaceAll('\\', '/')}`)} ${env.CGO_CPPFLAGS ?? ''}`,
     });
 
     await mkdir(path.join(app, 'dist/public'), { recursive: true });
