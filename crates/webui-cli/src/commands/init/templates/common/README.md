@@ -23,6 +23,33 @@ source. Stop with Ctrl+C.
 | Rust | Rust/Cargo __RUST_VERSION__ or newer |
 | Node | No additional toolchain |
 | Bun | Bun with Node-API support |
+| .NET | .NET 8 SDK and an approved source for the matching Microsoft.WebUI packages |
+| C / C++ | CMake 3.24+, a C/C++ toolchain, and access to the pinned CivetWeb source archive |
+| Go | Go 1.25+ and a cgo-compatible C compiler |
+
+C, C++, and Go require the standalone WebUI __WEBUI_VERSION__ native SDK.
+Download the `webui-sdk-__WEBUI_VERSION__-<platform>.tar.gz` archive and its
+adjacent `.sha256` file from the
+[matching release](https://github.com/microsoft/webui/releases/tag/v__WEBUI_VERSION__).
+Verify the checksum and extract the SDK root (`sdk.json`, `include/`, `lib/`,
+and `LICENSE`) into `.webui/sdk`, or set `WEBUI_SDK_DIR` to its absolute path.
+Build/start validate the version, target, OS, architecture, and file hashes.
+An invalid explicit override fails without fallback. SDKs are never taken
+from npm packages or `node_modules`, downloaded, or built automatically.
+
+The Go host imports `__WEBUI_GO_MODULE__` at the matching WebUI version;
+it does not copy a native binding into your app. Build restores the dependency
+through your configured Go proxy; keep the resulting `server/go.sum`.
+
+.NET uses restored NuGet native runtime assets, not the standalone SDK.
+Configure an approved source or download `Microsoft.WebUI.__WEBUI_VERSION__.nupkg`
+and all six `Microsoft.WebUI.Runtime.*.__WEBUI_VERSION__.nupkg` files from the
+matching release into one directory. Restore from that local source before
+building, without changing global NuGet configuration:
+
+```sh
+dotnet restore server/App.csproj --source /path/to/release-packages
+```
 
 Keep optional npm platform dependencies enabled. If your package manager blocks
 esbuild's install script, review and approve that package specifically; do not
@@ -53,7 +80,10 @@ __PACKAGE_MANAGER__ run start
 `build` compiles the browser entry, templates, CSS, and selected host.
 `start` uses those artifacts without compiling templates. Keep `dist/protocol.bin`
 private; only `dist/public/` is served at `/assets/`. Run from the app root.
-Rust needs its built server binary. Node/Bun need the installed WebUI native addon.
+Native servers need their built binary and runtime libraries. Node/Bun need
+the installed WebUI native addon; .NET needs its runtime and restored NuGet
+runtime assets. C/C++/Go render without a JavaScript runtime. Node remains
+build tooling for browser JavaScript, not a deployed native server dependency.
 Rust builds explicitly use the app-owned `server/target/` directory, even when
 `CARGO_TARGET_DIR` is set, so build, dev, and start always share the same binary.
 

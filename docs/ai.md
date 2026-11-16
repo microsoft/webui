@@ -167,8 +167,14 @@ static HTML still has transfer, parsing, layout, paint, and memory costs.
 ## Project structure
 
 Use [`webui init`](/reference/cli/#webui-init) to create a small two-page app
-with a Rust (default), Node, or Bun server and one interactive island. It can
+with a Rust (default), C, C++, .NET, Go, Node, or Bun server and one interactive island. It can
 optionally invoke the existing project-local reference-skill installer.
+
+C/C++/Go starters use a version-matched [standalone SDK](/build/integrations/ffi#standalone-native-sdk)
+from `.webui/sdk` or `WEBUI_SDK_DIR`, never from npm. Go imports the
+[official module](/build/integrations/go); .NET restores
+[Microsoft.WebUI NuGet runtime assets](/build/integrations/dotnet) independently.
+Node is browser build tooling, not a deployed native renderer requirement.
 
 ```
 my-app/

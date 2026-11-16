@@ -50,17 +50,15 @@ function launch(t, root, script, args = [], env = {}) {
   return { child, ended, output: () => output };
 }
 
-test('all three hosts have build/start arrays with no runtime template compiler', () => {
-  for (const host of ['rust', 'node', 'bun']) {
+test('all seven hosts have build/start arrays with no runtime template compiler', () => {
+  for (const host of ['rust', 'dotnet', 'c', 'cpp', 'go', 'node', 'bun']) {
     const commands = hostCommands(host);
     assert.ok(Array.isArray(commands.build));
     assert.ok(Array.isArray(commands.start[1]));
     assert.ok(!JSON.stringify(commands.start).includes('build.mjs'));
     assert.ok(!JSON.stringify(commands.start).includes('sdk.mjs'));
   }
-  for (const host of ['dotnet', 'c', 'cpp', 'go', 'unknown']) {
-    assert.throws(() => hostCommands(host), /Unknown server/);
-  }
+  assert.throws(() => hostCommands('unknown'), /Unknown server/);
 });
 
 test('request paths and per-page states reject document and traversal ambiguity', () => {
@@ -137,6 +135,24 @@ test('start works without compiler dependencies and orderly shutdown stops its c
   const [code] = await process.ended;
   assert.equal(code, 0, process.output());
   assert.equal(await readFile(path.join(root, 'stopped'), 'utf8'), 'yes');
+});
+
+test('.NET start uses restored assets without consulting a standalone SDK override', async t => {
+  const root = await fixture(t, 'dotnet');
+  const bin = path.join(root, 'tools');
+  const output = path.join(root, 'server/bin/Release/net8.0');
+  await mkdir(bin);
+  await mkdir(output, { recursive: true });
+  await symlink(process.execPath, path.join(bin, process.platform === 'win32' ? 'dotnet.exe' : 'dotnet'), 'file');
+  await writeFile(path.join(output, 'package.json'), '{"type":"commonjs"}');
+  await writeFile(path.join(output, 'App.dll'), "console.log('MANAGED_HOST_READY');");
+  const managed = launch(t, root, 'scripts/app.mjs', ['start'], {
+    PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+    WEBUI_SDK_DIR: path.join(root, 'missing-sdk'),
+  });
+  const [code] = await managed.ended;
+  assert.equal(code, 0, managed.output());
+  assert.match(managed.output(), /MANAGED_HOST_READY/);
 });
 
 test('dev coalesces edits, rebuilds before restarting the selected host, and recovers after failure', async t => {

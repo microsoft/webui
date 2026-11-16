@@ -62,7 +62,7 @@ mod tests {
         assert_eq!(init.server, commands::init::Server::Rust);
         assert_eq!(init.path, std::path::Path::new("."));
         assert!(!init.install && !init.ai_skill);
-        for server in ["rust", "node", "bun"] {
+        for server in ["rust", "dotnet", "c", "cpp", "node", "bun", "go"] {
             let cli = Cli::try_parse_from([
                 "webui",
                 "init",
@@ -80,9 +80,7 @@ mod tests {
             assert!(init.no_interactive);
             assert_eq!(init.package_manager, commands::init::PackageManager::Pnpm);
         }
-        for server in ["dotnet", "c", "cpp", "go", "python"] {
-            assert!(Cli::try_parse_from(["webui", "init", "--server", server]).is_err());
-        }
+        assert!(Cli::try_parse_from(["webui", "init", "--server", "python"]).is_err());
         let cli = Cli::try_parse_from(["webui", "init", "--package-manager", "bun"])?;
         let Some(Commands::Init(init)) = cli.command else {
             panic!("expected init command");

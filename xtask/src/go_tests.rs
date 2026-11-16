@@ -86,7 +86,40 @@ pub(crate) fn run() -> Result<(), String> {
     let proxy = root.join("proxy");
     let workspace = std::env::current_dir().map_err(|error| error.to_string())?;
     crate::publish::stage_go_proxy(&workspace, &version, &proxy)?;
-    check_external_consumer(&workspace, &root, library_dir, &protocol, &proxy)
+    check_external_consumer(&workspace, &root, library_dir, &protocol, &proxy)?;
+    check_generated_consumer(&root, &cli, &library, &protocol, &proxy)
+}
+
+fn check_generated_consumer(
+    root: &Path,
+    cli: &Path,
+    library: &Path,
+    protocol: &Path,
+    proxy: &Path,
+) -> Result<(), String> {
+    let mut command = build_command(
+        "node",
+        &["--test", "crates/webui-cli/tests/go-module.test.mjs"],
+    );
+    configure_environment(
+        &mut command,
+        &root.join("SDK with spaces/include"),
+        &root.join("SDK with spaces/lib"),
+        protocol,
+    )?;
+    command
+        .env("WEBUI_GO_TEST_CLI", cli)
+        .env("WEBUI_GO_TEST_LIBRARY", library)
+        .env("WEBUI_GO_TEST_PROXY", proxy)
+        .env("WEBUI_SDK_DIR", root.join("SDK with spaces"))
+        .env("GONOSUMDB", "*")
+        .env("GONOPROXY", "")
+        .env("GOPRIVATE", "")
+        .env("GOFLAGS", "");
+    checked(
+        &mut command,
+        "test initializer-generated Go module consumer",
+    )
 }
 
 fn checked(command: &mut Command, label: &str) -> Result<(), String> {
@@ -199,13 +232,14 @@ fn check_formatting() -> Result<(), String> {
             "go",
             "xtask/src/go_consumer.go",
             "xtask/src/publish_go_packer.go",
+            "crates/webui-cli/src/commands/init/templates/go/server",
         ],
     )
     .output()
     .map_err(|error| format!("Go formatting requires gofmt on PATH: {error}"))?;
     if !output.status.success() || !output.stdout.is_empty() {
         return Err(format!(
-            "Go formatting failed; run gofmt -w go xtask/src/go_consumer.go xtask/src/publish_go_packer.go:\n{}{}",
+            "Go formatting failed; run gofmt -w go xtask/src/go_consumer.go xtask/src/publish_go_packer.go crates/webui-cli/src/commands/init/templates/go/server:\n{}{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         ));
