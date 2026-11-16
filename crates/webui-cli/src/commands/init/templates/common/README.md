@@ -15,7 +15,9 @@ __PACKAGE_MANAGER__ run dev
 
 Open <http://127.0.0.1:3000>. Development watches your source files and runs the
 selected server. Changes rebuild the matching browser assets and protocol
-before restarting it. A failed rebuild stops the server until you fix the
+before restarting it. Native filesystem events watch source directories and
+configuration files; generated output is ignored. Edits during a build
+coalesce into a follow-up build. A failed rebuild stops the server until you fix the
 source. Stop with Ctrl+C.
 
 | Server | Additional prerequisites |
