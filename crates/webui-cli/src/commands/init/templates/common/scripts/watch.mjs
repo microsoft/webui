@@ -6,7 +6,13 @@ import path from 'node:path';
 
 const trees = new Set(['src', 'server', 'scripts']);
 const configs = new Set(['tsconfig.json', 'package.json']);
-const ignored = new Set(['node_modules', 'target', 'build', 'bin', 'obj', '.git']);
+const ignored = new Set(['node_modules', '.git']);
+const serverOutput = new Set(['target', 'build', 'bin', 'obj']);
+
+function excluded(directory) {
+  const parts = directory.split(path.sep);
+  return parts.some(part => ignored.has(part)) || (parts[0] === 'server' && serverOutput.has(parts[1]));
+}
 
 export function watchSources() {
   const directories = new Map();
@@ -29,7 +35,7 @@ export function watchSources() {
   function changed(directory, event, filename) {
     if (closed) return;
     const name = filename?.toString();
-    if (name && (ignored.has(name) || (directory === '.' && !trees.has(name) && !configs.has(name)))) return;
+    if (name && (excluded(path.join(directory, name)) || (directory === '.' && !trees.has(name) && !configs.has(name)))) return;
     rescan ||= event === 'rename' || !name;
     clearTimeout(timer);
     timer = setTimeout(() => {
@@ -92,7 +98,7 @@ export function watchSources() {
           directories.set(directory, entry);
         }
         for (const child of readdirSync(directory, { withFileTypes: true })) {
-          if (!child.isDirectory() || child.isSymbolicLink() || ignored.has(child.name)) continue;
+          if (!child.isDirectory() || child.isSymbolicLink() || excluded(path.join(directory, child.name))) continue;
           if (directory === '.' && !trees.has(child.name)) continue;
           pending.push(path.join(directory, child.name));
         }

@@ -27,7 +27,7 @@ export function requestPath(target) {
 }
 
 export function pageState(pathname) {
-  if (pathname === '/') return { title: 'Hello WebUI', count: 0, ready: false, isHome: true };
+  if (pathname === '/') return { title: 'Hello WebUI', count: 0, isHome: true };
   if (pathname === '/about') return { title: 'About WebUI', isHome: false };
   return null;
 }
@@ -71,7 +71,7 @@ export async function openAsset(pathname) {
     };
   } catch (error) {
     await handle?.close();
-    if (['ENOENT', 'ENOTDIR', 'ELOOP', 'EINVAL'].includes(error.code)) return null;
+    if (['ENOENT', 'ENOTDIR', 'ELOOP', 'EINVAL', 'ENAMETOOLONG'].includes(error.code)) return null;
     throw error;
   }
 }

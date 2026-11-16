@@ -147,6 +147,7 @@ impl CliError {
 ///   (see [`CliError::exit_code`]).
 /// - `65` (`EX_DATAERR`) — a template authoring or parse error (the source is
 ///   malformed).
+/// - `73` (`EX_CANTCREAT`) - a nonempty `init` destination.
 /// - `74` (`EX_IOERR`) — an I/O failure reading or writing files.
 /// - `1` — any other failure.
 ///

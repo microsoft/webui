@@ -80,7 +80,7 @@ test('a fresh generated Go app imports the staged official module and runs witho
     const port = reservation.address().port;
     await new Promise(resolve => reservation.close(resolve));
     const origin = `http://127.0.0.1:${port}`;
-    const [executable, args] = commands.start;
+    const [executable, args] = await commands.start();
     server = spawn(executable, args, {
       cwd: app,
       env: {

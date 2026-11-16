@@ -429,6 +429,7 @@ test.describe('client-side navigation', () => {
 
 test('zero freshness releases completed responses and refetches same-clock revisits', async ({ page }) => {
   let requests = 0;
+  let release = Promise.withResolvers<void>();
   await page.route('**/items/1', async route => {
     if (!route.request().headers()['accept']?.includes('application/json')) {
       await route.continue();
@@ -437,6 +438,7 @@ test('zero freshness releases completed responses and refetches same-clock revis
     const response = await route.fetch();
     const partial = await response.json() as DashboardPartial;
     requests++;
+    await release.promise;
     await route.fulfill({
       response,
       headers: { ...response.headers(), 'cache-control': 'no-store' },
@@ -451,14 +453,30 @@ test('zero freshness releases completed responses and refetches same-clock revis
   });
 
   await page.locator('nav a[href="/items/1"]').click();
-  await expect(page.locator('h2')).toHaveText('Item 1 revision 1');
+  try {
+    await expect(page.locator('error-display[data-webui-pending]')).toBeVisible();
+    await expect(page.locator('page-beta h2')).toHaveText('Beta Page');
+  } finally {
+    release.resolve();
+  }
+  await expect(page.locator('page-detail h2')).toHaveText('Item 1 revision 1');
+  await expect(page.locator('[data-webui-pending]')).toHaveCount(0);
   expect(await page.evaluate(() =>
     (window as CacheTestWindow).__testRouter.navCache?.has('/items/1'),
   )).toBe(false);
   await page.locator('nav a[href="/beta"]').click();
-  await expect(page.locator('h2')).toHaveText('Beta Page');
+  await expect(page.locator('page-beta h2')).toHaveText('Beta Page');
+  release = Promise.withResolvers<void>();
   await page.locator('nav a[href="/items/1"]').click();
-  await expect(page.locator('h2')).toHaveText('Item 1 revision 2');
+  try {
+    await expect(page.locator('error-display[data-webui-pending]')).toBeVisible();
+    await expect(page.locator('page-beta h2')).toHaveText('Beta Page');
+  } finally {
+    release.resolve();
+  }
+  await expect(page.locator('page-detail h2')).toHaveText('Item 1 revision 2');
+  await expect(page.locator('[data-webui-pending]')).toHaveCount(0);
+  await expect(page.locator('[data-webui-error]')).toHaveCount(0);
   expect(requests).toBe(2);
 });
 

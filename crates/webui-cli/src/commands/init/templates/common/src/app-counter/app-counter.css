@@ -1,6 +1,18 @@
-:host { display: block; font: inherit; color: inherit; }
-p { margin-block: 0 1rem; }
-output { font-variant-numeric: tabular-nums; font-weight: 700; }
+:host {
+  display: block;
+  font: inherit;
+  color: inherit;
+}
+
+p {
+  margin-block: 0 1rem;
+}
+
+output {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
 button {
   min-height: 2.75rem;
   padding: 0.6rem 1.25rem;
@@ -12,7 +24,11 @@ button {
   background: #244bc5;
   cursor: pointer;
 }
-button:hover:enabled { background: #193ca6; }
-button:disabled { color: #46536b; background: #e8ecf5; border-color: #b7c1d5; cursor: default; }
-button:focus-visible { outline: 3px solid #244bc5; outline-offset: 4px; }
-.status { margin-block: 0.75rem 0; color: #46536b; font-size: 0.9rem; }
+button:hover {
+  background: #193ca6;
+}
+
+button:focus-visible {
+  outline: 3px solid #244bc5;
+  outline-offset: 4px;
+}
