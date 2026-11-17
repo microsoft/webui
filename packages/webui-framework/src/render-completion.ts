@@ -133,7 +133,7 @@ export function enterRenderTask(task: RenderTask): Set<Completion> | undefined {
   if (observers) {
     for (const completion of observers) {
       if (!task.element.isConnected || !within(task.element, completion)) {
-        state.abort(completion);
+        state.cancel(completion);
       }
     }
   }
@@ -187,7 +187,7 @@ export function cancelRenderTask(task: RenderTask): void {
     completion.jobs.delete(task);
     completion.tasks--;
     if (state.active?.has(completion)) state.settle(completion);
-    else state.abort(completion);
+    else state.cancel(completion);
   }
 }
 
@@ -239,6 +239,7 @@ export function blockRenderWork(element: Element, reason: string): void {
 
 export function destroyRenderWork(element: WorkElement): void {
   unblockRenderWork(element);
+  renderState?.cancelRoot(element);
   const tasks = pendingTasks?.get(element);
   if (tasks) for (const task of tasks) cancelRenderTask(task);
   if (renderState) renderState.destroy(element);
@@ -251,6 +252,8 @@ function destroyUnobservedWork(element: WorkElement): void {
 }
 
 export function whenRendered(element: Element, unavailable?: string): Promise<void> {
+  // Each abandoned wait is independent so no shared promise retains callers.
+  if (!element.isConnected) return new Promise<void>(() => {});
   if (unavailable) return Promise.reject(invalidState(element, unavailable));
   if (!renderState) {
     renderState = cachedState?.deref();
@@ -272,7 +275,7 @@ function createRenderObserver() {
   let expectedRemovals: WeakMap<Work, Set<Completion>> | undefined;
   let removing: readonly Node[] | undefined;
 
-  function release(completion: Completion, error?: { readonly value: unknown }): void {
+  function release(completion: Completion, error?: { readonly value: unknown } | null): void {
     if (!completions.delete(completion)) return;
     observingRender = completions.size !== 0;
     if (!observingRender) {
@@ -295,6 +298,8 @@ function createRenderObserver() {
     }
     completion.jobs.clear();
     completion.blockers?.clear();
+    // Teardown releases observation without resuming obsolete async effects.
+    if (error === null) return;
     if (error) completion.reject(error.value);
     else completion.resolve();
   }
@@ -343,14 +348,8 @@ function createRenderObserver() {
     }
   }
 
-  function abortRenderScope(
-    completion: Completion,
-    reason = 'Captured render work left its component scope.',
-  ): void {
-    release(completion, { value: new DOMException(
-      '[WebUI] ' + reason,
-      'AbortError',
-    ) });
+  function cancelRenderScope(completion: Completion): void {
+    release(completion, null);
   }
 
   function blockCompletion(
@@ -376,7 +375,7 @@ function createRenderObserver() {
       completion.jobs.delete(element);
       if ((!element.isConnected || !within(element, completion)) &&
           !expected?.has(completion)) {
-        abortRenderScope(completion);
+        cancelRenderScope(completion);
       } else {
         settle(completion);
       }
@@ -396,7 +395,7 @@ function createRenderObserver() {
         for (const completion of work) {
           if (!element.isConnected || !within(element, completion)) {
             if (!expectedRemovals?.get(element)?.has(completion)) {
-              abortRenderScope(completion);
+              cancelRenderScope(completion);
             }
           }
         }
@@ -440,11 +439,7 @@ function createRenderObserver() {
   }
 
   function disconnectRenderWork(element: Element): void {
-    for (const completion of completions) {
-      if (completion.root === element) {
-        abortRenderScope(completion, 'The render-completion root disconnected.');
-      }
-    }
+    cancelRoot(element);
     const work = observersByWork.get(element);
     const tasks = pendingTasks?.get(element);
     if ((work || tasks) && active && removing) {
@@ -486,12 +481,20 @@ function createRenderObserver() {
     }
   }
 
+  function cancelRoot(element: Element): void {
+    for (const completion of completions) {
+      if (completion.root === element) {
+        cancelRenderScope(completion);
+      }
+    }
+  }
+
   function destroyRenderWork(element: WorkElement): void {
     const work = observersByWork.get(element);
     if (work) {
       for (const completion of work) {
         if (!expectedRemovals?.get(element)?.has(completion)) {
-          abortRenderScope(completion, 'Captured render work was destroyed before completion.');
+          cancelRenderScope(completion);
         }
       }
     }
@@ -600,11 +603,11 @@ function createRenderObserver() {
     finished(target: WorkElement): void {
       if (!executing.includes(target) && !gated.has(target)) detach(target);
     },
-    enroll, include, release, settle, abort: abortRenderScope, observers: observersByWork,
+    enroll, include, release, settle, cancel: cancelRenderScope, observers: observersByWork,
     get active() { return active; },
     set active(previous: Set<Completion> | undefined) { active = previous; },
     enter: enterRenderWork, leave: leaveRenderWork, fail: failRenderWork,
-    disconnect: disconnectRenderWork, destroy: destroyRenderWork,
+    disconnect: disconnectRenderWork, destroy: destroyRenderWork, cancelRoot,
     remove: expectRenderRemoval, restoreRemoval: finishRenderRemoval, complete: whenRendered,
     blocked: observeBlocked,
   };

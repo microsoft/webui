@@ -15,6 +15,7 @@ function excluded(directory) {
 }
 
 export function watchSources() {
+  const recursive = process.platform === 'win32';
   const directories = new Map();
   let version = 0;
   let timer;
@@ -35,12 +36,21 @@ export function watchSources() {
   function changed(directory, event, filename) {
     if (closed) return;
     const name = filename?.toString();
-    if (name && (excluded(path.join(directory, name)) || (directory === '.' && !trees.has(name) && !configs.has(name)))) return;
+    const target = name && path.join(directory, name);
+    if (target && (excluded(target) || (directory === '.' && !trees.has(target.split(path.sep)[0]) && !configs.has(target)))) return;
+    // Windows also reports a directory change when a file beneath it changes.
+    if (target && event === 'change') {
+      try {
+        if (lstatSync(target).isDirectory()) return;
+      } catch (error) {
+        if (!['ENOENT', 'ENOTDIR'].includes(error.code)) { fail(error); return; }
+      }
+    }
     rescan ||= event === 'rename' || !name;
     clearTimeout(timer);
     timer = setTimeout(() => {
       try {
-        if (rescan) reconcile();
+        if (rescan && !recursive) reconcile();
         rescan = false;
         version++;
         wake();
@@ -91,12 +101,14 @@ export function watchSources() {
           retire(directory);
           entry = { dev: info.dev, ino: info.ino };
           const current = entry;
-          entry.watcher = watch(directory, (event, name) => {
+          entry.watcher = watch(directory, { recursive }, (event, name) => {
             if (directories.get(directory) === current) changed(directory, event, name);
           });
           entry.watcher.on('error', error => watcherError(directory, current, error));
           directories.set(directory, entry);
         }
+        // A single ReadDirectoryChangesW handle permits nested directory renames.
+        if (recursive) { seen.add(directory); continue; }
         for (const child of readdirSync(directory, { withFileTypes: true })) {
           if (!child.isDirectory() || child.isSymbolicLink() || excluded(path.join(directory, child.name))) continue;
           if (directory === '.' && !trees.has(child.name)) continue;

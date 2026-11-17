@@ -191,14 +191,13 @@ for (const mode of ['open', 'closed'] as const) {
       const value = child.shadowRoot!.querySelector('.action')!.textContent;
       child.value = '106';
       const moving = host.$whenRendered();
+      let settled = false;
+      void moving.then(() => { settled = true; }, () => { settled = true; });
       document.body.appendChild(child);
-      let rejected = false;
-      try { await moving; } catch (error) {
-        rejected = error instanceof DOMException && error.name === 'AbortError';
-      }
-      return { value, rejected };
+      await child.$whenRendered();
+      return { value, settled };
     }, mode);
-    expect(result).toEqual({ value: '106', rejected: true });
+    expect(result).toEqual({ value: '106', settled: false });
   });
 }
 
@@ -223,9 +222,9 @@ test('nested light descendants and slot fallback retain rendered ownership', asy
   expect(values).toEqual(['61', '71']);
 });
 
-test('slot redistribution rejects changed ownership without disconnection', async ({ page }) => {
+test('slot redistribution abandons changed ownership without disconnection', async ({ page }) => {
   await page.goto('/render-completion/fixture.html');
-  const rejected = await page.evaluate(async () => {
+  const settled = await page.evaluate(async () => {
     const root = document.querySelector<RenderHost>('test-completion-root')!;
     const outer = document.createElement('section');
     document.body.appendChild(outer);
@@ -237,13 +236,14 @@ test('slot redistribution rejects changed ownership without disconnection', asyn
     if (child.assignedSlot !== slot) throw new Error('Expected an outer-owned slot inside the scope');
     child.value = '80';
     const waiting = root.$whenRendered();
+    let settled = false;
+    void waiting.then(() => { settled = true; }, () => { settled = true; });
     slot.name = 'elsewhere';
     if (!child.isConnected || child.assignedSlot) throw new Error('Expected redistribution without removal');
-    try { await waiting; return false; } catch (error) {
-      return error instanceof DOMException && error.name === 'AbortError';
-    }
+    await child.$whenRendered();
+    return settled;
   });
-  expect(rejected).toBe(true);
+  expect(settled).toBe(false);
 });
 
 test('completion follows adopted components through an iframe document', async ({ page }) => {
@@ -311,18 +311,85 @@ test('raw HTML disposal retires captured WebUI work', async ({ page }) => {
   expect(removed).toBe(true);
 });
 
-test('external removal rejects a root request without stealing focus', async ({ page }) => {
-  await page.goto('/render-completion/fixture.html');
-  const rejected = await page.evaluate(async () => {
-    const root = document.querySelector<RenderHost>('test-completion-root')!;
-    root.value = '2';
-    const waiting = root.$whenRendered();
-    root.remove();
-    try { await waiting; return false; } catch (error) {
-      return error instanceof DOMException && error.name === 'AbortError';
-    }
+for (const reconnect of ['same-turn', 'after-teardown'] as const) {
+  test(`plain await is abandoned on disconnect and a new wait works on ${reconnect} reconnect`, async ({ page }) => {
+    const errors: string[] = [];
+    page.on('pageerror', error => { errors.push(error.message); });
+    await page.goto('/render-completion/fixture.html');
+    const result = await page.evaluate(async reconnect => {
+      const root = document.querySelector<RenderHost>('test-completion-root')!;
+      let staleEffects = 0;
+      // Intentionally no catch: ordinary teardown must not reject an async caller.
+      void (async () => {
+        root.value = '2';
+        await root.$whenRendered();
+        staleEffects++;
+        document.querySelector<HTMLButtonElement>('#outside')!.focus();
+      })();
+      root.remove();
+      if (reconnect === 'after-teardown') {
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
+      document.body.appendChild(root);
+      root.value = '9';
+      await root.$whenRendered();
+      await new Promise(resolve => setTimeout(resolve, 0));
+      return {
+        staleEffects,
+        leaf: root.shadowRoot!.querySelector('test-completion-child')!
+          .shadowRoot!.querySelector('.action')!.textContent,
+      };
+    }, reconnect);
+    expect(result).toEqual({ staleEffects: 0, leaf: '10' });
+    expect(errors).toEqual([]);
   });
-  expect(rejected).toBe(true);
+}
+
+test('a removed child abandons its own wait while the parent completes structural disposal', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', error => { errors.push(error.message); });
+  await page.goto('/render-completion/fixture.html');
+  const result = await page.evaluate(async () => {
+    const root = document.querySelector<RenderHost>('test-completion-root')!;
+    const child = root.shadowRoot!.querySelector<RenderHost>('[data-row="b"]')!;
+    let staleEffects = 0;
+    root.rows = [{ id: 'a', value: '7' }];
+    void (async () => {
+      child.value = '42';
+      await child.$whenRendered();
+      staleEffects++;
+    })();
+    await root.$whenRendered();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    return {
+      staleEffects,
+      rows: root.shadowRoot!.querySelectorAll('[data-row]').length,
+      removed: !child.isConnected,
+    };
+  });
+  expect(result).toEqual({ staleEffects: 0, rows: 1, removed: true });
+  expect(errors).toEqual([]);
+});
+
+test('plain await while detached cannot resume after reconnect', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', error => { errors.push(error.message); });
+  await page.goto('/render-completion/fixture.html');
+  const staleEffects = await page.evaluate(async () => {
+    const root = document.querySelector<RenderHost>('test-completion-root')!;
+    root.remove();
+    let effects = 0;
+    void (async () => {
+      await root.$whenRendered();
+      effects++;
+    })();
+    document.body.appendChild(root);
+    await root.$whenRendered();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    return effects;
+  });
+  expect(staleEffects).toBe(0);
+  expect(errors).toEqual([]);
 });
 
 test('newly affected unloaded work rejects, and a later ready boundary succeeds', async ({ page }) => {
@@ -383,6 +450,36 @@ async function guardStyles(page: Page): Promise<void> {
     });
   });
 }
+
+test('teardown abandons plain await while a descendant mount is waiting for styles', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', error => { errors.push(error.message); });
+  await guardStyles(page);
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  await page.route('**/child.css', async route => {
+    await gate;
+    await route.continue();
+  });
+  await page.goto('/css-link/fixture.html', { waitUntil: 'domcontentloaded' });
+  await page.evaluate(() => {
+    const root = document.querySelector<RenderHost>('test-link-host')!;
+    root.shadowRoot!.querySelector('.slot')!.appendChild(document.createElement('test-link-child'));
+    const state = window as unknown as { staleEffects: number };
+    state.staleEffects = 0;
+    void (async () => {
+      await root.$whenRendered();
+      state.staleEffects++;
+    })();
+    root.remove();
+  });
+  release();
+  await page.evaluate(async () => {
+    await new Promise(resolve => setTimeout(resolve, 0));
+  });
+  expect(await page.evaluate(() => (window as unknown as { staleEffects: number }).staleEffects)).toBe(0);
+  expect(errors).toEqual([]);
+});
 
 for (const failed of [false, true]) {
   test(`started stylesheet-gated mounts ${failed ? 'reject failures' : 'wait for DOM insertion'}`, async ({ page }) => {

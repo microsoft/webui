@@ -56,6 +56,13 @@ function finish(host: Host, kind = UPDATE_WORK): void {
   leaveRenderWork(host, previous);
 }
 
+async function assertAbandoned(waiting: Promise<void>): Promise<void> {
+  let outcome = 'pending';
+  void waiting.then(() => { outcome = 'fulfilled'; }, () => { outcome = 'rejected'; });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(outcome, 'pending', 'cancellation must neither resume nor reject the caller');
+}
+
 test('a native render-root containment proof avoids repeated parent reads', () => {
   const root = new Host();
   class Child extends Host {
@@ -84,11 +91,11 @@ test('one observation captures the render-root hint once without caching child o
   Object.defineProperty(root, 'shadowRoot', { get() { reads++; return null; } });
   queueRenderWork(child, UPDATE_WORK);
   const waiting = whenRendered(root);
-  const rejected = assert.rejects(waiting, { name: 'AbortError' });
+  const cancelled = assertAbandoned(waiting);
   await Promise.resolve();
   child.parent = null;
   finish(child);
-  await rejected;
+  await cancelled;
   assert.equal(reads, 1, 'enrollment, entry and detach share only the root hint');
   child.parent = root;
   queueRenderWork(child, UPDATE_WORK);
@@ -251,15 +258,96 @@ test('render failures reject overlapping waiters with the original error', async
   await whenRendered(root);
 });
 
-test('disconnecting the root rejects instead of waiting for reconnect', async () => {
+test('disconnecting the root abandons overlapping waits without resuming them on reconnect', async () => {
   const root = new Host();
   queueRenderWork(root, UPDATE_WORK);
-  const waiting = whenRendered(root);
-  const rejected = assert.rejects(waiting, { name: 'AbortError' });
+  let resumed = 0;
+  let rejected = 0;
+  for (let i = 0; i < 2; i++) {
+    void whenRendered(root).then(() => { resumed++; }, () => { rejected++; });
+  }
+  root.connected = false;
+  disconnectRenderWork(root);
+  destroyRenderWork(root);
+  assert.equal(observingRender, false);
+  root.connected = true;
+  queueRenderWork(root, UPDATE_WORK);
+  const next = whenRendered(root);
+  finish(root);
+  await next;
+  assert.equal(resumed, 0);
+  assert.equal(rejected, 0);
+});
+
+test('a disconnected call is abandoned rather than rejecting or waiting for reconnect', async () => {
+  const root = new Host();
+  root.connected = false;
+  let settled = false;
+  void whenRendered(root, 'the component is disconnected').then(
+    () => { settled = true; }, () => { settled = true; },
+  );
+  assert.equal(observingRender, false);
+  root.connected = true;
+  await whenRendered(root);
+  assert.equal(settled, false);
+});
+
+test('root teardown releases pending descendant mounts and tasks from completion observation', async () => {
+  const root = new Host();
+  const child = new Host();
+  child.parent = root;
+  queueRenderWork(child, MOUNT_WORK);
+  const task = startRenderTask(child);
+  let settled = false;
+  void whenRendered(root).then(() => { settled = true; }, () => { settled = true; });
+  root.connected = false;
+  disconnectRenderWork(root);
+  assert.equal(observingRender, false);
+  destroyRenderWork(child);
+  finishRenderTask(task, { value: new Error('obsolete load failed') });
+  root.connected = true;
+  await whenRendered(root);
+  assert.equal(settled, false);
+});
+
+test('an original AbortError remains a failure rather than teardown cancellation', async () => {
+  const root = new Host();
+  const task = startRenderTask(root);
+  const failure = new DOMException('resource request failed', 'AbortError');
+  const rejected = assert.rejects(whenRendered(root), error => error === failure);
+  finishRenderTask(task, { value: failure });
+  await rejected;
+});
+
+test('disconnect after a real failure does not hide the failure', async () => {
+  const root = new Host();
+  queueRenderWork(root, UPDATE_WORK);
+  const failure = new Error('render failed before teardown');
+  const rejected = assert.rejects(whenRendered(root), error => error === failure);
+  failRenderWork(root, failure);
   root.connected = false;
   disconnectRenderWork(root);
   destroyRenderWork(root);
   await rejected;
+});
+
+test('abandoned waits do not retain their roots or suspended async callers', async () => {
+  function abandon(connected: boolean): [WeakRef<Host>, WeakRef<object>] {
+    const root = new Host();
+    root.connected = connected;
+    const captured = {};
+    void (async () => {
+      await whenRendered(root);
+      assert.fail(`obsolete caller resumed with ${String(captured)}`);
+    })();
+    root.connected = false;
+    disconnectRenderWork(root);
+    destroyRenderWork(root);
+    return [new WeakRef(root), new WeakRef(captured)];
+  }
+  const references = [...abandon(true), ...abandon(false)];
+  await collectAfterTurn();
+  for (const reference of references) assert.equal(reference.deref(), undefined);
 });
 
 test('expected structural disposal retires captured descendant work', async () => {
@@ -345,7 +433,8 @@ test('destroying executing work does not retain its replacement generation', asy
   const root = new Host();
   queueRenderWork(root, UPDATE_WORK);
   const first = whenRendered(root);
-  const rejected = assert.rejects(first, { name: 'AbortError' });
+  let settled = false;
+  void first.then(() => { settled = true; }, () => { settled = true; });
   await Promise.resolve();
   const outer = enterRenderWork(root);
   destroyRenderWork(root);
@@ -354,9 +443,9 @@ test('destroying executing work does not retain its replacement generation', asy
   const inner = enterRenderWork(root);
   finishRenderWork(root, UPDATE_WORK);
   leaveRenderWork(root, inner);
-  await rejected;
   await second;
   leaveRenderWork(root, outer);
+  assert.equal(settled, false);
 });
 
 test('destruction during scope validation does not revive retired work', async () => {
@@ -374,10 +463,10 @@ test('destruction during scope validation does not revive retired work', async (
   const child = new RemovedOnCheck();
   child.parent = root;
   queueRenderWork(child, UPDATE_WORK);
-  const rejected = assert.rejects(whenRendered(root), { name: 'AbortError' });
+  const cancelled = assertAbandoned(whenRendered(root));
   const previous = enterRenderWork(child);
   leaveRenderWork(child, previous);
-  await rejected;
+  await cancelled;
   const next = whenRendered(root);
   const settled = await Promise.race([
     next.then(() => true, () => false),
@@ -480,17 +569,17 @@ test('blocked staged targets are checked after a captured render inserts them', 
   unblockRenderWork(child);
 });
 
-test('unexpected reparenting rejects a captured job instead of reporting success', async () => {
+test('reparenting abandons a captured job instead of reporting success or failure', async () => {
   const root = new Host();
   const child = new Host();
   child.parent = root;
   queueRenderWork(child, UPDATE_WORK);
   const waiting = whenRendered(root);
-  const rejected = assert.rejects(waiting, { name: 'AbortError' });
+  const cancelled = assertAbandoned(waiting);
   await Promise.resolve();
   child.parent = null;
   finish(child);
-  await rejected;
+  await cancelled;
 });
 
 test('a later generation is not retained by a settled request', async () => {
@@ -530,7 +619,7 @@ test('author removal of a sibling is not mistaken for structural disposal', asyn
   queueRenderWork(root, UPDATE_WORK);
   queueRenderWork(sibling, UPDATE_WORK);
   const waiting = whenRendered(root);
-  const rejected = assert.rejects(waiting, { name: 'AbortError' });
+  const cancelled = assertAbandoned(waiting);
   await Promise.resolve();
   const previous = enterRenderWork(root);
   const previousRemoval = expectRenderRemoval(removed);
@@ -541,7 +630,7 @@ test('author removal of a sibling is not mistaken for structural disposal', asyn
   finishRenderRemoval(previousRemoval);
   finishRenderWork(root, UPDATE_WORK);
   leaveRenderWork(root, previous);
-  await rejected;
+  await cancelled;
 });
 
 test('a later independent blocker does not replace a retired staged generation', async () => {
@@ -909,7 +998,7 @@ test('expected removal retires only the boundary that caused it', async () => {
   queueRenderWork(root, UPDATE_WORK);
   const task = startRenderTask(removed);
   const outer = whenRendered(root);
-  const innerRejected = assert.rejects(whenRendered(inner), { name: 'AbortError' });
+  const innerCancelled = assertAbandoned(whenRendered(inner));
   await Promise.resolve();
   const previous = enterRenderWork(root);
   const previousRemoval = expectRenderRemoval(removed);
@@ -919,16 +1008,16 @@ test('expected removal retires only the boundary that caused it', async () => {
   finishRenderRemoval(previousRemoval);
   finishRenderWork(root, UPDATE_WORK);
   leaveRenderWork(root, previous);
-  await Promise.all([outer, innerRejected]);
+  await Promise.all([outer, innerCancelled]);
   finishRenderTask(task);
 });
 
-test('unexpected lazy task removal or movement rejects the captured completion', async () => {
+test('lazy task removal or movement abandons the captured completion', async () => {
   const root = new Host();
   const child = new Host();
   child.parent = root;
   const first = startRenderTask(child);
-  const removed = assert.rejects(whenRendered(root), { name: 'AbortError' });
+  const removed = assertAbandoned(whenRendered(root));
   child.connected = false;
   disconnectRenderWork(child);
   destroyRenderWork(child);
@@ -937,7 +1026,7 @@ test('unexpected lazy task removal or movement rejects the captured completion',
 
   child.connected = true;
   const second = startRenderTask(child);
-  const moved = assert.rejects(whenRendered(root), { name: 'AbortError' });
+  const moved = assertAbandoned(whenRendered(root));
   child.parent = null;
   const previous = enterRenderTask(second);
   leaveRenderTask(previous);

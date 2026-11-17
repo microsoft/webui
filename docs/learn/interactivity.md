@@ -341,7 +341,8 @@ async revealAction(): Promise<void> {
 Declare `showAction: false` in the initial server state as well. This example
 assumes focus intent is still current when rendering completes. For a wait
 that can outlast the interaction, revalidate that intent before moving focus.
-Handle completion failures at your application's error boundary.
+Routine component teardown needs no `try/catch`, `isConnected` check, revision
+counter, or extra scheduling around this pattern.
 
 The promise preserves batching and waits for a **finite batch of DOM updates**:
 pending work, changes in the current synchronous turn, and updates they cause
@@ -355,16 +356,26 @@ user callbacks, or non-WebUI rendering. Completion does not imply layout or
 paint, loaded images or fonts, or finished animations. Use this method instead
 of timers or counting microtasks.
 
-Call it on a connected, mounted component. Handle rejections at your
-application's error boundary:
+Call it after the component mounts. If it disconnects or is destroyed while
+the wait is pending, the framework abandons that wait: it neither rejects nor
+resumes the code after `await`. Reconnecting does not revive an old wait;
+new interactions can await rendering normally. A call made while disconnected
+is also abandoned. The same cancellation behavior applies if captured
+descendant work is removed, moves outside the component, or an activated lazy
+region is cancelled independently. Structural removal performed by the captured
+render still completes normally for the parent.
+Abandoned promises stay pending, so do not use them as a general-purpose task
+or teardown signal.
+
+Genuine failures still reject and belong at your application's error boundary:
 
 | Failure | Meaning |
 |---|---|
 | `InvalidStateError` | The component or affected work is not ready, such as deferred hydration, incomplete streaming, or unloaded definitions/templates. Wait for readiness before making a new request. |
-| `AbortError` | The component disconnected or captured work unexpectedly left its scope. |
 | Original error | Rendering, a property callback, or a required mount stylesheet failed. |
 
-Stylesheet waits have no deadline. The DOM can change again before your code
+Stylesheet waits have no deadline. Once a promise has settled, later teardown
+cannot cancel its continuation. The DOM can change again before your code
 resumes; focus selection and avoiding focus theft remain application policy.
 
 ### Migrating render calls

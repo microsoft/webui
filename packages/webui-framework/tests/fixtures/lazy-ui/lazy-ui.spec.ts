@@ -177,6 +177,8 @@ test('$whenRendered waits for an activated region and the nested region it activ
 });
 
 test('closing before the pack arrives keeps the region unmounted', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
   await page.goto('/lazy-ui/fixture.html?initial=0&delay=0');
   await ready(page);
   const url = await packUrl(page, 'test-lazy-shadow');
@@ -185,14 +187,23 @@ test('closing before the pack arrives keeps the region unmounted', async ({ page
     await release.promise;
     await route.continue();
   });
-  const opened = page.evaluate(() => (document.querySelector('test-lazy-shadow') as LazyOwner).open());
+  await page.evaluate(() => {
+    const state = window as unknown as { cancelledOpenResumed: boolean };
+    state.cancelledOpenResumed = false;
+    void (async () => {
+      await (document.querySelector('test-lazy-shadow') as LazyOwner).open();
+      state.cancelledOpenResumed = true;
+    })();
+  });
   await page.waitForFunction(() => (document.querySelector('test-lazy-shadow') as LazyOwner).opened);
   await page.locator('test-lazy-shadow .close').click();
   release.resolve();
-  await opened;
   await page.waitForFunction(() => window.__lazyFixture.registered('test-lazy-shadow'));
   await expect(page.locator('test-lazy-shadow .lazy-body')).toHaveCount(0);
   await expect(page.locator('test-lazy-shadow .loading')).toHaveCount(0);
+  expect(await page.evaluate(() =>
+    (window as unknown as { cancelledOpenResumed: boolean }).cancelledOpenResumed)).toBe(false);
+  expect(errors).toEqual([]);
 });
 
 test('a failed pack rejects $whenRendered and the next activation retries it', async ({ page }) => {

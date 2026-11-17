@@ -1611,16 +1611,15 @@ export class TemplateElement extends HTMLElement {
    *
    * Includes synchronous render consequences, activated lazy regions, and
    * started DOM-gated mounts, but not unrelated later work, layout, or paint.
-   * Rejects blocked affected work, rendering failures, and root disconnection.
+   * Disconnect or destruction abandons pending waits without resuming them.
+   * Blocked affected work and genuine rendering failures still reject.
    */
   $whenRendered(): Promise<void> {
-    const unavailable = !this.isConnected
-      ? 'the component is disconnected'
-      : this.$deferredSSR
-        ? 'hydration is deferred'
-        : !this.$hydrated || !this.$root
-          ? 'the component has not mounted'
-          : undefined;
+    const unavailable = this.$deferredSSR
+      ? 'hydration is deferred'
+      : !this.$hydrated || !this.$root
+        ? 'the component has not mounted'
+        : undefined;
     return whenRendered(this, unavailable);
   }
 
