@@ -3,7 +3,6 @@
 
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 
 use serde_json::{Map, Value};
 use webui_docs::{build_docs, DocsConfig, ShowMode};
@@ -17,10 +16,8 @@ fn builds_layout_scoped_regions_for_pages_and_404() -> TestResult {
         .parent()
         .and_then(Path::parent)
         .ok_or("workspace root is missing")?;
-    ensure_projection_package(workspace)?;
-
-    // Reuse the Press package's installed dependencies through normal ancestor resolution.
-    let fixtures = workspace.join("packages/webui-press/target");
+    // Keep this dependency-free browser build isolated from npm packages.
+    let fixtures = workspace.join("crates/webui-press/target");
     fs::create_dir_all(&fixtures)?;
     let fixture = tempfile::tempdir_in(fixtures)?;
     let root = fixture.path();
@@ -161,18 +158,50 @@ fn builds_layout_scoped_regions_for_pages_and_404() -> TestResult {
     Ok(())
 }
 
-fn ensure_projection_package(workspace: &Path) -> TestResult {
-    let entry = workspace.join("packages/webui/dist/projection/index.js");
-    if entry.exists() {
-        return Ok(());
+#[test]
+fn native_bundle_completes_when_page_workers_wait_for_projection() -> TestResult {
+    let fixture = tempfile::tempdir()?;
+    let root = fixture.path();
+    let template = root.join("template");
+    let content = root.join("content");
+    let output = root.join("dist");
+    fs::create_dir_all(&template)?;
+    fs::create_dir_all(&content)?;
+    fs::write(
+        template.join("index.html"),
+        "<!doctype html><html><body>{{{page.content}}}</body></html>",
+    )?;
+    // More independent entries than the global pool has workers recreates the
+    // barrier starvation that an out-of-process bundler previously avoided.
+    let pages = rayon::current_num_threads() + 4;
+    for index in 0..pages {
+        let filename = if index == 0 {
+            "index".to_string()
+        } else {
+            format!("page-{index}")
+        };
+        fs::write(content.join(format!("{filename}.md")), format!(
+            "# Page {index}\n\n<script type=\"module\" bundle>globalThis.nativePage{index} = true;</script>",
+        ))?;
     }
-    let program = if cfg!(windows) { "pnpm.cmd" } else { "pnpm" };
-    let status = Command::new(program)
-        .args(["--filter", "@microsoft/webui", "build"])
-        .current_dir(workspace)
-        .status()?;
-    if !status.success() {
-        return Err("failed to build @microsoft/webui projection package".into());
+    let config: DocsConfig = serde_json::from_value(object([
+        ("site", object([("title", string("Native parallel build"))])),
+        ("basePath", string("/")),
+        ("contentDir", path_value(&content)),
+        ("outDir", path_value(&output)),
+        ("publicDir", path_value(&root.join("public"))),
+        ("nav", Value::Array(Vec::new())),
+        ("sidebar", Value::Array(Vec::new())),
+    ]))?;
+    let stats = build_docs(&config, root, &template)?;
+    assert_eq!(stats.pages, pages);
+    for index in 0..pages {
+        let file = if index == 0 {
+            output.join("index.html")
+        } else {
+            output.join(format!("page-{index}/index.html"))
+        };
+        assert!(fs::read_to_string(file)?.contains("<script type=\"module\" src=\"/assets/page-"));
     }
     Ok(())
 }

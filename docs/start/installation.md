@@ -4,40 +4,110 @@ description: Install the WebUI CLI, verify your setup, and choose a backend inte
 
 # Installation
 
-Set up the `hello-webui` project for the [getting-started lessons](/start/).
-You need a current Node.js LTS release for the installation scripts and tooling.
-Your production backend can use any of the [deep integrations](#deep-integrations).
+Choose native application scaffolding, or set up the `hello-webui` project for
+the [getting-started lessons](/start/). Native frontend tooling does not need
+Node.js; the package-managed lesson setup below uses a current Node.js LTS
+release. Your backend can use any of the [deep integrations](#deep-integrations).
 
 ## Scaffold an application
 
 For a complete small application instead of the step-by-step lessons, use
-the WebUI initializer:
+the WebUI initializer with a [native toolchain](#native-toolchain) and your
+selected server's prerequisites installed:
 
 ```bash
-npm exec --package=@microsoft/webui -- webui init my-app --server rust
+webui init my-app --server rust --no-interactive
 cd my-app
-npm install
-npm run dev
+webui app check
+webui app dev
 ```
 
 Rust is the default server. Other choices are `dotnet`, `c`, `cpp`, `go`,
 `node`, and `bun`; install the
-selected host's toolchain separately. The starter includes server-rendered
+selected host's toolchain separately. Native frontend tooling is used
+for every server choice. Rust, Go, C, C++, and .NET starters have no
+`package.json` or JavaScript build scripts. Node/Bun starters retain their
+runtime `package.json` and server code; restore those packages with `npm install`
+or `bun install`, respectively. The starter includes server-rendered
 Home and About pages, native links, and one interactive counter. About needs
 no JavaScript. No UI kit, database, authentication, or client router is added.
 
 File generation is offline once the CLI is installed. Init never overwrites
 existing application files. In a terminal it offers dependency installation
 and installation of the [existing AI reference skill](#ai-coding-agents);
-both are optional. If you accept dependency installation, skip the separate
-`npm install` above. Native toolchain, standalone SDK, and approved package-source
-prerequisites are described in the generated README.
+both are optional. `--install` restores the selected host's dependencies; it
+does not install system toolchains or acquire a standalone SDK. For native
+projects, `--ai-skill` installs the project-local loader offline.
+
+Rust starts with `Cargo.toml`, `src/main.rs`, and `web/`; Go starts with
+`go.mod`, `cmd/server/`, and `web/`. All native starters use `webui.toml`.
+Use `webui app build` for production output, then `webui app start` to run
+the recorded build without restoration or compilation.
 
 See [`webui init`](/reference/cli/#webui-init) for automation flags, package
 manager selection, and machine-readable output. To follow the lessons instead,
 continue with the manual setup below.
 
-## Install the CLI
+## Native toolchain
+
+Native application checking requires the CLI and its matching native TypeScript
+compiler. Obtain a complete
+`webui-toolchain-<version>-<target-triple>.tar.gz` and adjacent SHA-256 checksum
+from an approved distribution that provides that artifact. Check availability
+for your selected release and target before choosing this setup; a bare CLI
+or an npm binary package is not the complete native checker toolchain.
+
+Verify the archive before extraction. Keep its layout intact:
+
+```text
+webui-toolchain/
+  bin/webui                 # webui.exe on Windows
+  compiler/tsc              # tsc.exe on Windows; lib*.d.ts beside it
+  notices/
+  toolchain.json
+```
+
+Checksums establish file integrity, not independent authenticity; use your
+approved artifact source. Consumers need this toolchain and their chosen
+server's prerequisites, not the tools used to produce the archive.
+
+Add the extracted `bin/` to your command path. Alternatively set
+`WEBUI_TOOLCHAIN_DIR` to the extracted root while using the matching CLI.
+An explicit override is authoritative, including when invalid. Native checking
+validates the exact release, platform, file inventory, and hashes before
+running the compiler. TypeScript is pinned to 7.0.2, independently of WebUI's
+release version. It never uses a PATH `tsc`, JavaScript wrapper, npm lookup,
+or automatic download. Supported targets are macOS, GNU/Linux, and MSVC Windows
+on x64 and ARM64; musl is not supported.
+
+Install the selected server prerequisites separately:
+
+| Server | Prerequisites |
+| --- | --- |
+| Rust | Rust 1.99.1+ and Cargo |
+| Go | Go 1.25+, cgo C compiler, matching [standalone SDK](/build/integrations/go#installation) |
+| C/C++ | CMake 3.24+, native C/C++ toolchain, matching [standalone SDK](/build/integrations/ffi#standalone-native-sdk) |
+| .NET | .NET 8 SDK and an approved matching [Microsoft.WebUI package source](/build/integrations/dotnet) |
+| Node | Node.js 22+ with native-addon support |
+| Bun | Bun with Node-API support |
+
+Toolchain and C ABI SDK acquisition are separate. Go/C/C++ resolve their SDK
+from `.webui/sdk` or the explicit `WEBUI_SDK_DIR`; `webui sdk check` verifies
+it. Rust uses Cargo, .NET uses NuGet runtime packages, and Node/Bun use the
+native addon instead.
+
+For standalone template compilation, the CLI can also be built without Node:
+
+```bash
+cargo install microsoft-webui-cli
+```
+
+This needs Rust 1.99.1+ and does not by itself install the native TypeScript
+companion required by `webui app check`.
+
+<span id="install-the-cli"></span>
+
+## Package-managed lesson setup
 
 Create a project directory:
 
@@ -271,7 +341,7 @@ See [Bun lifecycle scripts](https://bun.sh/docs/pm/lifecycle) and
 </webui-press-tab-panel>
 </webui-press-tabs>
 
-Bundlers such as `esbuild` may need separate approval. Commit the reviewed
+Other development tools may need separate approval. Commit the reviewed
 settings and lockfile for teammates and CI. Do not enable all dependency
 scripts to make one package work.
 
@@ -322,14 +392,25 @@ Each guide covers installation, protocol lifetime, and server integration.
 
 ## AI coding agents
 
-Install the reference skill in your project:
+For a native application, install the offline project-local loader while
+creating it:
+
+```bash
+webui init my-app --ai-skill --no-interactive
+```
+
+The loader uses the version-matched native CLI's `webui reference --path`
+to locate the core reference and adjacent Markdown guides. It does not need
+Node/npm or a network. Keep the CLI version aligned with `webui.toml`.
+
+For a Node-frontend application, install the reference skill in your project:
 
 ```bash
 npx skills add microsoft/webui --skill webui-reference
 ```
 
 Add `--global` to install the loader for your user account across projects.
-In an application, the skill reads `@microsoft/webui/ai.md` and relevant
+In a Node-frontend application, the skill reads `@microsoft/webui/ai.md` and relevant
 Markdown guides bundled with that installed package, including in hoisted
 workspaces. These guides work offline and match the package release. Install
 `@microsoft/webui` even if you only imported the browser framework, and keep

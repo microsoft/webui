@@ -119,13 +119,9 @@ function renderOne(
     const scriptPath = hasAuthoredEntry
       ? `/dist/${name}/element.js`
       : '/dist/static-host.js';
-    // Real WebUI apps load client islands as ES modules (`<script type="module">`),
-    // which are deferred until after the document is parsed. Fixtures can opt into
-    // that production-faithful timing with `"script": "module"` in webui.config.json;
-    // otherwise a classic (parser-blocking) script is injected for back-compat.
-    const scriptType = hasAuthoredEntry && fixtureConfig.script === 'module'
-      ? ' type="module"'
-      : '';
+    // Authored fixtures use native split ES modules, matching application timing.
+    // The standalone scriptless template host remains a classic IIFE.
+    const scriptType = hasAuthoredEntry ? ' type="module"' : '';
     const scriptTag = `<script${scriptType} src="${scriptPath}"></script>`;
     const inject = (source: string): string => {
       const bodyEnd = source.lastIndexOf('</body>');

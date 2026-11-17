@@ -53,6 +53,34 @@ Keep optional dependencies enabled so your manager can install the matching nati
 package. This API needs native-addon support; it is not a browser or
 JavaScript-only edge-runtime package.
 
+## Scaffold an application
+
+Node and Bun hosts use native frontend tooling:
+
+```bash
+webui init my-app --server node --no-interactive
+cd my-app
+npm install
+webui app check
+webui app dev
+```
+
+For Bun, select `--server bun` and restore with `bun install`. Native Bun
+defaults to Bun for runtime package restoration; native Node defaults to npm.
+`--package-manager` can override that choice.
+
+Install the matching [native toolchain](/start/installation#native-toolchain)
+separately. Browser bundling and TypeScript checking use native tools, not
+Node/esbuild build scripts. These hosts still require their server runtime,
+the native addon, a root runtime `package.json`, and `server/http.mjs`.
+Application templates and browser sources live in `web/`; `webui.toml`
+selects the host. There is no `scripts/` build orchestration.
+
+Use `webui app build` then `webui app start` for production. Start verifies the
+recorded host entry and protocol and does not restore packages or compile.
+Serve only `dist/public/` as static files. See
+[app commands](/reference/cli/#webui-app).
+
 ## Examples
 
 <webui-press-tabs>
@@ -117,6 +145,7 @@ Bun.serve({
 |----------|-------------|
 | `build(options)` | Build templates into a protocol. Returns `{ protocol, cssFiles, componentAssetFiles, lazyPackFiles, lazyScriptsModule?, metafile?, warnings, stats }` |
 | `prepareBuild(options)` | Compile once before client bundling; returns a single-use `PreparedBuild` |
+| `bundleClient(options)` | Run native browser bundling and state projection asynchronously; returns final files, proof and input/output metadata |
 | `new Protocol(protocol, options?)` | Decode and index protocol bytes once and bind the selected plugin |
 | `protocol.render(state, options?)` | Render into a UTF-8 `Buffer` for direct HTTP writes |
 | `protocol.prepareState(state)` | Parse an immutable, process-local native state snapshot once |
@@ -148,24 +177,34 @@ When your client imports generated lazy or component modules and also produces
 a state-projection manifest, retain one compilation across client bundling:
 
 ```typescript
-import { prepareBuild } from '@microsoft/webui';
-import { esbuildProjection } from '@microsoft/webui/projection.js';
-import { build as bundle } from 'esbuild';
+import { prepareBuild, bundleClient } from '@microsoft/webui';
 import { writeFileSync } from 'node:fs';
 
 const prepared = prepareBuild({
   appDir: './src', plugin: 'webui', modulesOut: './.webui',
 });
 prepared.writeModules();
-const manifest = './dist/webui-projection.json';
-await bundle({
-  entryPoints: ['./src/index.ts'], outdir: './dist',
-  bundle: true, splitting: true, format: 'esm',
-  plugins: [esbuildProjection({ manifest })],
+const client = await bundleClient({
+  project: process.cwd(),
+  entries: { index: 'src/index.ts' },
+  outDir: 'dist',
 });
-const result = prepared.finish({ projectionManifests: [manifest] });
+const result = prepared.finish({ projectionManifests: [client.manifestPath] });
 writeFileSync('./dist/protocol.bin', result.protocol);
 ```
+
+`bundleClient()` performs bundling, source analysis and proof construction
+natively. It needs no JavaScript compiler peer. `project` must contain the
+physical inputs and output directory. Set `write: false` to receive final
+`files` buffers without publishing them; a retained build still requires its
+proof's exact files on disk before finalization.
+
+The result's `warnings` contains typed `{ code, message }` advisories; build
+hosts should display them. Unexpected bundler warnings still fail the build.
+Set `parallelDynamicImports: true` to request concurrent imports of dynamic
+targets and their additional static dependencies. This may evaluate shared
+dependencies independently. The returned metadata records these native plans;
+do not rewrite final JavaScript after its hashes are produced.
 
 Publish `result.cssFiles` and `result.lazyPackFiles` with the protocol as
 described below. `writeModules()` uses `modulesOut`, or `appDir` when omitted,

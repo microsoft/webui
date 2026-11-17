@@ -319,6 +319,7 @@ stages:
           : "${BUILD_ARTIFACT_STAGING_DIRECTORY:?BUILD_ARTIFACT_STAGING_DIRECTORY is required}"
           : "${TARGET_TRIPLE:?TARGET_TRIPLE is required}"
           : "${ARTIFACT_NAME:?ARTIFACT_NAME is required}"
+          : "${RELEASE_VERSION:?RELEASE_VERSION is required}"
 
           sudo apt-get update -q
           sudo apt-get install -y -q protobuf-compiler binutils
@@ -344,10 +345,21 @@ stages:
               exit 1
             fi
           done
+          # The CLI is already built for TARGET_TRIPLE; the producer and its
+          # HTTPS helper run on the runner, never by executing that target.
+          CARGO_HOME="$CARGO_CACHE_HOME" cargo +1.99.1 xtask toolchain-stage \
+            --target "$TARGET_TRIPLE" \
+            --cli "target/$TARGET_TRIPLE/release/webui" \
+            --acquire-checker
+          toolchain="publish/toolchains/webui-toolchain-${RELEASE_VERSION}-${TARGET_TRIPLE}.tar.gz"
+          toolchain_output="$BUILD_ARTIFACT_STAGING_DIRECTORY/$ARTIFACT_NAME/publish/toolchains"
+          mkdir -p "$toolchain_output"
+          cp "$toolchain" "$toolchain.sha256" "$toolchain_output/"
       env:
         ARTIFACT_NAME: $(artifactName)
         BUILD_ARTIFACT_STAGING_DIRECTORY: $(Build.ArtifactStagingDirectory)
         TARGET_TRIPLE: $(targetTriple)
+        RELEASE_VERSION: $(releaseVersion)
     - task: Bash@3
       displayName: Build Python wheel ($(targetTriple))
       inputs:
@@ -478,10 +490,20 @@ stages:
             --target "$TARGET_TRIPLE" \
             --profile release \
             --output "$BUILD_ARTIFACT_STAGING_DIRECTORY/$ARTIFACT_NAME"
+          : "${RELEASE_VERSION:?RELEASE_VERSION is required}"
+          CARGO_HOME="$CARGO_CACHE_HOME" cargo +1.99.1 xtask toolchain-stage \
+            --target "$TARGET_TRIPLE" \
+            --cli "target/$TARGET_TRIPLE/release/webui" \
+            --acquire-checker
+          toolchain="publish/toolchains/webui-toolchain-${RELEASE_VERSION}-${TARGET_TRIPLE}.tar.gz"
+          toolchain_output="$BUILD_ARTIFACT_STAGING_DIRECTORY/$ARTIFACT_NAME/publish/toolchains"
+          mkdir -p "$toolchain_output"
+          cp "$toolchain" "$toolchain.sha256" "$toolchain_output/"
       env:
         ARTIFACT_NAME: $(artifactName)
         BUILD_ARTIFACT_STAGING_DIRECTORY: $(Build.ArtifactStagingDirectory)
         TARGET_TRIPLE: $(targetTriple)
+        RELEASE_VERSION: $(releaseVersion)
     - task: PublishPipelineArtifact@1
       displayName: Upload $(targetTriple) artifact
       inputs:
@@ -550,6 +572,9 @@ stages:
           if (-not $env:ARTIFACT_NAME) {
               throw 'ARTIFACT_NAME is required.'
           }
+          if (-not $env:RELEASE_VERSION) {
+              throw 'RELEASE_VERSION is required.'
+          }
 
           if (-not (Get-Command protoc -ErrorAction SilentlyContinue)) {
               $version = '29.5'
@@ -576,11 +601,21 @@ stages:
               --target $env:TARGET_TRIPLE `
               --profile release `
               --output "$env:BUILD_ARTIFACT_STAGING_DIRECTORY\$env:ARTIFACT_NAME"
+          cargo +1.99.1 xtask toolchain-stage `
+              --target $env:TARGET_TRIPLE `
+              --cli "target\$env:TARGET_TRIPLE\release\webui.exe" `
+              --acquire-checker
+          $toolchainName = 'webui-toolchain-{0}-{1}.tar.gz' -f $env:RELEASE_VERSION, $env:TARGET_TRIPLE
+          $toolchain = Join-Path 'publish\toolchains' $toolchainName
+          $toolchainOutput = "$env:BUILD_ARTIFACT_STAGING_DIRECTORY\$env:ARTIFACT_NAME\publish\toolchains"
+          New-Item -ItemType Directory -Force -Path $toolchainOutput | Out-Null
+          Copy-Item -LiteralPath @($toolchain, "$toolchain.sha256") -Destination $toolchainOutput
       env:
         AGENT_TEMP_DIRECTORY: $(Agent.TempDirectory)
         ARTIFACT_NAME: $(artifactName)
         BUILD_ARTIFACT_STAGING_DIRECTORY: $(Build.ArtifactStagingDirectory)
         TARGET_TRIPLE: $(targetTriple)
+        RELEASE_VERSION: $(releaseVersion)
     - task: PublishPipelineArtifact@1
       displayName: Upload $(targetTriple) artifact
       inputs:
@@ -796,6 +831,11 @@ stages:
       inputs:
         targetPath: '$(Build.SourcesDirectory)/publish/sdk'
         artifactName: standalone_sdk_archives
+    - task: PublishPipelineArtifact@1
+      displayName: Upload standalone native toolchains and checksums
+      inputs:
+        targetPath: '$(Build.SourcesDirectory)/publish/toolchains'
+        artifactName: standalone_native_toolchains
     - task: PublishPipelineArtifact@1
       displayName: Upload Go module proxy
       inputs:

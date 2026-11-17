@@ -1,0 +1,19 @@
+[package]
+name = "microsoft-webui-projection"
+description = "Native build-time state projection analysis for WebUI"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "webui_projection"
+
+[dependencies]
+oxc = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+
+[lints]
+workspace = true

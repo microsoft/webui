@@ -35,12 +35,12 @@ export function defineComponentAsset(asset: ComponentAsset): GeneratedComponentA
   const preload = (): Promise<void> => {
     if (pending) return pending;
     preloadComponentAssetStyles(root);
-    const next = registerComponentAssetGraph(asset).catch((error: unknown) => {
-      if (pending === next) pending = undefined;
+    pending = registerComponentAssetGraph(asset).catch((error: unknown) => {
+      // Single-flight loading prevents a newer attempt until this one rejects.
+      pending = undefined;
       throw error;
     });
-    pending = next;
-    return next;
+    return pending;
   };
 
   const create = async (): Promise<HTMLElement> => {

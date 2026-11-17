@@ -52,6 +52,19 @@ pub struct WatcherHandle {
 }
 
 impl WatcherHandle {
+    /// Change owned-output exclusions without resetting source content baselines
+    /// or replacing native subscriptions and their pending events.
+    pub fn set_ignored_paths(&mut self, paths: Vec<PathBuf>) {
+        let paths = paths
+            .into_iter()
+            .map(|path| std::fs::canonicalize(&path).unwrap_or(path))
+            .collect();
+        self.filter
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .ignore = paths;
+    }
+
     /// Replace the watched roots, exact files, and ignored subtrees in place.
     ///
     /// A replacement watcher would discard events this one has observed but
@@ -509,6 +522,31 @@ mod tests {
             "missing {} in {changed:?}",
             source.display()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn changing_ignores_preserves_pending_exact_source_edits() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let source = dir.path().join("entry.ts");
+        std::fs::write(&source, "export const value = 1;")?;
+        let (sender, receiver) = mpsc::channel();
+        let mut watcher = spawn_watcher(
+            WatchConfig {
+                paths: vec![dir.path().to_path_buf()],
+                explicit_files: vec![source.clone()],
+                ignore: Vec::new(),
+                debounce: Duration::from_millis(50),
+                retry_unchanged_when: None,
+            },
+            move |paths| {
+                let _ = sender.send(paths);
+            },
+        )?;
+        std::fs::write(&source, "export const value = 2;")?;
+        watcher.set_ignored_paths(vec![dir.path().join("dist")]);
+        let changed = receiver.recv_timeout(Duration::from_secs(5))?;
+        assert!(changed.contains(&source.canonicalize()?));
         Ok(())
     }
 

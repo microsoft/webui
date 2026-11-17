@@ -30,7 +30,9 @@ fn main() {
     };
 
     let result = match command {
+        Commands::App(args) => commands::app::execute(args),
         Commands::Build(args) => commands::build::execute(args).map(|()| 0),
+        Commands::Bundle(args) => commands::bundle::execute(args),
         Commands::Desktop(args) => {
             commands::sidecar::execute(commands::sidecar::Sidecar::Desktop, args).map(|()| 0)
         }
@@ -39,6 +41,8 @@ fn main() {
         }
         Commands::Inspect(args) => commands::inspect::execute(args).map(|()| 0),
         Commands::Init(args) => commands::init::execute(args).map(|()| 0),
+        Commands::Sdk(args) => commands::sdk::execute(args),
+        Commands::Reference(args) => commands::native::reference(args).map(|()| 0),
         Commands::Serve(args) => commands::serve::execute(args),
     };
 
@@ -78,7 +82,10 @@ mod tests {
             };
             assert_eq!(init.server.name(), server);
             assert!(init.no_interactive);
-            assert_eq!(init.package_manager, commands::init::PackageManager::Pnpm);
+            assert_eq!(
+                init.package_manager,
+                Some(commands::init::PackageManager::Pnpm)
+            );
         }
         assert!(Cli::try_parse_from(["webui", "init", "--server", "python"]).is_err());
         let cli = Cli::try_parse_from(["webui", "init", "--package-manager", "bun"])?;
@@ -86,7 +93,10 @@ mod tests {
             panic!("expected init command");
         };
         assert_eq!(init.server, commands::init::Server::Rust);
-        assert_eq!(init.package_manager, commands::init::PackageManager::Bun);
+        assert_eq!(
+            init.package_manager,
+            Some(commands::init::PackageManager::Bun)
+        );
         assert!(Cli::try_parse_from(["webui", "init", "--package-manager", "cargo"]).is_err());
         assert!(Cli::try_parse_from(["webui", "init", "--force"]).is_err());
         Ok(())

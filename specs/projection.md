@@ -18,7 +18,7 @@ manifest. The compiler identifies only proven WebUI component declarations
 and exact state keys; an unproven scripted component is a build error when
 manifests are selected.
 
-The TypeScript compiler emits a `webui.state-projection/v1` JSON fragment
+The producer emits a `webui.state-projection/v1` JSON fragment
 with producer and adapter identities, `root`, `analysisHash`, `buildId`,
 `inputs`, `outputs`, `components`, and optional `entryClosures`. Each component
 names its defining module, final output set, initial hydration keys, and
@@ -44,6 +44,26 @@ Deferred fragments inherit the finalized owner's state contract while retaining
 their compiled body roots. Preparation must not erase those roots through an
 intermediate full-state fallback. Packs and generated module content do not
 depend on projection; preparation and finalization share their original payloads.
+
+### Shared native analysis
+
+`webui-projection` owns semantic proof for both native and Node builds. It uses
+Oxc 0.158.0 on original source and the adapter-owned resolution graph; it does
+not execute application code, open files, or resolve packages independently.
+The Node browser-build entry point passes build configuration through N-API.
+Resolution, source capture, analysis, membership, manifest construction and
+hashing remain native. No JavaScript source graph or AST crosses that boundary,
+and no TypeScript/esbuild peer or public adapter SPI is involved.
+
+`webui-client-build` supplies the native adapter using Rolldown 1.3.2. One
+invocation supplies resolved edges, original source, tree-shaken membership,
+static entry closures, and final emitted bytes. The caller writes these exact
+bytes before retained-build finalization validates the manifest against disk.
+The same native producer and validator serve CLI, Press and Node callers.
+Renderer crates and standalone FFI hosts do not depend on these build crates.
+Node's combined build/render addon exposes native compilation separately from
+its request-time renderer. Type checking is a
+separate native TSC operation, not a substitute for semantic projection proof.
 
 ### Exact state-key proof
 
@@ -150,18 +170,18 @@ entryClosure(entry, member-count, members...) ... sorted by entry key
 Hash the concatenated record bytes with SHA-256 and prefix the lowercase
 digest with `sha256:`. This is **not** a hash of the JSON serialization.
 Omitting `entryClosures` when empty also omits its hash records so earlier
-fragments retain their original build IDs. The Rust and TypeScript golden
-vector for the same Unicode-bearing manifest is
+fragments retain their original build IDs. The shared Unicode-bearing golden
+vector is
 `sha256:8319202a060626c39cce76df50197c92dee27aab29d601161183c188204d7c18`.
 Do not change canonicalization without changing both producer and validator
 and their shared vector.
 
 ## Defining sources
 
-- [Adapter graph and membership interfaces](../packages/webui/src/projection/graph.ts)
-  and [compiler graph normalization](../packages/webui/src/projection/compiler.ts).
-- [Manifest shape and canonical hash](../packages/webui/src/projection/manifest.ts),
-  [Rust validator](../crates/webui-protocol/src/projection_manifest.rs).
-- [TypeScript golden-vector tests](../packages/webui/test/projection-compiler.test.ts),
-  [Rust golden-vector tests](../crates/webui-protocol/src/projection_manifest.rs),
-  and [adapter conformance tests](../packages/webui/test/projection-conformance.test.ts).
+- [Semantic graph and compiler](../crates/webui-projection/src/lib.rs).
+- [Native source capture and bundling](../crates/webui-client-build/src/lib.rs)
+  and [proof construction](../crates/webui-client-build/src/manifest.rs).
+- [Manifest schema, validator and shared golden vector](../crates/webui-protocol/src/projection_manifest.rs).
+- [Native semantic conformance](../crates/webui-projection/tests/semantics.rs),
+  [browser build contracts](../crates/webui-client-build/tests/build.rs), and
+  [thin Node build binding](../crates/webui-node/src/client_build.rs).

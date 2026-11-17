@@ -129,16 +129,36 @@ fn error_json(err: &anyhow::Error) -> serde_json::Value {
             let init = err
                 .chain()
                 .find_map(|cause| cause.downcast_ref::<crate::commands::init::InitError>());
+            let sdk = err
+                .chain()
+                .find_map(|cause| cause.downcast_ref::<crate::commands::sdk::SdkError>());
+            let native = err
+                .chain()
+                .find_map(|cause| cause.downcast_ref::<crate::commands::native::NativeError>());
             // Keep the same key set as the structured branch so `--format json`
             // has one stable shape; fields that don't apply are null.
             map.insert("severity".into(), Value::from("error"));
-            map.insert("code".into(), str_or_null(init.map(|error| error.code())));
+            map.insert(
+                "code".into(),
+                str_or_null(
+                    init.map(|error| error.code())
+                        .or_else(|| sdk.map(|error| error.code()))
+                        .or_else(|| native.map(|error| error.code())),
+                ),
+            );
             map.insert("message".into(), Value::from(err.to_string()));
             map.insert("file".into(), Value::Null);
             map.insert("line".into(), Value::Null);
             map.insert("column".into(), Value::Null);
             map.insert("snippet".into(), Value::Null);
-            map.insert("help".into(), str_or_null(init.map(|error| error.help())));
+            map.insert(
+                "help".into(),
+                str_or_null(
+                    init.map(|error| error.help())
+                        .or_else(|| sdk.map(|error| error.help()))
+                        .or_else(|| native.map(|error| error.help())),
+                ),
+            );
         }
     }
     map.insert("chain".into(), Value::Array(chain));
@@ -173,6 +193,16 @@ pub fn error(err: &anyhow::Error) {
         .find_map(|cause| cause.downcast_ref::<crate::commands::init::InitError>())
     {
         eprintln!("  {} {}", console::style("help:").yellow(), init.help());
+    } else if let Some(sdk) = err
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<crate::commands::sdk::SdkError>())
+    {
+        eprintln!("  {} {}", console::style("help:").yellow(), sdk.help());
+    } else if let Some(native) = err
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<crate::commands::native::NativeError>())
+    {
+        eprintln!("  {} {}", console::style("help:").yellow(), native.help());
     }
 }
 
@@ -280,6 +310,25 @@ pub fn warning_diagnostic(diag: &Diagnostic) {
         console::style("build warning:").yellow().bold(),
         styled_diagnostic_body(diag),
     );
+}
+
+pub(crate) fn native_build_warning(code: &str, message: &str) {
+    if is_json() {
+        let mut record = serde_json::Map::new();
+        record.insert("severity".into(), serde_json::Value::from("warning"));
+        record.insert("code".into(), serde_json::Value::from(code));
+        record.insert("message".into(), serde_json::Value::from(message));
+        println!("{}", serde_json::Value::Object(record));
+    } else {
+        eprintln!(
+            "  {} {}",
+            console::style("warning").yellow(),
+            console::style(code).yellow()
+        );
+        for line in message.lines() {
+            eprintln!("  {line}");
+        }
+    }
 }
 
 #[cfg(test)]

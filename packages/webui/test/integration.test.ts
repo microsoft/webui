@@ -10,6 +10,7 @@ import { describe, test, before, after } from 'node:test';
 import { strict as assert } from 'node:assert';
 import {
   build,
+  bundleClient,
   prepareBuild,
   inspect,
   Protocol,
@@ -29,7 +30,6 @@ import { once } from 'node:events';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { analyzeMetafile, build as bundle, type Metafile } from 'esbuild';
-import { esbuildProjection } from '@microsoft/webui/projection.js';
 
 let appDir: string;
 
@@ -95,12 +95,11 @@ test('retained public build bundles generated imports once and finishes the same
     prepared.writeModules();
     assert.equal(statSync(generatedPath).mtimeMs, modified);
     const manifestPath = join(directory, 'dist', 'webui-projection.json');
-    await bundle({
-      entryPoints: [join(directory, 'main.ts')], outdir: join(directory, 'dist'),
-      bundle: true, splitting: true, format: 'esm',
-      define: { __WEBUI_DEV__: 'false' },
-      tsconfigRaw: { compilerOptions: { experimentalDecorators: true, useDefineForClassFields: false } },
-      plugins: [esbuildProjection({ manifest: manifestPath })],
+    await bundleClient({
+      project: resolve(process.cwd(), '..', '..'),
+      entries: { index: join(directory, 'main.ts') },
+      outDir: join(directory, 'dist'),
+      manifestPath,
     });
     const expected = build({ ...options, projectionManifests: [manifestPath] });
     for (const name of ['index.html', 'app-shell.html', 'app-shell.css']) {

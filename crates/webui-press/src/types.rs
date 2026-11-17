@@ -198,7 +198,7 @@ pub enum CustomPage {
         /// a state file only read it once. Mutually exclusive with `state`.
         state_file: Option<String>,
         /// Path (relative to `config.json`) of a TypeScript/JavaScript file
-        /// to bundle as a per-page script. The file is bundled with esbuild
+        /// to bundle as a per-page script. The file is bundled natively
         /// and a `<script>` tag is appended to the page output.
         script_file: Option<String>,
     },
@@ -391,6 +391,18 @@ pub struct PageDescriptor {
 pub struct BuildStats {
     pub pages: usize,
     pub protocol_bytes: usize,
+    /// Nonfatal native browser-build advisories, without terminal styling.
+    pub warnings: Vec<microsoft_webui_client_build::BuildWarning>,
+}
+
+impl BuildStats {
+    /// Plain advisory bodies for the shared terminal rebuild reporter.
+    pub(crate) fn warning_messages(&self) -> Vec<String> {
+        self.warnings
+            .iter()
+            .map(|warning| format!("{}: {}", warning.code, warning.message.trim_end()))
+            .collect()
+    }
 }
 
 #[cfg(test)]

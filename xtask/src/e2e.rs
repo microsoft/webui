@@ -307,9 +307,7 @@ pub fn run(args: &[String]) -> ExitCode {
         if !dir.join("src").join("index.ts").exists() {
             continue;
         }
-        // Use each app's declared client build. WebUI examples run esbuild's
-        // JS API with esbuildProjection(), so bypassing the script would
-        // overwrite bundle bytes without updating the manifest.
+        // Keep each app's native browser bundle and projection proof together.
         match util::run_command_quiet("pnpm", &["build:client"], Some(&dir)) {
             Ok(()) => {
                 eprintln!("  {} {}", console::style("✔").green(), suite.name);

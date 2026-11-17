@@ -49,8 +49,8 @@ fn initializes_drive_and_verbatim_destinations_without_inspecting_bare_prefixes(
             "{}",
             String::from_utf8_lossy(&output.stdout)
         );
-        assert!(root.join("server/Cargo.toml").is_file());
-        assert!(root.join("src/index.html").is_file());
+        assert!(root.join("Cargo.toml").is_file());
+        assert!(root.join("web/index.html").is_file());
         let conflict = init(&root, &[])?;
         assert_eq!(conflict.status.code(), Some(73));
     }
@@ -63,7 +63,7 @@ fn windows_cmd_installers_keep_the_project_cwd_and_report_failures() -> Result<(
     let temp = temp()?;
     let bin = temp.path().join("bin");
     fs::create_dir(&bin)?;
-    for program in ["npm", "npx"] {
+    for program in ["npm"] {
         fs::write(
             bin.join(format!("{program}.cmd")),
             format!("@echo off\r\necho %*\r\n>{program}-cwd.txt echo installed\r\n"),
@@ -73,7 +73,7 @@ fn windows_cmd_installers_keep_the_project_cwd_and_report_failures() -> Result<(
     let path = std::env::join_paths([bin.clone(), Path::new(&system).join("System32")])?;
     let run = |root: &Path, args: &[&str]| -> Result<Output> {
         Command::new(env!("CARGO_BIN_EXE_webui"))
-            .args(["--format=json", "init"])
+            .args(["--format=json", "init", "--server", "node"])
             .arg(root)
             .args(args)
             .env("PATH", &path)
@@ -99,8 +99,10 @@ fn windows_cmd_installers_keep_the_project_cwd_and_report_failures() -> Result<(
     assert_eq!(report["dependencies"], "installed");
     assert_eq!(report["ai_skill"], "installed");
     assert!(root.join("npm-cwd.txt").is_file());
-    assert!(root.join("npx-cwd.txt").is_file());
-    assert!(String::from_utf8(output.stderr)?.contains("webui-reference"));
+    assert!(!root.join("npx-cwd.txt").exists());
+    assert!(root
+        .join(".github/skills/webui-reference/SKILL.md")
+        .is_file());
 
     fs::write(bin.join("npm.cmd"), "@echo off\r\nexit /b 23\r\n")?;
     let failed = temp.path().join("failed-app");
@@ -123,13 +125,13 @@ fn all_hosts_generate_offline_with_one_shared_frontend() -> Result<()> {
     let temp = temp()?;
     let mut entry = None;
     for (server, host_file) in [
-        ("rust", "server/src/main.rs"),
-        ("dotnet", "server/Program.cs"),
-        ("c", "server/main.c"),
-        ("cpp", "server/main.cpp"),
+        ("rust", "src/main.rs"),
+        ("dotnet", "Program.cs"),
+        ("c", "main.c"),
+        ("cpp", "main.cpp"),
         ("node", "server/main.mjs"),
         ("bun", "server/main.ts"),
-        ("go", "server/main.go"),
+        ("go", "cmd/server/main.go"),
     ] {
         let root = temp.path().join(format!("app-{server}"));
         let output = init(&root, &["--server", server, "--no-interactive"])?;
@@ -144,30 +146,28 @@ fn all_hosts_generate_offline_with_one_shared_frontend() -> Result<()> {
         assert_eq!(report["dependencies"], "skipped");
         assert_eq!(report["ai_skill"], "skipped");
         let files = report["files"].as_array().context("files array")?;
-        assert!(files.iter().any(|file| file == "src/index.html"));
+        assert!(files.iter().any(|file| file == "web/index.html"));
         assert!(
             files.iter().any(|file| file == host_file),
             "{server} host missing"
         );
         assert!(files.iter().any(|file| file == "README.md"));
-        assert_eq!(
-            files.iter().any(|file| file == "scripts/sdk.mjs"),
-            matches!(server, "c" | "cpp" | "go")
-        );
+        assert!(!root.join("scripts").exists());
         if matches!(server, "c" | "cpp") {
-            assert!(files.iter().any(|file| file == "server/host.h"));
-            assert!(files.iter().any(|file| file == "server/native.cmake"));
+            for shared in ["host.h", "shutdown.h", "native.cmake"] {
+                assert!(files.iter().any(|file| file == shared));
+            }
         }
         if server == "go" {
-            assert!(!files.iter().any(|file| file == "server/webui.go"));
-            let source = fs::read_to_string(root.join("server/main.go"))?;
+            assert!(!files.iter().any(|file| file == "cmd/server/webui.go"));
+            let source = fs::read_to_string(root.join("cmd/server/main.go"))?;
             let module_path = concat!(
                 "github.com/microsoft/webui/go/v",
                 env!("CARGO_PKG_VERSION_MAJOR")
             );
             assert!(source.contains(module_path));
             assert!(!source.contains("import \"C\""));
-            let module = fs::read_to_string(root.join("server/go.mod"))?;
+            let module = fs::read_to_string(root.join("go.mod"))?;
             let native = env!("CARGO_PKG_VERSION");
             let version = if let Some((base, number)) = native.split_once("-hotfix.") {
                 let (prefix, patch) = base.rsplit_once('.').context("release patch")?;
@@ -183,19 +183,26 @@ fn all_hosts_generate_offline_with_one_shared_frontend() -> Result<()> {
             assert!(!module.contains("replace"));
         }
         if server == "rust" {
-            assert!(files.iter().any(|file| file == "server/Cargo.toml"));
-            assert!(!root.join("server/Cargo.toml.template").exists());
+            assert!(files.iter().any(|file| file == "Cargo.toml"));
+            assert!(!root.join("Cargo.toml.template").exists());
         }
         assert!(!root.join("node_modules").exists());
-        let manifest: Value =
-            serde_json::from_str(&fs::read_to_string(root.join("package.json"))?)?;
-        assert_eq!(manifest["name"], format!("app-{server}"));
-        assert_eq!(manifest["webui"]["server"], server);
-        assert_eq!(
-            manifest["dependencies"]["@microsoft/webui"],
-            env!("CARGO_PKG_VERSION")
-        );
-        let html = fs::read_to_string(root.join("src/index.html"))?;
+        if matches!(server, "node" | "bun") {
+            let manifest: Value =
+                serde_json::from_str(&fs::read_to_string(root.join("package.json"))?)?;
+            assert_eq!(manifest["name"], format!("app-{server}"));
+            assert!(manifest.get("scripts").is_none());
+            assert!(manifest.get("webui").is_none());
+            assert_eq!(
+                manifest["dependencies"]["@microsoft/webui"],
+                env!("CARGO_PKG_VERSION")
+            );
+            assert!(root.join("server/http.mjs").is_file());
+        } else {
+            assert!(!root.join("package.json").exists());
+            assert!(!root.join("server/http.mjs").exists());
+        }
+        let html = fs::read_to_string(root.join("web/index.html"))?;
         if let Some(previous) = &entry {
             assert_eq!(previous, &html);
         }
@@ -221,7 +228,7 @@ fn go_named_application_has_a_valid_nonreserved_module_path() -> Result<()> {
     let root = temp.path().join("go");
     let output = init(&root, &["--server", "go", "--no-interactive"])?;
     assert!(output.status.success());
-    let module = fs::read_to_string(root.join("server/go.mod"))?;
+    let module = fs::read_to_string(root.join("go.mod"))?;
     assert!(module.starts_with("module example.com/go\n"));
     Ok(())
 }
@@ -250,7 +257,7 @@ fn rejects_conflicts_before_writing_and_preserves_git_metadata() -> Result<()> {
 fn normalizes_names_without_injecting_paths_into_project_files() -> Result<()> {
     let temp = temp()?;
     let root = temp.path().join("My Great App");
-    let output = init(&root, &["--package-manager", "pnpm"])?;
+    let output = init(&root, &["--server", "node", "--package-manager", "pnpm"])?;
     assert!(output.status.success());
     let manifest: Value = serde_json::from_str(&fs::read_to_string(root.join("package.json"))?)?;
     assert_eq!(manifest["name"], "my-great-app");
@@ -381,14 +388,14 @@ fn installers_are_opt_in_and_keep_machine_output_clean() -> Result<()> {
     let temp = temp()?;
     let bin = temp.path().join("bin");
     fs::create_dir(&bin)?;
-    for program in ["npm", "npx", "yarn"] {
+    for program in ["npm", "yarn"] {
         let file = bin.join(program);
         fs::write(&file, "#!/bin/sh\nprintf '%s\\n' \"$PWD\" \"$@\"\n")?;
         fs::set_permissions(&file, fs::Permissions::from_mode(0o755))?;
     }
     let root = temp.path().join("installed-app");
     let output = Command::new(env!("CARGO_BIN_EXE_webui"))
-        .args(["--format=json", "init"])
+        .args(["--format=json", "init", "--server", "node"])
         .arg(&root)
         .args(["--install", "--ai-skill", "--no-interactive"])
         .env("PATH", &bin)
@@ -402,16 +409,18 @@ fn installers_are_opt_in_and_keep_machine_output_clean() -> Result<()> {
     let report: Value = serde_json::from_slice(&output.stdout)?;
     assert_eq!(report["dependencies"], "installed");
     assert_eq!(report["ai_skill"], "installed");
-    assert_eq!(report["next_commands"][0], "npm run dev");
+    assert_eq!(report["next_commands"][0], "webui app check");
     let commands = String::from_utf8(output.stderr)?;
     assert!(commands.contains(&root.display().to_string()));
-    assert!(commands.contains("webui-reference"));
+    assert!(root
+        .join(".github/skills/webui-reference/SKILL.md")
+        .is_file());
+    assert!(!commands.contains("npx"));
     assert!(!commands.contains("--global"));
-    assert!(commands.contains("--yes"));
 
     let yarn_root = temp.path().join("yarn-app");
     let output = Command::new(env!("CARGO_BIN_EXE_webui"))
-        .args(["--format=json", "init"])
+        .args(["--format=json", "init", "--server", "bun"])
         .arg(&yarn_root)
         .args(["--package-manager", "yarn", "--install", "--no-interactive"])
         .env("PATH", &bin)
@@ -421,7 +430,7 @@ fn installers_are_opt_in_and_keep_machine_output_clean() -> Result<()> {
     let report: Value = serde_json::from_slice(&output.stdout)?;
     assert_eq!(report["package_manager"], "yarn");
     assert_eq!(report["dependencies"], "installed");
-    assert_eq!(report["next_commands"][0], "yarn run dev");
+    assert_eq!(report["next_commands"][0], "webui app check");
     assert_eq!(
         fs::read_to_string(yarn_root.join(".yarnrc.yml"))?,
         "nodeLinker: node-modules\n"
@@ -431,7 +440,7 @@ fn installers_are_opt_in_and_keep_machine_output_clean() -> Result<()> {
     fs::write(bin.join("npm"), "#!/bin/sh\nexit 23\n")?;
     let failed = temp.path().join("failed-install");
     let output = Command::new(env!("CARGO_BIN_EXE_webui"))
-        .args(["--format=json", "init"])
+        .args(["--format=json", "init", "--server", "node"])
         .arg(&failed)
         .arg("--install")
         .env("PATH", &bin)

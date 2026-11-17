@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { buildFixtureEntries } from '@microsoft/webui-test-support/fixture-build';
+import { buildFixtureEntries, workspaceRoot } from '@microsoft/webui-test-support/fixture-build';
 import { renderFixtures } from '@microsoft/webui-test-support/fixture-render';
 import { startFixtureServer } from '@microsoft/webui-test-support/fixture-server';
 import { prepareStreamingFixture } from '@microsoft/webui-test-support/fixture-streaming';
@@ -25,13 +25,14 @@ const projectionManifest = await buildFixtureEntries({
   tsconfig,
   emptyMessage: `No fixture entry points found in ${fixturesRoot}`,
   extraBuilds: [{
-    entryPoints: [resolve(here, 'static-host.ts')],
-    bundle: true,
+    project: workspaceRoot,
+    entries: { 'static-host': resolve(here, 'static-host.ts') },
     format: 'iife',
-    outfile: resolve(outDir, 'static-host.js'),
-    platform: 'browser',
+    outDir,
+    manifestPath: resolve(outDir, 'static-host-projection.json'),
+    development: true,
+    minify: false,
     target: 'es2022',
-    supported: { 'import-attributes': true },
     tsconfig,
   }],
 });

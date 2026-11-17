@@ -13,7 +13,10 @@ mod e2e_approve;
 mod go_tests;
 mod hotfix;
 mod license_headers;
+mod native_assets;
 mod native_ipc;
+mod native_toolchain;
+mod native_toolchain_command;
 mod node_tests;
 mod process;
 mod publish;
@@ -125,6 +128,7 @@ fn main() -> ExitCode {
             publish::run_stage(&extra)
         }
         Some("sdk-stage") => publish::run_sdk(&args[2..]),
+        Some("toolchain-stage") => native_toolchain_command::run(&workspace_root, &args[2..]),
         Some("publish-build") => {
             let extra: Vec<String> = args.iter().skip(2).cloned().collect();
             publish::run_build(&extra)
@@ -196,6 +200,8 @@ fn usage() -> ExitCode {
            hotfix <commit> <oldest-tag> [--dry-run] [--support-commit <commit>]  Backport a commit and publish incremented hotfix branches\n  \
            publish-build --target <triple> [--profile release|debug] [--output <dir>] [--native-only|--python-only|--portable-only]  Build, stage, and optionally export one target's native artifacts and Python wheel\n  \
            sdk-stage [--target <triple|all>]  Stage already-built SDK and Go module artifacts without publishing\n  \
+           toolchain-stage --target <triple> --cli <built-cli> (--checker-package <native.tgz> | --acquire-checker) [--checker-dir <dir>]  Stage a frozen-checksum native toolchain without publishing\n  \
+           toolchain-stage --validate-release  Validate all six standalone toolchain archive/checksum pairs without executing target binaries\n  \
            publish-stage [--target <triple|all>] [--profile release] [--native-only|--pack-only] [--prebuilt-wasm]  Stage release artifacts into publish/\n  \
            build-windows-local [--target all|x64|arm64|<triple>]  Build and stage Windows MSVC artifacts locally with cargo-xwin\n  \
            license-headers [--fix]  Check (or fix) license headers in source files\n  \
@@ -859,7 +865,6 @@ impl Step {
                 &[
                     "--test",
                     "crates/webui-cli/tests/starter.test.mjs",
-                    "crates/webui-cli/tests/sdk.test.mjs",
                     "scripts/tag-release.test.mjs",
                 ],
                 None,

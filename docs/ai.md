@@ -10,11 +10,15 @@ description: "Core application-authoring rules for coding agents: composition, t
 > WebUI application code. Use the linked guides for detailed API options and
 > platform-specific constraints.
 >
-> Install the loader skill in your project with
-> `npx skills add microsoft/webui --skill webui-reference`, or add `--global`
-> to use it across projects. See
+> Install the project-local loader with `webui init my-app --ai-skill` for a
+> native application, or
+> `npx skills add microsoft/webui --skill webui-reference` for an SDK-consuming project.
+> The latter accepts `--global` for use across projects. See
 > [AI Coding Agents](/start/installation#ai-coding-agents).
-> In a consuming app it reads the installed `@microsoft/webui/ai.md` and the
+> Native applications use `webui reference --path` to locate their
+> version-matched offline reference and its adjacent `docs/` guides without
+> Node/npm. In a package-consuming app the loader reads the installed
+> `@microsoft/webui/ai.md` and the
 > relevant guides bundled alongside it. Upgrading `@microsoft/webui` updates
 > both. In the framework source checkout, it reads `docs/ai.md` and the
 > corresponding source guides.
@@ -31,9 +35,10 @@ Use this page for everyday UI authoring and composition. Specialized features
 are opt-in, not prerequisites for a WebUI application. Before implementing one,
 read its guide rather than inferring setup or API details from this summary.
 In the framework source checkout, use the corresponding file under `docs/`.
-In a consuming app, follow the local links from this file to guides in the same
-installed package. Keep `@microsoft/webui` and `@microsoft/webui-framework` at
-matching versions; do not substitute the latest website for a missing guide.
+In a consuming app, follow local links to the adjacent version-matched guides.
+Keep the native CLI aligned with `webui.toml`, or keep `@microsoft/webui` and
+`@microsoft/webui-framework` at matching versions when using the Node SDK.
+Do not substitute the latest website for a missing guide.
 
 | When the task involves | Read before implementing |
 |---|---|
@@ -141,7 +146,8 @@ protocol.bin + JSON state    -- native render -->  HTML
 HTML + optional browser JS   -- hydrate -->        interactive components
 ```
 
-Build templates with WebUI and bundle authored browser code separately.
+Native `webui app` commands build templates and bundle optional browser code
+together. With the lower-level `webui build` command, bundle browser code separately.
 A supported native host loads the protocol once and supplies JSON state for
 each render. Ordinary SSR sends HTML and assets to the browser, not
 `protocol.bin`. Browser interactivity uses the optional framework runtime;
@@ -167,18 +173,22 @@ static HTML still has transfer, parsing, layout, paint, and memory costs.
 ## Project structure
 
 Use [`webui init`](/reference/cli/#webui-init) to create a small two-page app
-with a Rust (default), C, C++, .NET, Go, Node, or Bun server and one interactive island. It can
-optionally invoke the existing project-local reference-skill installer.
+with a Rust (default), C, C++, .NET, Go, Node, or Bun server and one interactive
+island. All hosts use the native frontend compiler. `--ai-skill` installs the
+project-local reference loader offline.
 
 C/C++/Go starters use a version-matched [standalone SDK](/build/integrations/ffi#standalone-native-sdk)
 from `.webui/sdk` or `WEBUI_SDK_DIR`, never from npm. Go imports the
 [official module](/build/integrations/go); .NET restores
 [Microsoft.WebUI NuGet runtime assets](/build/integrations/dotnet) independently.
-Node is browser build tooling, not a deployed native renderer requirement.
+The native browser toolchain is installed separately from the SDK. Neither
+native frontend compilation nor Rust/Go/C/C++/.NET rendering requires Node.
+Node/Bun hosts retain runtime packages and server code.
 
 ```
 my-app/
-|- src/
+|- webui.toml                 <- Native application configuration
+|- web/
 |  |- index.html              <- Entry template
 |  |- index.ts                <- Hydration entry point
 |  |- my-component/
@@ -188,9 +198,15 @@ my-app/
 |  \- static-widget/
 |     |- static-widget.html   <- Scriptless: no .ts needed
 |     \- static-widget.css
-|- data/state.json            <- Server state for dev
+|- src/main.rs                <- Rust host (Cargo.toml at root)
 \- dist/
 ```
+
+The Go host uses root `go.mod` and `cmd/server/` instead. Other hosts use their
+own root manifest. Rust/Go/C/C++/.NET native projects contain no `package.json`
+or JavaScript build scripts. Native Node/Bun projects retain runtime
+`package.json` and `server/http.mjs`. The manual lessons and Node-frontend
+projects use `src/` for frontend sources instead of `web/`.
 
 **Component discovery:**
 
@@ -1340,7 +1356,43 @@ Before emitting WebUI code, confirm:
 ## Build and run
 
 Building WebUI or a Rust host from source requires Rust 1.99.1 or newer.
-Prebuilt npm binaries do not require Rust.
+Prebuilt binaries do not require Rust unless Rust is the selected host.
+
+### Native applications
+
+Install the complete, matching
+[native toolchain](/start/installation#native-toolchain) and selected host
+prerequisites, then:
+
+```bash
+webui init my-app --server rust --no-interactive
+cd my-app
+webui app check
+webui app dev
+webui app build
+webui app start
+```
+
+`check` runs native TypeScript and host checks. C/C++/.NET host checks perform
+builds and cannot run while an app writer owns the project. Build/dev/start
+are mutually exclusive. `start` verifies the last complete host/protocol build
+and compiles or restores nothing. Dev stops the host before rebuilding and
+waits for another edit after failure. Use `build --frontend-only` before direct
+host builds; those commands do not rebuild the frontend.
+`--project <DIR>` selects an app for every `webui app` subcommand.
+Machine supervisors can opt into `--control-stdin` and send one ASCII `S`
+or close stdin for graceful shutdown; stdin control is disabled by default.
+
+Generation is offline and never overwrites application files. Optional
+`--install` restores selected host dependencies, not system tools or SDKs.
+Package-manager selection applies only to Node/Bun runtime dependencies;
+Bun defaults to Bun and Node to npm.
+Go/C/C++ use `webui sdk check` and `webui sdk exec -- <command>` with
+`.webui/sdk` or the authoritative `WEBUI_SDK_DIR`.
+Use `webui reference --path [--project <DIR>]` for the offline authoring
+reference. See [CLI reference](/reference/cli/) for configuration and flags.
+
+### Package-managed CLI setup
 
 Keep platform optional dependencies enabled. Package managers can block
 WebUI's CLI setup script: follow the
@@ -1350,9 +1402,11 @@ installed build tools when needed. Script approval and registry download
 permissions are different; do not add blanket `--allow-remote=all` or
 all-scripts overrides to generated install commands.
 
-### Web apps
+<span id="web-apps"></span>
 
-For an interactive app, install the CLI and browser framework, then bundle the
+### Template previews and custom web builds
+
+For a custom package-managed build, install the CLI and browser framework, then bundle the
 browser entry into `dist` before serving. A scriptless app can omit the framework
 dependency and `--servedir` when it has no static assets.
 

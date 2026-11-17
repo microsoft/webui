@@ -44,23 +44,38 @@ export async function shutdown(child) {
   });
   let timer;
   try {
-    child.send('shutdown');
-    await Promise.race([
+    child.stdin.once('error', error => {
+      if (error.code !== 'EPIPE') child.emit('error', error);
+    });
+    child.stdin.end('S');
+    const code = await Promise.race([
       stopped,
       new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error('Supervisor shutdown timed out')), 10_000);
+        timer = setTimeout(() => reject(new Error('Supervisor shutdown timed out')),
+          16_000);
       }),
     ]);
+    if (code !== 0 || child.signalCode) {
+      throw new Error(`Native supervisor did not stop gracefully (${child.signalCode ?? code})`);
+    }
   } finally {
     clearTimeout(timer);
     await terminateTree(child);
   }
 }
 
-export function spawnFixture(root, script, args = [], env = {}) {
-  return spawn(process.execPath, [script, ...args], {
+export function spawnNativeFixture(root, cli, args = ['app', 'start'], env = {}) {
+  return spawn(cli, [...args, '--control-stdin'], {
     cwd: root,
     env: { ...process.env, ...env },
-    stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+}
+
+export function spawnHostFixture(root, script, env = {}) {
+  return spawn(process.execPath, [script], {
+    cwd: root,
+    env: { ...process.env, ...env, _WEBUI_APP_CONTROL: 'stdin-v1' },
+    stdio: ['pipe', 'pipe', 'pipe'],
   });
 }

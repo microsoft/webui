@@ -9,7 +9,7 @@
     "build:deps": "pnpm --filter @microsoft/webui --filter @microsoft/webui-framework run build",
     "build:client": "node ./build-client.mjs",
     "build:server": "tsc -p server/tsconfig.json && esbuild server/src/index.ts --bundle --platform=node --format=esm --outfile=server/dist/index.js",
-    "start:client": "pnpm run build:deps && node ./build-client.mjs --watch",
+    "start:client": "pnpm run build:deps && cargo build --release -p microsoft-webui-cli && node ./build-client.mjs --watch",
     "start:api": "tsx watch server/src/index.ts --port 3030",
     "start:test-api": "tsx server/src/index.ts --port 3030 --test-controls --max-concurrent-streams 16",
     "start:server": "cargo run -p microsoft-webui-cli -- serve ./src --theme=@microsoft/webui-examples-theme --plugin=webui --projection-manifest ./dist/webui-projection.json --servedir ./dist --css style --port 3020 --api-port 3030 --watch",

@@ -21,6 +21,7 @@ path = "src/main.rs"
 
 [dependencies]
 microsoft-webui = { path = "../webui", version = "3.1.2", features = ["cli"] }
+microsoft-webui-client-build = { path = "../webui-client-build", version = "3.1.2" }
 microsoft-webui-discovery = { path = "../webui-discovery", version = "3.1.2" }
 microsoft-webui-handler = { path = "../webui-handler", version = "3.1.2" }
 microsoft-webui-parser = { path = "../webui-parser", version = "3.1.2" }

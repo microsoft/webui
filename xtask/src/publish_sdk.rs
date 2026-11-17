@@ -5,9 +5,10 @@
 
 use super::PlatformEntry;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 pub(super) fn directory(root: &Path, platform: &PlatformEntry) -> PathBuf {
     root.join("publish/sdk-contents").join(platform.triple)
@@ -80,42 +81,22 @@ pub(super) fn stage(root: &Path, platform: &PlatformEntry, build_dir: &Path) -> 
 }
 
 pub(super) fn sha256(path: &Path) -> Result<String, String> {
-    // Release tooling already requires Node. Use its OpenSSL-backed
-    // implementation rather than introducing another Rust crypto consumer.
-    const SCRIPT: &str = r#"
-        import { createHash } from 'node:crypto';
-        import { createReadStream } from 'node:fs';
-        try {
-            const hash = createHash('sha256');
-            for await (const chunk of createReadStream(process.argv[1])) hash.update(chunk);
-            process.stdout.write(hash.digest('hex'));
-        } catch (error) {
-            console.error(error.message);
-            process.exitCode = 1;
+    let mut file = fs::File::open(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    let mut buffer = vec![0_u8; 16 * 1024];
+    let mut hash = Sha256::new();
+    loop {
+        let length = file
+            .read(&mut buffer)
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        if length == 0 {
+            break;
         }
-    "#;
-    let output = Command::new("node")
-        .args(["--input-type=module", "--eval", SCRIPT, "--"])
-        .arg(path)
-        .output()
-        .map_err(|error| format!("SDK hashing requires Node.js on PATH: {error}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "SDK hashing failed for {}: {}",
-            path.display(),
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
+        hash.update(&buffer[..length]);
     }
-    let digest = String::from_utf8(output.stdout).map_err(|error| error.to_string())?;
-    if digest.len() != 64
-        || !digest
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    {
-        return Err(format!(
-            "Node.js returned an invalid SDK SHA-256 digest for {}",
-            path.display()
-        ));
+    let mut digest = String::with_capacity(64);
+    use std::fmt::Write;
+    for byte in hash.finalize() {
+        write!(digest, "{byte:02x}").map_err(|error| error.to_string())?;
     }
     Ok(digest)
 }
@@ -225,7 +206,7 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn node_hashes_known_vectors_and_reports_missing_files() {
+    fn native_hashes_known_vectors_and_reports_missing_files() {
         let root = tempfile::Builder::new()
             .prefix("SDK hashes with spaces ")
             .tempdir()
@@ -243,8 +224,7 @@ pub(super) mod tests {
         );
         fs::remove_file(&file).expect("remove input");
         let error = sha256(&file).expect_err("missing input must fail");
-        assert!(error.contains("SDK hashing failed"));
-        assert!(error.contains("ENOENT"));
+        assert!(error.contains(&file.display().to_string()), "{error}");
     }
 
     pub(in crate::publish) fn fixture(root: &Path, _platform: &PlatformEntry) {

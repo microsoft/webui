@@ -19,8 +19,8 @@ in the sources and references listed at the end.
   request must not parse templates, analyze JavaScript, or rebuild dependency
   graphs.
 - **Render without a JavaScript runtime.** The server consumes a binary
-  protocol and JSON state; JavaScript is for browser interactions and optional
-  build-time analysis, never for SSR.
+  protocol and JSON state; browser compilation and core SSR do not require a
+  JavaScript runtime.
 - **Preserve ordinary HTML.** SSR is useful before hydration. Components can
   be HTML-only; authored browser behavior is an opt-in island rather than an
   application-wide prerequisite.
@@ -62,6 +62,13 @@ These are separable boundaries: an application can render without a router or
 browser runtime, and a host can load `protocol.bin` without shipping the
 compiler. Only the selected optional browser entry points should reach an
 application's JavaScript bundle.
+
+Native application tooling adds build-only browser compilation
+(`webui-client-build`) and semantic state analysis (`webui-projection`).
+Rolldown bundles the browser graph; Oxc analyzes its original TypeScript
+sources and resolved edges. Neither a JavaScript VM nor a Node subprocess is
+needed for native frontend compilation. Handler crates and standalone native
+renderer hosts do not depend on these bundler or analysis crates.
 
 Browser resource data, rendering, and delivery are separate layers. Template
 registration and style catalogs do not require a renderer or navigation
@@ -233,10 +240,12 @@ imports ahead of time; deferred imports must not be promoted accidentally.
 
 Without a projection manifest, initial hydration uses full state and unknown
 scripted navigation surfaces retain full state for correctness. The WebUI
-projection compiler is a **build-only** TypeScript analysis in
-`@microsoft/webui/projection.js`, not part of the Rust render path or the
-package's root runtime import. A bundler adapter supplies its already
-resolved module graph and final output membership. The compiler traces
+projection compiler is a **build-only**, shared Rust semantic analysis in
+`webui-projection`, not part of the render path. Native browser compilation
+calls it directly; Node exposes the same browser build through a thin N-API
+binding. Rolldown captures its already resolved module graph and final output
+membership in Rust. No JavaScript projection adapter, parser service, manifest
+builder, or alternate frontend implementation is retained. The compiler traces
 WebUI-authored component definitions and observable/attribute properties,
 including inherited properties, and emits exact per-component state keys.
 It never infers a key set from raw output text or reruns module resolution.
@@ -507,7 +516,7 @@ non-streaming output does not acquire streaming markers or state.
 
 | Surface | Responsibility |
 | --- | --- |
-| `webui` Rust library and CLI | Build/inspect protocols, render requests, and serve development apps. Watch rebuilds replace the served artifact only after a successful build. |
+| `webui` Rust library and CLI | Build/inspect protocols, render requests, serve template previews, and supervise native application builds and hosts. |
 | `@microsoft/webui` | Node build API and native-addon runtime; its projection subpath is build-only. Browser framework and router are separate packages. |
 | C FFI, .NET, Go, Python, WASM | Load a protocol once and expose rendering through host-native ownership and errors. Binding-specific APIs expose partial, token, and streaming operations where supported. WASM can also build protocols when its parser feature is selected. |
 | `webui-press` | Convert Markdown/site templates to WebUI page inputs, resolve nested site regions and theme-family styles at build time, and share a validated client projection across page builds. |
@@ -531,13 +540,42 @@ directly rather than loading their dependencies into the core CLI. Package
 installation can use Node, but command dispatch has no JavaScript wrapper.
 Application initialization is also owned by the Rust CLI. It emits ordinary
 editable source files from embedded templates without requiring a network or
-host toolchain. One frontend/build contract is shared by the Rust, C, C++,
-.NET, Go, Node, and Bun server adapters; dependency and agent-skill installation are separate,
-explicit onboarding steps. Generated production hosts load compiled artifacts
-rather than retaining the scaffolder or compiling templates at request time.
+host toolchain. Native frontend tooling is the default for Rust, C, C++,
+.NET, Go, Node, and Bun server adapters; an explicit Node frontend preserves
+package-managed build orchestration. Native Rust/Go/C/C++/.NET roots have
+only their host manifests, application sources, and frontend configuration.
+Node/Bun still need runtime packages and server code. Dependency restoration
+and agent-skill installation are separate, explicit onboarding steps.
+
+One application supervisor owns the project writer lock, matching frontend
+and protocol generation, host build, promotion, and host lifetime. It stages
+assets and protocol together, builds the host before promotion, and records
+the executable and protocol identities. Start validates those identities
+without compiling or restoring dependencies. Development consumes bounded
+native filesystem events, coalesces edits, drains the previous host before
+rebuilding, and waits for another edit after failure rather than serving an
+old generation as a successful rebuild. Direct host builds consume prepared
+frontend artifacts rather than importing a compiler into the running host.
+
+The supervisor gates child execution inside an owned process group or Windows
+Job before work begins. Graceful control travels over a private stdin channel;
+hosts stop admission and drain requests before releasing renderer resources.
+Bounded confirmation and containment handle children that fail to stop.
+This lifecycle belongs to application tooling and host adapters, not the
+render engine.
+
+The CLI embeds canonical first-party framework TypeScript and offline reference
+data at build/release time. It materializes release-owned resources in the
+project cache and maps framework exports to those sources for both bundling
+and native type checking. Cargo consumers receive staged resources, not an
+npm-fetching build script. Native TypeScript checking uses a separately
+validated, release-matched toolchain archive with an independently pinned
+checker version; there is no ambient compiler discovery or implicit download.
+Generated production hosts load compiled artifacts rather than retaining
+the scaffolder or compiling templates at request time.
 Native C ABI SDKs are language-neutral standalone release archives, separate
-from npm packages. Release staging owns their version, target identity, and
-integrity inventory. Platform libraries must remain relocatable rather than
+from both browser toolchains and npm packages. Release staging owns their
+version, target identity, and integrity inventory. Platform libraries must remain relocatable rather than
 retaining build-machine paths. Go source modules are distributed independently
 of those libraries, with a matching release identity and Go's subdirectory
 module tags. Neither Go consumers nor deployed native renderers require npm.
@@ -660,7 +698,7 @@ engineering another; they are not public application-authoring guides.
 | Question | Current authoritative source |
 | --- | --- |
 | Protobuf fields and fragment shapes | `crates/webui-protocol/proto/webui.proto` |
-| Projection boundary, manifest identity, and hash contract | [`specs/projection.md`](specs/projection.md); `packages/webui/src/projection/{graph,manifest,diagnostics}.ts`, `crates/webui-protocol/src/projection_manifest.rs` |
+| Projection boundary, manifest identity, and hash contract | [`specs/projection.md`](specs/projection.md); `crates/webui-{projection,client-build}/src/`, `crates/webui-protocol/src/projection_manifest.rs` |
 | Component asset ownership, registration, and publication | [`specs/component-assets.md`](specs/component-assets.md); `crates/webui/src/component_assets/`, `crates/webui/src/component_asset_output.rs`, `packages/webui-framework/src/component-asset/` |
 | Parser directives and build diagnostics | `crates/webui-parser/src/`, `docs/learn/directives/` |
 | State paths and expression semantics | `crates/webui-state/src/`, `crates/webui-expressions/src/`, `docs/learn/state-management/index.md`, `docs/learn/directives/if.md` |
@@ -674,6 +712,7 @@ engineering another; they are not public application-authoring guides.
 | Desktop app and window APIs | `docs/build/desktop.md`, `crates/webui-desktop/src/` |
 | Host APIs and examples | `docs/build/integrations/`, `docs/reference/cli/`, package READMEs, `examples/` |
 | Native SDK distribution and compatibility | [`specs/native-sdk.md`](specs/native-sdk.md), `xtask/src/publish_sdk.rs` |
+| Native application tooling, resources, and checker distribution | [`specs/native-toolchain.md`](specs/native-toolchain.md), `crates/webui-cli/src/commands/app/`, `crates/webui-client-build/` |
 
 Tests at each boundary are the executable compatibility checks. Add focused
 tests when behavior changes, including producer/consumer parity for binary

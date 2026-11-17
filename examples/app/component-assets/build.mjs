@@ -9,6 +9,6 @@ const { client } = await runWebUIBuild({
   theme: '@microsoft/webui-examples-theme',
   componentAssetRoots: ['lazy-panel', 'secondary-panel'],
   metafilePath: 'dist/component-assets.meta.json',
-  clientOptions: { define: { __WEBUI_DEV__: 'false' } },
+  clientOptions: { defines: { __WEBUI_DEV__: 'false' } },
 });
 writeFileSync('dist/client-metafile.json', `${JSON.stringify(client.metafile, null, 2)}\n`);

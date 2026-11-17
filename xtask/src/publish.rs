@@ -13,6 +13,7 @@
 //! - `publish/standalone/` — legacy direct-download native and WASM assets
 //! - `publish/python/`  — pre-staged wheels plus the generated source distribution
 //! - `publish/sdk/`     - standalone versioned SDK archives and SHA-256 sidecars
+//! - `publish/toolchains/` - native CLI/checker archives and SHA-256 sidecars
 //! - `publish/go/`      - source-only Go module proxy for offline release testing
 
 use crate::release_version::ReleaseVersion;
@@ -136,6 +137,7 @@ const PUBLISH_SUBDIRS: &[&str] = &[
     "sdk",
     "sdk-contents",
     "go",
+    "toolchains",
 ];
 
 /// Distribution name used for `microsoft-webui` Python artifact filenames.
@@ -592,7 +594,7 @@ fn prepare_publish_dirs(root: &Path, mode: StageMode) -> Result<(), String> {
             // `native/` and `python/` are populated by a prior stage/build step
             // (e.g. downloaded matrix-build pipeline artifacts) and must be
             // preserved, not cleaned, when only packing/validating.
-            for subdir in ["native", "python"] {
+            for subdir in ["native", "python", "toolchains"] {
                 fs::create_dir_all(publish_dir.join(subdir))
                     .map_err(|e| format!("failed to create publish/{subdir}: {e}"))?;
             }
@@ -1568,6 +1570,7 @@ fn pack_rust_crates(root: &Path) -> Result<(), String> {
     args.push("--no-verify");
     args.push("--allow-dirty");
 
+    crate::native_assets::stage(root)?;
     crate::desktop_assets::stage_built_assets(root)?;
     crate::desktop_assets::with_packaged_assets(root, || {
         run_command_quiet("cargo", &args, None).map_err(|e| format!("cargo package failed: {e}"))
@@ -2002,7 +2005,7 @@ fn validate_release_artifact_counts(root: &Path, version: &str) -> Result<(), St
     }
     validate_artifact_count(
         count_files_with_extension(&publish.join("crates"), "crate"),
-        17,
+        19,
         "crate packages",
     )?;
     validate_artifact_count(
@@ -2022,6 +2025,7 @@ fn validate_release_artifact_counts(root: &Path, version: &str) -> Result<(), St
     )?;
     validate_python_release_artifacts(&publish, &python_version)?;
     archives::validate_release(root, version)?;
+    crate::native_toolchain::validate_release(root, version)?;
     go::validate_release(root, version)
 }
 
@@ -2030,14 +2034,28 @@ fn validate_release_artifact_counts(root: &Path, version: &str) -> Result<(), St
 /// `sdk-stage [--target <triple|all>]` consumes `publish/sdk-contents/<target>`.
 pub fn run_sdk(args: &[String]) -> ExitCode {
     let result = (|| {
-        let target = match args {
-            [] => "all",
-            [flag, target] if flag == "--target" => target.as_str(),
-            _ => return Err("usage: sdk-stage [--target <triple|all>]".to_string()),
-        };
+        let usage = "usage: sdk-stage [--target <triple|all>] [--build-dir <already-built-native-artifacts>]";
+        let mut target = None;
+        let mut build_dir = None;
+        let mut flags = args.iter();
+        while let Some(flag) = flags.next() {
+            let value = flags.next().ok_or(usage)?;
+            match flag.as_str() {
+                "--target" if target.is_none() => target = Some(value.as_str()),
+                "--build-dir" if build_dir.is_none() => build_dir = Some(PathBuf::from(value)),
+                _ => return Err(usage.to_string()),
+            }
+        }
+        let target = target.unwrap_or("all");
         let root = std::env::current_dir().map_err(|error| error.to_string())?;
         let version = version::read_version()?;
-        if target == "all" {
+        if let Some(directory) = build_dir {
+            if target == "all" {
+                return Err("--build-dir requires one explicit --target".to_owned());
+            }
+            stage_sdk_archive(&root, target, &directory)?;
+            go::stage(&root, &version)
+        } else if target == "all" {
             stage_binding_distributions(&root, &version)
         } else {
             let platform = PLATFORMS
@@ -2882,7 +2900,7 @@ mod tests {
         let publish = root.path().join("publish");
         for (directory, extension, count) in [
             ("npm", "tgz", 17),
-            ("crates", "crate", 17),
+            ("crates", "crate", 19),
             ("nuget", "nupkg", 8),
             ("nuget", "snupkg", 2),
             ("standalone", "bin", 20),
@@ -3060,7 +3078,7 @@ mod tests {
         }
         write_numbered_files(root.path().join("publish/npm"), 17, "tgz");
         write_desktop_npm_fixtures(&root.path().join("publish/npm"), "3.1.2");
-        write_numbered_files(root.path().join("publish/crates"), 17, "crate");
+        write_numbered_files(root.path().join("publish/crates"), 19, "crate");
         write_numbered_files(root.path().join("publish/nuget"), 8, "nupkg");
         write_numbered_files(root.path().join("publish/nuget"), 2, "snupkg");
         write_numbered_files(root.path().join("publish/standalone"), 20, "asset");
@@ -3095,7 +3113,7 @@ mod tests {
         }
         write_numbered_files(root.path().join("publish/npm"), 16, "tgz");
         write_desktop_npm_fixtures(&root.path().join("publish/npm"), "1.2.3");
-        write_numbered_files(root.path().join("publish/crates"), 17, "crate");
+        write_numbered_files(root.path().join("publish/crates"), 19, "crate");
         write_numbered_files(root.path().join("publish/nuget"), 8, "nupkg");
         write_numbered_files(root.path().join("publish/nuget"), 2, "snupkg");
         write_numbered_files(root.path().join("publish/standalone"), 20, "asset");
@@ -3166,6 +3184,8 @@ mod tests {
         )
         .expect("Go source");
         stage_binding_distributions(root, version).expect("SDK and Go distributions");
+        crate::native_toolchain::test_release_fixture(root, version)
+            .expect("toolchain release fixtures");
     }
 
     fn write_numbered_files(directory: PathBuf, count: u32, extension: &str) {

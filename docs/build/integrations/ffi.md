@@ -23,6 +23,12 @@ the [official Go module](./go). Use `--server c`, `--server cpp`, or
 `--server go`. C/C++ require CMake 3.24+ and a compatible native toolchain.
 Go requires Go 1.25+ and a cgo C compiler.
 
+All use native frontend tooling. Install the matching
+[native toolchain](/start/installation#native-toolchain) separately from the
+C ABI SDK. Native C/C++ roots contain `CMakeLists.txt`, `main.c` or `main.cpp`,
+`host.h`, `web/`, and `webui.toml`, with no `package.json` or JavaScript build
+scripts.
+
 Download the release-matched `webui-sdk-<version>-<platform>.tar.gz` and its
 adjacent `.sha256` file from the
 [release assets](https://github.com/microsoft/webui/releases).
@@ -30,6 +36,8 @@ Verify the archive before extraction. Its root contains
 `include/webui_ffi.h`, the shared library in `lib/`, `sdk.json` with target
 identity and file hashes, and license notices. Windows also includes the
 DLL import library.
+Checksums detect corruption and mismatched files; they are not independent
+proof of authenticity. Obtain artifacts through an approved release source.
 
 SDKs are standalone, language-neutral artifacts, not npm package payloads.
 They target Windows, macOS, and GNU/Linux on x64 and ARM64; musl is not
@@ -40,18 +48,34 @@ Deployed renderers do not require npm or the template compiler.
 
 Generated apps resolve only `WEBUI_SDK_DIR` (when explicitly set) or their
 project-local `.webui/sdk` directory. Extract the archive's SDK root there,
-without an extra wrapper directory. The generated build helper validates
+without an extra wrapper directory. The native CLI validates
 the release version, target, operating system, architecture, libc, complete
 inventory, and file hashes. An invalid override fails without fallback.
 It never downloads or builds an SDK or discovers one through npm.
+
+```bash
+webui sdk check
+webui sdk exec -- cmake -S . -B build
+webui sdk exec -- cmake --build build
+```
+
+`sdk exec` runs directly without a shell and changes only the child's
+include/link/loader environment, preserving existing flags and search paths.
+It does not build frontend assets. For the generated application, use
+`webui app check`, `webui app dev`, `webui app build`, and `webui app start`;
+or run `webui app build --frontend-only` before direct CMake commands.
+C/C++ app checks perform native builds and cannot run while another app
+build/dev/start owns the project. Start validates the recorded executable
+and protocol without compiling or restoring. See [SDK commands](/reference/cli/#webui-sdk)
+and [app commands](/reference/cli/#webui-app).
 
 The C/C++ starters support persistent HTTP/1.1 for requests without bodies.
 Body-bearing requests receive the normal response and close the connection;
 the read-only starter does not accept uploads. The transport caps on-demand
 workers and queued connections at 16 each, expires persistent idle clients
 after 100 ms, and limits request I/O waits to 2 seconds. Tune these limits in
-the generated `server/host.h` for your deployment, particularly slow clients
-or large assets.
+the generated `host.h` for your deployment, particularly slow clients or large
+assets.
 
 ## Building the Shared Library
 

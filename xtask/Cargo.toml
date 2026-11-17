@@ -12,9 +12,12 @@ windows-app-sdk-tools = ["dep:windows-bindgen"]
 console = { workspace = true }
 ctrlc = { workspace = true }
 serde_json = { workspace = true }
+serde = { workspace = true }
 windows-bindgen = { workspace = true, optional = true }
 sha2 = { workspace = true }
 tempfile = { workspace = true }
+base64 = { workspace = true }
+serde_yaml = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }

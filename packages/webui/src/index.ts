@@ -1,10 +1,16 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { createRequire } from "node:module";
-import { packageName, platformKey, resolve } from "./platform.js";
-
-const require = createRequire(import.meta.url);
+import { addonInstallHelp, loadBinding } from "./binding.js";
+export { bundleClient } from "./bundle.js";
+export type {
+  ClientBundleOptions,
+  ClientBundle,
+  ClientMetafile,
+  ClientOutputImport,
+  ClientProjectionManifest,
+  ClientBuildWarning,
+} from "./bundle.js";
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -36,8 +42,8 @@ export interface BuildOptions {
   /** Root component tags emitted as static `.webui.js` ESM assets. */
   componentAssetRoots?: string[];
   /**
-   * Return the build metafile: the component asset graph in esbuild's
-   * `inputs`/`outputs` format and a `lazyPacks` cost report. Returned only
+   * Return the build metafile: the component asset input/output graph and a
+   * `lazyPacks` cost report. Returned only
    * when the build emits component assets or lazy packs. Also measures each
    * lazy pack's `brotliBytes`.
    */
@@ -391,44 +397,8 @@ interface NativeStreamStep {
   boundary?: NativeBoundaryDescriptor | null;
 }
 
-let addon: NativeAddon | undefined;
-
 function loadAddon(): NativeAddon {
-  if (addon) return addon;
-
-  const addonPath = resolve("addon");
-  if (!addonPath) {
-    throw new Error(
-      `[webui] Native addon not found for ${platformKey()}. ${addonInstallHelp()} ` +
-        'The Node API does not fall back to the CLI; invoke "webui" explicitly for filesystem builds.',
-    );
-  }
-
-  try {
-    // .node files load via require(), native libs (.dylib/.so/.dll) via dlopen
-    if (addonPath.endsWith(".node")) {
-      addon = require(addonPath) as NativeAddon;
-    } else {
-      const m: { exports: NativeAddon } = { exports: {} as NativeAddon };
-      process.dlopen(m, addonPath);
-      addon = m.exports;
-    }
-  } catch (cause) {
-    throw new Error(
-      `[webui] Failed to load native addon at ${addonPath}. ${addonInstallHelp()}`,
-      { cause },
-    );
-  }
-  return addon;
-}
-
-function addonInstallHelp(): string {
-  try {
-    return `Reinstall ${packageName()} or set WEBUI_ADDON_PATH to a compatible addon.`;
-  } catch (error) {
-    const platformError = error instanceof Error ? error.message : String(error);
-    return `${platformError} Set WEBUI_ADDON_PATH to a compatible addon.`;
-  }
+  return loadBinding<NativeAddon>();
 }
 
 // ── Build API ────────────────────────────────────────────────────────

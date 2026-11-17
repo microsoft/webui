@@ -10,7 +10,7 @@
     "build:protocol": "cargo run -p microsoft-webui-cli -- build ./src --plugin=webui --projection-manifest ./dist/webui-projection.json --css module --out ./dist",
     "build:client": "node ../../build-client.mjs",
     "build:server": "cargo check -p marketplace-api",
-    "start:client": "pnpm run build:deps && node ../../build-client.mjs --watch",
+    "start:client": "pnpm run build:deps && cargo build --release -p microsoft-webui-cli && node ../../build-client.mjs --watch",
     "start:server": "cargo run -p marketplace-api -- --port 3004 --css=module",
     "start": "cargo xtask dev commerce",
     "test": "playwright test",

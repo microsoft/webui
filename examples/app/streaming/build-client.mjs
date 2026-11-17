@@ -25,12 +25,13 @@
  * island is excluded on its own because its loader lives inside a boundary.
  */
 import { runWebUIClientBuild } from "../../build-client.mjs";
+import { fileURLToPath } from "node:url";
 
 await runWebUIClientBuild({
   // Object form so the island lands at `dist/weather-panel.js` rather than
   // inheriting its `src/weather-panel/` directory.
-  entryPoints: {
-    index: "src/index.ts",
-    "weather-panel": "src/weather-panel/weather-panel.ts",
+  entries: {
+    index: fileURLToPath(new URL("src/index.ts", import.meta.url)),
+    "weather-panel": fileURLToPath(new URL("src/weather-panel/weather-panel.ts", import.meta.url)),
   },
 });

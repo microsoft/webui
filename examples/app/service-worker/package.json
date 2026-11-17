@@ -14,7 +14,7 @@
     "build:client": "node build-client.mjs",
     "check:render": "node dist-scripts/check-render.js",
     "start:server": "pnpm run build && node dist-scripts/serve.js --port 4175",
-    "start:client": "node build-client.mjs --watch",
+    "start:client": "cargo build --release -p microsoft-webui-cli && node build-client.mjs --watch",
     "start": "cargo xtask dev service-worker",
     "test": "pnpm run build && playwright test"
   },

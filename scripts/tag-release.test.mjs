@@ -247,10 +247,12 @@ test('a remote without atomic push support fails without publishing any tag', t 
   assert.equal(f.remoteTag('go/v3.1.2'), null);
 });
 
-test('Azure selected-build detection gates SDK and Go independently, including historical builds', () => {
+test('Azure selected-build detection gates toolchains, SDK and Go independently, including historical builds', () => {
   const detector = fileURLToPath(new URL('../.ado/release-distributions.py', import.meta.url));
   const python = process.platform === 'win32' ? 'python' : 'python3';
-  for (const names of [[], ['standalone_sdk_archives'], ['go_module_proxy'], ['standalone_sdk_archives', 'go_module_proxy']]) {
+  const artifacts = ['standalone_sdk_archives', 'go_module_proxy', 'standalone_native_toolchains'];
+  for (let mask = 0; mask < 8; mask++) {
+    const names = artifacts.filter((_, index) => mask & (1 << index));
     const output = spawnSync(python, [detector], {
       input: JSON.stringify({ value: names.map(name => ({ name })) }),
       encoding: 'utf8',
@@ -259,10 +261,12 @@ test('Azure selected-build detection gates SDK and Go independently, including h
     for (const [artifact, variable, pattern] of [
       ['standalone_sdk_archives', 'sdkAvailable', 'sdk/*.tar.gz.sha256'],
       ['go_module_proxy', 'goAvailable', 'go/webui-go-proxy-*.tar.gz'],
+      ['standalone_native_toolchains', 'toolchainsAvailable', 'toolchains/*.tar.gz.sha256'],
     ]) {
       assert.ok(output.stdout.includes(`variable=${variable};isOutput=true]${names.includes(artifact)}`));
       assert.equal(output.stdout.includes(pattern), names.includes(artifact));
     }
+    assert.equal(output.stdout.includes('toolchains/*.tar.gz%0A'), names.includes('standalone_native_toolchains'));
   }
   assert.notEqual(spawnSync(python, [detector], {
     input: '{"error":"denied"}',
@@ -273,7 +277,11 @@ test('Azure selected-build detection gates SDK and Go independently, including h
 test('Azure optional distributions share the historical standalone handoff without unconditional inputs', () => {
   const build = readFileSync(new URL('../.ado/pipelines/azure-pipelines-build.yml', import.meta.url), 'utf8');
   const cd = readFileSync(new URL('../.ado/pipelines/azure-pipelines-cd.yml', import.meta.url), 'utf8');
-  for (const [directory, artifact, variable] of [['sdk', 'standalone_sdk_archives', 'sdkAvailable'], ['go', 'go_module_proxy', 'goAvailable']]) {
+  for (const [directory, artifact, variable] of [
+    ['sdk', 'standalone_sdk_archives', 'sdkAvailable'],
+    ['go', 'go_module_proxy', 'goAvailable'],
+    ['toolchains', 'standalone_native_toolchains', 'toolchainsAvailable'],
+  ]) {
     assert.ok(build.includes(`targetPath: '$(Build.SourcesDirectory)/publish/${directory}'\n        artifactName: ${artifact}`));
     assert.ok(cd.includes(`artifact: ${artifact}`));
     assert.ok(cd.includes(`SourceFolder: $(Pipeline.Workspace)/releaseBuild/${artifact}\n            Contents: '**'`));
@@ -293,4 +301,32 @@ test('Azure optional distributions share the historical standalone handoff witho
     const section = build.split(`  - job: ${job}\n`)[1]?.split('\n  - job: ')[0];
     assert.ok(section?.includes("- task: GoTool@0\n      displayName: Use Go 1.25\n      inputs:\n        version: '1.25.0'"), job);
   }
+});
+
+test('Azure native target matrix stages real target CLIs and aggregates toolchains before pack-only upload', () => {
+  const build = readFileSync(new URL('../.ado/pipelines/azure-pipelines-build.yml', import.meta.url), 'utf8');
+  for (const [job, targets, executable] of [
+    ['BuildLinuxAssets', ['x86_64-unknown-linux-gnu', 'aarch64-unknown-linux-gnu'], 'webui'],
+    ['BuildMacOSAssets', ['aarch64-apple-darwin', 'x86_64-apple-darwin'], 'webui'],
+    ['BuildWindowsAssets', ['x86_64-pc-windows-msvc', 'aarch64-pc-windows-msvc'], 'webui.exe'],
+  ]) {
+    const section = build.split(`  - job: ${job}\n`)[1]?.split('\n  - job: ')[0];
+    for (const target of targets) assert.ok(section?.includes(`targetTriple: ${target}`), target);
+    assert.ok(section.includes('xtask toolchain-stage'), job);
+    assert.ok(section.includes('--acquire-checker'), job);
+    assert.ok(section.indexOf('xtask publish-build') < section.indexOf('xtask toolchain-stage'), job);
+    const cli = executable.endsWith('.exe')
+      ? 'target\\$env:TARGET_TRIPLE\\release\\webui.exe'
+      : 'target/$TARGET_TRIPLE/release/webui';
+    assert.ok(section.includes(`--cli "${cli}"`), job);
+    assert.ok(section.includes('RELEASE_VERSION: $(releaseVersion)'), job);
+    assert.ok(section.includes('publish/toolchains') || section.includes('publish\\toolchains'), job);
+    assert.ok(section.includes('$toolchain.sha256'), job);
+  }
+  const assembly = build.split('  - job: AssembleRelease\n')[1];
+  for (const target of ['linux-x64', 'linux-arm64', 'macos-arm64', 'macos-x64', 'windows-x64', 'windows-arm64']) {
+    assert.ok(assembly.includes(`artifactName: stage-${target}\n        targetPath: $(Build.SourcesDirectory)`), target);
+  }
+  assert.ok(assembly.indexOf('--pack-only') < assembly.indexOf('artifactName: standalone_native_toolchains'));
+  assert.ok(assembly.includes("targetPath: '$(Build.SourcesDirectory)/publish/toolchains'"));
 });

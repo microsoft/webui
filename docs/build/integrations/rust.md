@@ -26,6 +26,10 @@ To install the standalone compiler without npm, use Rust 1.99.1 or newer:
 cargo install microsoft-webui-cli
 ```
 
+This builds the CLI without Node/npm. Native application checking also requires
+the release-matched [native toolchain](/start/installation#native-toolchain)
+with its native TypeScript compiler.
+
 For a Rust application host, add the rendering library:
 
 ```toml
@@ -35,6 +39,40 @@ serde_json = "1"
 ```
 
 The crate is published as `microsoft-webui` on crates.io; the bare `webui` name is owned by an unrelated project. Cargo's default rename rules mean items remain importable as `use webui::...` because the crate sets `[lib] name = "webui"` internally.
+
+## Scaffold an application
+
+With the native toolchain and Cargo installed:
+
+```bash
+webui init my-app --server rust --no-interactive
+cd my-app
+webui app check
+webui app dev
+```
+
+The native default creates `Cargo.toml`, `src/main.rs`, `web/`, and
+`webui.toml`, with no `package.json` or JavaScript build scripts. Frontend
+compilation does not require Node. Cargo provides the renderer; Rust hosts do
+not use the standalone C ABI SDK.
+
+Use `webui app build` followed by `webui app start` for a complete production
+build. Start verifies the recorded executable and protocol and performs no
+compilation or restoration. Only `dist/public/` is public static content.
+The generated server drains requests before releasing renderer resources.
+
+For direct Cargo commands, prepare the frontend first:
+
+```bash
+webui app build --frontend-only
+cargo check
+cargo run --release
+```
+
+Cargo does not rebuild browser assets or templates. Native app builds use the
+project's `target/` directory, independently of inherited `CARGO_TARGET_DIR`.
+See [app commands](/reference/cli/#webui-app) for native development and
+production workflows.
 
 ## Lazy template packs
 

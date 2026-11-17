@@ -437,9 +437,10 @@ Trusted Types also does not sanitize HTML already delivered by the server.
 
 ## Build-Time State Projection
 
-State projection is opt-in. Build your browser code with the projection plugin,
-then pass the generated `webui-projection.json` to WebUI to reduce the state
-sent to the browser.
+Native application builds include state projection. Use `webui app build`
+to compile browser code and produce the matching protocol in one pipeline.
+Custom Node build hosts can use `bundleClient()` and pass its native proof to
+WebUI finalization.
 
 Projection includes inherited `@observable` and `@attr` fields, including
 those from statically analyzable class factories such as
@@ -447,55 +448,14 @@ those from statically analyzable class factories such as
 factory is analyzable: if the compiler cannot prove the exact state keys, the
 projection build reports an error rather than dropping inherited state.
 
-The supported esbuild plugin is exported from `@microsoft/webui/projection.js`:
-
-<webui-press-tabs sync="package-manager" storage="local">
-<webui-press-tab slot="tab" value="npm" active>npm</webui-press-tab>
-<webui-press-tab slot="tab" value="pnpm">pnpm</webui-press-tab>
-<webui-press-tab slot="tab" value="yarn">Yarn</webui-press-tab>
-<webui-press-tab slot="tab" value="bun">Bun</webui-press-tab>
-<webui-press-tab-panel active>
-
-```bash
-npm install -D esbuild typescript
-```
-
-</webui-press-tab-panel>
-<webui-press-tab-panel>
-
-```bash
-pnpm add -D esbuild typescript
-```
-
-</webui-press-tab-panel>
-<webui-press-tab-panel>
-
-```bash
-yarn add --dev esbuild typescript
-```
-
-</webui-press-tab-panel>
-<webui-press-tab-panel>
-
-```bash
-bun add --dev esbuild typescript
-```
-
-</webui-press-tab-panel>
-</webui-press-tabs>
-
 ```js
 // build-client.mjs
-import * as esbuild from 'esbuild';
-import { esbuildProjection } from '@microsoft/webui/projection.js';
+import { bundleClient } from '@microsoft/webui';
 
-await esbuild.build({
-  entryPoints: ['src/index.ts'],
-  outdir: 'dist',
-  bundle: true,
-  splitting: true,
-  format: 'esm',
-  plugins: [esbuildProjection()],
+await bundleClient({
+  project: process.cwd(),
+  entries: { index: 'src/index.ts' },
+  outDir: 'dist',
 });
 ```
 
@@ -528,8 +488,10 @@ Behavior is intentionally strict:
   SSR host attribute wins; projected state seeds the property only when that
   attribute is absent.
 
-Use your existing esbuild entry points, splitting, and output naming. The plugin
-runs as part of that build; it does not start a second bundle.
+The native bundler owns entry points, splitting, output naming and the exact
+source/output proof. There is no separate JavaScript projection compiler or
+adapter to configure. See [single-compilation builds](/build/integrations/node#single-compilation-builds)
+when your browser entry imports generated lazy or component modules.
 
 ## State Sent to the Browser
 

@@ -18,9 +18,11 @@
 #else
 #include <dirent.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
+#include "shutdown.h"
 
 #define HOST_MAX_ASSETS 4096
 #define HOST_MAX_FILE (16u * 1024u * 1024u)
@@ -45,11 +47,41 @@ struct host {
 static volatile sig_atomic_t host_stopping = 0;
 static void host_signal(int number) { (void)number; host_stopping = 1; }
 
+static int host_control_tick(void) {
+    unsigned char command = 0;
+#ifdef _WIN32
+    HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
+    DWORD available = 0, count = 0;
+    if (!PeekNamedPipe(input, NULL, 0, NULL, &available, NULL)) {
+        if (GetLastError() == ERROR_BROKEN_PIPE) {
+            fprintf(stderr, "WebUI supervisor disconnected; shutting down\n"); return 1;
+        }
+        fprintf(stderr, "Cannot read WebUI supervisor pipe: %lu\n", (unsigned long)GetLastError()); return -1;
+    }
+    if (!available) return 0;
+    if (!ReadFile(input, &command, 1, &count, NULL) || count != 1) {
+        fprintf(stderr, "Cannot read WebUI supervisor command\n"); return -1;
+    }
+#else
+    struct pollfd input = {STDIN_FILENO, POLLIN, 0};
+    int ready = poll(&input, 1, 0);
+    if (ready < 0 && errno == EINTR) return 0;
+    if (ready < 0) { fprintf(stderr, "Cannot poll WebUI supervisor pipe: %s\n", strerror(errno)); return -1; }
+    if (!ready) return 0;
+    ssize_t count = read(STDIN_FILENO, &command, 1);
+    if (count == 0) { fprintf(stderr, "WebUI supervisor disconnected; shutting down\n"); return 1; }
+    if (count < 0 && errno == EINTR) return 0;
+    if (count != 1) { fprintf(stderr, "Cannot read WebUI supervisor command\n"); return -1; }
+#endif
+    if (command != 'S') { fprintf(stderr, "Invalid WebUI supervisor command; shutting down\n"); return -1; }
+    return 1;
+}
+
 static const char *host_mime(const char *name) {
     const char *extension = strrchr(name, '.');
     static const char *const types[][2] = {
         {".js", "text/javascript; charset=utf-8"}, {".css", "text/css; charset=utf-8"},
-        {".json", "application/json"}, {".txt", "text/plain; charset=utf-8"},
+        {".json", "application/json"}, {".map", "application/json"}, {".txt", "text/plain; charset=utf-8"},
         {".svg", "image/svg+xml"}, {".png", "image/png"}, {".jpg", "image/jpeg"},
         {".jpeg", "image/jpeg"}, {".gif", "image/gif"}, {".webp", "image/webp"},
         {".avif", "image/avif"}, {".ico", "image/x-icon"},
@@ -98,7 +130,7 @@ static void host_log_native(const char *operation) {
     fprintf(stderr, "%s: %s\n", operation, error ? error : "native operation failed without a diagnostic");
 }
 
-static int host_request(struct mg_connection *connection) {
+static int host_dispatch(struct mg_connection *connection) {
     const struct mg_request_info *request = mg_get_request_info(connection);
     struct host *app = (struct host *)request->user_data;
     /* No endpoint consumes bodies. Close instead of draining unbounded or
@@ -122,6 +154,25 @@ static int host_request(struct mg_connection *connection) {
                                   app->assets[i].bytes, app->assets[i].length, head);
     const char message[] = "Not found\n";
     return host_reply(connection, 404, "text/plain; charset=utf-8", message, sizeof(message) - 1, head);
+}
+
+static int host_request(struct mg_connection *connection) {
+    host_lock_requests();
+    if (host_draining) {
+        host_unlock_requests();
+        mg_disable_connection_keep_alive(connection);
+        const char message[] = "Server shutting down\n";
+        const struct mg_request_info *request = mg_get_request_info(connection);
+        return host_reply(connection, 503, "text/plain; charset=utf-8", message,
+                          sizeof(message) - 1, strcmp(request->request_method, "HEAD") == 0);
+    }
+    ++host_active_requests;
+    host_unlock_requests();
+    int status = host_dispatch(connection);
+    host_lock_requests();
+    if (--host_active_requests == 0) host_signal_idle();
+    host_unlock_requests();
+    return status;
 }
 
 static unsigned char *host_read(FILE *file, size_t *length) {
@@ -308,16 +359,24 @@ static int host_serve(struct host *app) {
     struct mg_callbacks callbacks;
     memset(&callbacks, 0, sizeof(callbacks));
     callbacks.begin_request = host_request;
+    if (!host_init_requests()) { fprintf(stderr, "Cannot initialize HTTP shutdown coordination\n"); return 1; }
     mg_init_library(0);
     struct mg_context *context = mg_start(&callbacks, app, options);
-    if (!context) { fprintf(stderr, "Cannot listen on %s; check HOST/PORT and port availability.\n", address); mg_exit_library(); return 1; }
+    if (!context) { fprintf(stderr, "Cannot listen on %s; check HOST/PORT and port availability.\n", address); mg_exit_library(); host_free_requests(); return 1; }
     signal(SIGINT, host_signal);
     signal(SIGTERM, host_signal);
 #ifndef _WIN32
     signal(SIGPIPE, SIG_IGN);
 #endif
     fprintf(stderr, "WebUI listening on http://%s\n", address);
+    const char *control = getenv("_WEBUI_APP_CONTROL");
+    int controlled = control && strcmp(control, "stdin-v1") == 0;
+    int control_failed = 0;
     while (!host_stopping) {
+        if (controlled) {
+            int command = host_control_tick();
+            if (command) { control_failed = command < 0; break; }
+        }
 #ifdef _WIN32
         Sleep(100);
 #else
@@ -325,8 +384,10 @@ static int host_serve(struct host *app) {
         nanosleep(&delay, NULL);
 #endif
     }
+    int drained = host_drain_requests();
     mg_stop(context); /* Joins workers before releasing any native handles. */
+    host_free_requests();
     mg_exit_library();
-    return 0;
+    return control_failed || !drained ? 1 : 0;
 }
 #endif

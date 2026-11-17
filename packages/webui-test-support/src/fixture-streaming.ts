@@ -1,12 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { build as buildClient } from 'esbuild';
 import { build as buildProtocol, Protocol } from '@microsoft/webui';
 import type { StreamStep } from '@microsoft/webui';
-import { esbuildProjection } from '@microsoft/webui/projection.js';
 import { relative, resolve, sep } from 'node:path';
 import type { FixtureRequestContext } from './fixture-server.js';
+import { bundleFixtureClient, workspaceRoot } from './fixture-build.ts';
 
 interface StreamingFixtureOptions {
   fixturePath: string;
@@ -41,41 +40,33 @@ export async function prepareStreamingFixture({
   const applicationPath = resolve(fixturePath, 'application.ts');
   const streamingPath = resolve(fixturePath, 'streaming.ts');
   const projectionPath = resolve(outDir, 'webui-projection.json');
-  const built = await buildClient({
-    absWorkingDir: fixturePath,
-    entryPoints: { application: applicationPath, streaming: streamingPath },
-    outdir: outDir,
+  const built = await bundleFixtureClient({
+    project: workspaceRoot,
+    entries: { application: applicationPath, streaming: streamingPath },
+    outDir,
     publicPath,
-    entryNames: '[name]-[hash]',
-    chunkNames: 'chunks/[name]-[hash]',
-    bundle: true,
-    splitting: true,
+    entryNames: '[name]-[hash].js',
+    chunkNames: 'chunks/[name]-[hash].js',
     format: 'esm',
-    platform: 'browser',
     target: 'es2022',
     minify: true,
     tsconfig,
-    define: { __WEBUI_DEV__: 'false' },
-    metafile: true,
-    plugins: [
-      esbuildProjection({ manifest: projectionPath }),
-    ],
+    defines: { __WEBUI_DEV__: 'false' },
+    manifestPath: projectionPath,
   });
-  if (!built.metafile) throw new Error('Streaming fixture has no esbuild output metadata.');
   const servedUrl = (output: string): string =>
-    publicPath + relative(outDir, resolve(fixturePath, output)).split(sep).join('/');
+    publicPath + relative(outDir, resolve(workspaceRoot, output)).split(sep).join('/');
   let application: string | undefined;
   let coordinatorOutput: string | undefined;
   let templateHostRuntime: string | undefined;
   for (const [output, details] of Object.entries(built.metafile.outputs)) {
-    if (!details.entryPoint) continue;
     const href = servedUrl(output);
-    if (resolve(fixturePath, details.entryPoint) === applicationPath) application = href;
-    if (resolve(fixturePath, details.entryPoint) === streamingPath) coordinatorOutput = output;
-    if (
-      details.entryPoint.endsWith('/static-host.js') ||
-      details.entryPoint.endsWith('/static-host.ts')
-    ) {
+    if (details.entryPoint) {
+      if (resolve(workspaceRoot, details.entryPoint) === applicationPath) application = href;
+      if (resolve(workspaceRoot, details.entryPoint) === streamingPath) coordinatorOutput = output;
+    }
+    if (Object.keys(details.inputs).some(input =>
+      /\/static-host\.[jt]s$/.test(input.replaceAll('\\', '/')))) {
       if (templateHostRuntime) throw new Error('Streaming fixture bundled two template-host runtimes.');
       templateHostRuntime = href;
     }
@@ -91,15 +82,15 @@ export async function prepareStreamingFixture({
   }
   closure.delete(coordinatorOutput);
   const imports = [...closure].sort((a, b) =>
-    built.metafile!.outputs[b].bytes - built.metafile!.outputs[a].bytes ||
+    built.metafile.outputs[b].bytes - built.metafile.outputs[a].bytes ||
     Buffer.compare(Buffer.from(a), Buffer.from(b)),
   );
   const assets: StreamingFixtureAssets = {
     coordinator: {
       src: servedUrl(coordinatorOutput), imports: imports.map(servedUrl),
       inputs: [coordinatorOutput, ...imports].flatMap(output =>
-        Object.entries(built.metafile!.outputs[output].inputs)
-          .filter(([, input]) => input.bytesInOutput > 0).map(([name]) => name.replaceAll('\\', '/'))),
+        Object.keys(built.metafile.outputs[output].inputs)
+          .map(name => name.replaceAll('\\', '/'))),
     },
     application,
     templateHostRuntime,

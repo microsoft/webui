@@ -65,15 +65,15 @@ bun run webui build ./src --out ./dist --plugin webui
 </webui-press-tab-panel>
 </webui-press-tabs>
 
-This command **does not bundle application TypeScript**. Use a JavaScript
-bundler for the browser entry and load its output from the page. The
+This low-level command **does not bundle application TypeScript**. Bundle the
+browser entry with the native compiler and load its output from the page. The
 [Add interaction lesson](/start/add-interactivity#bundle-the-browser-entry) provides a
-complete esbuild setup.
+complete native `bundleClient()` setup.
 
 ### Production builds
 
 The lessons use a development browser bundle. Before deploying an interactive
-app, set `__WEBUI_DEV__` to `'false'` and enable `minify` in the esbuild
+app, set `development` to `false` and enable `minify` in the native build
 configuration, then rebuild the browser entry and the WebUI templates.
 
 `webui build` emits `dist/protocol.bin` and component styles. The protocol is a

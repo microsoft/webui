@@ -2,13 +2,12 @@
 // Licensed under the MIT license.
 
 // Builds one NTP fixture the way an application with its own bundler would:
-// Node `prepareBuild()` supplies generated modules, esbuild bundles
-// the client with code splitting and the projection plugin, then a second
-// build with the projection manifest produces the protocol, CSS, and packs.
+// Node `prepareBuild()` retains generated modules and compilation options;
+// native Rolldown bundles the client and proves its state before finalization.
 
 import assert from 'node:assert/strict';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { join, relative, resolve } from 'node:path';
 import { brotliCompressSync, constants } from 'node:zlib';
 import { ASSET_ROOTS, DEFERRED, STATE, UIS, benchConfig, regionsOf, uiEntries, writeApp, writeMain } from './app.mjs';
 
@@ -18,44 +17,6 @@ export const brotli = (buffer, quality = 11) =>
   brotliCompressSync(buffer, { params: { [constants.BROTLI_PARAM_QUALITY]: quality } });
 
 const compress = buffer => ({ raw: buffer, br: brotli(buffer) });
-
-/**
- * esbuild leaves a split chunk's shared dependencies as static imports that the
- * browser discovers only after the chunk arrives. webpack and rspack load an
- * async chunk group in parallel, so this rewrites each dynamic import to also
- * import the target's static dependency closure at the same time. Modules
- * already loaded resolve from the module map without a request.
- */
-function parallelChunkGroups() {
-  return {
-    name: 'ntp-parallel-chunk-groups',
-    setup(build) {
-      build.onEnd(result => {
-        if (result.errors.length > 0 || !result.outputFiles || !result.metafile) return;
-        const cwd = build.initialOptions.absWorkingDir;
-        const outputs = result.metafile.outputs;
-        const keys = new Map(Object.keys(outputs).map(key => [resolve(cwd, key), key]));
-        for (let i = 0; i < result.outputFiles.length; i++) {
-          const file = result.outputFiles[i];
-          if (!file.path.endsWith('.js')) continue;
-          const from = dirname(file.path);
-          const text = file.text;
-          const rewritten = text.replace(/import\((["'])(\.{1,2}\/[^"']+\.js)\1\)/g, (match, quote, specifier) => {
-            const key = keys.get(resolve(from, specifier));
-            const dependencies = key ? staticClosure(outputs, key).filter(dependency => dependency !== key) : [];
-            if (dependencies.length === 0) return match;
-            const specifiers = [specifier, ...dependencies.map(dependency =>
-              './' + relative(from, resolve(cwd, dependency)).replaceAll('\\', '/'))];
-            return `Promise.all([${specifiers.map(entry => `import(${quote}${entry}${quote})`).join(',')}]).then(m=>m[0])`;
-          });
-          if (rewritten === text) continue;
-          const contents = Buffer.from(rewritten);
-          result.outputFiles[i] = { path: file.path, contents, hash: file.hash, get text() { return rewritten; } };
-        }
-      });
-    },
-  };
-}
 
 /** An output and every output it reaches through static imports. */
 export function staticClosure(outputs, start) {
@@ -71,11 +32,49 @@ export function staticClosure(outputs, start) {
   return [...reached];
 }
 
-function writeModules(dir, files) {
-  for (let i = 0; i + 1 < files.length; i += 2) {
-    mkdirSync(dirname(join(dir, files[i])), { recursive: true });
-    writeFileSync(join(dir, files[i]), files[i + 1]);
+/** Validate native request plans without erasing the bundle's static graph. */
+export function parallelImportPlans(outputs, label = 'NTP') {
+  const groups = [];
+  for (const [from, output] of Object.entries(outputs)) {
+    const available = new Set(staticClosure(outputs, from));
+    const plans = new Map();
+    const nativePlans = output.parallelDynamicImports ?? {};
+    assert.ok(typeof nativePlans === 'object' && nativePlans !== null && !Array.isArray(nativePlans),
+      `${label}: native parallel plans must map targets to dependencies`);
+    for (const [target, dependencies] of Object.entries(nativePlans)) {
+      assert.ok(output.imports.some(edge =>
+        !edge.external && edge.kind === 'dynamic-import' && edge.path === target),
+      `${label}: parallel plan must name a dynamic target of ${from}`);
+      const closure = new Set(staticClosure(outputs, target));
+      closure.delete(target);
+      assert.ok(Array.isArray(dependencies), `${label}: parallel plan must list dependencies`);
+      for (const dependency of dependencies) {
+        assert.ok(outputs[dependency] && closure.has(dependency),
+          `${label}: parallel dependency ${dependency} must belong to ${target}'s static closure`);
+        assert.ok(output.imports.some(edge =>
+          !edge.external && edge.kind === 'dynamic-import' && edge.path === dependency),
+        `${label}: native metadata must record the injected import of ${dependency}`);
+      }
+      plans.set(target, new Set(dependencies));
+      groups.push({ from, target, dependencies: [...dependencies] });
+    }
+    for (const edge of output.imports) {
+      if (edge.external || edge.kind !== 'dynamic-import') continue;
+      assert.ok(outputs[edge.path], `${label}: native dynamic target ${edge.path} must exist`);
+      const needed = staticClosure(outputs, edge.path)
+        .filter(dependency => dependency !== edge.path && !available.has(dependency));
+      // Injected import() calls are part of their original target's group, not
+      // independent authored calls requiring another synthetic plan.
+      const covering = plans.has(edge.path)
+        ? [plans.get(edge.path)]
+        : [...plans.values()].filter(dependencies => dependencies.has(edge.path));
+      for (const dependency of needed) {
+        assert.ok(covering.some(dependencies => dependencies.has(dependency)),
+          `${label}: native parallel plan for ${edge.path} must request ${dependency}`);
+      }
+    }
   }
+  return groups;
 }
 
 /** Bytes a later pack repeats from an earlier one, and the Brotli bytes they cost. */
@@ -118,7 +117,7 @@ const hrefs = text => [...text.matchAll(/"href":"([^"]+)"/g)].map(match => match
  * Build fixture `key` (`<variant>-<css>`, or `probe-<css>` for the lazy app
  * with eager and idle triggers) under `scratch`.
  */
-export async function buildFixture({ key, scratch, root, prepareBuild, Protocol, bundle, esbuildProjection, probeTriggers }) {
+export async function buildFixture({ key, scratch, root, prepareBuild, Protocol, bundleClient, probeTriggers }) {
   const [name, css] = key.split('-');
   const variant = name === 'probe' ? 'lazy' : name;
   const dir = join(scratch, key);
@@ -134,35 +133,25 @@ export async function buildFixture({ key, scratch, root, prepareBuild, Protocol,
     componentAssetFiles: prepared.componentAssetFiles,
     lazyPackFiles: prepared.lazyPackFiles,
   };
-  if (variant !== 'eager') {
-    // The generated modules never depend on the projection, so they come first.
-    if (variant === 'lazy') {
-      const { fileName, content, declaration } = first.lazyScriptsModule;
-      writeModules(modulesOut, [fileName, content, declaration.fileName, declaration.content]);
-    } else writeModules(modulesOut, first.componentAssetFiles);
-  }
+  prepared.writeModules();
   const regions = variant === 'lazy' ? regionsOf(first.lazyPackFiles) : {};
   if (variant === 'lazy') assert.equal(Object.keys(regions).length, Object.keys(UIS).length, `${key}: every UI is a lazy region`);
   const config = benchConfig(variant, regions);
   writeMain(dir, variant, config);
   const outdir = join(dir, 'dist');
   const manifest = join(dir, 'webui-projection.json');
-  const result = await bundle({
-    entryPoints: [join(dir, 'main.ts')], outdir, bundle: true, format: 'esm', splitting: true, minify: true,
-    platform: 'browser', target: 'es2022', legalComments: 'none', absWorkingDir: dir,
-    entryNames: '[name]', chunkNames: 'chunk-[hash]', write: false, metafile: true,
-    nodePaths: [join(root, 'examples', 'app', 'lazy-ui', 'node_modules')],
-    tsconfigRaw: { compilerOptions: { experimentalDecorators: true, useDefineForClassFields: false } },
-    supported: { 'import-attributes': true }, define: { __WEBUI_DEV__: 'false' },
-    plugins: [parallelChunkGroups(), esbuildProjection({ manifest })], logLevel: 'silent',
-  }).catch(error => {
-    const notes = (error.errors ?? []).flatMap(entry => [entry.text, ...(entry.notes ?? []).map(note => note.text)]);
-    throw new Error(`${key}: ${error.message}\n${notes.join('\n')}`);
+  const tsconfig = join(dir, 'tsconfig.json');
+  writeFileSync(tsconfig, JSON.stringify({
+    compilerOptions: { experimentalDecorators: true, useDefineForClassFields: false },
+  }));
+  const result = await bundleClient({
+    project: root, entries: { main: join(dir, 'main.ts') }, outDir: outdir,
+    format: 'esm', minify: true, target: 'es2022', tsconfig,
+    framework: join(root, 'packages', 'webui-framework'),
+    parallelDynamicImports: true,
+    entryNames: '[name].js', chunkNames: 'chunk-[hash].js', manifestPath: manifest,
   });
-  for (const file of result.outputFiles) {
-    mkdirSync(dirname(file.path), { recursive: true });
-    writeFileSync(file.path, file.contents);
-  }
+  for (const warning of result.warnings) console.warn(`[${key}] ${warning.code}: ${warning.message}`);
   const built = prepared.finish({ projectionManifests: [manifest] });
   if (variant === 'lazy') {
     assert.deepEqual(built.lazyScriptsModule, first.lazyScriptsModule, `${key}: lazy.webui.js is stable across preparation and finalization`);
@@ -174,10 +163,10 @@ export async function buildFixture({ key, scratch, root, prepareBuild, Protocol,
 
   const files = new Map();
   const outputs = result.metafile.outputs;
-  const served = outputKey => relative(outdir, resolve(dir, outputKey)).replaceAll('\\', '/');
+  const served = outputKey => relative(outdir, resolve(root, outputKey)).replaceAll('\\', '/');
   for (const outputKey of Object.keys(outputs)) {
     if (!outputKey.endsWith('.js')) continue;
-    files.set(served(outputKey), { type: TYPES['.js'], body: compress(readFileSync(resolve(dir, outputKey))) });
+    files.set(served(outputKey), { type: TYPES['.js'], body: compress(readFileSync(resolve(root, outputKey))) });
   }
   for (let i = 0; i + 1 < built.cssFiles.length; i += 2) {
     files.set(built.cssFiles[i], { type: TYPES['.css'], body: compress(Buffer.from(built.cssFiles[i + 1])) });
@@ -190,8 +179,21 @@ export async function buildFixture({ key, scratch, root, prepareBuild, Protocol,
   }
 
   const entries = new Map();
-  for (const [outputKey, output] of Object.entries(outputs)) if (output.entryPoint) entries.set(output.entryPoint, outputKey);
-  const startupScripts = new Set(staticClosure(outputs, entries.get('main.ts')).map(served));
+  for (const [outputKey, output] of Object.entries(outputs)) {
+    for (const input of Object.keys(output.inputs)) {
+      entries.set(resolve(root, input), outputKey);
+    }
+  }
+  for (const [outputKey, output] of Object.entries(outputs)) {
+    if (output.entryPoint) entries.set(resolve(root, output.entryPoint), outputKey);
+  }
+  const mainOutput = entries.get(join(dir, 'main.ts'));
+  assert.ok(mainOutput, `${key}: native bundle must include the startup entry`);
+  const startupOutputs = new Set(staticClosure(outputs, mainOutput));
+  const parallelImports = parallelImportPlans(outputs, key).map(group => ({
+    from: served(group.from), target: served(group.target), dependencies: group.dependencies.map(served),
+  }));
+  const startupScripts = new Set([...startupOutputs].map(served));
   const startupCss = new Set();
   for (let i = 0; i < built.cssFiles.length; i += 2) {
     if (!DEFERRED.some(tag => built.cssFiles[i].startsWith(tag))) startupCss.add(built.cssFiles[i]);
@@ -202,7 +204,9 @@ export async function buildFixture({ key, scratch, root, prepareBuild, Protocol,
   for (const id of Object.keys(UIS)) {
     const chunks = new Set();
     for (const entry of uiEntries(id, variant)) {
-      for (const output of staticClosure(outputs, entries.get(entry))) {
+      const outputEntry = entries.get(join(dir, entry));
+      assert.ok(outputEntry, `${key}: native bundle must retain UI entry ${entry}`);
+      for (const output of staticClosure(outputs, outputEntry)) {
         if (!startupScripts.has(served(output))) chunks.add(served(output));
       }
     }
@@ -223,7 +227,7 @@ export async function buildFixture({ key, scratch, root, prepareBuild, Protocol,
   const protocol = new Protocol(built.protocol, { plugin: 'webui' });
   const html = Buffer.from(protocol.render(STATE));
   return {
-    key, variant, css, dir, protocol, files, packs, regions, config, ui, startupScripts, startupCss,
+    key, variant, css, dir, protocol, files, packs, regions, config, ui, startupScripts, startupCss, parallelImports,
     warnings: built.warnings,
     lazyScriptsModule: first?.lazyScriptsModule?.content,
     sizes: {

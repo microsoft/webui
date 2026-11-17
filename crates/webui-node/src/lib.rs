@@ -48,7 +48,9 @@ use webui_protocol::WebUIProtocol;
 
 const STREAM_CHUNK_SIZE: usize = 16 * 1024;
 
+mod client_build;
 mod prepared_build;
+pub use client_build::bundle_client;
 pub use prepared_build::{prepare_build, JsFinishBuildOptions, JsPreparedBuild};
 
 /// Build statistics returned from the build function.

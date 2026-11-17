@@ -21,7 +21,7 @@
 
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { cpus, platform, release } from 'node:os';
@@ -31,13 +31,11 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { brotliCompressSync, constants, gzipSync } from 'node:zlib';
 import { verifyTriggerFixture, snapshot, installTriggerProbe } from './trigger-proof.mjs';
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+const root = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..'));
 const require = createRequire(join(root, 'packages', 'webui-test-support', 'package.json'));
-const { build: bundle, version: esbuildVersion } = require('esbuild');
 const { chromium } = require('@playwright/test');
 assert.ok(process.env.WEBUI_ADDON_PATH, 'Set WEBUI_ADDON_PATH to the freshly built release addon.');
-const { prepareBuild, Protocol } = await import(pathToFileURL(join(root, 'packages', 'webui', 'dist', 'index.js')).href);
-const { esbuildProjection } = await import(pathToFileURL(join(root, 'packages', 'webui', 'dist', 'projection', 'index.js')).href);
+const { bundleClient, prepareBuild, Protocol } = await import(pathToFileURL(join(root, 'packages', 'webui', 'dist', 'index.js')).href);
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((pairs, value, index, all) => {
   if (value.startsWith('--')) pairs.push([value.slice(2), all[index + 1]]);
@@ -72,7 +70,7 @@ const clients = args['baseline-framework']
   : [{ suffix: '', entry: legacyFramework || frameworkEntry }];
 assert.ok(!legacyFramework || variants.every(variant => variant === 'plain'), 'Legacy startup supports only the plain comparison.');
 const OUTPUT = resolve(args.out ?? join(root, 'target', 'lazy-triggers.json'));
-// Package specifiers let the projection plugin recognize the framework's decorators.
+// Package specifiers identify the framework's decorators to native projection.
 const FRAMEWORK = {
   'index.ts': '@microsoft/webui-framework',
   'runtime.ts': '@microsoft/webui-framework/runtime.js',
@@ -286,30 +284,27 @@ async function generate() {
         // first and bundled like application code.
         const prepared = prepareBuild(options);
         const generated = prepared.lazyScriptsModule;
-        if (generated) {
-          mkdirSync(options.modulesOut, { recursive: true });
-          writeFileSync(join(options.modulesOut, generated.fileName), generated.content);
-          writeFileSync(join(options.modulesOut, generated.declaration.fileName), generated.declaration.content);
-        }
+        prepared.writeModules();
         const manifest = join(dir, 'webui-projection.json');
         const outfile = join(dir, 'dist', 'app.js');
-        await bundle({
-          entryPoints: [join(dir, 'main.ts')], outfile, bundle: true, format: 'esm', minify: true,
-          platform: 'browser', target: 'es2022', legalComments: 'none', absWorkingDir: dir,
-          nodePaths: [join(root, 'examples', 'app', 'lazy-ui', 'node_modules')],
-          ...(client.entry ? { alias: {
+        const tsconfig = join(dir, 'tsconfig.json');
+        writeFileSync(tsconfig, JSON.stringify({
+          compilerOptions: { experimentalDecorators: true, useDefineForClassFields: false },
+        }));
+        const clientBuild = await bundleClient({
+          project: root, entries: { app: join(dir, 'main.ts') }, outDir: dirname(outfile),
+          // This benchmark serves one script, as before: IIFE keeps native
+          // dynamic runtime helpers in that one asset without an ESM waterfall.
+          format: 'iife', minify: true, target: 'es2022', tsconfig,
+          ...(client.entry ? { aliases: {
             '@microsoft/webui-framework/runtime.js': resolve(dirname(client.entry), 'runtime.js'),
             '@microsoft/webui-framework/styles.js': resolve(dirname(client.entry), 'styles-entry.js'),
             '@microsoft/webui-framework/lazy.js': resolve(dirname(client.entry), 'lazy-entry.js'),
             '@microsoft/webui-framework': resolve(client.entry),
-          } } : {}),
-          tsconfigRaw: { compilerOptions: { experimentalDecorators: true, useDefineForClassFields: false } },
-          supported: { 'import-attributes': true }, define: { __WEBUI_DEV__: 'false' },
-          plugins: [esbuildProjection({ manifest })], logLevel: 'silent',
-        }).catch(error => {
-          const notes = (error.errors ?? []).flatMap(entry => entry.notes ?? []).map(note => note.text);
-          throw new Error(`${error.message}\n${notes.join('\n')}`);
+          } } : { framework: join(root, 'packages', 'webui-framework') }),
+          manifestPath: manifest,
         });
+        for (const warning of clientBuild.warnings) console.warn(`[${id}/${variant}] ${warning.code}: ${warning.message}`);
         const built = prepared.finish({ projectionManifests: [manifest] });
         assert.deepEqual(built.lazyScriptsModule, generated, 'lazy.webui.js is stable across preparation and finalization');
         const packs = new Map();
@@ -566,7 +561,7 @@ const { server, origin } = await serve(fixtures);
 const browser = await chromium.launch({ channel: process.env.WEBUI_BENCH_CHANNEL ?? 'msedge' }).catch(() => chromium.launch());
 const report = {
   environment: {
-    date: new Date().toISOString(), browser: browser.version(), node: process.version, esbuild: esbuildVersion,
+    date: new Date().toISOString(), browser: browser.version(), node: process.version, bundler: 'native-rolldown',
     os: `${platform()} ${release()}`, cpu: cpus()[0]?.model, profile: PROFILE_NAME, profileSettings: PROFILE ?? null,
     hoverDwellMs: DWELL_MS, samples: SAMPLES, warmups: WARMUPS, memorySamples: MEMORY_SAMPLES,
     addon: process.env.WEBUI_ADDON_PATH,

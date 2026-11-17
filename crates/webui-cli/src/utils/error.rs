@@ -154,6 +154,18 @@ impl CliError {
 /// (clap already exits with `2` for argument/usage errors before this runs.)
 #[must_use]
 pub fn exit_code(err: &anyhow::Error) -> i32 {
+    if let Some(native) = err
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<crate::commands::native::NativeError>())
+    {
+        return native.exit_code();
+    }
+    if let Some(sdk) = err
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<crate::commands::sdk::SdkError>())
+    {
+        return sdk.exit_code();
+    }
     if let Some(init) = err
         .chain()
         .find_map(|cause| cause.downcast_ref::<crate::commands::init::InitError>())

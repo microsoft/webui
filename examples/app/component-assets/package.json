@@ -12,7 +12,7 @@
     "build:client": "node ./build-client.mjs",
     "copy:data": "node -e \"require('node:fs').copyFileSync('src/lazy-panel-data.json','dist/lazy-panel-data.json')\"",
     "verify:performance": "node ./tests/performance-budget.mjs",
-    "start:client": "pnpm run build:deps && pnpm run build:assets && node ../../build-client.mjs --watch",
+    "start:client": "pnpm run build:deps && cargo build --release -p microsoft-webui-cli && pnpm run build:assets && node ../../build-client.mjs --watch",
     "start:server": "cargo run -p microsoft-webui-cli -- serve ./src --state ./data/state.json --theme=@microsoft/webui-examples-theme --plugin=webui --projection-manifest ./dist/webui-projection.json --emit-component-assets lazy-panel,secondary-panel --modules-out ./.webui --metafile ./dist/component-assets.meta.json --servedir ./dist --port 3010 --watch",
     "start": "cargo xtask dev component-assets",
     "test": "playwright test",

@@ -118,48 +118,33 @@ Misspelled literal-fallback tokens are returned as non-fatal warnings.
 
 ### Optional state projection
 
-The build-only `@microsoft/webui/projection.js` subpath exposes the
-bundler-neutral projection compiler and the supported esbuild adapter. esbuild
-and TypeScript are optional peer dependencies, so applications that do not use
-projection do not install or load them:
-
-```bash
-npm install -D esbuild typescript
-```
+`bundleClient()` runs browser bundling and exact state projection in the native
+Rust compiler. No TypeScript or esbuild peer dependency is required.
 
 ```js
-import * as esbuild from "esbuild";
-import { esbuildProjection } from "@microsoft/webui/projection.js";
+import { bundleClient, build } from "@microsoft/webui";
 
-await esbuild.build({
-  entryPoints: ["src/index.ts"],
-  outdir: "dist",
-  bundle: true,
-  splitting: true,
-  format: "esm",
-  plugins: [esbuildProjection()],
+const client = await bundleClient({
+  project: process.cwd(),
+  entries: { index: "src/index.ts" },
+  outDir: "dist",
 });
 
 const result = build({
   appDir: "./src",
   plugin: "webui",
-  projectionManifests: ["./dist/webui-projection.json"],
+  projectionManifests: [client.manifestPath],
 });
 ```
 
-esbuild runs once and emits both browser chunks and
+The native compiler bundles once and emits both browser chunks and
 `webui-projection.json`; WebUI then embeds the exact initial/navigation
-surfaces into `protocol.bin`. The adapter uses esbuild's resolved graph and
-emitted output membership. Source inputs and outputs receive exact hashes;
-opaque inputs rely on their emitted output proof. Code splitting, dynamic
-imports, output hashes, and external bundles remain application-owned.
+surfaces into `protocol.bin`. Source capture, graph resolution, tree-shaken
+membership and final-byte hashing stay in Rust. `bundleClient()` is only the
+Node binding to that compiler, not a second projection pipeline.
 
-Other bundler adapters can use the exported `AdapterContext`,
-`compileProjection()`, and conformance fixtures without importing esbuild. The
-package currently ships and supports `esbuildProjection()` as its official
-adapter. Custom adapters provide a normalized JavaScript/TypeScript source
-graph and exact emitted output bytes. Non-source bundler inputs stay outside
-the semantic graph, so projection does not decode or hash their input bodies.
+See the [Node integration guide](https://microsoft.github.io/webui/build/integrations/node#single-compilation-builds)
+for retaining one template compilation across generated-module bundling.
 
 With no manifest, WebUI performs no JavaScript analysis and preserves full
 state. Once any manifest is supplied, coverage is strict: every scripted
@@ -169,7 +154,8 @@ then all fragments should be passed through `projectionManifests`.
 
 Manifest keys are exact JavaScript `@observable` and `@attr` property names.
 During hydration, an existing SSR host attribute wins over projected `@attr`
-state. Runtime hosts never load TypeScript, esbuild, or the manifest.
+state. Runtime rendering never runs the bundler, analyzes TypeScript, or reads
+the manifest.
 
 ### `new Protocol(protocol: Buffer, options?: ProtocolOptions)`
 

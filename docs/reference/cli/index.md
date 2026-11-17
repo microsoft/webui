@@ -5,8 +5,16 @@ description: "Build, serve, and inspect WebUI apps; configure CSS, themes, exter
 
 # CLI Reference
 
-Use `webui` to compile templates, run a development server, or inspect the
-compiled artifact. For an app with `src/index.html` and `data/state.json`:
+Use `webui init` and `webui app` for a native application, including browser
+bundling and host supervision:
+
+```bash
+webui init my-app --no-interactive
+webui app check --project ./my-app
+webui app dev --project ./my-app
+```
+
+For a template preview with `src/index.html` and `data/state.json`:
 
 ```bash
 webui serve ./src --state ./data/state.json --plugin=webui --watch
@@ -14,12 +22,18 @@ webui build ./src --out ./dist --plugin=webui
 webui inspect ./dist/protocol.bin
 ```
 
-Bundle authored browser TypeScript or JavaScript separately. `webui build`
+For this lower-level workflow, bundle browser TypeScript or JavaScript
+separately. `webui build`
 produces the protocol and CSS; it does not replace your application bundler.
 
 ## Installation
 
-Install with your package manager:
+For native application commands, use the complete release-matched
+[native toolchain](/start/installation#native-toolchain).
+The standalone CLI can compile browser assets without Node; native application
+checking additionally needs the matching native TSC companion.
+
+For package-managed frontend tooling, install with your package manager:
 
 <webui-press-tabs sync="package-manager" storage="local">
 <webui-press-tab slot="tab" value="npm" active>npm</webui-press-tab>
@@ -149,9 +163,9 @@ webui init my-app --server bun --no-interactive
 | --- | --- | --- |
 | `PATH` | New or empty destination; existing `.git` metadata is allowed | `.` |
 | `--server <SERVER>` | `rust`, `dotnet`, `c`, `cpp`, `node`, `bun`, or `go` | `rust` |
-| `--package-manager <MANAGER>` | `npm`, `pnpm`, `yarn`, or `bun`; independent of the server | `npm` |
-| `--install` | Install the generated package dependencies | Off |
-| `--ai-skill` | Run the existing project-local WebUI reference skill installer | Off |
+| `--package-manager <MANAGER>` | `npm`, `pnpm`, `yarn`, or `bun`; only for Node/Bun runtime packages | `bun` for Bun; otherwise `npm` when packages are used |
+| `--install` | Restore the selected host's dependencies, or install package dependencies where applicable | Off |
+| `--ai-skill` | Install the project-local WebUI reference loader offline | Off |
 | `--no-interactive` | Do not ask onboarding questions | Off |
 
 Generation is offline and does not require the selected server toolchain.
@@ -165,58 +179,248 @@ at most 64 characters, and not be `con`, `prn`, `aux`, `nul`, `com1` through
 In a terminal, init offers dependency installation and installation of the
 existing `webui-reference` skill separately. Both default to No. There are no
 global installations, automatic toolchain installations, Git initialization,
-or automatic server launches. Package lifecycle scripts remain subject to your
+or automatic server launches. Native Rust/Go/C/C++/.NET projects have no
+`package.json` or `scripts/*.mjs`; `--package-manager` is rejected for them.
+Node/Bun projects retain runtime packages and
+`server/http.mjs`, not JavaScript build orchestration.
+Package lifecycle scripts remain subject to your
 package manager's approval policy.
 
 Without a terminal, with `--no-interactive`, or with `--format json`, init never
 prompts. Explicit `--install` and `--ai-skill` still run their requested steps.
-The skill installer uses its noninteractive mode when no interaction is allowed.
-Its loader reads the reference bundled with the installed `@microsoft/webui`,
-not an independently copied documentation snapshot.
-On Windows, installation from a UNC destination is rejected before running
-either installer because `cmd.exe` cannot retain that working directory.
+`--ai-skill` copies the embedded loader to
+`.github/skills/webui-reference/SKILL.md`; it resolves offline guides through
+[`webui reference`](#webui-reference).
+On Windows, package-manager installers that use `cmd.exe` reject UNC
+destinations because that shell cannot retain their working directory.
 The generated app is preserved; move it to a local drive or map the share
 to a drive letter before installing. Offline generation on a UNC share is
 still supported.
 
 ```bash
 cd my-app
-npm install
-npm run dev
+webui app check
+webui app dev
+webui app build
+webui app start
 ```
 
 The generated `README.md` describes the selected server's prerequisites and
-commands. Node.js 22 or newer builds the client and protocol. Rust also needs
-Cargo; the Bun host needs Bun with Node-API support. C/C++ need CMake 3.24+
+commands. All seven hosts use the same native frontend tooling.
+Rust needs Cargo; Node needs Node.js 22+ as its server runtime, and Bun needs
+Bun with Node-API support. C/C++ need CMake 3.24+
 and a native toolchain; Go needs Go 1.25+ and a cgo C compiler. These three
 hosts require the [standalone native SDK](/build/integrations/ffi#standalone-native-sdk)
 at `.webui/sdk` or the explicit `WEBUI_SDK_DIR` location, not in `node_modules`.
 .NET needs the .NET 8 SDK and an approved source for matching
 [Microsoft.WebUI NuGet packages](/build/integrations/dotnet).
-Selecting a host does not
-install these system tools. Use `check` for TypeScript checks, `build` for
-production output, and `start` to run it without compiling templates. Rust
-and C/C++/Go/.NET production servers render without a JavaScript runtime; Node and Bun use
-the native addon. Only Home loads the counter's JavaScript; About remains
+Selecting a host does not install these system tools. Native `--install`
+runs Cargo fetch, Go module download, .NET restore, CMake configuration, or
+the selected Node/Bun runtime package manager. It does not acquire an SDK.
+Rust and C/C++/Go/.NET production servers render without a JavaScript runtime;
+Node and Bun use the native addon. Only Home loads the counter's JavaScript; About remains
 scriptless. See [server integrations](/build/integrations/).
-Rust starter builds use the app-owned `server/target/` directory rather than
-an inherited `CARGO_TARGET_DIR`. Yarn starters select the `node-modules`
-linker in a project-local `.yarnrc.yml` for the native TypeScript compiler,
-without changing global Yarn settings.
-Development uses native filesystem events rather than scanning the source
-tree on a timer. Edits coalesce while a build is running; failed builds wait
-for the next source edit, and generated output does not trigger rebuilds.
+Native Rust roots use `Cargo.toml`, `src/main.rs`, and `web/`; Go roots use
+`go.mod`, `cmd/server/main.go`, `cmd/server/main_test.go`, and `web/`.
+Other native hosts also keep their manifest at the project root.
+Rust app builds use the app-owned `target/` rather than an inherited
+`CARGO_TARGET_DIR`.
 
-JSON output includes the destination, selected server and package manager,
-created files, dependency/skill installation outcomes, prerequisites, and next
+JSON output includes the destination, selected server, package manager
+(`null` for package-free hosts), created files, dependency/skill installation
+outcomes, prerequisites, and next
 commands. A failed requested installation leaves the generated app intact,
 reports the failed command, and exits nonzero. Its result record is followed
 by the normal JSON error record.
 
 Init diagnostics use `init-unsafe-destination`, `init-directory-not-empty`,
-`init-invalid-name`, and `init-install-failed`. A nonempty destination exits
-with `73`; invalid names or destinations exit with `2`; installation failures
-exit with `1`; filesystem failures follow the normal I/O exit convention.
+`init-invalid-name`, `init-invalid-options`, and `init-install-failed`.
+A nonempty destination exits with `73`; invalid names, destinations, or options
+exit with `2`; installation failures exit with `1`; filesystem failures follow
+the normal I/O exit convention.
+
+### `webui bundle`
+
+Bundle browser JavaScript or TypeScript and produce exact state-projection
+proof with the native compiler. This command does not compile HTML templates
+or start a server; use `webui app` for a complete application workflow.
+
+```json
+{
+  "project": "/absolute/path/to/my-app",
+  "entries": { "index": "web/index.ts" },
+  "outDir": "dist/public"
+}
+```
+
+```bash
+webui bundle --config browser.json
+webui bundle --config browser.json --watch
+```
+
+`--config` reads native browser-build configuration. Entry paths are relative
+to `project` or absolute inside it. The compiler emits
+`webui-projection.json` beside the browser outputs unless `--manifest` selects
+another project-contained destination. Pass that proof to template
+finalization when building a protocol separately.
+
+`--watch` conservatively watches the whole configured `project` with native
+filesystem events, including inherited configuration inside that boundary.
+Keep configuration dependencies inside `project`; external inherited
+configuration is not promised watch coverage. Emitted files, the selected manifest
+and publication staging are excluded. Use repeatable `--watch-ignore <PATH>`
+for additional generated subtrees such as `target` or `.git`; paths are relative
+to `project`. Recursive registration cost depends on the project tree.
+The watcher preserves the last published output after a failed rebuild.
+Interrupt to stop it. A supervising program can explicitly enable `--control-stdin` and
+send one `S` byte or close stdin for a graceful stop. Node/npm is not required.
+
+### `webui app`
+
+Check, build, develop, and run a native-frontend project containing `webui.toml`:
+
+```bash
+webui app --project ./my-app check
+webui app build --project ./my-app
+webui app build --frontend-only --project ./my-app
+webui app dev --project ./my-app
+webui app start --project ./my-app
+```
+
+These options apply throughout `app`, before or after the subcommand:
+
+| Option | Description | Default |
+| --- | --- | --- |
+| `--project <DIR>` | Application directory containing `webui.toml` | `.` |
+| `--control-stdin` | Accept one ASCII `S` byte or stdin EOF as a graceful stop request | Off |
+
+| Command | Behavior |
+| --- | --- |
+| `check` | Run strict native TypeScript checking when `browser` is configured, then check the selected host |
+| `build` | Bundle browser assets, compile matching templates/protocol, build the host, then publish to `dist/` |
+| `build --frontend-only` | Publish only frontend assets and protocol for a direct host-toolchain build |
+| `dev` | Watch source events, rebuild, and restart the host |
+| `start` | Verify and run the last complete build; restore and compile nothing |
+
+`check` uses Cargo check for Rust, Go tests for Go, and host checks for
+Node/Bun. C/C++/.NET checks perform native builds, so they cannot run while
+another app writer owns the project. Build, dev, and start are mutually
+exclusive per project. The native checker comes only from the validated
+[toolchain](/start/installation#native-toolchain), not PATH or npm.
+Run `check` explicitly; browser bundling is not TypeScript type checking.
+
+Build publishes matching frontend/protocol output only after the selected
+host builds successfully. Start rejects a missing, mismatched, or modified
+recorded executable or protocol; rerun `webui app build` to prepare a complete
+generation. `--frontend-only` does not prepare a new start record.
+Direct Cargo/Go/CMake/.NET builds consume prepared frontend artifacts.
+Serve only `dist/public/` as static files, never the protocol, SDK, or sources.
+Public output includes `webui-LICENSE.txt`; preserve it when deploying.
+Production browser builds omit sourcemaps; dev emits them.
+
+Development uses bounded native filesystem events, not periodic source-tree
+scans. Edits coalesce while building; generated output is ignored. The previous
+host stops before rebuilding. A failed build reports diagnostics and waits for
+the next edit, without presenting the old generation as a successful rebuild.
+Stopping an app command requests graceful host shutdown before owned-process
+cleanup; active requests drain before renderer resources are released.
+
+For machine supervision without console interaction, opt in with
+`webui app dev --control-stdin` or `webui app start --control-stdin`.
+The controller can write one ASCII `S` or close stdin to request graceful
+shutdown. Any other first byte requests cleanup and reports an error.
+Without the flag, stdin does not control app shutdown.
+
+#### `webui.toml`
+
+The Rust preset is:
+
+```toml
+schema = 1
+version = "<WebUI release>"
+server = "rust"
+app = "web"
+entry = "index.html"
+browser = "index.ts"
+manifest = "Cargo.toml"
+target = "webui-app"
+host = "src/main.rs"
+```
+
+Use the exact CLI release for `version`; unknown fields and mismatched schema
+or version are errors. `server` accepts the same seven choices as init.
+`app`, `manifest`, and `host` are project-relative; `entry` and `browser` are
+relative to `app`. Paths cannot contain parent segments or be absolute.
+`target` is a single native target name, not a path or command option.
+Omit `browser` for HTML/CSS-only applications with no component scripts.
+
+| Server | `manifest` | `target` | `host` |
+| --- | --- | --- | --- |
+| Rust | `Cargo.toml` | `webui-app` | `src/main.rs` |
+| Go | `go.mod` | `webui-app` | `cmd/server` |
+| C | `CMakeLists.txt` | `webui-app` | `main.c` |
+| C++ | `CMakeLists.txt` | `webui-app` | `main.cpp` |
+| .NET | `App.csproj` | `App` | `Program.cs` |
+| Node | `package.json` | `webui-app` | `server/main.mjs` |
+| Bun | `package.json` | `webui-app` | `server/main.ts` |
+
+### `webui reference`
+
+Read the release-matched offline authoring reference without Node/npm:
+
+```bash
+webui reference
+webui reference --path
+webui reference --path --project ./my-app
+```
+
+Without `--path`, print the core reference. With it, materialize the reference
+and adjacent `docs/` guides under the project's `.webui/toolchain/<release>/`
+cache and print the absolute core file path. `--project` defaults to `.`.
+`--format json` with `--path` emits `path` and `version`.
+Use a CLI matching the application's `webui.toml`; do not substitute the
+latest online reference for an unavailable matching one.
+Existing conflicting cached resources are errors, not silently overwritten.
+
+### `webui sdk`
+
+Validate a standalone C ABI SDK or run a native command with its include, link,
+and shared-library search paths. These commands do not require Node or npm.
+
+```bash
+webui sdk check
+webui sdk check --project ./my-app
+webui sdk exec -- go build ./...
+webui sdk exec --project ./my-app -- go test ./...
+```
+
+An explicit `WEBUI_SDK_DIR` selects the extracted SDK directory authoritatively;
+otherwise the commands use `<project>/.webui/sdk`. An empty or invalid override
+fails without trying another location. Validation checks the CLI's exact WebUI
+version, schema, OS, architecture, ABI/libc, inventory, and each file's SHA-256.
+Inventory files must be regular files contained within the SDK directory.
+
+Acquire the matching standalone archive and its checksum from the approved
+release source, verify the archive, and extract it before running these commands.
+SHA-256 checks establish integrity, not independent authenticity.
+The CLI never downloads, builds, or resolves an SDK from npm. See
+[standalone SDK setup](/build/integrations/ffi#standalone-native-sdk).
+
+`check` prints the validated directory, version, and target; `--format json`
+emits those three fields as one object. Invalid metadata or integrity exits with
+`65`, SDK read failures with `74`, and unsupported platforms with `69`.
+Errors include stable `sdk-*` codes and setup help.
+
+`exec` requires an executable and its arguments after `--`. It runs directly,
+without a shell, from `--project` (default `.`), preserving the child command's
+exit status. Only the child receives `WEBUI_SDK_DIR`, `CGO_ENABLED=1`, quoted
+include/link flags, and platform loader paths. Existing flags and loader paths
+are retained; no global environment is modified. On Unix the command replaces
+the CLI process, preserving native signal behavior.
+
+These commands prepare SDK consumers, not browser assets or templates.
+Rust hosts use Cargo dependencies and do not need this standalone SDK; .NET
+hosts use their matching NuGet runtime packages.
 
 ### `webui build`
 

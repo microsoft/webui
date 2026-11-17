@@ -10,19 +10,25 @@ mod platform;
 #[path = "windows.rs"]
 mod platform;
 
+mod notification;
+mod stdin_control;
+mod task;
+mod worker;
+
 use actix_web::dev::Server;
-use std::io::{self, Read, Write};
+use notification::{stop_channel, Requests};
+use std::io::{self, Read};
 use std::num::NonZeroU64;
-use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
+use std::process::{Command, ExitStatus};
 use std::thread;
 use std::time::{Duration, Instant};
+use stdin_control::StdinControl;
 use tokio::sync::watch;
+use worker::Worker;
 
 const CHILD_ENV: &str = "_WEBUI_DEV_SERVER_CHILD";
 const CHILD_VERSION: &str = "bounded-v1";
 const CONFIRMATION: Duration = Duration::from_secs(2);
-const RUNNING_POLL: Duration = Duration::from_millis(100);
 const STOPPING_POLL: Duration = Duration::from_millis(10);
 
 /// Private success status returned after HTTP and rebuild teardown completes.
@@ -89,6 +95,32 @@ enum ControlState {
 pub struct Control(watch::Receiver<ControlState>);
 
 impl Control {
+    /// Wait for a supervisor stop or report loss of its control channel.
+    ///
+    /// Application orchestrators use this to stop native hosts gracefully
+    /// before releasing their request-scoped rendering resources.
+    pub async fn shutdown_requested(&mut self) -> Result<(), Error> {
+        match self.stop_state().await {
+            ControlState::Stop => Ok(()),
+            ControlState::Failed(kind) => Err(Error::Control(io::Error::new(
+                kind,
+                "the supervisor control pipe closed",
+            ))),
+            ControlState::Running => Err(Error::Control(io::Error::other(
+                "invalid supervisor stop state",
+            ))),
+        }
+    }
+
+    /// Interrupt the gated worker's owned process group during a build.
+    ///
+    /// The worker must install signal handling before calling this method;
+    /// the signal includes the worker so it can observe and join cancellation.
+    /// The supervisor's containment deadline remains the final force-stop bound.
+    pub fn interrupt_build(&self) -> Result<(), Error> {
+        platform::interrupt_current_group().map_err(Error::Control)
+    }
+
     /// Stop active HTTP connections when the supervisor requests shutdown.
     ///
     /// The caller must still drop its watcher and join active rebuild work after
@@ -138,6 +170,26 @@ impl Control {
 /// Returns an error when signal registration, child startup, control, or forced
 /// termination fails.
 pub fn prepare(timeout: Option<NonZeroU64>) -> Result<Mode, Error> {
+    prepare_with_stdin(timeout, false)
+}
+
+/// Enter bounded supervision, optionally accepting machine stop requests.
+///
+/// Like [`prepare`], call this once at process entry, before output or work.
+/// With a timeout and `enabled`, the supervising parent starts one stdin reader.
+/// Its first ASCII `S` byte or EOF requests graceful stop; another first byte
+/// reports a control error after cleanup. Only the first byte is interpreted.
+/// Without a timeout, stdin is untouched and execution remains direct.
+///
+/// The private child gate is checked first, so a worker never starts this
+/// external reader on its private startup/shutdown pipe. The reader is
+/// process-scoped: an already-completed worker never waits for controller EOF.
+///
+/// # Errors
+///
+/// Returns the same failures as [`prepare`], plus stdin reader startup, read,
+/// or malformed-control errors when machine control is enabled.
+pub fn prepare_with_stdin(timeout: Option<NonZeroU64>, enabled: bool) -> Result<Mode, Error> {
     if let Some(control) = child_gate()? {
         return Ok(Mode::Child(control));
     }
@@ -154,7 +206,7 @@ pub fn prepare(timeout: Option<NonZeroU64>) -> Result<Mode, Error> {
     let executable = std::env::current_exe().map_err(Error::Startup)?;
     let mut command = Command::new(executable);
     command.args(std::env::args_os().skip(1));
-    supervise(command, grace, requests).map(Mode::Supervisor)
+    supervise_with_stdin(command, grace, requests, enabled).map(Mode::Supervisor)
 }
 
 fn validate_policy(grace: Duration) -> Result<(), Error> {
@@ -201,66 +253,61 @@ fn child_gate() -> Result<Option<Control>, Error> {
     Ok(Some(Control(receiver)))
 }
 
-struct StopHandle(SyncSender<()>);
-
-impl StopHandle {
-    fn request(&self) -> bool {
-        match self.0.try_send(()) {
-            Ok(()) | Err(TrySendError::Full(())) => true,
-            Err(TrySendError::Disconnected(())) => false,
-        }
-    }
+#[cfg(test)]
+fn supervise(command: Command, grace: Duration, requests: Requests) -> Result<i32, Error> {
+    supervise_with_stdin(command, grace, requests, false)
 }
 
-fn stop_channel() -> (StopHandle, Receiver<()>) {
-    let (sender, receiver) = mpsc::sync_channel(2);
-    (StopHandle(sender), receiver)
-}
-
-fn supervise(mut command: Command, grace: Duration, requests: Receiver<()>) -> Result<i32, Error> {
+fn supervise_with_stdin(
+    mut command: Command,
+    grace: Duration,
+    requests: Requests,
+    enabled: bool,
+) -> Result<i32, Error> {
     validate_policy(grace)?;
     command.env(CHILD_ENV, CHILD_VERSION);
-    let mut worker = Worker::spawn(command)?;
-    worker.release()?;
+    let mut worker = Worker::spawn(command, requests.notification.clone())?;
+    let mut input = match StdinControl::start(enabled, requests.notification.clone()) {
+        Ok(input) => input,
+        Err(error) => return Err(worker.abort(error)),
+    };
+    let result = worker
+        .release()
+        .and_then(|()| supervise_running(&mut worker, grace, &requests, &mut input));
+    let result = result.map_err(|error| worker.abort(error));
+    // Include input already reported during worker/scope cleanup, too.
+    input.poll(&requests);
+    input.resolve(result)
+}
+
+fn supervise_running(
+    worker: &mut Worker,
+    grace: Duration,
+    requests: &Requests,
+    input: &mut StdinControl,
+) -> Result<i32, Error> {
     let mut deadline = None;
     loop {
-        if let Some(status) = worker.try_wait()? {
-            worker.finished = true;
-            return exit_code(status);
+        input.poll(requests);
+        if worker.exited()? {
+            return exit_code(worker.finish()?);
+        }
+        worker.check_relays()?;
+        if requests.count() >= 2 {
+            return Err(Error::Forced(ForcedReason::RepeatedRequest));
         }
         if deadline.is_some_and(|limit| Instant::now() >= limit) {
-            worker.terminate()?;
             return Err(Error::Forced(ForcedReason::Deadline));
         }
-        let pause = deadline.map_or(RUNNING_POLL, |limit: Instant| {
-            limit
-                .saturating_duration_since(Instant::now())
-                .min(STOPPING_POLL)
-        });
-        match requests.recv_timeout(pause) {
-            Ok(()) if deadline.is_some() => {
-                worker.terminate()?;
-                return Err(Error::Forced(ForcedReason::RepeatedRequest));
-            }
-            Ok(()) => {
-                worker.request_stop()?;
-                deadline = Some(
-                    Instant::now()
-                        .checked_add(grace)
-                        .ok_or(Error::InvalidPolicy)?,
-                );
-            }
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) if deadline.is_none() => {
-                worker.request_stop()?;
-                deadline = Some(
-                    Instant::now()
-                        .checked_add(grace)
-                        .ok_or(Error::InvalidPolicy)?,
-                );
-            }
-            Err(RecvTimeoutError::Disconnected) => thread::sleep(pause),
+        if deadline.is_none() && (requests.count() != 0 || requests.disconnected()) {
+            worker.request_stop()?;
+            deadline = Some(
+                Instant::now()
+                    .checked_add(grace)
+                    .ok_or(Error::InvalidPolicy)?,
+            );
         }
+        requests.wait(deadline)?;
     }
 }
 
@@ -269,136 +316,6 @@ fn exit_code(status: ExitStatus) -> Result<i32, Error> {
         Some(JOINED_EXIT_CODE) => Ok(0),
         Some(code) => Ok(code),
         None => Err(Error::ChildExited),
-    }
-}
-
-struct Worker {
-    child: Child,
-    control: Option<ChildStdin>,
-    scope: platform::Scope,
-    output_relays: Vec<thread::JoinHandle<()>>,
-    finished: bool,
-}
-
-impl Worker {
-    fn spawn(mut command: Command) -> Result<Self, Error> {
-        let mut scope = platform::Scope::new().map_err(Error::Startup)?;
-        scope.configure(&mut command);
-        #[cfg(unix)]
-        command.stdout(Stdio::piped()).stderr(Stdio::piped());
-        let mut child = command
-            .stdin(Stdio::piped())
-            .spawn()
-            .map_err(Error::Startup)?;
-        if let Err(error) = scope.attach(&child) {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(Error::Startup(error));
-        }
-        let output_relays = match start_output_relays(&mut child) {
-            Ok(relays) => relays,
-            Err(error) => {
-                let _ = scope.terminate(&child);
-                let _ = child.wait();
-                return Err(Error::Startup(error));
-            }
-        };
-        let control = child.stdin.take();
-        Ok(Self {
-            child,
-            control,
-            scope,
-            output_relays,
-            finished: false,
-        })
-    }
-
-    fn release(&mut self) -> Result<(), Error> {
-        self.write_control(b'G')
-    }
-
-    fn request_stop(&mut self) -> Result<(), Error> {
-        self.write_control(b'S')?;
-        self.control.take();
-        Ok(())
-    }
-
-    fn write_control(&mut self, byte: u8) -> Result<(), Error> {
-        self.control
-            .as_mut()
-            .ok_or_else(|| {
-                Error::Control(io::Error::new(
-                    io::ErrorKind::BrokenPipe,
-                    "shutdown control pipe is closed",
-                ))
-            })?
-            .write_all(&[byte])
-            .map_err(Error::Control)
-    }
-
-    fn try_wait(&mut self) -> Result<Option<ExitStatus>, Error> {
-        self.child.try_wait().map_err(Error::Control)
-    }
-
-    fn terminate(&mut self) -> Result<(), Error> {
-        self.scope.terminate(&self.child).map_err(Error::Control)?;
-        let deadline = Instant::now()
-            .checked_add(CONFIRMATION)
-            .ok_or(Error::InvalidPolicy)?;
-        loop {
-            if self.try_wait()?.is_some() {
-                self.finished = true;
-                self.join_output_relays();
-                return Ok(());
-            }
-            if Instant::now() >= deadline {
-                return Err(Error::UnconfirmedTermination);
-            }
-            thread::sleep(STOPPING_POLL);
-        }
-    }
-
-    fn join_output_relays(&mut self) {
-        for relay in self.output_relays.drain(..) {
-            let _ = relay.join();
-        }
-    }
-}
-
-#[cfg(unix)]
-fn start_output_relays(child: &mut Child) -> io::Result<Vec<thread::JoinHandle<()>>> {
-    let mut stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| io::Error::other("missing supervised stdout pipe"))?;
-    let mut stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| io::Error::other("missing supervised stderr pipe"))?;
-    Ok(vec![
-        thread::Builder::new()
-            .name("webui-shutdown-stdout".to_owned())
-            .spawn(move || {
-                let _ = io::copy(&mut stdout, &mut io::stdout());
-            })?,
-        thread::Builder::new()
-            .name("webui-shutdown-stderr".to_owned())
-            .spawn(move || {
-                let _ = io::copy(&mut stderr, &mut io::stderr());
-            })?,
-    ])
-}
-
-#[cfg(windows)]
-fn start_output_relays(_child: &mut Child) -> io::Result<Vec<thread::JoinHandle<()>>> {
-    Ok(Vec::new())
-}
-
-impl Drop for Worker {
-    fn drop(&mut self) {
-        if !self.finished {
-            let _ = self.terminate();
-        }
     }
 }
 

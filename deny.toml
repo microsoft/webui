@@ -21,6 +21,9 @@ allow = [
     "Zlib",
 ]
 confidence-threshold = 0.8
+exceptions = [
+    { name = "xxhash-rust", version = "=0.8.21", allow = ["BSL-1.0"] },
+]
 
 [licenses.private]
 ignore = true
@@ -34,6 +37,15 @@ skip = [
     # prost-build's current petgraph release requires these older hashing crates.
     # They are confined to IPC generation tooling, not the desktop runtime.
     { name = "hashbrown", version = "=0.15.5" },
+    # Build-only Rolldown/Oxc resolve through dashmap and simd-json.
+    { name = "hashbrown", version = "=0.14.5" },
+    { name = "hashbrown", version = "=0.16.1" },
+    # Existing prost/comrak/ICU consumers retain these while Oxc uses newer APIs.
+    { name = "itertools", version = "=0.14.0" },
+    { name = "phf", version = "=0.13.1" },
+    { name = "phf_generator", version = "=0.13.1" },
+    { name = "phf_shared", version = "=0.13.1" },
+    { name = "synstructure", version = "=0.13.2" },
     { name = "foldhash", version = "=0.1.5" },
     { name = "r-efi" },
     { name = "windows-sys" },

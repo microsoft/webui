@@ -11,7 +11,7 @@
     "build:client": "node ../../build-client.mjs",
     "build:protocol": "cargo run -p microsoft-webui-cli -- build ./src --plugin=webui --projection-manifest ./dist/webui-projection.json --theme=@microsoft/webui-examples-theme --out ./dist --modules-out ./.webui",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json --noEmit",
-    "start:client": "pnpm run build:deps && pnpm run build:modules && node ../../build-client.mjs --watch",
+    "start:client": "pnpm run build:deps && cargo build --release -p microsoft-webui-cli && pnpm run build:modules && node ../../build-client.mjs --watch",
     "start:api": "node server/index.mjs --port 3021",
     "start:server": "cargo run -p microsoft-webui-cli -- serve ./src --state ./data/state.json --plugin=webui --projection-manifest ./dist/webui-projection.json --theme=@microsoft/webui-examples-theme --modules-out ./.webui --servedir ./dist --port 3011 --api-port 3021 --watch",
     "start": "cargo xtask dev lazy-ui",

@@ -18,11 +18,11 @@ interface WebUIWindow {
 
 function classifyLazyResource(url: string): LazyResource | undefined {
   const { pathname } = new URL(url);
-  if (/\/lazy-panel\.webui-[A-Z0-9]+\.js$/.test(pathname)) return 'lazy-asset';
-  if (/\/secondary-panel\.webui-[A-Z0-9]+\.js$/.test(pathname)) {
+  if (/\/lazy-panel\.webui-[A-Za-z0-9_-]+\.js$/.test(pathname)) return 'lazy-asset';
+  if (/\/secondary-panel\.webui-[A-Za-z0-9_-]+\.js$/.test(pathname)) {
     return 'secondary-asset';
   }
-  if (/\/chunk-[A-Z0-9]+\.js$/.test(pathname)) return 'bundled-chunk';
+  if (pathname.endsWith('.js') && !pathname.endsWith('/index.js')) return 'bundled-chunk';
   if (pathname.endsWith('/lazy-panel.css')) return 'css';
   if (pathname.endsWith('/lazy-panel-data.json')) return 'data';
   return undefined;
@@ -53,6 +53,41 @@ function lazyPanelStylesheets(
 }
 
 test.describe('static component assets', () => {
+  test('preloads both roots on keyboard focus and mounts only on activation', async ({ page }) => {
+    const lazyRequests: LazyResource[] = [];
+    const pageErrors: Error[] = [];
+    page.on('pageerror', error => pageErrors.push(error));
+    page.on('request', request => {
+      const resource = classifyLazyResource(request.url());
+      if (resource) lazyRequests.push(resource);
+    });
+
+    await page.goto('/');
+    await expect(page.getByRole('button', { name: 'Load lazy panel' })).toBeVisible();
+    await page.keyboard.press('Tab');
+    await expect(page.getByRole('button', { name: 'Load lazy panel' })).toBeFocused();
+    await expect.poll(() => countLazyRequests(lazyRequests, 'lazy-asset')).toBe(1);
+    await expect.poll(() => countLazyRequests(lazyRequests, 'css')).toBe(1);
+    await expect(page.locator('lazy-panel')).toHaveCount(0);
+    expect(countLazyRequests(lazyRequests, 'data')).toBe(0);
+
+    await page.keyboard.press('Enter');
+    await expect(page.locator('lazy-panel')).toHaveCount(1);
+    await expect(page.getByText('Loaded from component fetch')).toBeVisible();
+    await page.keyboard.press('Tab');
+    await expect(page.getByRole('button', { name: 'Load secondary panel' })).toBeFocused();
+    await expect.poll(() => countLazyRequests(lazyRequests, 'secondary-asset')).toBe(1);
+    await expect(page.locator('secondary-panel')).toHaveCount(0);
+
+    await page.keyboard.press('Enter');
+    await expect(page.locator('secondary-panel')).toHaveCount(1);
+    await expect(page.getByText('Secondary component asset')).toBeVisible();
+    await expect(page.getByRole('alert')).toHaveCount(0);
+    expect(countLazyRequests(lazyRequests, 'lazy-asset')).toBe(1);
+    expect(countLazyRequests(lazyRequests, 'secondary-asset')).toBe(1);
+    expect(pageErrors).toEqual([]);
+  });
+
   test('recovers a failed speculative native import through an explicit reload', async ({ page }) => {
     let assetRequests = 0;
     const pageErrors: Error[] = [];
@@ -242,7 +277,8 @@ test.describe('static component assets', () => {
 
     expect(countLazyRequests(lazyRequests, 'secondary-asset')).toBe(1);
     expect(countLazyRequests(lazyRequests, 'lazy-asset')).toBe(0);
-    expect(countLazyRequests(lazyRequests, 'bundled-chunk')).toBeGreaterThanOrEqual(1);
+    const sharedRequests = countLazyRequests(lazyRequests, 'bundled-chunk');
+    expect(sharedRequests).toBeGreaterThanOrEqual(1);
     expect(await loadedTemplateNames(page)).toContain('shared-detail');
 
     await page.getByRole('button', { name: 'Load lazy panel' }).click();
@@ -279,6 +315,7 @@ test.describe('static component assets', () => {
     expect(await loadedTemplateNames(page)).toContain('shared-detail');
     expect(countLazyRequests(lazyRequests, 'lazy-asset')).toBe(1);
     expect(countLazyRequests(lazyRequests, 'secondary-asset')).toBe(1);
+    expect(countLazyRequests(lazyRequests, 'bundled-chunk')).toBe(sharedRequests);
     expect(countLazyRequests(lazyRequests, 'data')).toBe(1);
     expect(countLazyRequests(lazyRequests, 'css')).toBeGreaterThanOrEqual(1);
 

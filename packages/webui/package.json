@@ -21,7 +21,8 @@
     "dist/index.*",
     "dist/install.*",
     "dist/platform.*",
-    "dist/projection/",
+    "dist/binding.*",
+    "dist/bundle.*",
     "wasm/"
   ],
   "scripts": {
@@ -30,7 +31,7 @@
     "postbuild": "node dist/install.js",
     "prepack": "node scripts/prepare-ai.js",
     "postinstall": "node --input-type=module -e \"try{await import('./dist/install.js')}catch{}\"",
-    "test": "pnpm --filter @microsoft/webui-framework build --incremental false && tsc --project tsconfig.test.json && node --test ../../examples/build-client.test.mjs dist/test/ai-reference.test.js dist/test/integration.test.js dist/test/native-addon-loading.test.js dist/test/projection-conformance.test.js dist/test/projection-compiler.test.js dist/test/projection-class-factory.test.js dist/test/projection-esbuild.test.js dist/test/projection-mixins.test.js dist/test/projection-proof.test.js dist/test/projection-parser.test.js dist/test/projection-peers.test.js"
+    "test": "pnpm --filter @microsoft/webui-framework build --incremental false && tsc --project tsconfig.test.json && node --test ../../examples/build-client.test.mjs dist/test/ai-reference.test.js dist/test/integration.test.js dist/test/native-addon-loading.test.js dist/test/native-bundle.test.js"
   },
   "engines": {
     "node": ">=18"
@@ -49,12 +50,6 @@
         "types": "./dist/platform.d.ts",
         "default": "./dist/platform.js"
       }
-    },
-    "./projection.js": {
-      "import": {
-        "types": "./dist/projection/index.d.ts",
-        "default": "./dist/projection/index.js"
-      }
     }
   },
   "optionalDependencies": {
@@ -65,22 +60,9 @@
     "@microsoft/webui-win32-arm64": "workspace:*",
     "@microsoft/webui-win32-x64": "workspace:*"
   },
-  "peerDependencies": {
-    "esbuild": "^0.28.1",
-    "typescript": "^6.0.3 || 7.0.2"
-  },
-  "peerDependenciesMeta": {
-    "esbuild": {
-      "optional": true
-    },
-    "typescript": {
-      "optional": true
-    }
-  },
   "devDependencies": {
     "@types/node": "catalog:",
     "esbuild": "catalog:",
-    "typescript": "catalog:",
-    "typescript-6": "catalog:"
+    "typescript": "catalog:"
   }
 }

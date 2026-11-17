@@ -14,6 +14,8 @@ try
     using var protocol = new Protocol(await File.ReadAllBytesAsync(Path.Combine(root, "dist", "protocol.bin")));
     using var handler = new WebUIHandler("webui");
     var builder = WebApplication.CreateSlimBuilder(args);
+    builder.Services.Configure<Microsoft.Extensions.Hosting.HostOptions>(options =>
+        options.ShutdownTimeout = TimeSpan.FromSeconds(10));
     string host = Environment.GetEnvironmentVariable("HOST") ?? "127.0.0.1";
     string portText = Environment.GetEnvironmentVariable("PORT") ?? "3000";
     if ((!IPAddress.TryParse(host, out _) && host != "localhost") ||
@@ -60,6 +62,25 @@ try
         else
             await Reply(context, 404, "text/plain; charset=utf-8", "Not found\n"u8.ToArray());
     });
+    if (Environment.GetEnvironmentVariable("_WEBUI_APP_CONTROL") == "stdin-v1")
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                using Stream input = Console.OpenStandardInput();
+                byte[] command = new byte[1];
+                int count = await input.ReadAsync(command);
+                if (count == 0) app.Logger.LogWarning("WebUI supervisor disconnected; shutting down");
+                else if (command[0] != (byte)'S') app.Logger.LogError("Invalid WebUI supervisor command; shutting down");
+            }
+            catch (IOException error)
+            {
+                app.Logger.LogWarning(error, "WebUI supervisor control failed; shutting down");
+            }
+            app.Lifetime.StopApplication();
+        });
+    }
     // RunAsync drains requests before the native using declarations are disposed.
     await app.RunAsync();
     return 0;
@@ -87,7 +108,7 @@ internal static class PublicAssets
     internal static readonly Dictionary<string, string> Mimes = new(StringComparer.OrdinalIgnoreCase)
     {
         [".js"] = "text/javascript; charset=utf-8", [".css"] = "text/css; charset=utf-8",
-        [".json"] = "application/json", [".txt"] = "text/plain; charset=utf-8",
+        [".json"] = "application/json", [".map"] = "application/json", [".txt"] = "text/plain; charset=utf-8",
         [".svg"] = "image/svg+xml", [".png"] = "image/png", [".jpg"] = "image/jpeg",
         [".jpeg"] = "image/jpeg", [".gif"] = "image/gif", [".webp"] = "image/webp",
         [".avif"] = "image/avif", [".ico"] = "image/x-icon",

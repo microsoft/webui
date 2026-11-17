@@ -7,13 +7,21 @@ import {
   preloadComponentAssetStyles,
 } from '@microsoft/webui-framework/component-asset-runtime.js';
 
-const loadLazyPanel = () =>
-  import('../../.webui/lazy-panel.webui.js')
-    .then(module => defineComponentAsset(module.default));
+const loadLazyPanel = async () => {
+  preloadComponentAssetStyles('lazy-panel');
+  const module = await import('../../.webui/lazy-panel.webui.js');
+  const asset = defineComponentAsset(module.default);
+  await asset.preload();
+  return asset;
+};
 
-const loadSecondaryPanel = () =>
-  import('../../.webui/secondary-panel.webui.js')
-    .then(module => defineComponentAsset(module.default));
+const loadSecondaryPanel = async () => {
+  preloadComponentAssetStyles('secondary-panel');
+  const module = await import('../../.webui/secondary-panel.webui.js');
+  const asset = defineComponentAsset(module.default);
+  await asset.preload();
+  return asset;
+};
 
 export class AppShell extends WebUIElement {
   @attr title = '';
@@ -23,22 +31,15 @@ export class AppShell extends WebUIElement {
   secondaryPanelSlot!: HTMLDivElement;
 
   preloadPanel(): void {
-    preloadComponentAssetStyles('lazy-panel');
-    void loadLazyPanel()
-      .then(asset => asset.preload())
-      .catch(() => undefined);
+    void loadLazyPanel().catch(() => undefined);
   }
 
   preloadSecondaryPanel(): void {
-    preloadComponentAssetStyles('secondary-panel');
-    void loadSecondaryPanel()
-      .then(asset => asset.preload())
-      .catch(() => undefined);
+    void loadSecondaryPanel().catch(() => undefined);
   }
 
   async openPanel(): Promise<void> {
     try {
-      preloadComponentAssetStyles('lazy-panel');
       const [asset, state] = await Promise.all([
         loadLazyPanel(),
         fetch('./lazy-panel-data.json').then(response => {
@@ -57,7 +58,6 @@ export class AppShell extends WebUIElement {
 
   async openSecondaryPanel(): Promise<void> {
     try {
-      preloadComponentAssetStyles('secondary-panel');
       const asset = await loadSecondaryPanel();
       this.secondaryPanelSlot.replaceChildren(await asset.create());
       this.loadError = '';

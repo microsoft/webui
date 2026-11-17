@@ -229,10 +229,7 @@ pub fn run_example_builds() -> Result<(), String> {
 /// Every example app's `build:deps` step compiles the shared packages
 /// (`@microsoft/webui`, `@microsoft/webui-framework`, `@microsoft/webui-delivery`)
 /// with `tsc` into their `dist/` directories. Building the apps in parallel
-/// makes those `tsc` invocations race for the shared output: one app reads
-/// `packages/webui/dist/projection/adapters/esbuild.js` while another app's
-/// `tsc` is mid-rewrite of the sibling `loader.js`, surfacing in CI as
-/// `does not provide an export named 'compileProjection'`.
+/// makes those `tsc` invocations race with imports of shared native SDK bindings.
 ///
 /// Building the shared packages once here seeds their outputs and the
 /// incremental `.tsbuildinfo` (the shared tsconfigs set `"incremental": true`),

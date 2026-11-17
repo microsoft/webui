@@ -11,7 +11,7 @@ import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
-import { hostCommands } from '../src/commands/init/templates/common/scripts/app.mjs';
+import { shutdown, spawnNativeFixture, terminateTree } from './starter-process.mjs';
 
 async function run(command, args, cwd, env) {
   const child = spawn(command, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -28,8 +28,7 @@ test('a fresh generated Go app imports the staged official module and runs witho
     assert.ok(process.env[name], `Run cargo xtask test-go: ${name} is required`);
   }
   const root = await realpath(await mkdtemp(path.join(tmpdir(), 'webui-go-consumer-')));
-  const previous = process.cwd();
-  let env = {
+  const env = {
     ...process.env,
     GOWORK: 'off',
     GOTOOLCHAIN: 'local',
@@ -41,55 +40,45 @@ test('a fresh generated Go app imports the staged official module and runs witho
   let server, closed;
   try {
     const app = path.join(root, 'consumer-app');
-    await run(process.env.WEBUI_GO_TEST_CLI, ['init', app, '--server', 'go', '--no-interactive'], root, env);
-    const module = await readFile(path.join(app, 'server/go.mod'), 'utf8');
+    const cli = process.env.WEBUI_GO_TEST_CLI;
+    await run(cli, ['init', app, '--server', 'go', '--no-interactive'], root, env);
+    const module = await readFile(path.join(app, 'go.mod'), 'utf8');
     const dependency = module.match(/^require (github\.com\/microsoft\/webui\/go\/v\d+) (v\S+)$/m);
     assert.ok(dependency, module);
     assert.ok(!module.includes('replace'), 'consumer must use the module artifact, not a local replacement');
-    assert.ok((await readFile(path.join(app, 'server/main.go'), 'utf8')).includes(dependency[1]));
-    await assert.rejects(stat(path.join(app, 'server/webui.go')), { code: 'ENOENT' });
-    await assert.rejects(stat(path.join(app, 'server/go.sum')), { code: 'ENOENT' });
+    assert.ok((await readFile(path.join(app, 'cmd/server/main.go'), 'utf8')).includes(dependency[1]));
+    await assert.rejects(stat(path.join(app, 'cmd/server/webui.go')), { code: 'ENOENT' });
+    await assert.rejects(stat(path.join(app, 'go.sum')), { code: 'ENOENT' });
+    await assert.rejects(stat(path.join(app, 'package.json')), { code: 'ENOENT' });
+    await assert.rejects(stat(path.join(app, 'scripts')), { code: 'ENOENT' });
 
     const stale = path.join(root, 'stale SDK/include');
     await mkdir(stale, { recursive: true });
     await writeFile(path.join(stale, 'webui_ffi.h'), '#error Inherited headers must not shadow the selected SDK\n');
-    const { provisionSdk, sdkEnvironment } = await import(pathToFileURL(path.join(app, 'scripts/sdk.mjs')));
-    env = sdkEnvironment(await provisionSdk(app), {
-      ...env,
-      CGO_CFLAGS: `${JSON.stringify(`-I${stale.replaceAll('\\', '/')}`)} ${env.CGO_CFLAGS ?? ''}`,
-      CGO_CPPFLAGS: `${JSON.stringify(`-I${stale.replaceAll('\\', '/')}`)} ${env.CGO_CPPFLAGS ?? ''}`,
-    });
+    env.CGO_CFLAGS = `${JSON.stringify(`-I${stale.replaceAll('\\', '/')}`)} ${env.CGO_CFLAGS ?? ''}`;
+    env.CGO_CPPFLAGS = `${JSON.stringify(`-I${stale.replaceAll('\\', '/')}`)} ${env.CGO_CPPFLAGS ?? ''}`;
+    await run(cli, ['sdk', 'check'], app, env);
+    await run(cli, ['app', 'build'], app, env);
 
     await mkdir(path.join(app, 'dist/public'), { recursive: true });
-    await copyFile(process.env.WEBUI_GO_TEST_PROTOCOL, path.join(app, 'dist/protocol.bin'));
     await copyFile(process.env.WEBUI_GO_TEST_PROTOCOL, path.join(app, 'dist/public/private.bin'));
     await mkdir(path.join(app, 'dist/public/nested'));
     // The full framework browser suite covers JS; this checks the real Go host.
     await copyFile(process.env.WEBUI_GO_TEST_PROTOCOL, path.join(app, 'dist/public/nested/source.ts'));
-    process.chdir(app);
-    const commands = hostCommands('go');
-    for (const [command, arguments_, cwd = '.'] of commands.build) {
-      await run(command, arguments_, cwd, env);
-    }
-    const sum = await readFile(path.join(app, 'server/go.sum'), 'utf8');
+    const sum = await readFile(path.join(app, 'go.sum'), 'utf8');
     assert.ok(sum.split('\n').some(line => line.startsWith(`${dependency[1]} ${dependency[2]} h1:`)), sum);
-    await run('go', ['test', '-race', '-count=1', './...'], 'server', env);
+    await run(cli, ['sdk', 'exec', '--', 'go', 'test', '-race', '-count=1', './...'], app, env);
 
     const reservation = createServer().listen(0, '127.0.0.1');
     await once(reservation, 'listening');
     const port = reservation.address().port;
     await new Promise(resolve => reservation.close(resolve));
     const origin = `http://127.0.0.1:${port}`;
-    const [executable, args] = await commands.start();
-    server = spawn(executable, args, {
-      cwd: app,
-      env: {
+    server = spawnNativeFixture(app, cli, ['app', 'start'], {
         ...env,
         HOST: '127.0.0.1', PORT: String(port), WEBUI_APP_ROOT: app,
         // Windows needs the DLL search path; neither location contains Node.
         PATH: process.platform === 'win32' ? path.dirname(process.env.WEBUI_GO_TEST_LIBRARY) : '',
-      },
-      stdio: ['ignore', 'pipe', 'pipe'],
     });
     let output = '';
     server.stdout.on('data', chunk => { output += chunk; });
@@ -121,16 +110,10 @@ test('a fresh generated Go app imports the staged official module and runs witho
     assert.equal(head.status, 200);
     assert.equal(await head.text(), '');
     assert.equal((await fetch(origin, { method: 'POST' })).status, 405);
-    server.kill('SIGTERM');
+    await shutdown(server);
     const [code, signal] = await closed;
-    if (process.platform === 'win32') {
-      // Node uses TerminateProcess, not a Go signal handler, on Windows.
-      // The generated Go suite separately verifies real cancellation/draining.
-      assert.equal(code, null, output);
-      assert.equal(signal, 'SIGTERM', output);
-    } else {
-      assert.equal(code, 0, output);
-    }
+    assert.equal(code, 0, output);
+    assert.equal(signal, null, output);
     const probe = createConnection({ host: '127.0.0.1', port });
     probe.setTimeout(1000, () => probe.destroy(new Error('Listener close probe timed out')));
     try {
@@ -140,12 +123,10 @@ test('a fresh generated Go app imports the staged official module and runs witho
     }
   } finally {
     if (server && server.exitCode === null && server.signalCode === null) {
-      server.kill('SIGTERM');
-      const timer = setTimeout(() => server.kill('SIGKILL'), 10_000);
-      await closed.finally(() => clearTimeout(timer));
+      await terminateTree(server);
+      await closed;
     }
-    process.chdir(previous);
-    await run('go', ['clean', '-modcache'], previous, env);
+    await run('go', ['clean', '-modcache'], root, env);
     await rm(root, { recursive: true, force: true });
   }
 });

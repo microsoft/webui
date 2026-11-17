@@ -97,8 +97,9 @@ pub async fn run_serve(opts: ServeConfig, control: Option<Control>) -> Result<()
         let td = template_dir.clone();
         tokio::task::spawn_blocking(move || -> Result<BuildCache> {
             let mut cache = BuildCache::new();
-            build_docs_with_cache(&cfg, &cd, &td, &mut cache)
+            let stats = build_docs_with_cache(&cfg, &cd, &td, &mut cache)
                 .map_err(|e| anyhow!("initial build failed: {e}"))?;
+            webui_dev_server::RebuildReporter::new().warnings(&stats.warning_messages());
             // Subsequent rebuilds suppress the per-step banner output
             // (the rolling rebuild line replaces it) and skip cleaning
             // the output dir — overwriting in place is faster and
@@ -153,9 +154,8 @@ pub async fn run_serve(opts: ServeConfig, control: Option<Control>) -> Result<()
                 )
                 .map_err(|error| format!("Cannot refresh Press input watches: {error}"))?;
             }
-            result.map_err(|e| format!("{e}"))?;
-            // webui-press has no per-rebuild advisories to surface.
-            Ok(Vec::new())
+            let stats = result.map_err(|e| format!("{e}"))?;
+            Ok(stats.warning_messages())
         })
     };
 
