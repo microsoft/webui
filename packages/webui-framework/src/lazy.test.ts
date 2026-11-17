@@ -512,14 +512,15 @@ test('a closed activation ignores a late failure and can retry when reopened', a
     runtime.activate(host, binding, url);
     const loading = runtime.load(id, url);
     const rejected = assert.rejects(loading, /cancelled pack failed/);
-    const cancelled = assert.rejects(whenRendered(host), { name: 'AbortError' });
+    let cancelledSettled = false;
+    void whenRendered(host).then(() => { cancelledSettled = true; }, () => { cancelledSettled = true; });
     runtime.cancelActivation(host, binding);
-    await cancelled;
     response.reject(new Error('cancelled pack failed'));
     await rejected;
     await tick();
     assert.equal(errors, 0);
     assert.equal(reported.length, reportCount);
+    assert.equal(cancelledSettled, false);
     assert.equal(mounted, 0);
     await whenRendered(host);
     assert.equal(mounted, 0, 'observing a closed region must not reactivate it');
@@ -591,9 +592,9 @@ test('a late cancelled activation cannot settle or fail its replacement', async 
   });
   try {
     runtime.activate(host, binding, oldUrl);
-    const cancelled = assert.rejects(whenRendered(host), { name: 'AbortError' });
+    let cancelledSettled = false;
+    void whenRendered(host).then(() => { cancelledSettled = true; }, () => { cancelledSettled = true; });
     runtime.cancelActivation(host, binding);
-    await cancelled;
     runtime.activate(host, binding, newUrl);
     let completed = false;
     const waiting = whenRendered(host).then(() => { completed = true; });
@@ -608,6 +609,7 @@ test('a late cancelled activation cannot settle or fail its replacement', async 
     await waiting;
     assert.equal(mounted, 1);
     assert.equal(errors, 0);
+    assert.equal(cancelledSettled, false);
   } finally {
     runtime.cancelActivation(host, binding);
     responses.delete(oldUrl);

@@ -3,16 +3,27 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 const script = fileURLToPath(new URL('./tag-release.sh', import.meta.url)).replaceAll('\\', '/');
-const bash = process.platform === 'win32'
-  ? join(dirname(dirname(dirname(execFileSync('git', ['--exec-path'], { encoding: 'utf8' }).trim()))), 'bin/bash.exe')
-  : 'bash';
+function findBash() {
+  if (process.platform !== 'win32') return 'bash';
+  const candidates = spawnSync('where.exe', ['bash.exe'], { encoding: 'utf8' });
+  if (candidates.status === 0) {
+    for (const candidate of candidates.stdout.trim().split(/\r?\n/)) {
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  const gitRoot = dirname(dirname(dirname(execFileSync('git', ['--exec-path'], { encoding: 'utf8' }).trim())));
+  const bundled = join(gitRoot, 'bin/bash.exe');
+  if (existsSync(bundled)) return bundled;
+  throw new Error('Release-tag tests require Git Bash. Install Git for Windows and add its bin directory to PATH.');
+}
+const bash = findBash();
 
 function fixture(t, { module = 'github.com/microsoft/webui/go/v3' } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'webui release tags '));
@@ -69,7 +80,9 @@ function fixture(t, { module = 'github.com/microsoft/webui/go/v3' } = {}) {
   function run(overrides = {}) {
     // Safety invariant: every executed tag command has a fresh local bare origin.
     assert.equal(git(['remote', 'get-url', 'origin']), remote);
-    return spawnSync(bash, [script], { cwd: work, env: { ...env, ...overrides }, encoding: 'utf8' });
+    const result = spawnSync(bash, [script], { cwd: work, env: { ...env, ...overrides }, encoding: 'utf8' });
+    if (result.error) throw result.error;
+    return result;
   }
   return { root, work, remote, git, remoteGit, remoteTag, seed, run, commit, historical };
 }

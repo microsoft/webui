@@ -484,10 +484,11 @@ test('native watcher excludes generated registrations, handles nameless events, 
     const sources = watchSources();
     try {
       assert.deepEqual(registered.map(entry => entry.directory.split(path.sep).join('/')).sort(),
-        ['.', 'scripts', 'server', 'src', 'src/bin', 'src/build', 'src/nested', 'src/obj', 'src/target']);
+        process.platform === 'win32' ? ['.'] :
+          ['.', 'scripts', 'server', 'src', 'src/bin', 'src/build', 'src/nested', 'src/obj', 'src/target']);
       let ignoredVersion = sources.version;
-      const server = registered.find(entry => entry.directory === 'server');
-      server.watcher.emit('change', 'change', 'target');
+      const server = registered.find(entry => entry.directory === (process.platform === 'win32' ? '.' : 'server'));
+      server.watcher.emit('change', 'change', process.platform === 'win32' ? path.join('server', 'target') : 'target');
       await new Promise(resolve => setTimeout(resolve, 100));
       assert.equal(sources.version, ignoredVersion);
       const version = sources.version;
@@ -515,6 +516,8 @@ test('native watcher recovers deleted Windows handles and registration races wit
     import fs from 'node:fs';
     import path from 'node:path';
     import { syncBuiltinESMExports } from 'node:module';
+    // Exercise per-directory registration recovery even on recursive-watch platforms.
+    Object.defineProperty(process, 'platform', { value: 'linux' });
     const registered = new Map();
     const originalWatch = fs.watch;
     const originalRead = fs.readdirSync;

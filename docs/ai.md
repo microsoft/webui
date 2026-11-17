@@ -843,9 +843,14 @@ await this.$whenRendered();
 this.actionButton.focus(); // w-ref="{actionButton}" on the conditional button
 ```
 
-Call it on a connected, mounted component. It includes affected WebUI
-descendants, not unrelated future work or paint. Handle rejections at your
-application's error boundary and recheck focus intent after awaiting. See
+Call it after mounting. It includes affected WebUI descendants, not unrelated
+future work or paint. Routine disconnect or destruction abandons pending waits
+without rejection or post-await effects; reconnect does not revive them.
+Calls while disconnected are also abandoned. No caller-side teardown checks,
+revision counters, or scheduling workarounds are needed. Cancelled or moved
+captured descendant work also abandons the affected wait. Genuine failures still
+reject at your application's error boundary. A settled promise cannot be
+cancelled retroactively, and focus intent remains application policy. See
 [affected rendering](/learn/interactivity#wait-for-affected-rendering)
 for the complete contract. Do not count microtasks or use timers to guess when
 rendering has finished.

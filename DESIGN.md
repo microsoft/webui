@@ -457,7 +457,10 @@ follows rendered ownership and includes started
 DOM-gated mount continuations, but does not force deferred hydration, wait for
 unrelated future work, or imply paint. Failed or readiness-blocked affected
 work cannot be reported as successful completion. Interaction policy, including
-focus recovery, remains owned by the application.
+focus recovery, remains owned by the application. Component teardown abandons
+its pending completion observations without success or failure, so obsolete
+async effects do not resume on a later connection. Genuine rendering failures
+remain distinguishable from this lifecycle cancellation.
 
 The framework treats compiled HTML and metadata as trusted output of its own
 compiler, not as arbitrary user HTML. Trusted Types support protects compiler

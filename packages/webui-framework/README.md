@@ -109,9 +109,15 @@ await this.$whenRendered();
 this.actionButton.focus(); // w-ref="{actionButton}" on the conditional button
 ```
 
-Call it on a connected, mounted component. It includes affected WebUI
+Call it after mounting. It includes affected WebUI
 descendants and activated lazy regions, not unrelated future work or paint.
-Handle rejected completion requests and recheck focus intent after a wait. See
+Disconnect or destruction abandons pending waits without rejection or resuming
+post-await code, even after reconnect. Calls while disconnected are also
+abandoned. Routine teardown needs no caller-side `try/catch`, connection checks,
+revision counters, or scheduling workarounds. Cancelled or moved captured
+descendant work also abandons the affected wait. Genuine failures still reject;
+handle them at the application's error boundary. Already-settled promises cannot
+be cancelled retroactively, and focus intent remains application policy. See
 [Wait for affected rendering](https://microsoft.github.io/webui/learn/interactivity#wait-for-affected-rendering)
 for the full contract and template example.
 
