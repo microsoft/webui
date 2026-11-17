@@ -197,18 +197,19 @@ test('a captured write enrolls a job already queued independently after sealing'
   await waiting;
 });
 
-test('queued membership still rejects a target moved outside the captured scope', async () => {
+test('queued membership abandons a boundary when a target leaves the captured scope', async () => {
   const root = new Target();
   const child = new Target();
   child.parent = root;
   enqueueRender(child);
-  const waiting = whenRendered(root);
-  const rejected = assert.rejects(waiting, { name: 'AbortError' });
+  let settled = false;
+  void whenRendered(root).then(() => { settled = true; }, () => { settled = true; });
   child.parent = null;
-  await rejected;
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(settled, false);
 });
 
-test('moving queued work rejects only the boundary it leaves', async () => {
+test('moving queued work abandons only the boundary it leaves', async () => {
   const root = new Target();
   const elsewhere = new Target();
   const child = new Target();
@@ -217,15 +218,16 @@ test('moving queued work rejects only the boundary it leaves', async () => {
   leaf.parent = child;
   child.run = () => { queueRenderWork(leaf, MOUNT_WORK); };
   enqueueRender(child);
-  const outside = assert.rejects(whenRendered(root), { name: 'AbortError' });
+  let outerSettled = false;
+  void whenRendered(root).then(() => { outerSettled = true; }, () => { outerSettled = true; });
   let innerFinished = false;
   const inside = whenRendered(child).then(() => { innerFinished = true; });
   child.parent = elsewhere;
-  await outside;
   await Promise.resolve();
   assert.equal(innerFinished, false);
   finishRenderWork(leaf, MOUNT_WORK);
   await inside;
+  assert.equal(outerSettled, false);
 });
 
 test('a failed scope check retries unattempted work and reports the error', async () => {

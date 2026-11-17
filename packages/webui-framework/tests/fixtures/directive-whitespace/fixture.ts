@@ -4,8 +4,8 @@
 import { build, Protocol } from '../../../../webui/dist/index.js';
 import { buildFixtureEntries } from '@microsoft/webui-test-support/fixture-build';
 import { expect, type Page } from '@playwright/test';
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { TemplateMeta } from '../../../src/template-types.js';
 import type { DirectiveCase } from './sources.js';
@@ -26,16 +26,21 @@ const items: WhitespaceItem[] = [
   },
 ];
 
-export async function buildBrowserModule(workspace: string): Promise<string> {
+export async function buildBrowserModule(workspace: string): Promise<Map<string, string>> {
+  const outDir = resolve(workspace, 'bundle');
   await buildFixtureEntries({
     fixturesRoot: dirname(here),
     entryFileName: authoredFile,
-    outDir: resolve(workspace, 'bundle'),
+    outDir,
     tsconfig: resolve(here, '../../../tsconfig.test.json'),
   });
-  return readFileSync(
-    resolve(workspace, 'bundle', 'directive-whitespace', `${tag}.js`), 'utf8',
-  );
+  const modules = new Map<string, string>();
+  for (const file of readdirSync(outDir, { recursive: true, encoding: 'utf8' })) {
+    if (file.endsWith('.js')) {
+      modules.set(file.split(sep).join('/'), readFileSync(resolve(outDir, file), 'utf8'));
+    }
+  }
+  return modules;
 }
 
 export function compileFixture(fixture: DirectiveCase, workspace: string) {
@@ -71,11 +76,18 @@ export function removeWorkspace(workspace: string): void {
   rmSync(workspace, { recursive: true, force: true });
 }
 
-export async function loadSsr(page: Page, html: string, module: string): Promise<void> {
+export async function loadSsr(page: Page, html: string, modules: ReadonlyMap<string, string>): Promise<void> {
   await page.route('**/directive-whitespace/fixture.html', route =>
     route.fulfill({ contentType: 'text/html', body: html }));
-  await page.route('**/directive-whitespace/component.js', route =>
-    route.fulfill({ contentType: 'text/javascript', body: module }));
+  await page.route('**/directive-whitespace/bundle/**', route => {
+    const file = new URL(route.request().url()).pathname.slice('/directive-whitespace/bundle/'.length);
+    const source = modules.get(file);
+    return route.fulfill({
+      status: source === undefined ? 404 : 200,
+      contentType: 'text/javascript',
+      body: source ?? `Missing native fixture module: ${file}`,
+    });
+  });
   await page.goto('/directive-whitespace/fixture.html');
   await page.evaluate(() => {
     const host = document.querySelector('test-directive-whitespace');
@@ -95,7 +107,7 @@ export async function loadSsr(page: Page, html: string, module: string): Promise
 
 export async function hydrate(page: Page): Promise<void> {
   await page.evaluate(async moduleUrl => { await import(moduleUrl); },
-    '/directive-whitespace/component.js');
+    `/directive-whitespace/bundle/directive-whitespace/${tag}.js`);
 }
 
 export async function expectOriginalElements(page: Page): Promise<void> {

@@ -140,12 +140,22 @@ fallback rendering while rejecting the boundary. This does not impose a
 resource deadline or wait for all CSS on the page.
 
 Structural disposal retires removed descendant jobs. Root disconnection or
-unexpected loss of captured work rejects; same-stack descendant moves that restore the
-scope remain valid. Destruction clears pending and weak blocked entries.
+explicit root destruction abandons that root's pending boundaries without
+fulfillment or rejection, including on same-stack reconnect. Calls made while
+disconnected return independent pending promises without starting observation.
+Reconnection requires a new boundary; it never revives old continuations.
+Abandonment releases observer membership and callbacks just like settlement,
+without keeping an application continuation alive in framework-owned storage.
+Loss or independent cancellation of captured descendant work also abandons
+the affected boundary rather than creating a synthetic error. Same-stack
+descendant moves that restore the scope remain valid.
+Destruction clears pending and weak blocked entries.
 Failures reject affected waiters with the original error without changing
 existing callback retry or unprocessed-path recovery behavior. Overlapping
 waiters settle independently and exactly once; a settled boundary is never
-reopened. DOM is not frozen between settlement and an await continuation.
+reopened. A genuine failure, including an original `AbortError`, is not
+reclassified as teardown cancellation. DOM is not frozen between settlement
+and an await continuation, and already-settled promises cannot be cancelled.
 
 There is no flash of content, because the HTML was already on screen at step 2. There is no first render, because the framework never re-renders the DOM that SSR emitted.
 

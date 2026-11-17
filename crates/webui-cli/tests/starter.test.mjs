@@ -239,6 +239,10 @@ test('native development rebuilds atomic/nested edits, ignores outputs, and reco
   await writeFile(path.join(nested, 'note.txt'), 'nested edit');
   await waitFor(() => starts() > count, host.output);
   await sleep(200);
+  const beforeRename = starts();
+  await rename(path.dirname(nested), path.join(root, 'web/home-page/relocated'));
+  await waitFor(() => starts() > beforeRename, host.output);
+  await sleep(200);
   const before = starts();
   for (const directory of ['dist/public', '.webui', 'target', 'bin', 'obj', 'build']) {
     await mkdir(path.join(root, directory), { recursive: true });

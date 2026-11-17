@@ -15,7 +15,7 @@ import {
 import { directiveCases, type DirectiveCase } from './sources.js';
 
 let workspace: string;
-let browserModule: string;
+let browserModule: Awaited<ReturnType<typeof buildBrowserModule>>;
 
 test.beforeAll(async () => {
   workspace = createWorkspace();
