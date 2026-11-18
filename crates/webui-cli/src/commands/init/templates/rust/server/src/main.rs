@@ -110,7 +110,10 @@ async fn request(request: HttpRequest, runtime: web::Data<Runtime>) -> HttpRespo
     if pathname.contains(['\\', '\0']) || pathname.split('/').any(|p| p == "." || p == "..") {
         return text(StatusCode::NOT_FOUND, "Not found");
     }
-    let state = match pathname.as_ref() {
+    // Use the same validated literal route for state and rendering. The generic
+    // matcher expects encoded input for dynamic segments, not these fixed pages.
+    let route = pathname.as_ref();
+    let state = match route {
         "/" => Some(serde_json::json!({"title":"Hello WebUI","count":0,"isHome":true})),
         "/about" => Some(serde_json::json!({"title":"About WebUI","isHome":false})),
         _ => None,
@@ -120,7 +123,7 @@ async fn request(request: HttpRequest, runtime: web::Data<Runtime>) -> HttpRespo
         match runtime.handler.render(
             &runtime.protocol,
             &state,
-            &RenderOptions::new("index.html", request.path()),
+            &RenderOptions::new("index.html", route),
             &mut html,
         ) {
             Ok(()) => {

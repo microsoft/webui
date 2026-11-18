@@ -2,7 +2,9 @@
 // Licensed under the MIT license.
 
 use std::fs;
+use std::io::Write;
 use std::path::Path;
+use std::process::Command;
 
 use webui::browser_build::{build, ClientBuildOptions, ImportKind, SourceMap};
 
@@ -128,4 +130,144 @@ async fn parallel_groups_honor_public_paths_and_rehash_when_the_shared_module_ch
     Ok(())
 }
 
-use std::io::Write;
+#[tokio::test]
+async fn parallel_groups_do_not_assimilate_dependency_or_target_exports() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path();
+    fixture(root)?;
+    fs::write(root.join("package.json"), r#"{"type":"module"}"#)?;
+    fs::write(
+        root.join("a.ts"),
+        r#"import { Shared } from './shared.ts';
+        import { then as direct } from './direct.ts';
+        import { then as named } from './named.ts';
+        import { then as quoted } from './quoted.ts';
+        import { then as star } from './star.ts';
+        import { label } from './opaque.ts';
+        export const value = new Shared()[globalThis.method](
+            direct('direct') + named('named') + quoted('quoted') + star('star') + label
+        );"#,
+    )?;
+    fs::OpenOptions::new()
+        .append(true)
+        .open(root.join("b.ts"))?
+        .write_all(b"\nexport { resolveResult as then } from './target-result.ts';")?;
+    fs::write(
+        root.join("target-result.ts"),
+        r#"export function resolveResult(resolve) {
+            resolve({
+                value: 'authored result',
+                get then() { globalThis.targetThenReads++; }
+            });
+        }"#,
+    )?;
+    let callable = r#"(value) {
+        if (typeof value !== 'string') throw Error('unexpected then call on a static dependency');
+        return value + '-';
+    }"#;
+    for (name, source) in [
+        ("direct", format!("export function then{callable}")),
+        (
+            "named",
+            format!("function impl{callable} export {{ impl as then }};"),
+        ),
+        (
+            "quoted",
+            format!(r#"function impl{callable} export {{ impl as "th\u0065n" }};"#),
+        ),
+        ("star", "export * from './star-source.ts';".into()),
+        ("star-source", format!("export function then{callable}")),
+        (
+            "opaque",
+            "export * from './opaque-barrel.ts'; export const label = 'opaque';".into(),
+        ),
+        ("opaque-barrel", "export * from 'runtime-only';".into()),
+    ] {
+        fs::write(root.join(format!("{name}.ts")), source)?;
+    }
+    let external = root.join("node_modules/runtime-only");
+    fs::create_dir_all(&external)?;
+    fs::write(
+        external.join("package.json"),
+        r#"{"exports":"./index.mjs"}"#,
+    )?;
+    fs::write(
+        external.join("index.mjs"),
+        format!("export function then{callable}"),
+    )?;
+
+    let mut config = options(root, false);
+    for name in ["direct", "named", "quoted", "star", "opaque"] {
+        config
+            .entries
+            .insert(format!("shared/{name}"), format!("{name}.ts").into());
+    }
+    config.external.push("runtime-only".into());
+    let mut ordinary_output = Vec::new();
+    for parallel in [false, true] {
+        let out = if parallel { "parallel" } else { "ordinary" };
+        config.out_dir = out.into();
+        config.parallel_dynamic_imports = parallel;
+        let result = build(config.clone()).await?;
+        result.write_outputs(&Path::new(out).join("projection.json"))?;
+        let executed = Command::new("node")
+            .args([
+                "--input-type=module",
+                "--eval",
+                r#"import assert from 'node:assert/strict';
+                globalThis.method = 'method0';
+                globalThis.targetThenReads = 0;
+                const { first, second } = await import(process.argv[1]);
+                assert.equal((await first()).value, 'direct-named-quoted-star-opaque-shared-0');
+                assert.equal((await second()).value, 'authored result');
+                console.log(globalThis.targetThenReads);"#,
+            ])
+            .arg(format!("./{out}/pages/main.js"))
+            .current_dir(root)
+            .output()?;
+        assert!(
+            executed.status.success(),
+            "{out} emitted JavaScript failed: {}",
+            String::from_utf8_lossy(&executed.stderr)
+        );
+        if !parallel {
+            ordinary_output = executed.stdout;
+            continue;
+        }
+        assert_eq!(
+            String::from_utf8_lossy(&executed.stdout),
+            String::from_utf8_lossy(&ordinary_output),
+            "parallel mode must not re-assimilate the authored target's result"
+        );
+
+        let entry = &result.metadata.outputs[&format!("{out}/pages/main.js")];
+        assert_eq!(entry.parallel_dynamic_imports.len(), 1);
+        let (target, dependencies) = entry
+            .parallel_dynamic_imports
+            .first_key_value()
+            .ok_or("only the ordinary lazy target should have a parallel plan")?;
+        assert!(target.starts_with(&format!("{out}/chunks/a-")), "{target}");
+        let safe = dependencies
+            .iter()
+            .find(|path| path.starts_with(&format!("{out}/chunks/shared-")))
+            .ok_or("the safe shared chunk should still be injected")?;
+        let static_edges = &result.metadata.outputs[target].imports;
+        for name in ["direct", "named", "quoted", "star", "opaque"] {
+            let path = format!("{out}/shared/{name}.js");
+            assert!(
+                static_edges.iter().any(|edge| edge.path == path
+                    && !edge.external
+                    && matches!(edge.kind, ImportKind::Static)),
+                "missing native static edge: {path}; got {static_edges:?}"
+            );
+            assert!(
+                !entry.imports.iter().any(|edge| edge.path == path),
+                "unexpected injected edge: {path}"
+            );
+        }
+        assert!(entry.imports.iter().any(|edge| edge.path == *safe
+            && !edge.external
+            && matches!(edge.kind, ImportKind::Dynamic)));
+    }
+    Ok(())
+}

@@ -14,9 +14,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if out.exists() {
         std::fs::remove_dir_all(&out)?;
     }
-    let sources = support::stage_for_build(&manifest, &out, env!("CARGO_PKG_VERSION"))?;
-    for source in sources {
-        println!("cargo:rerun-if-changed={}", source.display());
+    // Let Cargo watch the resource roots recursively, including files that did
+    // not exist when the previous generation was staged.
+    let inputs = support::stage_for_build(&manifest, &out, env!("CARGO_PKG_VERSION"))?;
+    for input in inputs {
+        println!("cargo:rerun-if-changed={}", input.display());
     }
     println!("cargo:rustc-env=WEBUI_NATIVE_ASSETS={}", out.display());
     println!(

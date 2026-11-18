@@ -26,6 +26,27 @@ const { SourceMapConsumer } = createRequire(
 const { build } = require('esbuild');
 process.chdir(fileURLToPath(new URL('../packages/webui-test-support/', import.meta.url)));
 
+test('standalone example builds prepare the compiler addon and client watches prepare the CLI', async () => {
+  for (const app of ['calculator', 'commerce', 'contact-book-manager', 'routes',
+    'service-worker', 'streaming', 'todo-webui']) {
+    const manifest = new URL(`./app/${app}/package.json`, import.meta.url);
+    const { scripts } = JSON.parse(await readFile(manifest, 'utf8'));
+    const buildSteps = scripts.build.split(' && ');
+    assert.equal(buildSteps[0], 'pnpm run build:deps', app);
+    assert.ok(buildSteps.indexOf(
+      'cargo xtask build-node-addons --release -- pnpm run build:client',
+    ) > 0, app);
+    // The E2E and desktop callers can still build a client with prepared dependencies.
+    const client = scripts['build:client'];
+    assert.match(client, /^node \S*build-client\.mjs$/, app);
+    assert.deepEqual(scripts['start:client'].split(' && '), [
+      'pnpm run build:deps',
+      'cargo build --release -p microsoft-webui-cli',
+      `${client} --watch`,
+    ], app);
+  }
+});
+
 test('NTP accepts a nonempty static closure covered by native parallel request plans', () => {
   const outputs = {
     'main.js': {

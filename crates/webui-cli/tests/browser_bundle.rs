@@ -26,6 +26,46 @@ async fn changed(path: &Path, previous: Option<&[u8]>) -> Result<Vec<u8>> {
     anyhow::bail!("native browser output did not change: {}", path.display())
 }
 
+#[test]
+fn native_bundle_json_warnings_match_the_diagnostic_schema() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path();
+    fs::write(
+        root.join("main.ts"),
+        "export { feature } from './feature.ts'; export const load = () => import('./feature.ts');",
+    )?;
+    fs::write(root.join("feature.ts"), "export const feature = 'shared';")?;
+    let config = root.join("browser.json");
+    fs::write(
+        &config,
+        r#"{"project":".","entries":{"index":"main.ts"},"outDir":"dist"}"#,
+    )?;
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_webui"))
+        .current_dir(root)
+        .args(["--format", "json", "bundle", "--config"])
+        .arg(&config)
+        .env("PATH", "")
+        .output()?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    let warning: Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(warning["severity"], "warning");
+    assert_eq!(warning["code"], "INEFFECTIVE_DYNAMIC_IMPORT");
+    let message = warning["message"].as_str().context("missing message")?;
+    assert!(message.contains("feature.ts"));
+    assert!(!message.contains('\x1b'));
+    for key in ["file", "line", "column", "snippet", "help"] {
+        assert!(warning.get(key).is_some_and(Value::is_null), "{key}");
+    }
+    assert_eq!(warning["chain"].as_array().map(Vec::len), Some(0));
+    assert!(root.join("dist/index.js").is_file());
+    Ok(())
+}
+
 #[tokio::test]
 async fn native_bundle_watch_rebuilds_recovers_and_stops_without_node() -> Result<()> {
     let temp = tempfile::tempdir_in(std::env::temp_dir().canonicalize()?)?;

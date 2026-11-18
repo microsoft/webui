@@ -24,10 +24,11 @@ export interface ClientBundleOptions {
   entryNames?: string;
   chunkNames?: string;
   publicPath?: string;
-  loaders?: Record<string, "js" | "ts" | "jsx" | "tsx" | "json" | "text" | "css" | "file" | "dataurl">;
+  /** Extension overrides for non-CSS bundling. Use CSS import attributes for stylesheets. */
+  loaders?: Record<string, "js" | "ts" | "jsx" | "tsx" | "json" | "text" | "file" | "dataurl">;
   virtualModules?: Record<string, string>;
   tsconfig?: string;
-  /** Start each dynamic target and its native static-closure chunks together. */
+  /** Start eligible dynamic targets and their static dependencies together. */
   parallelDynamicImports?: boolean;
   /** Publish final files and the native proof; false returns owned buffers only. */
   write?: boolean;

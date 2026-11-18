@@ -38,6 +38,15 @@ use util::{
 };
 
 fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().collect();
+    let task = args.get(1).map(|s| s.as_str());
+
+    // The addon build resolves the workspace itself. Keep the caller's
+    // directory for the optional command, such as a package-local build.
+    if task == Some("build-node-addons") {
+        return node_addons::run(&args[2..]);
+    }
+
     let workspace_root = match workspace_root() {
         Ok(path) => path,
         Err(message) => {
@@ -54,9 +63,6 @@ fn main() -> ExitCode {
         );
         return ExitCode::FAILURE;
     }
-
-    let args: Vec<String> = std::env::args().collect();
-    let task = args.get(1).map(|s| s.as_str());
 
     match task {
         #[cfg(feature = "windows-app-sdk-tools")]
@@ -92,7 +98,6 @@ fn main() -> ExitCode {
         Some("native-ipc") => with_desktop_assets(|| native_ipc::run(&args[2..])),
         Some("build") => with_desktop_assets(|| run_steps(&[Step::BUILD, Step::BUILD_EXAMPLES])),
         Some("build-examples") => run_steps(&[Step::BUILD_EXAMPLES]),
-        Some("build-node-addons") => node_addons::run(&args[2..]),
         Some("build-wasm") => run_steps(&[Step::BUILD_WASM]),
         Some("docs") => run_steps(&[Step::DOCS]),
         Some("bench") => with_desktop_assets(|| {
@@ -187,7 +192,7 @@ fn usage() -> ExitCode {
            native-ipc [--timeout SECONDS] [--fail-fast] [--plan darwin|win32|linux]  Run native IPC source/package and no-IPC contracts\n  \
            build   Build the workspace\n  \
            build-examples  Build all example integrations and apps\n  \
-           build-node-addons [--release]  Build independent handler and compiler Node addons (default debug)\n  \
+           build-node-addons [--release] [-- COMMAND [ARG...]]  Build Node addons and optionally run a command with their paths\n  \
            build-wasm  Build WASM playground module\n  \
            docs    Build the documentation site\n  \
            bench <target> [-- <extra>] [--save-baseline NAME | --baseline NAME]\n  \

@@ -1,10 +1,11 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT license.
 
-"""Build standalone native-host templates against an explicitly supplied SDK.
+"""Build and run standalone native-host templates.
 
 python3 .../tests/native-hosts/acceptance.py --sdk /absolute/sdk --dist /absolute/app/dist
-Add --dotnet-feed /approved/local/feed to include the pinned NuGet consumer.
+Use --hosts rust for the generated Cargo consumer (no SDK required).
+Use --hosts dotnet --dotnet-feed /approved/local/feed for the pinned NuGet consumer.
 This intentionally never builds the SDK or enables NuGet publication.
 """
 
@@ -186,6 +187,12 @@ def serve(binary, root, env, host):
                 time.sleep(0.1)
         else:
             raise AssertionError("server not ready after 10s")
+        if host == "rust":
+            status, _, about = request(port, "/about")
+            assert status == 200 and b"Compile once. Render natively." in about, about
+            for path in ["/%61bout", "/a%62out?query=1"]:
+                status, _, encoded_about = request(port, path)
+                assert status == 200 and encoded_about == about, (path, status, encoded_about)
         verify(port)
         if host == "go":
             for path in ["/a%62out", "/%61bout"]:
@@ -243,18 +250,23 @@ def serve(binary, root, env, host):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--sdk", type=Path, required=True)
+    parser.add_argument("--sdk", type=Path, help="standalone SDK for C, C++, and Go")
     parser.add_argument("--dist", type=Path, required=True)
     parser.add_argument("--cli", type=Path, default=Path("target/debug/webui"))
     parser.add_argument("--dotnet-feed", type=Path)
     parser.add_argument("--hosts", nargs="+", default=["c", "cpp", "go"])
     args = parser.parse_args()
-    sdk, dist, cli = args.sdk.resolve(), args.dist.resolve(), args.cli.resolve()
-    env = dict(os.environ, WEBUI_SDK_DIR=str(sdk), CGO_ENABLED="1")
-    env["CGO_CFLAGS"] = f'"-I{sdk / "include"}"'
-    env["CGO_LDFLAGS"] = f'"-L{sdk / "lib"}"'
+    if args.sdk is None and any(host in ["c", "cpp", "go"] for host in args.hosts):
+        parser.error("--sdk is required for C, C++, and Go")
+    sdk = args.sdk.resolve() if args.sdk is not None else None
+    dist, cli = args.dist.resolve(), args.cli.resolve()
+    env = os.environ.copy()
     loader = "DYLD_LIBRARY_PATH" if os.uname().sysname == "Darwin" else "LD_LIBRARY_PATH"
-    env[loader] = str(sdk / "lib") + os.pathsep + env.get(loader, "")
+    if sdk is not None:
+        env.update(WEBUI_SDK_DIR=str(sdk), CGO_ENABLED="1")
+        env["CGO_CFLAGS"] = f'"-I{sdk / "include"}"'
+        env["CGO_LDFLAGS"] = f'"-L{sdk / "lib"}"'
+        env[loader] = str(sdk / "lib") + os.pathsep + env.get(loader, "")
     with tempfile.TemporaryDirectory(prefix="webui native hosts ") as temporary:
         # Keep release package restoration isolated from the user's cache.
         env["NUGET_PACKAGES"] = str(Path(temporary) / "nuget")
@@ -272,12 +284,18 @@ def main():
             (public / "secret-link.js").symlink_to(root / "secret.js")
             (public / "folder-link").symlink_to(root, target_is_directory=True)
             if host in ["c", "cpp"]:
-                command(["cmake", "-S", "server", "-B", "server/build", "-DCMAKE_BUILD_TYPE=Release"], root, env)
-                command(["cmake", "--build", "server/build", "--parallel", "2"], root, env)
-                binary = [str(server / "build/webui-app")]
+                shutil.copytree(sdk, root / ".webui/sdk")
+                cmake_env = env.copy()
+                cmake_env.pop("WEBUI_SDK_DIR", None)
+                command(["cmake", "-S", ".", "-B", "build", "-DCMAKE_BUILD_TYPE=Release"], root, cmake_env)
+                command(["cmake", "--build", "build", "--parallel", "2"], root, cmake_env)
+                binary = [str(root / "build/webui-app")]
                 if os.uname().sysname == "Darwin":
                     links = subprocess.check_output(["otool", "-L", binary[0]], text=True)
                     assert "@rpath/libwebui_ffi.dylib" in links, "SDK dylib has a nonrelocatable install name"
+            elif host == "rust":
+                command(["cargo", "build", "--target-dir", "target"], root, env)
+                binary = [str(root / "target/debug/webui-app")]
             elif host == "go":
                 command(["go", "mod", "download", "all"], server, env)
                 command(["go", "test", "-race", "./..."], server, env)

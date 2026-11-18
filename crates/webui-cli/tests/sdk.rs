@@ -219,7 +219,11 @@ fn validates_every_sdk_identity_field_and_never_resolves_npm_payloads() -> Resul
 #[test]
 fn exec_sets_native_paths_preserves_flags_and_propagates_exit_status() -> Result<()> {
     let temp = tempfile::Builder::new()
-        .prefix("native SDK with spaces ")
+        .prefix(if cfg!(unix) {
+            r"native SDK \ with spaces "
+        } else {
+            "native SDK with spaces "
+        })
         .tempdir()?;
     let sdk = temp.path().join(".webui/sdk");
     inventory(&sdk)?;
@@ -256,7 +260,8 @@ fn sdk_environment_child() -> Result<()> {
         return Ok(());
     }
     let root = std::env::var("WEBUI_SDK_DIR")?;
-    let normalized = if let Some(unc) = root.strip_prefix(r"\\?\UNC\") {
+    #[cfg(windows)]
+    let root = if let Some(unc) = root.strip_prefix(r"\\?\UNC\") {
         format!("//{}", unc.replace('\\', "/"))
     } else {
         root.strip_prefix(r"\\?\")
@@ -264,15 +269,13 @@ fn sdk_environment_child() -> Result<()> {
             .replace('\\', "/")
     };
     assert_eq!(std::env::var("CGO_ENABLED")?, "1");
-    for (name, inherited, prefix) in [
-        ("CGO_CFLAGS", "-DEXISTING_C", "-I"),
-        ("CGO_CPPFLAGS", "-DEXISTING_CPP", "-I"),
-        ("CGO_LDFLAGS", "-DEXISTING_LD", "-L"),
+    for (name, inherited, prefix, directory) in [
+        ("CGO_CFLAGS", "-DEXISTING_C", "-I", "include"),
+        ("CGO_CPPFLAGS", "-DEXISTING_CPP", "-I", "include"),
+        ("CGO_LDFLAGS", "-DEXISTING_LD", "-L", "lib"),
     ] {
         let flag = std::env::var(name)?;
-        assert!(flag.contains(&normalized));
-        assert!(flag.starts_with(&format!("\"{prefix}")));
-        assert!(flag.ends_with(inherited));
+        assert_eq!(flag, format!("\"{prefix}{root}/{directory}\" {inherited}"));
     }
     std::process::exit(23);
 }

@@ -168,6 +168,7 @@ fn relative_path(project: &Path, path: &Path) -> napi::Result<PathBuf> {
     } else {
         path
     };
+    let relative = relative.strip_prefix(".").unwrap_or(relative);
     if relative.as_os_str().is_empty()
         || relative
             .components()

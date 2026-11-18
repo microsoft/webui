@@ -1452,7 +1452,8 @@ other addon. CLI installation stays the same. See
 
 Authoring mistakes fail the build with a structured diagnostic carrying a stable
 code, source location, snippet, and a `help:` fix. Branch on the `code`, never
-the message. `--format json` emits one JSON object per error on stdout.
+the message. `--format json` emits one JSON object per error or native browser
+build warning on stdout.
 
 ### Desktop apps
 

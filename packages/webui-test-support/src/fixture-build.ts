@@ -69,7 +69,8 @@ export async function buildFixtureEntries({
   for (const extraBuild of extraBuilds) {
     const extraManifest = resolve(extraBuild.project,
       extraBuild.manifestPath ?? resolve(extraBuild.project, extraBuild.outDir, 'webui-projection.json'));
-    if (extraManifest === built.manifestPath) {
+    if (existsSync(extraManifest)
+      && realpathSync.native(extraManifest) === realpathSync.native(built.manifestPath)) {
       throw new Error('Fixture extra builds must set a distinct manifestPath to preserve the authored entry proof.');
     }
     await bundleFixtureClient(extraBuild);

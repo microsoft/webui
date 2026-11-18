@@ -318,6 +318,10 @@ pub(crate) fn native_build_warning(code: &str, message: &str) {
         record.insert("severity".into(), serde_json::Value::from("warning"));
         record.insert("code".into(), serde_json::Value::from(code));
         record.insert("message".into(), serde_json::Value::from(message));
+        for field in ["file", "line", "column", "snippet", "help"] {
+            record.insert(field.into(), serde_json::Value::Null);
+        }
+        record.insert("chain".into(), serde_json::Value::Array(Vec::new()));
         println!("{}", serde_json::Value::Object(record));
     } else {
         eprintln!(

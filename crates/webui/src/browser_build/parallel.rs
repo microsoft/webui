@@ -35,6 +35,26 @@ pub(super) fn static_closure<'a>(
     Ok(seen)
 }
 
+pub(super) fn can_group(
+    args: &HookRenderChunkArgs<'_>,
+    filename: &str,
+) -> Result<bool, ClientBuildError> {
+    let chunk = args.chunks.get(filename).ok_or_else(|| {
+        ClientBuildError::Invalid("parallel import references a missing native chunk".into())
+    })?;
+    // Promise resolution reads the emitted namespace's `then` regardless of
+    // the original binding name or whether it is currently callable.
+    if chunk.exports.iter().any(|name| name.as_str() == "then") {
+        return Ok(false);
+    }
+    let native = args.chunk_table.get(chunk.originate_from).ok_or_else(|| {
+        ClientBuildError::Invalid("parallel import chunk has no native graph record".into())
+    })?;
+    // Rolldown renders these external stars as ESM re-exports; their actual
+    // export names are unknown and therefore absent from chunk.exports.
+    Ok(native.entry_level_external_module_idx.is_empty())
+}
+
 pub(super) fn expression(
     importer: &str,
     target_call: &str,

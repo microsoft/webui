@@ -61,8 +61,9 @@ static entry closures, and final emitted bytes. The caller writes these exact
 bytes before retained-build finalization validates the manifest against disk.
 The same native producer and validator serve CLI, Press and Node callers.
 Renderer crates and standalone FFI hosts do not depend on these build crates.
-Node's combined build/render addon exposes native compilation separately from
-its request-time renderer. Type checking is a
+The npm package ships separate build and request-time renderer addons compiled
+from the same crate. `@microsoft/webui/build.js` loads only the build addon;
+`@microsoft/webui` loads only the renderer. Type checking is a
 separate native TSC operation, not a substitute for semantic projection proof.
 
 ### Exact state-key proof

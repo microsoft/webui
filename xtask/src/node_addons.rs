@@ -42,13 +42,26 @@ pub(crate) fn build(release: bool) -> Result<Addons, String> {
 }
 
 pub(crate) fn run(args: &[String]) -> ExitCode {
-    let result = parse_release(args).and_then(build);
+    let result = parse_args(args).and_then(|(release, command)| {
+        let addons = build(release)?;
+        eprintln!("WEBUI_ADDON_PATH={}", addons.runtime.display());
+        eprintln!("WEBUI_BUILD_ADDON_PATH={}", addons.builder.display());
+        let Some((program, args)) = command.split_first() else {
+            return Ok(ExitCode::SUCCESS);
+        };
+        let args: Vec<_> = args.iter().map(String::as_str).collect();
+        let mut command = build_command(program, &args);
+        addons.apply(&mut command);
+        let status = command
+            .status()
+            .map_err(|error| format!("Could not run {program}: {error}"))?;
+        Ok(status
+            .code()
+            .and_then(|code| u8::try_from(code).ok())
+            .map_or(ExitCode::FAILURE, ExitCode::from))
+    });
     match result {
-        Ok(addons) => {
-            eprintln!("WEBUI_ADDON_PATH={}", addons.runtime.display());
-            eprintln!("WEBUI_BUILD_ADDON_PATH={}", addons.builder.display());
-            ExitCode::SUCCESS
-        }
+        Ok(status) => status,
         Err(error) => {
             eprintln!("Node addon build failed: {error}");
             ExitCode::FAILURE
@@ -56,11 +69,19 @@ pub(crate) fn run(args: &[String]) -> ExitCode {
     }
 }
 
-fn parse_release(args: &[String]) -> Result<bool, String> {
-    match args {
-        [] => Ok(false),
-        [arg] if arg == "--release" => Ok(true),
-        _ => Err("Usage: cargo xtask build-node-addons [--release]".into()),
+fn parse_args(args: &[String]) -> Result<(bool, &[String]), String> {
+    let invalid =
+        || "Usage: cargo xtask build-node-addons [--release] [-- COMMAND [ARG...]]".into();
+    let (release, remaining) = match args {
+        [arg, rest @ ..] if arg == "--release" => (true, rest),
+        _ => (false, args),
+    };
+    match remaining {
+        [] => Ok((release, &[])),
+        [separator, command @ ..] if separator == "--" && !command.is_empty() => {
+            Ok((release, command))
+        }
+        _ => Err(invalid()),
     }
 }
 
@@ -260,10 +281,13 @@ mod tests {
     }
 
     #[test]
-    fn build_cli_accepts_only_the_selected_profile() {
-        assert_eq!(parse_release(&[]), Ok(false));
-        assert_eq!(parse_release(&["--release".into()]), Ok(true));
-        assert!(parse_release(&["--features=handler,build".into()]).is_err());
+    fn build_cli_accepts_an_optional_command_after_the_selected_profile() {
+        assert_eq!(parse_args(&[]), Ok((false, &[][..])));
+        assert_eq!(parse_args(&["--release".into()]), Ok((true, &[][..])));
+        let args = ["--release", "--", "pnpm", "run", "build:client"].map(String::from);
+        assert_eq!(parse_args(&args), Ok((true, &args[2..])));
+        assert!(parse_args(&["--".into()]).is_err());
+        assert!(parse_args(&["--features=handler,build".into()]).is_err());
     }
 
     #[test]

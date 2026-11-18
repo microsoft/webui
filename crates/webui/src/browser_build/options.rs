@@ -103,9 +103,10 @@ pub struct ClientBuildOptions {
     /// URL prefix for emitted chunks and assets.
     #[serde(default)]
     pub public_path: Option<String>,
-    /// Start each internal dynamic target and its unavailable static closure in
-    /// one Promise-all import group. This opt-in may evaluate shared dependencies
-    /// independently, matching explicit parallel dynamic-import scheduling.
+    /// Start eligible internal dynamic imports alongside static dependencies
+    /// not already available to the importer. Chunks that may export `then`
+    /// are not grouped; imports with retained options are left ungrouped.
+    /// This opt-in may evaluate shared dependencies independently.
     #[serde(default)]
     pub parallel_dynamic_imports: bool,
     /// Extension (including `.`) to explicit loader.

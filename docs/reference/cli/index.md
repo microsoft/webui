@@ -1414,7 +1414,7 @@ Where the mistake is likely a typo, the `help:` line suggests the intended name 
 
 ### JSON diagnostics
 
-With `--format json`, each error is emitted as a single JSON object on **stdout** (the colorized terminal output is suppressed), so editors, CI, and AI assistants can consume it directly:
+With `--format json`, each error or native browser build warning is emitted as a single JSON object on **stdout** (the colorized terminal output is suppressed), so editors, CI, and AI assistants can consume it directly:
 
 ```bash
 webui build ./my-app --out ./dist --format json
@@ -1434,7 +1434,9 @@ webui build ./my-app --out ./dist --format json
 }
 ```
 
-Fields that don't apply to a given error are `null`. The `code` is stable across releases — branch on it rather than on the human-readable `message`.
+Fields that don't apply to a diagnostic are `null`. Native browser build warnings
+use `"severity": "warning"` and an empty `chain`. The `code` is stable across
+releases. Branch on it rather than on the human-readable `message`.
 
 ### Exit codes
 

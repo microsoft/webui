@@ -52,6 +52,31 @@ impl Urls {
         Ok(())
     }
 
+    fn plan(
+        &self,
+        args: &HookRenderChunkArgs<'_>,
+        target: &str,
+        available: &BTreeSet<&str>,
+    ) -> anyhow::Result<Vec<String>> {
+        self.reserve_plan(target.len())?;
+        let mut dependencies = Vec::new();
+        // Keep the original Promise for targets that can assimilate their own
+        // namespace: unwrapping a group could assimilate their result again.
+        if !parallel::can_group(args, target)? {
+            return Ok(dependencies);
+        }
+        for dependency in parallel::static_closure(args, target)? {
+            if dependency != target
+                && !available.contains(dependency)
+                && parallel::can_group(args, dependency)?
+            {
+                self.reserve_plan(dependency.len())?;
+                dependencies.push(dependency.to_owned());
+            }
+        }
+        Ok(dependencies)
+    }
+
     pub(super) fn finish(&self) -> Result<BTreeMap<String, InternalImports>, ClientBuildError> {
         let mut imports = self
             .imports
@@ -165,17 +190,13 @@ impl Plugin for Urls {
             if external_paths.contains(path) {
                 return Err(anyhow::anyhow!("an external import collides with emitted chunk {target}; change chunkNames or the external module ID before setting publicPath"));
             }
-            if let Some(dynamic) = dynamic.filter(|_| self.parallel) {
+            // If Rolldown retains import options, the host may reject them
+            // before loading the target. Do not start other imports in that case.
+            if let Some(dynamic) =
+                dynamic.filter(|import| self.parallel && import.options.is_none())
+            {
                 if !plans.contains_key(&target) {
-                    self.reserve_plan(target.len())?;
-                    let mut dependencies = Vec::new();
-                    for dependency in parallel::static_closure(args, &target)? {
-                        if dependency != target && !available.contains(dependency) {
-                            self.reserve_plan(dependency.len())?;
-                            dependencies.push(dependency.to_owned());
-                        }
-                    }
-                    plans.insert(target.clone(), dependencies);
+                    plans.insert(target.clone(), self.plan(args, &target, &available)?);
                 }
                 let dependencies = &plans[&target];
                 if !dependencies.is_empty() {
@@ -218,6 +239,8 @@ impl Plugin for Urls {
                 .map_err(anyhow::Error::msg)?;
             changed = true;
         }
+        // Empty plans cache ineligible targets but do not describe an emission.
+        plans.retain(|_, dependencies| !dependencies.is_empty());
         self.imports
             .lock()
             .map_err(|error| anyhow::anyhow!("{error}"))?

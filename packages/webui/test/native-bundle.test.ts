@@ -93,6 +93,8 @@ test("native path boundaries accept ordinary and namespaced absolute destination
     { ...options, manifestPath },
     { ...options, outDir: path.relative(project, options.outDir),
       manifestPath: path.relative(project, manifestPath) },
+    { ...options, outDir: `.${path.sep}${path.relative(project, options.outDir)}`,
+      manifestPath: `.${path.sep}${path.relative(project, manifestPath)}` },
     { ...options, project: path.toNamespacedPath(project), manifestPath },
     { ...options, outDir: path.toNamespacedPath(options.outDir),
       manifestPath: path.toNamespacedPath(manifestPath) },
@@ -112,9 +114,12 @@ test("native path boundaries accept ordinary and namespaced absolute destination
   }
   await assert.rejects(readFile(manifestPath), { code: "ENOENT" });
   for (const outDir of [
+    ".",
+    `.${path.sep}`,
     path.join(`${project}-outside`, "dist"),
     path.join(project, "..") + `${path.sep}escape`,
     `dist${path.sep}..${path.sep}escape`,
+    `.${path.sep}..${path.sep}escape`,
   ]) {
     await assert.rejects(bundleClient({ ...options, outDir, write: false }), /inside|parent/);
   }

@@ -226,16 +226,20 @@ writeFileSync('./dist/protocol.bin', result.protocol);
 
 `bundleClient()` performs bundling, source analysis and proof construction
 natively. It needs no JavaScript compiler peer. `project` must contain the
-physical inputs and output directory. Set `write: false` to receive final
-`files` buffers without publishing them; a retained build still requires its
-proof's exact files on disk before finalization.
+physical inputs and output directory. `outDir` and `manifestPath` accept
+project-relative paths such as `./dist` and `./dist/proof.json`. CSS imports
+use import attributes (such as `with { type: "css" }`), not a `"css"` loader
+override. Set `write: false` to receive final `files` buffers without publishing
+them; a retained build still requires its proof's exact files on disk before
+finalization.
 
 The result's `warnings` contains typed `{ code, message }` advisories; build
 hosts should display them. Unexpected bundler warnings still fail the build.
-Set `parallelDynamicImports: true` to request concurrent imports of dynamic
-targets and their additional static dependencies. This may evaluate shared
-dependencies independently. The returned metadata records these native plans;
-do not rewrite final JavaScript after its hashes are produced.
+Set `parallelDynamicImports: true` to request concurrent imports of eligible
+dynamic targets and their additional static dependencies. Imports with
+retained options and chunks that may export `then` keep their normal loading
+semantics. This option may evaluate eligible shared dependencies independently.
+The returned metadata records the actual concurrent imports.
 
 Publish `result.cssFiles` and `result.lazyPackFiles` with the protocol as
 described below. `writeModules()` uses `modulesOut`, or `appDir` when omitted,

@@ -46,7 +46,8 @@ fn quote_flag(prefix: &str, path: &Path) -> Result<String, SdkError> {
     let path_text = path
         .to_str()
         .ok_or_else(|| invalid(path, "cgo SDK paths must be valid UTF-8"))?;
-    let path_text = if let Some(unc) = path_text.strip_prefix(r"\\?\UNC\") {
+    #[cfg(windows)]
+    let translated = if let Some(unc) = path_text.strip_prefix(r"\\?\UNC\") {
         format!("//{}", unc.replace('\\', "/"))
     } else {
         path_text
@@ -54,8 +55,23 @@ fn quote_flag(prefix: &str, path: &Path) -> Result<String, SdkError> {
             .unwrap_or(path_text)
             .replace('\\', "/")
     };
-    serde_json::to_string(&format!("{prefix}{path_text}"))
-        .map_err(|error| invalid(path, error.to_string()))
+    #[cfg(windows)]
+    let path_text = translated.as_str();
+
+    // cmd/go splits quoted arguments without interpreting escape sequences.
+    let quote = if !path_text.contains('"') {
+        '"'
+    } else if !path_text.contains('\'') {
+        '\''
+    } else if !path_text.contains([' ', '\t', '\n', '\r']) {
+        return Ok(format!("{prefix}{path_text}"));
+    } else {
+        return Err(invalid(
+            path,
+            "cgo SDK paths containing whitespace cannot contain both kinds of quotes",
+        ));
+    };
+    Ok(format!("{quote}{prefix}{path_text}{quote}"))
 }
 
 fn loader_variable() -> OsString {
@@ -74,6 +90,7 @@ fn loader_variable() -> OsString {
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
     #[test]
     fn cgo_flags_preserve_windows_paths_with_spaces_without_verbatim_prefixes(
     ) -> Result<(), SdkError> {
@@ -93,6 +110,21 @@ mod tests {
         ] {
             assert_eq!(quote_flag("-I", Path::new(path))?, expected);
         }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cgo_flags_use_literal_unix_paths_without_json_escaping() -> Result<(), SdkError> {
+        assert_eq!(
+            quote_flag("-I", Path::new(r#"/tmp/SDK\directory "quoted"/include"#))?,
+            r#"'-I/tmp/SDK\directory "quoted"/include'"#
+        );
+        assert_eq!(
+            quote_flag("-I", Path::new(r#"/tmp/"can't"/include"#))?,
+            r#"-I/tmp/"can't"/include"#
+        );
+        assert!(quote_flag("-I", Path::new(r#"/tmp/"can't quote"/include"#)).is_err());
         Ok(())
     }
 }
