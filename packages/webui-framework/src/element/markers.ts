@@ -15,6 +15,8 @@
  *   <!--wi-->   repeat item boundary
  *   <!--wc-->   conditional block start
  *   <!--/wc-->  conditional block end
+ *   <!--wo-->   route outlet start
+ *   <!--/wo-->  route outlet end
  *   <!--wN-->   raw HTML binding start
  *   <!--/wN-->  raw HTML binding end
  */
@@ -30,6 +32,7 @@ export const MARKER_RAW_START = 'w';
 export const MARKER_RAW_END = '/w';
 
 const MARKER_REPEAT_ITEM = 'wi';
+const MARKER_OUTLET_START = 'wo';
 const EMPTY: never[] = [];
 
 export interface SSRRepeatRange {
@@ -52,6 +55,11 @@ function isRawStartMarker(data: string): boolean {
   return true;
 }
 
+function isRangeStart(data: string): boolean {
+  return data === MARKER_OUTLET_START || data === MARKER_COND_START ||
+    data === MARKER_REPEAT_START || isRawStartMarker(data);
+}
+
 /**
  * Collect the item markers (<!--wi-->) within a repeat range.
  *
@@ -66,16 +74,12 @@ export function collectItemMarkers(repeatStart: Comment): SSRRepeatRange {
 /**
  * Find the closing marker of a complete structural block range.
  *
- * `start` must be a `<!--wc-->`, `<!--wr-->`, or `<!--wN-->` comment. Walks forward with
+ * `start` must be a `<!--wc-->`, `<!--wr-->`, `<!--wo-->`, or `<!--wN-->` comment. Walks forward with
  * depth tracking over same-type markers so nested blocks of the same kind are
  * consumed as part of the range. Returns `null` when the range is unterminated.
  */
 export function findBlockEnd(start: Comment, data: string, items?: Comment[]): Comment | null {
-  const endTag = data === MARKER_COND_START
-    ? MARKER_COND_END
-    : isRawStartMarker(data)
-      ? `/${data}`
-      : MARKER_REPEAT_END;
+  const endTag = `/${data}`;
   let depth = 1;
   let node: ChildNode | null = start.nextSibling;
   while (node) {
@@ -201,6 +205,7 @@ export function buildSSRIndex(
   needMarkers: boolean,
   first: ChildNode | null = ssrRoot.firstChild,
   rangeEnd: Node | null = null,
+  staleMarkers?: Node[],
 ): SSRIndex {
   const elements: Array<Node | undefined> = [ssrRoot];
   if (!needMarkers && shape.length === 1) return { elements, conds: EMPTY, repeats: EMPTY, raws: EMPTY };
@@ -223,13 +228,19 @@ export function buildSSRIndex(
     // Advance the SSR cursor to the next element, recording block markers in
     // document order and stepping over their ranges.
     let s = frame.s;
+    let outletEnd: Comment | null = null;
     while (s && s !== frameEnd) {
       const type = s.nodeType;
       if (type === 8 /* COMMENT_NODE */) {
         const data = (s as Comment).data;
-        if (data === MARKER_COND_START || data === MARKER_REPEAT_START || isRawStartMarker(data)) {
+        if (isRangeStart(data)) {
           const items: Comment[] | undefined = data === MARKER_REPEAT_START ? [] : undefined;
           const end = findBlockEnd(s as Comment, data, items);
+          if (data === MARKER_OUTLET_START) {
+            outletEnd = end;
+            if (!end) s = null;
+            break;
+          }
           if (items) repeats.push({ start: s as Comment, items, end });
           else if (data === MARKER_COND_START) conds.push(s as Comment, end);
           else if (end) raws.push([s as Comment, end]);
@@ -256,7 +267,13 @@ export function buildSSRIndex(
     // missing SSR elements leaves holes rather than shifting every index after
     // it onto the wrong node.
     index++;
-    if (s) {
+    if (outletEnd) {
+      // One compiled <outlet> slot, but no live element belongs to this template.
+      // Skip the child routes, which hydrate independently.
+      staleMarkers?.push(s as Comment, outletEnd);
+      frame.s = outletEnd.nextSibling;
+      s = null;
+    } else if (s) {
       elements[index] = s;
       frame.s = s.nextSibling;
     }
@@ -320,11 +337,9 @@ export function findByOrdinal(
     // Detect a structural block opening marker and skip the entire range.
     if (child.nodeType === 8 /* COMMENT_NODE */) {
       const data = (child as Comment).data;
-      if (
-        data === MARKER_COND_START
-        || data === MARKER_REPEAT_START
-        || isRawStartMarker(data)
-      ) {
+      if (isRangeStart(data)) {
+        // A text binding before an outlet inserts before its range, not a route.
+        if (data === MARKER_OUTLET_START && nodeType === 1 && count++ === ordinal) return child;
         child = skipBlockRange(child as Comment, data);
         continue;
       }

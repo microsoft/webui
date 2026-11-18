@@ -2768,12 +2768,21 @@ impl HtmlParser {
                                     self.process_route_directive(&element, fragments, depth)?;
                                 }
                                 "outlet" => {
-                                    self.flush_raw_buffer(fragments);
                                     if outlet_seen {
                                         self.warnings.push(self.multiple_outlets_warning(&element));
                                     }
                                     outlet_seen = true;
-                                    fragments.push(WebUIFragment::outlet());
+                                    let markers = self
+                                        .plugin
+                                        .as_deref()
+                                        .and_then(ParserPlugin::outlet_markers);
+                                    if let Some((start, _)) = markers {
+                                        self.raw_buffer.push_str(start);
+                                    }
+                                    self.add_fragment(WebUIFragment::outlet(), fragments);
+                                    if let Some((_, end)) = markers {
+                                        self.raw_buffer.push_str(end);
+                                    }
                                 }
                                 "boundary" => {
                                     self.enter_boundary_directive(
@@ -11642,6 +11651,26 @@ mod tests {
             diag.error_code() == Some(codes::INVALID_CSS)
                 && diag.to_string().contains("Unterminated CSS var() call")
         ));
+    }
+
+    #[test]
+    fn webui_outlet_brackets_route_output_without_wrapping_it() {
+        let html = "<main><outlet /></main>";
+        let mut parser = HtmlParser::with_plugin(Box::new(plugin::webui::WebUIParserPlugin::new()));
+        parser.parse("test.html", html).expect("parse failed");
+        let records = parser.into_fragment_records();
+        let fragments = &records["test.html"].fragments;
+        assert!(
+            matches!(
+                fragments.as_slice(),
+                [
+                    WebUIFragment { fragment: Some(web_ui_fragment::Fragment::Raw(before)) },
+                    WebUIFragment { fragment: Some(web_ui_fragment::Fragment::Outlet(_)) },
+                    WebUIFragment { fragment: Some(web_ui_fragment::Fragment::Raw(after)) },
+                ] if before.value == "<main><!--wo-->" && after.value == "<!--/wo--></main>"
+            ),
+            "{fragments:?}"
+        );
     }
 
     #[test]

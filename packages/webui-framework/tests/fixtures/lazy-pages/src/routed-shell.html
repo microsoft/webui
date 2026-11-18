@@ -3,4 +3,4 @@
   <a href="/lazy-routes/preview">Preview page</a>
   <a href="/lazy-routes/other">Other page</a>
 </nav>
-<main><outlet /></main>
+<main>{{beforeOutlet}}<outlet />{{afterOutlet}}<span data-label="{{outletLabel}}"></span></main>

@@ -297,6 +297,11 @@ pub trait ParserPlugin {
         false
     }
 
+    /// Optional static SSR markup before and after an outlet's route output.
+    fn outlet_markers(&self) -> Option<(&'static str, &'static str)> {
+        None
+    }
+
     /// Configure the plugin before parsing or component registration begins.
     fn configure_parser(&mut self, _options: &ParserOptions) {}
 
