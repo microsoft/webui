@@ -357,7 +357,12 @@ fn published_cargo_source_contains_the_default_rust_starter() -> Result<()> {
         "src/commands/init/templates/rust/server/Cargo.toml.template",
         "src/commands/init/templates/rust/server/src/main.rs",
     ] {
-        assert!(files.lines().any(|file| file == expected), "{expected}");
+        assert!(
+            files
+                .lines()
+                .any(|file| Path::new(file) == Path::new(expected)),
+            "missing {expected} in packaged files:\n{files}"
+        );
     }
     Ok(())
 }
