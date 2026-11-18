@@ -90,12 +90,34 @@ impl Fixture {
             write(source, "new resource")?;
             assert!(!self.build()?.1, "adding {source:?} did not rerun Cargo");
             assert_eq!(fs::read_to_string(assets.join(target))?, "new resource");
-            fs::remove_file(source)?;
+            remove_without_changing_directory_mtime(source)?;
             assert!(!self.build()?.1, "removing {source:?} did not rerun Cargo");
             assert!(!assets.join(target).exists(), "stale staged {target}");
         }
         Ok(())
     }
+}
+
+// Directory timestamps do not always advance on deletion. Preserve the
+// timestamp deliberately so this regression does not depend on the filesystem.
+fn remove_without_changing_directory_mtime(path: &Path) -> Result<()> {
+    let parent = path.parent().context("resource parent")?;
+    let mut options = fs::OpenOptions::new();
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_WRITE_ATTRIBUTES,
+        };
+        options
+            .access_mode(FILE_WRITE_ATTRIBUTES)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS);
+    }
+    let modified = fs::metadata(parent)?.modified()?;
+    let directory = options.read(true).open(parent)?;
+    fs::remove_file(path)?;
+    directory.set_modified(modified)?;
+    Ok(())
 }
 
 fn write(path: &Path, contents: &str) -> Result<()> {

@@ -86,10 +86,11 @@ silently replaced. The same release cache owns offline reference Markdown and
 its loader. `reference --path` materializes the core reference and adjacent
 `docs/` without Node/npm.
 
-Source checkout staging reads first-party resources directly. The published CLI
-crate must include staged `assets/` with matching framework/reference data;
-consumer Cargo builds must never fetch npm resources. Native browser assets
-can be built by the source Rust CLI without Node; full application checking
+Source checkout staging reads first-party resources directly. Cargo tracks
+resource trees for additions and individual packaged or checkout inputs for
+removals. The published CLI crate must include staged `assets/` with matching
+framework/reference data; consumer Cargo builds must never fetch npm resources.
+Native browser assets can be built by the source Rust CLI without Node; full application checking
 additionally requires the genuine native TSC companion. Production disables
 sourcemaps; development emits them. Legal comments remain inline, and public
 output includes `webui-LICENSE.txt`.

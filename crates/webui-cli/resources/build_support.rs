@@ -15,8 +15,10 @@ pub fn stage_for_build(crate_root: &Path, out: &Path, version: &str) -> io::Resu
     } else {
         let packaged = crate_root.join("assets");
         validate_version(&packaged.join("framework/package.json"), version)?;
-        copy_tree(&packaged, out, CopyKind::All)?;
-        Ok(vec![packaged])
+        let mut inputs = Vec::new();
+        copy_tree(&packaged, out, CopyKind::All, &mut inputs)?;
+        inputs.push(packaged);
+        Ok(inputs)
     }
 }
 
@@ -75,20 +77,27 @@ pub fn stage_checkout(checkout: &Path, out: &Path, version: &str) -> io::Result<
         }
     }
     let framework_sources = framework.join("src");
+    let docs = checkout.join("docs");
+    let skill = checkout.join("ai/SKILL.md");
+    let license = checkout.join("LICENSE");
+    let mut inputs = vec![manifest];
     copy_tree(
         &framework_sources,
         &out.join("framework/src"),
         CopyKind::TypeScript,
+        &mut inputs,
     )?;
     write(
         &out.join("framework/package.json"),
         &serde_json::to_vec_pretty(&metadata)?,
     )?;
     write(&out.join("framework/tsconfig.json"), br#"{"compilerOptions":{"target":"ES2022","experimentalDecorators":true,"useDefineForClassFields":false}}"#)?;
-    let docs = checkout.join("docs");
-    let skill = checkout.join("ai/SKILL.md");
-    let license = checkout.join("LICENSE");
-    copy_tree(&docs, &out.join("reference/docs"), CopyKind::Markdown)?;
+    copy_tree(
+        &docs,
+        &out.join("reference/docs"),
+        CopyKind::Markdown,
+        &mut inputs,
+    )?;
     for (source, target) in [
         (&docs.join("ai.md"), out.join("reference/ai.md")),
         (&skill, out.join("reference/SKILL.md")),
@@ -96,7 +105,8 @@ pub fn stage_checkout(checkout: &Path, out: &Path, version: &str) -> io::Result<
     ] {
         write(&target, &fs::read(source)?)?;
     }
-    Ok(vec![manifest, framework_sources, docs, skill, license])
+    inputs.extend([framework_sources, docs, skill, license]);
+    Ok(inputs)
 }
 
 fn validate_version(path: &Path, version: &str) -> io::Result<serde_json::Value> {
@@ -114,7 +124,12 @@ enum CopyKind {
     Markdown,
 }
 
-fn copy_tree(input: &Path, output: &Path, kind: CopyKind) -> io::Result<()> {
+fn copy_tree(
+    input: &Path,
+    output: &Path,
+    kind: CopyKind,
+    inputs: &mut Vec<PathBuf>,
+) -> io::Result<()> {
     let mut pending = vec![(input.to_owned(), output.to_owned())];
     while let Some((source, target)) = pending.pop() {
         let metadata = fs::symlink_metadata(&source)?;
@@ -149,6 +164,7 @@ fn copy_tree(input: &Path, output: &Path, kind: CopyKind) -> io::Result<()> {
             };
             if selected {
                 write(&target, &fs::read(&source)?)?;
+                inputs.push(source);
             }
         }
     }
