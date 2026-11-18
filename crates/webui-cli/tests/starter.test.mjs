@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { once } from 'node:events';
-import { cp, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -44,7 +44,8 @@ async function fixture(t, server = 'node') {
 }
 
 async function symlinkFixtures(t, root) {
-  const publicDir = path.join(root, 'dist/public');
+  // The child resolves relative paths from its real cwd, not the temp-dir alias.
+  const publicDir = path.join(await realpath(root), 'dist/public');
   const synthetic = new Set([path.join(publicDir, 'permission-link.js')]);
   await writeFile(path.join(publicDir, 'permission-link.js'), 'must not be served');
   try {
