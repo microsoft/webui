@@ -2,7 +2,7 @@
   "name": "@microsoft/webui",
   "description": "WebUI — high-performance server-side rendering framework. Build-time protocol compiler and streaming renderer.",
   "license": "MIT",
-  "version": "3.1.2",
+  "version": "3.2.0",
   "publishConfig": {
     "tag": "latest"
   },
@@ -32,7 +32,7 @@
     "postbuild": "node dist/install.js",
     "prepack": "node scripts/prepare-ai.js",
     "postinstall": "node --input-type=module -e \"try{await import('./dist/install.js')}catch{}\"",
-    "test": "pnpm --filter @microsoft/webui-framework build --incremental false && tsc --project tsconfig.test.json && node --test ../../examples/build-client.test.mjs dist/test/ai-reference.test.js dist/test/integration.test.js dist/test/native-addon-loading.test.js dist/test/native-bundle.test.js dist/test/native-install.test.js"
+    "test": "pnpm --filter @microsoft/webui-framework build --incremental false && tsc --project tsconfig.test.json && node --test ../../examples/build-client.test.mjs ../../examples/native-build.test.mjs dist/test/ai-reference.test.js dist/test/integration.test.js dist/test/native-addon-loading.test.js dist/test/native-bundle.test.js dist/test/native-install.test.js"
   },
   "engines": {
     "node": ">=18"
