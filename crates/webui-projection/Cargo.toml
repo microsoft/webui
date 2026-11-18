@@ -6,9 +6,15 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "README.md"
+keywords = ["webui", "typescript", "compiler", "ssr", "projection"]
+categories = ["development-tools::build-utils", "web-programming"]
 
 [lib]
 name = "webui_projection"
+path = "src/lib.rs"
 
 [dependencies]
 oxc = { workspace = true }
