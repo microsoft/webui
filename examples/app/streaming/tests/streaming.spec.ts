@@ -2,6 +2,10 @@
 // Licensed under the MIT license.
 
 import { test, expect, type Page } from '@playwright/test';
+import type { ClientProjectionManifest } from '@microsoft/webui';
+import { readFile } from 'node:fs/promises';
+import { dirname, relative, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 /**
  * Progressive streaming hydration coverage for this example's
@@ -333,9 +337,15 @@ test.describe('streaming priority hydration', () => {
     // preload scanner cannot discover it until index.js has downloaded and
     // parsed. That waterfall is what the hint removes.
     expect(preloads.length).toBeGreaterThan(0);
-    for (const href of preloads) {
-      expect(href).toMatch(/\/chunk-[^/]+\.js$/);
-    }
+    const manifestFile = fileURLToPath(new URL('../dist/webui-projection.json', import.meta.url));
+    const proof = JSON.parse(await readFile(manifestFile, 'utf8')) as ClientProjectionManifest;
+    const project = resolve(dirname(manifestFile), proof.root);
+    const entry = relative(project, resolve(dirname(manifestFile), 'index.js')).split(sep).join('/');
+    const closure = proof.entryClosures?.[entry];
+    expect(closure).toBeDefined();
+    expect(preloads).toEqual(closure!.map(output =>
+      new URL(relative(dirname(entry), output).split(sep).join('/'), page.url()).pathname));
+    expect(preloads).not.toContain('/weather-panel.js');
 
     // Order is the whole feature. Preloads are issued in document order over
     // one connection, so a small chunk listed first delays the long pole and

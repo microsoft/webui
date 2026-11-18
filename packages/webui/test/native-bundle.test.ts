@@ -85,6 +85,46 @@ test("native in-memory builds retain split outputs, legal notices, ASCII and fre
   await assert.rejects(readFile(path.join(root, "dist/index.js")), { code: "ENOENT" });
 });
 
+test("native path boundaries accept ordinary and namespaced absolute destinations without weakening containment", async t => {
+  const { root, options } = await fixture(t);
+  const manifestPath = path.join(root, "dist/proof.json");
+  const variants = [
+    { ...options, manifestPath },
+    { ...options, outDir: path.relative(project, options.outDir),
+      manifestPath: path.relative(project, manifestPath) },
+    { ...options, project: path.toNamespacedPath(project), manifestPath },
+    { ...options, outDir: path.toNamespacedPath(options.outDir),
+      manifestPath: path.toNamespacedPath(manifestPath) },
+  ];
+  const source = await readFile(path.join(root, "index.ts"));
+  const sourceKey = path.relative(project, path.join(root, "index.ts")).replaceAll("\\", "/");
+  for (const variant of variants) {
+    const client = await bundleClient({ ...variant, write: false });
+    assert.equal(path.toNamespacedPath(client.manifestPath), path.toNamespacedPath(manifestPath));
+    const output = client.files.find(file => path.basename(file.path) === "index.js");
+    assert.ok(output);
+    assert.equal(path.toNamespacedPath(output.path),
+      path.toNamespacedPath(path.join(root, "dist/index.js")));
+    assert.equal(client.manifest.inputs[sourceKey],
+      `sha256:${createHash("sha256").update(source).digest("hex")}`);
+    assert.deepEqual(client.manifest.components["app-counter"].hydrationKeys, ["count"]);
+  }
+  await assert.rejects(readFile(manifestPath), { code: "ENOENT" });
+  for (const outDir of [
+    path.join(`${project}-outside`, "dist"),
+    path.join(project, "..") + `${path.sep}escape`,
+    `dist${path.sep}..${path.sep}escape`,
+  ]) {
+    await assert.rejects(bundleClient({ ...options, outDir, write: false }), /inside|parent/);
+  }
+  await assert.rejects(bundleClient({
+    ...options, manifestPath: path.join(`${project}-outside`, "proof.json"), write: false,
+  }), /inside/);
+  const published = await bundleClient({ ...options, manifestPath });
+  assert.deepEqual(JSON.parse(await readFile(manifestPath, "utf8")), published.manifest);
+  assert.ok((await readFile(path.join(root, "dist/index.js"))).length > 0);
+});
+
 test("native publication rejects source/manifest collisions and redirected output paths", async t => {
   const { root, options } = await fixture(t);
   await assert.rejects(bundleClient({ ...options, manifestPath: path.join(root, "dist/index.js") }),
@@ -110,5 +150,5 @@ test("native bundling returns typed nonfatal advisories without terminal colors"
   assert.equal(client.warnings[0].code, "INEFFECTIVE_DYNAMIC_IMPORT");
   assert.ok(client.warnings[0].message.length > 0);
   assert.doesNotMatch(client.warnings[0].message, /\x1b/);
-  assert.ok(client.files.some(file => file.path.endsWith("/index.js")));
+  assert.ok(client.files.some(file => path.basename(file.path) === "index.js"));
 });

@@ -2,7 +2,8 @@
 // Licensed under the MIT license.
 
 import { readFile, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
+import type { ClientProjectionManifest } from '@microsoft/webui';
 import { expect, test, type Page } from '@playwright/test';
 import type { LazyDialog } from '../src/lazy-dialog/lazy-dialog.js';
 import {
@@ -55,7 +56,7 @@ function isPackOf(owner: 'lazy-popover' | 'lazy-dialog', url: string): boolean {
 
 /** The chunk the bundler splits from `src/layout-preview/layout-preview.ts`. */
 function isPreviewScript(url: string): boolean {
-  return /\/layout-preview-[A-Z0-9]+\.js$/.test(new URL(url).pathname);
+  return /\/layout-preview-[A-Za-z0-9_-]+\.js$/.test(new URL(url).pathname);
 }
 
 /** The stylesheet of `<layout-preview>`, which only the settings region needs. */
@@ -763,7 +764,15 @@ test.describe('a per-request asset base on another origin', () => {
     // Module preload hints name the entry's own imports, so they stay with `./index.js`.
     const hints = await page.locator('link[rel="modulepreload"]').evaluateAll(links =>
       links.map(link => (link as HTMLLinkElement).href));
-    expect(hints).not.toEqual([]);
+    const manifestFile = join(exampleRoot, 'dist/webui-projection.json');
+    const proof = JSON.parse(await readFile(manifestFile, 'utf8')) as ClientProjectionManifest;
+    const project = resolve(dirname(manifestFile), proof.root);
+    const entry = relative(project, join(exampleRoot, 'dist/index.js')).split(sep).join('/');
+    const closure = proof.entryClosures?.[entry];
+    expect(closure).toBeDefined();
+    expect(hints).toEqual(closure!.map(output =>
+      new URL(relative(dirname(entry), output).split(sep).join('/'), `${origin}/`).href));
+    expect(hints.some(isPreviewScript)).toBe(false);
     expect(hints.filter(href => !href.startsWith(`${origin}/`))).toEqual([]);
 
     await page.getByRole('button', { name: 'View settings', exact: true }).click();
@@ -781,7 +790,7 @@ test.describe('a per-request asset base on another origin', () => {
     ]));
     expect(fromPage.filter(path => path.endsWith('.css') || path.startsWith('/_webui/'))).toEqual([]);
     // Every script, including the preview's chunk, downloaded once, from the page's origin.
-    expect(scripts).toContainEqual(expect.stringMatching(/\/layout-preview-[A-Z0-9]+\.js$/));
+    expect(scripts.filter(isPreviewScript)).toHaveLength(1);
     expect(scripts.filter(href => !href.startsWith(`${origin}/`))).toEqual([]);
     expect(scripts.filter((href, index) => scripts.indexOf(href) !== index)).toEqual([]);
     expect(cdn.requests.filter(path => path.endsWith('.js'))).toEqual([]);

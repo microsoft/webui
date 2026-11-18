@@ -12,7 +12,10 @@ pub(super) fn input_key(root: &Path, id: &str) -> Result<String, ClientBuildErro
     if let Some(id) = id.strip_prefix('\0') {
         return Ok(crate::manifest::hex("virtual:", id.as_bytes()));
     }
-    let relative = Path::new(id).strip_prefix(root).map_err(|_| {
+    // Oxc resolves Windows IDs without the verbatim prefix returned by std's
+    // canonicalize. Recover the physical identity before comparing boundaries.
+    let path = contained(root, Path::new(id))?;
+    let relative = path.strip_prefix(root).map_err(|_| {
         ClientBuildError::Invalid("captured input escaped its project boundary".into())
     })?;
     if relative.as_os_str().is_empty() {
@@ -163,4 +166,28 @@ pub(super) fn framework_exports(root: &Path) -> Result<FrameworkAliases, ClientB
         ));
     }
     Ok(aliases)
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::input_key;
+
+    #[test]
+    fn windows_resolver_ids_match_canonical_input_boundaries(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let source = temp.path().join("index.ts");
+        std::fs::write(&source, "export const value = 42;")?;
+        let root = temp.path().canonicalize()?;
+        let id = source.to_str().ok_or("test path must be UTF-8")?;
+        assert!(!id.starts_with(r"\\?\"), "use an ordinary resolver ID");
+        assert_eq!(input_key(&root, id)?, "index.ts");
+        let outside = tempfile::NamedTempFile::new()?;
+        assert!(input_key(
+            &root,
+            outside.path().to_str().ok_or("test path must be UTF-8")?
+        )
+        .is_err());
+        Ok(())
+    }
 }

@@ -150,7 +150,21 @@ pub fn bundle_client(
 
 fn relative_path(project: &Path, path: &Path) -> napi::Result<PathBuf> {
     let relative = if path.is_absolute() {
-        path.strip_prefix(project).map_err(bundle_error)?
+        // std canonicalization uses verbatim Windows prefixes, while Node paths
+        // use ordinary drive/UNC prefixes. Compare components without resolving
+        // the (possibly nonexistent) output or normalizing away parent segments.
+        let mut parts = path.components();
+        for expected in project.components() {
+            if !parts
+                .next()
+                .is_some_and(|part| same_component(expected, part))
+            {
+                return Err(Error::from_reason(
+                    "Native browser outputs must remain inside the canonical project",
+                ));
+            }
+        }
+        parts.as_path()
     } else {
         path
     };
@@ -166,6 +180,21 @@ fn relative_path(project: &Path, path: &Path) -> napi::Result<PathBuf> {
     Ok(relative.to_path_buf())
 }
 
+fn same_component(left: Component<'_>, right: Component<'_>) -> bool {
+    #[cfg(windows)]
+    if let (Component::Prefix(left), Component::Prefix(right)) = (left, right) {
+        use std::path::Prefix;
+        return match (left.kind(), right.kind()) {
+            (Prefix::VerbatimDisk(a), Prefix::Disk(b))
+            | (Prefix::Disk(a), Prefix::VerbatimDisk(b)) => a == b,
+            (Prefix::VerbatimUNC(a, b), Prefix::UNC(c, d))
+            | (Prefix::UNC(a, b), Prefix::VerbatimUNC(c, d)) => a == c && b == d,
+            (a, b) => a == b,
+        };
+    }
+    left == right
+}
+
 fn utf8(path: &Path) -> napi::Result<String> {
     path.to_str()
         .map(str::to_owned)
@@ -176,4 +205,42 @@ fn utf8(path: &Path) -> napi::Result<String> {
 #[inline(never)]
 fn bundle_error(error: impl std::fmt::Display) -> Error {
     Error::from_reason(format!("Native browser build failed: {error}"))
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::relative_path;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn windows_output_prefixes_preserve_project_containment() -> napi::Result<()> {
+        for (root, output) in [
+            (r"\\?\C:\project", r"C:\project\dist\index.js"),
+            (r"\\?\C:\project", r"C:/project/dist/index.js"),
+            (r"\\?\C:\project", r"\\?\C:\project\dist\index.js"),
+            (
+                r"\\?\UNC\server\share\project",
+                r"\\server\share\project\dist\index.js",
+            ),
+        ] {
+            assert_eq!(
+                relative_path(Path::new(root), Path::new(output))?,
+                PathBuf::from(r"dist\index.js")
+            );
+        }
+        for output in [
+            r"D:\project\dist\index.js",
+            r"C:\project-other\dist\index.js",
+            r"C:\project\dist\..\index.js",
+            r"C:\project",
+        ] {
+            assert!(relative_path(Path::new(r"\\?\C:\project"), Path::new(output)).is_err());
+        }
+        assert!(relative_path(
+            Path::new(r"\\?\UNC\server\share\project"),
+            Path::new(r"\\server\other\project\dist\index.js")
+        )
+        .is_err());
+        Ok(())
+    }
 }
