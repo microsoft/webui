@@ -3,6 +3,7 @@
 
 //! Examples build tasks.
 
+use crate::node_addons::{self, Addons};
 use crate::util::{
     build_command, collect_child_dirs, display_name, run_command, run_command_quiet,
 };
@@ -126,7 +127,7 @@ pub const INTEGRATION_BUILDS: &[IntegrationBuild] = &[
     },
 ];
 
-pub fn run_integration_builds() -> Result<(), String> {
+fn run_integration_builds(addons: &Addons) -> Result<(), String> {
     if INTEGRATION_BUILDS.is_empty() {
         eprintln!(
             "  {} no integration build entries configured",
@@ -143,7 +144,12 @@ pub fn run_integration_builds() -> Result<(), String> {
         );
         for command in integration.commands {
             let cwd = command.cwd.map(Path::new);
-            run_command_quiet(command.cmd, command.args, cwd).map_err(|message| {
+            let mut child = build_command(command.cmd, command.args);
+            if let Some(cwd) = cwd {
+                child.current_dir(cwd);
+            }
+            addons.apply(&mut child);
+            node_addons::run_checked(&mut child, "integration build").map_err(|message| {
                 format!(
                     "integration '{}' command failed: {}",
                     integration.name, message
@@ -161,7 +167,7 @@ fn is_example_app_dir(app_dir: &Path) -> bool {
     app_dir.join("package.json").is_file()
 }
 
-pub fn run_app_builds() -> Result<(), String> {
+fn run_app_builds(addons: &Addons) -> Result<(), String> {
     use std::thread;
 
     let apps_root = Path::new("examples/app");
@@ -182,6 +188,7 @@ pub fn run_app_builds() -> Result<(), String> {
     let handles: Vec<_> = app_dirs
         .into_iter()
         .map(|app_dir| {
+            let addons = addons.clone();
             thread::spawn(move || {
                 let app_name = display_name(&app_dir);
                 if !has_script(&app_dir, "build") {
@@ -192,7 +199,7 @@ pub fn run_app_builds() -> Result<(), String> {
                     ));
                 }
 
-                run_app_build_script(&app_dir)
+                run_app_build_script(&app_dir, &addons)
                     .map_err(|message| format!("app '{}' build failed: {}", app_name, message))?;
 
                 eprintln!("  {} app: {}", console::style("•").dim(), app_name);
@@ -218,10 +225,11 @@ pub fn run_app_builds() -> Result<(), String> {
 }
 
 pub fn run_example_builds() -> Result<(), String> {
-    run_integration_builds()?;
+    let addons = node_addons::build(true)?;
+    run_integration_builds(&addons)?;
     ensure_example_wasm()?;
     ensure_example_deps()?;
-    run_app_builds()
+    run_app_builds(&addons)
 }
 
 /// Build the shared workspace JS packages once, before the parallel app builds.
@@ -277,8 +285,9 @@ fn ensure_example_wasm() -> Result<(), String> {
     crate::build_wasm::run()
 }
 
-fn run_app_build_script(app_dir: &Path) -> Result<(), String> {
+fn run_app_build_script(app_dir: &Path, addons: &Addons) -> Result<(), String> {
     let mut command = build_command("pnpm", &["run", "build"]);
+    addons.apply(&mut command);
     command
         .current_dir(app_dir)
         .env("CARGO_INCREMENTAL", "0")

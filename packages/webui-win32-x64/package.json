@@ -5,7 +5,8 @@
   "description": "WebUI platform-specific binary for Windows x64",
   "files": [
     "bin/webui.exe",
-    "webui.node"
+    "webui.node",
+    "webui-build.node"
   ],
   "license": "MIT",
   "name": "@microsoft/webui-win32-x64",

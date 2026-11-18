@@ -1,126 +1,144 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-use crate::cargo_artifacts::{self, Kind};
+use crate::node_addons::{self, run_checked, Addons};
 use crate::util::{build_command, run_command_quiet};
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Command;
 
 pub(crate) fn run() -> Result<(), String> {
-    let output = run_checked(
-        &mut build_command(
-            "cargo",
-            &[
-                "build",
-                "--locked",
-                "-p",
-                "microsoft-webui-node",
-                "--message-format=json-render-diagnostics",
-            ],
-        ),
-        "WebUI test addon build",
+    let dependencies = run_checked(
+        &mut runtime_dependency_command(),
+        "WebUI runtime dependency audit",
     )?;
-    let addon = addon_artifact(&output.stdout)?;
-    if !addon.is_file() {
-        return Err(format!(
-            "Cargo reported a WebUI test addon that does not exist: {}",
-            addon.display()
-        ));
-    }
+    check_runtime_dependencies(&dependencies.stdout)?;
+    let addons = node_addons::build(false)?;
 
     run_command_quiet("pnpm", &["--filter", "@microsoft/webui", "build"], None)
         .map_err(|error| format!("WebUI test package build failed:\n{error}"))?;
-    run_checked(&mut test_command(&addon), "WebUI Node package tests")?;
+    run_checked(&mut test_command(&addons), "WebUI Node package tests")?;
     Ok(())
 }
 
-fn test_command(addon: &Path) -> Command {
-    let mut command = build_command("pnpm", &["--filter", "@microsoft/webui", "test"]);
-    command.env("WEBUI_ADDON_PATH", addon);
-    command
+fn runtime_dependency_command() -> Command {
+    build_command(
+        "cargo",
+        &[
+            "tree",
+            "--locked",
+            "-p",
+            "microsoft-webui-node",
+            "--edges",
+            "normal,build",
+            "--target",
+            "all",
+            "--prefix",
+            "none",
+            "--format",
+            "{p}",
+        ],
+    )
 }
 
-fn run_checked(command: &mut Command, label: &str) -> Result<Output, String> {
-    let output = command
-        .output()
-        .map_err(|error| format!("{label}: {error}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "{label} failed ({}):\n{}{}",
-            output.status,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        ));
+fn check_runtime_dependencies(output: &[u8]) -> Result<(), String> {
+    let tree = std::str::from_utf8(output)
+        .map_err(|error| format!("Invalid WebUI runtime dependency tree: {error}"))?;
+    let mut has_runtime = false;
+    for package in tree
+        .lines()
+        .filter_map(|line| line.split_whitespace().next())
+    {
+        has_runtime |= package == "microsoft-webui-node";
+        if matches!(
+            package,
+            "microsoft-webui"
+                | "microsoft-webui-node-build"
+                | "microsoft-webui-parser"
+                | "microsoft-webui-discovery"
+                | "microsoft-webui-client-build"
+                | "microsoft-webui-projection"
+                | "rolldown"
+                | "oxc"
+        ) || package.starts_with("rolldown_")
+            || package.starts_with("oxc_")
+        {
+            return Err(format!(
+                "WebUI handler addon has a production dependency on {package}; \
+                 move compiler dependencies to microsoft-webui-node-build (parser dev-tests are allowed)"
+            ));
+        }
     }
-    Ok(output)
+    if !has_runtime {
+        return Err("Cargo did not report the WebUI runtime dependency graph".to_string());
+    }
+    Ok(())
 }
 
-fn addon_artifact(output: &[u8]) -> Result<PathBuf, String> {
-    cargo_artifacts::find(output, "webui_node", Kind::Cdylib)
+fn test_command(addons: &Addons) -> Command {
+    let mut command = build_command("pnpm", &["--filter", "@microsoft/webui", "test"]);
+    addons.apply(&mut command);
+    command
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{addon_artifact, run_checked, test_command};
+    use super::{check_runtime_dependencies, runtime_dependency_command, test_command, Addons};
     use std::ffi::OsStr;
-    use std::path::{Path, PathBuf};
-    use std::process::Command;
 
     #[test]
-    fn selects_the_reported_addon_across_platforms_and_target_directories() {
-        for file in [
-            "/custom target/debug/libwebui_node.so",
-            "/custom target/aarch64-apple-darwin/debug/libwebui_node.dylib",
-            "C:/custom target/debug/webui_node.dll",
-        ] {
-            let output = format!(
-                "{{\"reason\":\"compiler-artifact\",\"target\":{{\"name\":\"dependency\",\"crate_types\":[\"cdylib\"]}},\"filenames\":[\"/other/libdependency.so\"]}}\n\
-                 {{\"reason\":\"compiler-artifact\",\"target\":{{\"name\":\"webui_node\",\"crate_types\":[\"cdylib\"]}},\"filenames\":[\"{file}\",\"webui_node.pdb\",\"webui_node.dll.lib\"]}}\n\
-                 {{\"reason\":\"build-finished\",\"success\":true}}\n"
-            );
-            assert_eq!(addon_artifact(output.as_bytes()), Ok(PathBuf::from(file)));
-        }
-    }
-
-    #[test]
-    fn rejects_missing_malformed_and_ambiguous_artifacts() {
-        for output in [
-            "",
-            "not json",
-            r#"{"reason":"build-finished","success":true}"#,
-            r#"{"reason":"compiler-artifact","target":{"name":"webui_node","crate_types":["rlib"]},"filenames":["libwebui_node.so"]}"#,
-            r#"{"reason":"compiler-artifact","target":{"name":"webui_node","crate_types":["cdylib"]},"filenames":["one.so","two.so"]}"#,
-        ] {
-            assert!(addon_artifact(output.as_bytes()).is_err(), "{output}");
-        }
-    }
-
-    #[test]
-    fn runs_the_package_script_with_an_explicit_fresh_addon() {
-        let addon = Path::new("custom target/libwebui_node.so");
-        let command = test_command(addon);
+    fn runs_the_package_script_with_both_explicit_fresh_addons() {
+        let addons = Addons {
+            runtime: "custom target/libwebui_node.so".into(),
+            builder: "custom target/libwebui_node_build.so".into(),
+        };
+        let command = test_command(&addons);
         let args: Vec<_> = command.get_args().collect();
         assert!(args.ends_with(&[
             OsStr::new("--filter"),
             OsStr::new("@microsoft/webui"),
             OsStr::new("test"),
         ]));
-        assert!(command
-            .get_envs()
-            .any(|(key, value)| { key == "WEBUI_ADDON_PATH" && value == Some(addon.as_os_str()) }));
+        for (name, path) in [
+            ("WEBUI_ADDON_PATH", &addons.runtime),
+            ("WEBUI_BUILD_ADDON_PATH", &addons.builder),
+        ] {
+            assert!(command
+                .get_envs()
+                .any(|(key, value)| key == name && value == Some(path.as_os_str())));
+        }
     }
 
     #[test]
-    fn propagates_failed_child_process_output() {
-        let result = run_checked(
-            Command::new("node")
-                .args(["-e", "console.error('node-suite-failure'); process.exit(1)"]),
-            "WebUI Node package tests",
-        );
-        let Err(error) = result else {
-            panic!("a failing Node suite must fail the gate");
-        };
-        assert!(error.contains("WebUI Node package tests failed"));
-        assert!(error.contains("node-suite-failure"));
+    fn audits_normal_and_build_dependencies_without_parser_dev_tests() {
+        let command = runtime_dependency_command();
+        let args: Vec<_> = command.get_args().collect();
+        assert!(args
+            .windows(2)
+            .any(|pair| { pair == [OsStr::new("--edges"), OsStr::new("normal,build")] }));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == [OsStr::new("--target"), OsStr::new("all")]));
+        assert!(check_runtime_dependencies(
+            b"microsoft-webui-node v3.1.2\nmicrosoft-webui-handler v3.1.2\nnapi v3.12.4\n"
+        )
+        .is_ok());
+        assert!(check_runtime_dependencies(b"").is_err());
+        for forbidden in [
+            "microsoft-webui",
+            "microsoft-webui-node-build",
+            "microsoft-webui-parser",
+            "microsoft-webui-discovery",
+            "microsoft-webui-client-build",
+            "microsoft-webui-projection",
+            "rolldown",
+            "rolldown_common",
+            "oxc",
+            "oxc_parser",
+        ] {
+            let tree = format!("microsoft-webui-node v3.1.2\n{forbidden} v1.0.0\n");
+            let Err(error) = check_runtime_dependencies(tree.as_bytes()) else {
+                panic!("compiler code must not enter the runtime production graph");
+            };
+            assert!(error.contains(forbidden), "{error}");
+        }
     }
 }

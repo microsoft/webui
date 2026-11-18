@@ -174,6 +174,11 @@ Keep optional dependencies enabled: they provide native binaries for Windows,
 macOS, and Linux on x64 and ARM64. A supported prebuilt install needs no Rust
 toolchain. Commit your lockfile and keep WebUI package versions aligned.
 
+The same package installs the `webui` CLI and ships separate native runtime
+and compiler addons. Node hosts import runtime APIs from `@microsoft/webui`;
+custom Node build scripts import compiler APIs from `@microsoft/webui/build`.
+Each API loads only its own addon. See the [Node integration guide](/build/integrations/node#choose-an-entry-point).
+
 ## Verify the CLI
 
 <webui-press-tabs sync="package-manager" storage="local">

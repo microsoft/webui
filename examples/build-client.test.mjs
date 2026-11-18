@@ -10,7 +10,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { runInNewContext } from 'node:vm';
-import { runWebUIClientBuild } from './build-client.mjs';
+import { runWebUIBuild, runWebUIClientBuild } from './build-client.mjs';
 import { minifyClient } from './minify-client.mjs';
 import { parallelImportPlans } from './integration/lazy-ui-bench/ntp/build.mjs';
 
@@ -97,6 +97,32 @@ function outputMetadata(result, root, name = 'index.js') {
   assert.ok(match, `missing native output metadata for ${name}`);
   return match[1];
 }
+
+test('production helper prepares, bundles and finalizes without loading the runtime addon', async t => {
+  const root = await sourceFixture(t);
+  const { resolve: resolveArtifact } = await import('../packages/webui/dist/platform.js');
+  await writeFile(path.join(root, 'src/index.html'), '<!doctype html><html><body><main>{{title}}</main></body></html>');
+  const loaded = [];
+  const dlopen = process.dlopen;
+  t.mock.method(process, 'dlopen', function (...args) {
+    loaded.push(args[1]);
+    return Reflect.apply(dlopen, this, args);
+  });
+  const { result, client } = await runWebUIBuild({
+    appDir: path.join(root, 'src'),
+    plugin: 'webui',
+    modulesOut: path.join(root, '.webui'),
+    outDir: path.join(root, 'dist'),
+    clientOptions: {
+      entries: { index: path.join(root, 'src/index.js') },
+    },
+  });
+  assert.ok(result.protocol.length > 0);
+  assert.deepEqual(await readFile(path.join(root, 'dist/protocol.bin')), result.protocol);
+  assert.ok(Object.keys(client.manifest.outputs).length > 0);
+  assert.deepEqual(loaded, [resolveArtifact('build-addon')],
+    'preparation and bundling reuse one compiler addon without loading the runtime');
+});
 
 test('native production output binds final optimized bytes and retained modules', async t => {
   const { root, result } = await fixture(t);

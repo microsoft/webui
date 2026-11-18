@@ -36,7 +36,9 @@ const root = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), '..',
 const require = createRequire(join(root, 'packages', 'webui-test-support', 'package.json'));
 const { chromium } = require('@playwright/test');
 assert.ok(process.env.WEBUI_ADDON_PATH, 'Set WEBUI_ADDON_PATH to the freshly built release addon.');
-const { bundleClient, prepareBuild, Protocol } = await import(pathToFileURL(join(root, 'packages', 'webui', 'dist', 'index.js')).href);
+assert.ok(process.env.WEBUI_BUILD_ADDON_PATH, 'Set WEBUI_BUILD_ADDON_PATH to the freshly built release compiler addon.');
+const { bundleClient, prepareBuild } = await import(pathToFileURL(join(root, 'packages', 'webui', 'dist', 'build.js')).href);
+const { Protocol } = await import(pathToFileURL(join(root, 'packages', 'webui', 'dist', 'index.js')).href);
 
 const args = {};
 for (let i = 2; i < process.argv.length; i++) {
@@ -202,6 +204,7 @@ const report = {
     viewport: VIEWPORT, hoverDwellMs: DWELL_MS, settleMs: SETTLE_MS, samples: SAMPLES, warmups: WARMUPS,
     memorySamples: MEMORY_SAMPLES, probeSamples: PROBE_SAMPLES, configs: CONFIGS, caches: CACHES, modes: MODES,
     targets: TARGETS, imageBytes: image.length, addon: process.env.WEBUI_ADDON_PATH,
+    buildAddon: process.env.WEBUI_BUILD_ADDON_PATH,
   },
   fixtures: {}, runs: [], startup: [], opens: [], memory: [], probes: [], parallel: [], acceptance: [],
 };

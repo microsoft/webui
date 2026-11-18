@@ -1,7 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { build, Protocol } from '../../../../webui/dist/index.js';
+import { build } from '../../../../webui/dist/build.js';
+import { Protocol } from '../../../../webui/dist/index.js';
 import { buildFixtureEntries } from '@microsoft/webui-test-support/fixture-build';
 import { expect, type Page } from '@playwright/test';
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';

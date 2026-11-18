@@ -399,6 +399,10 @@ impl ParserPlugin for WebUIParserPlugin {
         true
     }
 
+    fn outlet_markers(&self) -> Option<(&'static str, &'static str)> {
+        Some(("<!--wo-->", "<!--/wo-->"))
+    }
+
     fn begin_fragment(&mut self, _context: FragmentContext<'_>) {
         self.element_events.set(0);
         self.next_event_idx.set(0);

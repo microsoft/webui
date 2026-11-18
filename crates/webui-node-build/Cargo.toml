@@ -1,0 +1,35 @@
+[package]
+name = "microsoft-webui-node-build"
+description = "Build-only Node.js native addon for the WebUI compiler via napi-rs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["webui", "nodejs", "napi", "compiler", "build"]
+categories = ["api-bindings", "web-programming"]
+
+[lib]
+name = "webui_node_build"
+crate-type = ["cdylib"]
+
+[dependencies]
+napi = { workspace = true }
+napi-derive = { workspace = true }
+microsoft-webui = { path = "../webui", version = "3.1.2" }
+microsoft-webui-client-build = { path = "../webui-client-build", version = "3.1.2" }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[build-dependencies]
+napi-build = { workspace = true }
+
+[dev-dependencies]
+microsoft-webui-protocol = { path = "../webui-protocol", version = "3.1.2", features = ["projection-manifest"] }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

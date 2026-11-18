@@ -47,8 +47,21 @@ complete native pipeline through N-API; it owns no projection graph, manifest
 builder, or optional compiler-peer compatibility layer. Press calls the native
 builder directly. Native compilation uses neither a JavaScript VM nor a Node
 subprocess. Handler crates and standalone native renderer hosts do not depend
-on these compiler crates. Node's combined build/render addon exposes browser
-compilation without running it during rendering.
+on these compiler crates. Node distributes two native artifacts in one npm
+package: `libwebui_node` is the runtime binding and `libwebui_node_build` is the
+compiler binding (platform extensions differ). The runtime root
+`@microsoft/webui` exposes `Protocol`, streaming, inspection, and runtime types.
+The explicit `@microsoft/webui/build` entry owns `build`, `prepareBuild`,
+`bundleClient`, and compiler types; none are re-exported by the root.
+Each entry loads only its own addon when used. `WEBUI_ADDON_PATH` overrides
+runtime resolution; `WEBUI_BUILD_ADDON_PATH` independently overrides build
+resolution. Platform npm packages ship both artifacts and the CLI install
+remains in the same package.
+
+The runtime binding depends on the handler without a production compiler
+dependency. The compiler binding may use the same handler library internally,
+but N-API handles never cross addon boundaries. Compilation passes serialized
+protocol bytes to runtime consumers, not a loaded native `Protocol`.
 Prepared templates compile once across bundling and finalization; final-byte
 hashes and the existing protocol validator remain authoritative.
 

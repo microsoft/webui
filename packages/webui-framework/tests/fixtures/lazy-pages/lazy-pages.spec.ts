@@ -16,6 +16,74 @@ interface Graph {
 
 type CompletionHost = HTMLElement & { $whenRendered(): Promise<void> };
 
+test('a scriptless leaf adopts its conditional after an empty outlet', async ({ page }) => {
+  const errors: Error[] = [];
+  page.on('pageerror', error => errors.push(error));
+  await page.goto('/lazy-routes/');
+  const home = page.locator('routed-home');
+  const heading = home.getByRole('heading', { level: 2 });
+  expect(await home.evaluate(host => 'setState' in host)).toBe(true);
+  await expect(heading).toHaveText('Home from SSR');
+
+  const updateTitle = (title: string) => home.evaluate(async (host, value) => {
+    const component = host as CompletionHost & { setState(state: { title: string }): void };
+    component.setState({ title: value });
+    await component.$whenRendered();
+  }, title);
+
+  await updateTitle('Refreshed home');
+  expect(await heading.count()).toBe(1);
+  await expect(home.locator('div > h2')).toHaveText('Refreshed home');
+  await updateTitle('');
+  await expect(heading).toHaveCount(0);
+  await updateTitle('Restored home');
+  await expect(heading).toHaveText('Restored home');
+  await expect(home.locator('div > h2')).toHaveText('Restored home');
+  expect(errors).toEqual([]);
+});
+
+test('a populated outlet keeps its routes and the bindings on either side', async ({ page }) => {
+  const errors: Error[] = [];
+  page.on('pageerror', error => errors.push(error));
+  await page.goto('/lazy-routes/');
+  const shell = page.locator('routed-shell');
+  const main = shell.locator('main');
+  const active = main.locator(':scope > webui-route[active]');
+  await expect(active.getByRole('heading', { level: 2 })).toHaveText('Home from SSR');
+  const route = await active.elementHandle();
+  const update = (label: string) => shell.evaluate(async (host, value) => {
+    const component = host as CompletionHost & {
+      setState(state: { beforeOutlet: string; afterOutlet: string; outletLabel: string }): void;
+    };
+    component.setState({
+      beforeOutlet: 'Before routes',
+      afterOutlet: 'After routes',
+      outletLabel: value,
+    });
+    await component.$whenRendered();
+  }, label);
+  await update('After routes label');
+  await expect(main.locator(':scope > span')).toHaveAttribute('data-label', 'After routes label');
+  await expect(main.locator(':scope > webui-route')).toHaveCount(3);
+  expect(await route.evaluate(element => ({
+    stillActive: element.isConnected && element.hasAttribute('active'),
+    before: element.parentNode?.firstChild?.textContent,
+    after: element.parentElement?.lastElementChild?.previousSibling?.textContent,
+  }))).toEqual({ stillActive: true, before: 'Before routes', after: 'After routes' });
+  await shell.evaluate(async host => {
+    const parent = host.parentNode!;
+    const next = host.nextSibling;
+    host.remove();
+    await Promise.resolve();
+    parent.insertBefore(host, next);
+  });
+  await update('Reconnected label');
+  await expect(main.locator(':scope > span')).toHaveAttribute('data-label', 'Reconnected label');
+  expect(await active.elementHandle().then(current => current.evaluate((node, original) => node === original, route)))
+    .toBe(true);
+  expect(errors).toEqual([]);
+});
+
 function behavior(graph: Graph, name: string): string {
   const found = Object.entries(graph.outputs).find(([, output]) =>
     output.inputs.some(input => input.endsWith(`/lazy-pages/src/${name}.ts`)));

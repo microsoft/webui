@@ -21,6 +21,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::node_addons;
 use crate::process::{self, ManagedChild, ReservedPort};
 use crate::util;
 
@@ -258,8 +259,8 @@ pub fn run(args: &[String]) -> ExitCode {
 
     // Build native Rust artifacts that example servers and Node test fixtures
     // load at runtime. Without this:
-    // - Framework e2e tests load a stale libwebui_node dylib and produce
-    //   mismatched SSR output (release profile, loaded by the Node addon).
+    // - Framework e2e tests load stale handler or compiler addons and produce
+    //   mismatched SSR output (release profile).
     // - Example `pnpm start:server` scripts compile webui-cli on the critical
     //   path via `cargo run` and overflow the port-readiness timeout (debug
     //   profile, used by `cargo run` defaults).
@@ -267,15 +268,17 @@ pub fn run(args: &[String]) -> ExitCode {
         "\n{} Building Rust runtime artifacts...",
         console::style("▸").cyan().bold(),
     );
-    match util::run_command_quiet(
-        "cargo",
-        &["build", "--release", "-p", "microsoft-webui-node"],
-        None,
-    ) {
-        Ok(()) => eprintln!("  {}", console::style("✔ webui-node (release)").green()),
+    match node_addons::build(true) {
+        Ok(addons) => {
+            // Set before starting any suite threads; all child builds, servers,
+            // and tests must load these exact Cargo-reported artifacts.
+            set_env_var("WEBUI_ADDON_PATH", &addons.runtime);
+            set_env_var("WEBUI_BUILD_ADDON_PATH", &addons.builder);
+            eprintln!("  {}", console::style("✔ Node addons (release)").green());
+        }
         Err(msg) => {
             eprintln!(
-                "  {} webui-node release build failed",
+                "  {} Node addons release build failed",
                 console::style("✘").red().bold(),
             );
             eprintln!("    {msg}");
@@ -615,7 +618,7 @@ fn kill_servers(servers: &mut [ManagedChild]) {
 /// the workspace denies `unsafe_code`. This call is sound because
 /// `xtask e2e` runs single-threaded up to the point we set it.
 #[allow(unsafe_code)]
-fn set_env_var(key: &str, value: &str) {
+fn set_env_var(key: &str, value: impl AsRef<std::ffi::OsStr>) {
     // SAFETY: single-threaded; no other thread is reading or writing
     // process env. Children inherit the new value when spawned later.
     unsafe { std::env::set_var(key, value) }

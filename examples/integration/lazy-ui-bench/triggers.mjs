@@ -35,7 +35,9 @@ const root = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), '..',
 const require = createRequire(join(root, 'packages', 'webui-test-support', 'package.json'));
 const { chromium } = require('@playwright/test');
 assert.ok(process.env.WEBUI_ADDON_PATH, 'Set WEBUI_ADDON_PATH to the freshly built release addon.');
-const { bundleClient, prepareBuild, Protocol } = await import(pathToFileURL(join(root, 'packages', 'webui', 'dist', 'index.js')).href);
+assert.ok(process.env.WEBUI_BUILD_ADDON_PATH, 'Set WEBUI_BUILD_ADDON_PATH to the freshly built release compiler addon.');
+const { bundleClient, prepareBuild } = await import(pathToFileURL(join(root, 'packages', 'webui', 'dist', 'build.js')).href);
+const { Protocol } = await import(pathToFileURL(join(root, 'packages', 'webui', 'dist', 'index.js')).href);
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((pairs, value, index, all) => {
   if (value.startsWith('--')) pairs.push([value.slice(2), all[index + 1]]);
@@ -535,6 +537,7 @@ if (args['write-fixtures']) {
   writeFileSync(resolve(args['write-fixtures']), JSON.stringify({
     label: args['fixture-label'] ?? 'main',
     addon: process.env.WEBUI_ADDON_PATH,
+    buildAddon: process.env.WEBUI_BUILD_ADDON_PATH,
     framework: legacyFramework || frameworkEntry,
     fixtures: [...fixtures.values()].map(fixture => ({
       ...fixture, script: fixture.script.raw.toString('base64'),
@@ -565,6 +568,7 @@ const report = {
     os: `${platform()} ${release()}`, cpu: cpus()[0]?.model, profile: PROFILE_NAME, profileSettings: PROFILE ?? null,
     hoverDwellMs: DWELL_MS, samples: SAMPLES, warmups: WARMUPS, memorySamples: MEMORY_SAMPLES,
     addon: process.env.WEBUI_ADDON_PATH,
+    buildAddon: process.env.WEBUI_BUILD_ADDON_PATH,
     legacyFramework, frameworkEntry, baselineFramework: args['baseline-framework'],
     matchingFixtures: args['read-fixtures'],
     snapshots: args.snapshots, probe: args.probe,

@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { loadBinding } from "./binding.js";
+import { addonInstallHelp, loadBinding } from "./binding.js";
 
 /** Options passed directly to the shared native Rolldown browser compiler. */
 export interface ClientBundleOptions {
@@ -111,10 +111,10 @@ interface NativeClientBinding {
  */
 export async function bundleClient(options: ClientBundleOptions): Promise<ClientBundle> {
   const { manifestPath, write, ...build } = options;
-  const native = loadBinding<Partial<NativeClientBinding>>();
+  const native = loadBinding<Partial<NativeClientBinding>>("build-addon");
   if (typeof native.bundleClient !== "function") {
     throw new Error(
-      "[webui] The loaded addon has no native browser compiler. Rebuild or install the matching WebUI native addon.",
+      `[webui] The loaded build addon has no native browser compiler. ${addonInstallHelp("build-addon")}`,
     );
   }
   const result = await native.bundleClient(JSON.stringify(build), manifestPath, write);

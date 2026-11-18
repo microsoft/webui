@@ -329,16 +329,22 @@ jobs:
         env:
           WEBUI_NATIVE_EXPORT_ROOT: ${{ runner.temp }}/desktop-native-${{ matrix.platform.package }}
 
-      - name: Verify staged and exported npm platform artifact
+      - name: Verify staged and exported npm platform artifacts
         shell: bash
         run: |
           set -euo pipefail
-          package="packages/$NATIVE_PACKAGE"
-          pnpm --dir "$package" pack --pack-destination "$WEBUI_NATIVE_EXPORT_ROOT"
-          while IFS= read -r file; do
-            test -s "$package/$file"
-            cmp "$package/$file" "$WEBUI_NATIVE_EXPORT_ROOT/$package/$file"
-          done < <(jq -r '.files[]' "$package/package.json" | tr -d '\r')
+          platform="${NATIVE_PACKAGE#webui-desktop-}"
+          for name in "$NATIVE_PACKAGE" "webui-$platform"; do
+            package="packages/$name"
+            pnpm --dir "$package" pack --pack-destination "$WEBUI_NATIVE_EXPORT_ROOT"
+            while IFS= read -r file; do
+              test -s "$package/$file"
+              cmp "$package/$file" "$WEBUI_NATIVE_EXPORT_ROOT/$package/$file"
+            done < <(jq -r '.files[]' "$package/package.json" | tr -d '\r')
+          done
+          version="$(jq -r .version packages/webui/package.json | tr -d '\r')"
+          node scripts/validate-node-packages.mjs \
+            "$WEBUI_NATIVE_EXPORT_ROOT/microsoft-webui-$platform-$version.tgz"
         env:
           WEBUI_NATIVE_EXPORT_ROOT: ${{ runner.temp }}/desktop-native-${{ matrix.platform.package }}
           NATIVE_PACKAGE: ${{ matrix.platform.package }}
@@ -358,11 +364,13 @@ jobs:
           done
           powershell=""
           if [[ "$RUNNER_OS" == Windows ]]; then powershell="$(command -v pwsh)"; fi
+          node_smoke="$PWD/scripts/test-node-package.mjs"
           cd "$project"
           printf '{"private":true}\n' > package.json
           npm install --offline --omit=optional --no-audit --no-fund \
             "./microsoft-webui-$version.tgz" "./microsoft-webui-$platform-$version.tgz" \
             "./microsoft-webui-press-$version.tgz" "./microsoft-webui-press-$platform-$version.tgz"
+          node "$node_smoke"
           cli="./node_modules/@microsoft/webui/bin/webui"
           if [[ "$RUNNER_OS" == Windows ]]; then cli="$cli.exe"; fi
           unset WEBUI_BINARY_PATH WEBUI_DESKTOP_BINARY WEBUI_PRESS_BINARY_PATH

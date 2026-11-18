@@ -81,7 +81,8 @@ function launch(root, env, action = 'start', direct = false) {
 }
 
 async function symlinkFixtures(t, root) {
-  const publicDir = path.join(root, 'dist/public');
+  // The child resolves relative paths from its real cwd, not the temp-dir alias.
+  const publicDir = path.join(await realpath(root), 'dist/public');
   const synthetic = new Set([path.join(publicDir, 'permission-link.js')]);
   await writeFile(path.join(publicDir, 'permission-link.js'), 'must not be served');
   try {

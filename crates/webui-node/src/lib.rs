@@ -27,7 +27,6 @@
 //! protocol.renderStream(state, 'index.html', '/', (chunk) => process.stdout.write(chunk));
 //! ```
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use napi::bindgen_prelude::{Buffer, Either, External, Function};
@@ -43,337 +42,18 @@ use webui_handler::{
     SessionOptions, StreamStep as HandlerStreamStep, StreamingSession as HandlerStreamingSession,
     WebUIHandler,
 };
-#[cfg(test)]
 use webui_protocol::WebUIProtocol;
 
 const STREAM_CHUNK_SIZE: usize = 16 * 1024;
 
-mod client_build;
-mod prepared_build;
-pub use client_build::bundle_client;
-pub use prepared_build::{prepare_build, JsFinishBuildOptions, JsPreparedBuild};
-
-/// Build statistics returned from the build function.
-#[napi(object)]
-pub struct JsBuildStats {
-    /// Build duration in milliseconds.
-    pub duration_ms: f64,
-    /// Total number of protocol fragments.
-    pub fragment_count: u32,
-    /// Number of registered components.
-    pub component_count: u32,
-    /// Number of CSS files produced.
-    pub css_file_count: u32,
-    /// Size of the serialized protocol in bytes.
-    pub protocol_size_bytes: u32,
-    /// Number of unique CSS tokens discovered.
-    pub token_count: u32,
-}
-
-/// Result of a successful build operation.
-#[napi(object)]
-pub struct JsBuildResult {
-    /// Serialized protocol (protobuf binary).
-    pub protocol: Buffer,
-    /// CSS files as alternating [filename, content, filename, content, ...].
-    pub css_files: Vec<String>,
-    /// Static component asset files as alternating [filename, content, filename, content, ...].
-    pub component_asset_files: Vec<String>,
-    /// Lazy-region packs; publish each under `_webui/packs/` in the build output.
-    pub lazy_pack_files: Vec<JsLazyPackFile>,
-    /// Generated `lazy.webui.js` and its `lazy.webui.d.ts`, present when the
-    /// build has lazy regions.
-    pub lazy_scripts_module: Option<JsGeneratedModule>,
-    /// Build metafile JSON when requested and the build emits component assets
-    /// or lazy packs.
-    pub metafile: Option<String>,
-    /// Non-fatal build advisories (plain text), e.g. CSS tokens used only with a
-    /// literal `var()` fallback and absent from every theme.
-    pub warnings: Vec<String>,
-    /// Build statistics.
-    pub stats: JsBuildStats,
-}
-
-/// One lazy-region template pack and its cost report.
-#[napi(object)]
-pub struct JsLazyPackFile {
-    /// Content-addressed file name inside `_webui/packs/`.
-    pub file_name: String,
-    /// JSON pack content.
-    pub content: String,
-    /// Path relative to the asset base: `_webui/packs/<fileName>`.
-    pub path: String,
-    /// Region identity, `<owner>::lazy:@<n>`.
-    pub region: String,
-    /// Component whose template declares the region.
-    pub owner: String,
-    /// Prefetch trigger: `intent`, `idle`, `eager`, or `demand`.
-    pub trigger: String,
-    /// Content hash from the file name.
-    pub hash: String,
-    /// Size of `content` in bytes.
-    pub bytes: u32,
-    /// Brotli size at quality 11, present when `metafile` is requested.
-    pub brotli_bytes: Option<u32>,
-    /// Module specifiers of the scripted components the region introduces.
-    pub scripts: Vec<String>,
-    /// Stylesheet paths, relative to the asset base, that the pack registers
-    /// in a Link build; empty in Style and Module builds.
-    pub stylesheets: Vec<String>,
-}
-
-/// A generated ES module for the application bundler.
-#[napi(object)]
-pub struct JsGeneratedModule {
-    /// File name to write in the generated-modules directory.
-    pub file_name: String,
-    /// JavaScript module source.
-    pub content: String,
-    /// TypeScript declarations to write next to the module.
-    pub declaration: JsGeneratedDeclaration,
-}
-
-/// TypeScript declarations for a generated module, such as `lazy.webui.d.ts`.
-#[napi(object)]
-pub struct JsGeneratedDeclaration {
-    /// File name to write in the generated-modules directory.
-    pub file_name: String,
-    /// TypeScript declaration source.
-    pub content: String,
-}
-
-/// Inline projection manifest transported through N-API.
-#[napi(object)]
-pub struct JsProjectionManifest {
-    /// Logical manifest path used to resolve `root` and stale file checks.
-    pub path: String,
-    /// Canonical manifest JSON.
-    pub json: String,
-}
-
-/// Build options for the webui build API.
-#[napi(object)]
-pub struct JsBuildOptions {
-    /// Path to the application folder containing templates.
-    pub app_dir: String,
-    /// Entry HTML file name (defaults to "index.html").
-    pub entry: Option<String>,
-    /// CSS mode: "link" (default), "style", or "module".
-    pub css: Option<String>,
-    /// Fallback DOM strategy: "shadow" (default) or "light".
-    pub dom: Option<String>,
-    /// Merge component stylesheets into shared bundled chunks.
-    ///
-    /// Composes with `css`: bundling decides how stylesheets are grouped, `css`
-    /// decides how they reach the page.
-    pub css_bundle: Option<bool>,
-    /// Plugin identifier (see crate documentation for available identifiers).
-    pub plugin: Option<String>,
-    /// Additional component sources (npm packages or local paths).
-    pub components: Option<Vec<String>>,
-    /// Root component tags emitted as static `.webui.js` ESM assets.
-    pub component_asset_roots: Option<Vec<String>>,
-    /// Generate and return the build metafile: the component asset graph and
-    /// the lazy-region pack report.
-    pub metafile: Option<bool>,
-    /// Link-mode CSS filename template using [name], [hash], [ext].
-    pub css_file_name_template: Option<String>,
-    /// Public URL or path ending in "/" that maps to the output directory.
-    /// Requests override it with the `$webui.assetBase` state member.
-    pub asset_base: Option<String>,
-    /// Module specifiers for custom elements without a usable sibling module,
-    /// keyed by tag; written verbatim in `lazy.webui.js`.
-    pub component_modules: Option<HashMap<String, String>>,
-    /// Directory the generated modules will be written to. Relative module
-    /// specifiers in `lazy.webui.js` start here; defaults to `appDir`.
-    pub modules_out: Option<String>,
-    /// Legal comment handling: "inline" (default) or "none".
-    pub legal_comments: Option<String>,
-    /// Design token theme: a JSON file path or npm package name.
-    pub theme: Option<String>,
-    /// Projection manifest paths.
-    pub projection_manifests: Option<Vec<String>>,
-    /// Inline manifest objects with their logical paths.
-    pub projection_manifest_objects: Option<Vec<JsProjectionManifest>>,
-}
-
-/// Build a WebUI application from an app directory.
-///
-/// Returns the compiled protocol bytes, CSS files, and build statistics.
-#[napi]
-pub fn build(options: JsBuildOptions) -> napi::Result<JsBuildResult> {
-    let result = webui::build(build_options(options)?)
-        .map_err(|e| NapiError::from_reason(format!("Build error: {}", e.chain_message())))?;
-    Ok(js_build_result(result))
-}
-
-fn build_options(options: JsBuildOptions) -> napi::Result<webui::BuildOptions> {
-    let css = options
-        .css
-        .map(|s| s.parse::<webui::CssStrategy>())
-        .transpose()
-        .map_err(NapiError::from_reason)?
-        .unwrap_or_default();
-    let dom = options
-        .dom
-        .map(|value| value.parse::<webui::DomStrategy>())
-        .transpose()
-        .map_err(NapiError::from_reason)?
-        .unwrap_or_default();
-
-    let plugin = options
-        .plugin
-        .map(|s| s.parse::<webui::Plugin>())
-        .transpose()
-        .map_err(NapiError::from_reason)?;
-
-    let legal_comments = options
-        .legal_comments
-        .map(|s| s.parse::<webui::LegalComments>())
-        .transpose()
-        .map_err(NapiError::from_reason)?
-        .unwrap_or_default();
-
-    let app_dir = std::path::PathBuf::from(&options.app_dir);
-    let theme = options
-        .theme
-        .as_deref()
-        .map(|theme| load_theme(theme, &app_dir))
-        .transpose()?;
-    let projection_manifests = projection_sources(
-        options.projection_manifests,
-        options.projection_manifest_objects,
-    );
-
-    let build_options = webui::BuildOptions {
-        app_dir,
-        entry: options.entry.unwrap_or_else(|| "index.html".to_string()),
-        css,
-        dom,
-        css_bundle: options.css_bundle.unwrap_or(false),
-        plugin,
-        components: options.components.unwrap_or_default(),
-        component_asset_roots: options.component_asset_roots.unwrap_or_default(),
-        metafile: options.metafile.unwrap_or(false),
-        css_file_name_template: options
-            .css_file_name_template
-            .unwrap_or_else(|| webui::DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string()),
-        asset_base: options.asset_base,
-        component_modules: options
-            .component_modules
-            .unwrap_or_default()
-            .into_iter()
-            .collect(),
-        modules_out: options.modules_out.map(std::path::PathBuf::from),
-        legal_comments,
-        theme,
-        projection_manifests,
-    };
-
-    Ok(build_options)
-}
-
-fn projection_sources(
-    paths: Option<Vec<String>>,
-    objects: Option<Vec<JsProjectionManifest>>,
-) -> Vec<webui::ProjectionManifestSource> {
-    let mut sources: Vec<webui::ProjectionManifestSource> = paths
-        .unwrap_or_default()
-        .into_iter()
-        .map(std::path::PathBuf::from)
-        .map(Into::into)
-        .collect();
-    sources.extend(objects.unwrap_or_default().into_iter().map(|manifest| {
-        webui::ProjectionManifestSource::Inline {
-            manifest_path: manifest.path.into(),
-            json: manifest.json,
-        }
-    }));
-    sources
-}
-
-#[allow(clippy::cast_possible_truncation)] // stats are bounded by component/file counts
-fn js_build_result(result: webui::BuildResult) -> JsBuildResult {
-    // Flatten css_files into alternating [filename, content, ...] for JS interop
-    let css_files: Vec<String> = result
-        .css_files
-        .into_iter()
-        .flat_map(|(name, content)| [name, content])
-        .collect();
-    let component_asset_files: Vec<String> = result
-        .component_asset_files
-        .into_iter()
-        .flat_map(|file| [file.name, file.content])
-        .collect();
-    let lazy_pack_files: Vec<JsLazyPackFile> = result
-        .lazy_pack_files
-        .into_iter()
-        .map(js_lazy_pack_file)
-        .collect();
-    let warnings: Vec<String> = result.warnings.iter().map(|d| d.to_string()).collect();
-
-    JsBuildResult {
-        protocol: Buffer::from(result.protocol_bytes),
-        css_files,
-        component_asset_files,
-        lazy_pack_files,
-        lazy_scripts_module: result.lazy_scripts_module.map(|module| JsGeneratedModule {
-            file_name: module.file_name,
-            content: module.content,
-            declaration: JsGeneratedDeclaration {
-                file_name: module.declaration.file_name,
-                content: module.declaration.content,
-            },
-        }),
-        metafile: result.metafile,
-        warnings,
-        stats: JsBuildStats {
-            duration_ms: result.stats.duration.as_secs_f64() * 1000.0,
-            fragment_count: result.stats.fragment_count as u32,
-            component_count: result.stats.component_count as u32,
-            css_file_count: result.stats.css_file_count as u32,
-            protocol_size_bytes: result.stats.protocol_size_bytes as u32,
-            token_count: result.stats.token_count as u32,
-        },
-    }
-}
-
-fn js_lazy_pack_file(pack: webui::LazyPackFile) -> JsLazyPackFile {
-    let path = pack.path();
-    let hash = pack.hash().to_string();
-    let to_u32 = |bytes: usize| u32::try_from(bytes).unwrap_or(u32::MAX);
-    JsLazyPackFile {
-        bytes: to_u32(pack.bytes()),
-        brotli_bytes: pack.brotli_bytes.map(to_u32),
-        scripts: pack
-            .scripts
-            .into_iter()
-            .map(|script| script.specifier)
-            .collect(),
-        stylesheets: pack.stylesheets,
-        trigger: pack.trigger.as_str().to_string(),
-        file_name: pack.file_name,
-        content: pack.content,
-        path,
-        region: pack.region,
-        owner: pack.owner,
-        hash,
-    }
-}
-
-fn load_theme(theme: &str, search_root: &std::path::Path) -> napi::Result<webui::TokenFile> {
-    let resolved = webui::resolve_theme_path(theme, search_root)
-        .map_err(|e| NapiError::from_reason(format!("Theme resolution error: {e}")))?;
-    webui::load_token_file(&resolved).map_err(|e| {
-        NapiError::from_reason(format!("Theme load error for {}: {e}", resolved.display()))
-    })
-}
-
 /// Inspect protocol bytes and return a JSON representation.
 #[napi]
 pub fn inspect(protocol_data: Buffer) -> napi::Result<String> {
-    webui::inspect_bytes(&protocol_data)
-        .map_err(|e| NapiError::from_reason(format!("Inspect error: {e}")))
+    let protocol = WebUIProtocol::from_protobuf(&protocol_data)
+        .map_err(|_| NapiError::from_reason("Inspect error: protocol error"))?;
+    protocol
+        .to_json_pretty()
+        .map_err(|e| NapiError::from_reason(format!("Inspect error: Serialization error: {e}")))
 }
 
 /// A decoded protocol and its reusable deterministic indices.
@@ -709,22 +389,25 @@ fn parse_state_json(state_json: &str) -> napi::Result<Value> {
 }
 
 fn create_handler(plugin: Option<String>) -> napi::Result<WebUIHandler> {
-    let plugin = plugin
-        .map(|value| value.parse::<webui::Plugin>())
-        .transpose()
-        .map_err(NapiError::from_reason)?;
-    Ok(match plugin {
-        Some(webui::Plugin::Fast | webui::Plugin::FastV2) => {
+    // The handler exposes plugin factories, not the compiler's Plugin enum.
+    // Keep this compatibility adapter aligned with the compiler via dev-only tests.
+    Ok(match plugin.as_deref() {
+        Some("fast" | "fast-v2") => {
             WebUIHandler::with_plugin(|| Box::new(FastV2HydrationPlugin::new()))
         }
-        Some(webui::Plugin::FastV3) => {
-            WebUIHandler::with_plugin(|| Box::new(FastV3HydrationPlugin::new()))
-        }
-        Some(webui::Plugin::WebUI) => {
-            WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()))
-        }
+        Some("fast-v3") => WebUIHandler::with_plugin(|| Box::new(FastV3HydrationPlugin::new())),
+        Some("webui") => WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new())),
         None => WebUIHandler::new(),
+        Some(other) => return Err(unknown_plugin(other)),
     })
+}
+
+#[cold]
+#[inline(never)]
+fn unknown_plugin(plugin: &str) -> NapiError {
+    NapiError::from_reason(format!(
+        "Unknown plugin: {plugin}. Use \"webui\", \"fast-v3\", \"fast-v2\", or \"fast\"."
+    ))
 }
 
 webui_handler::define_string_response_writer!(BufferedWriter, output);
@@ -845,12 +528,43 @@ fn render_to_callback(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
     use webui_parser::HtmlParser;
-    use webui_protocol::projection_manifest::{
-        ProjectionAdapter, ProjectionComponent, ProjectionManifest, ProjectionProducer,
-        PRODUCER_NAME, SCHEMA_ID,
-    };
+
+    #[test]
+    fn handler_plugin_names_and_errors_match_compiler_contract() -> napi::Result<()> {
+        for plugin in ["fast", "fast-v2", "fast-v3", "webui"] {
+            assert!(plugin.parse::<webui_parser::Plugin>().is_ok());
+            create_handler(Some(plugin.to_string()))?;
+        }
+        create_handler(None)?;
+
+        for plugin in ["", "none", "FAST", "webui ", "unknown"] {
+            let compiler_error = plugin
+                .parse::<webui_parser::Plugin>()
+                .err()
+                .ok_or_else(|| NapiError::from_reason("compiler accepted invalid plugin"))?;
+            let runtime_error = create_handler(Some(plugin.to_string()))
+                .err()
+                .ok_or_else(|| NapiError::from_reason("runtime accepted invalid plugin"))?;
+            assert_eq!(runtime_error.status, napi::Status::GenericFailure);
+            assert_eq!(runtime_error.reason, compiler_error);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn fast_alias_preserves_fast_v2_rendering() -> napi::Result<()> {
+        let bytes = build_protocol("<p>{{name}}</p>");
+        let render = |plugin: &str| {
+            Protocol::new(Buffer::from(bytes.clone()), Some(plugin.to_string()))?.render(
+                r#"{"name":"WebUI"}"#.to_string(),
+                "index.html".to_string(),
+                "/".to_string(),
+            )
+        };
+        assert_eq!(render("fast")?.as_ref(), render("fast-v2")?.as_ref());
+        Ok(())
+    }
 
     /// Helper: parse HTML into protobuf bytes for testing.
     fn build_protocol(html: &str) -> Vec<u8> {
@@ -1326,668 +1040,6 @@ mod tests {
         );
     }
 
-    // ── Tests for build() and inspect() napi exports ─────────────────
-
-    fn projection_manifest_json() -> String {
-        const EMPTY_SHA256: &str =
-            "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-        let mut manifest = ProjectionManifest {
-            schema: SCHEMA_ID.to_string(),
-            producer: ProjectionProducer {
-                name: PRODUCER_NAME.to_string(),
-                version: "0.0.18".to_string(),
-            },
-            adapter: ProjectionAdapter {
-                name: "test".to_string(),
-                bundler: "test@1.0.0".to_string(),
-            },
-            root: ".".to_string(),
-            analysis_hash: format!("sha256:{}", "1".repeat(64)),
-            build_id: String::new(),
-            inputs: BTreeMap::from([("demo-card.ts".to_string(), EMPTY_SHA256.to_string())]),
-            outputs: BTreeMap::from([("bundle.js".to_string(), EMPTY_SHA256.to_string())]),
-            components: BTreeMap::from([(
-                "demo-card".to_string(),
-                ProjectionComponent {
-                    module: "demo-card.ts".to_string(),
-                    outputs: vec!["bundle.js".to_string()],
-                    hydration_keys: vec!["name".to_string()],
-                    navigation_keys: vec!["label".to_string(), "name".to_string()],
-                },
-            )]),
-            entry_closures: BTreeMap::new(),
-        };
-        manifest.build_id = manifest.compute_build_id();
-        serde_json::to_string(&manifest).unwrap()
-    }
-
-    fn projection_build_options(app_dir: &std::path::Path) -> JsBuildOptions {
-        JsBuildOptions {
-            app_dir: app_dir.to_string_lossy().to_string(),
-            entry: None,
-            css: None,
-            dom: None,
-            css_bundle: None,
-            plugin: Some("webui".to_string()),
-            components: None,
-            component_asset_roots: None,
-            metafile: None,
-            css_file_name_template: None,
-            asset_base: None,
-            component_modules: None,
-            modules_out: None,
-            legal_comments: None,
-            theme: None,
-            projection_manifests: None,
-            projection_manifest_objects: None,
-        }
-    }
-
-    #[test]
-    fn test_build_accepts_projection_paths_and_inline_objects() {
-        let dir = tempfile::TempDir::new().unwrap();
-        std::fs::write(dir.path().join("index.html"), "<demo-card></demo-card>").unwrap();
-        std::fs::write(dir.path().join("demo-card.html"), "<p>{{name}}</p>").unwrap();
-        std::fs::write(dir.path().join("demo-card.ts"), "").unwrap();
-        std::fs::write(dir.path().join("bundle.js"), "").unwrap();
-        let manifest_path = dir.path().join("projection.json");
-        let json = projection_manifest_json();
-        std::fs::write(&manifest_path, &json).unwrap();
-
-        let mut path_options = projection_build_options(dir.path());
-        path_options.projection_manifests = Some(vec![manifest_path.to_string_lossy().to_string()]);
-        let path_result = build(path_options).unwrap();
-        let path_protocol = WebUIProtocol::from_protobuf(&path_result.protocol).unwrap();
-        assert_eq!(
-            path_protocol.components["demo-card"].hydration_keys,
-            ["name"]
-        );
-
-        std::fs::remove_file(&manifest_path).unwrap();
-        let mut inline_options = projection_build_options(dir.path());
-        inline_options.projection_manifest_objects = Some(vec![JsProjectionManifest {
-            path: manifest_path.to_string_lossy().to_string(),
-            json,
-        }]);
-        let inline_result = build(inline_options).unwrap();
-        let inline_protocol = WebUIProtocol::from_protobuf(&inline_result.protocol).unwrap();
-        assert_eq!(
-            inline_protocol.components["demo-card"].navigation_keys,
-            ["label", "name"]
-        );
-    }
-
-    #[test]
-    fn test_build_simple_app() {
-        let dir = tempfile::TempDir::new().unwrap();
-        std::fs::write(dir.path().join("index.html"), "<h1>Hello</h1>").unwrap();
-
-        let options = JsBuildOptions {
-            app_dir: dir.path().to_string_lossy().to_string(),
-            entry: None,
-            css: None,
-            dom: None,
-            css_bundle: None,
-            plugin: None,
-            components: None,
-            component_asset_roots: None,
-            metafile: None,
-            css_file_name_template: None,
-            asset_base: None,
-            component_modules: None,
-            modules_out: None,
-            legal_comments: None,
-            theme: None,
-            projection_manifests: None,
-            projection_manifest_objects: None,
-        };
-
-        let result = build(options).unwrap();
-        assert!(!result.protocol.is_empty());
-        assert!(result.stats.fragment_count > 0);
-        assert!(result.stats.protocol_size_bytes > 0);
-        assert!(result.stats.duration_ms >= 0.0);
-    }
-
-    #[test]
-    fn test_build_with_custom_entry() {
-        let dir = tempfile::TempDir::new().unwrap();
-        std::fs::write(dir.path().join("page.html"), "<p>Custom</p>").unwrap();
-
-        let options = JsBuildOptions {
-            app_dir: dir.path().to_string_lossy().to_string(),
-            entry: Some("page.html".to_string()),
-            css: None,
-            dom: None,
-            css_bundle: None,
-            plugin: None,
-            components: None,
-            component_asset_roots: None,
-            metafile: None,
-            css_file_name_template: None,
-            asset_base: None,
-            component_modules: None,
-            modules_out: None,
-            legal_comments: None,
-            theme: None,
-            projection_manifests: None,
-            projection_manifest_objects: None,
-        };
-
-        let result = build(options).unwrap();
-        assert!(!result.protocol.is_empty());
-    }
-
-    #[test]
-    fn test_build_missing_app_dir() {
-        let options = JsBuildOptions {
-            app_dir: "/nonexistent/path".to_string(),
-            entry: None,
-            css: None,
-            dom: None,
-            css_bundle: None,
-            plugin: None,
-            components: None,
-            component_asset_roots: None,
-            metafile: None,
-            css_file_name_template: None,
-            asset_base: None,
-            component_modules: None,
-            modules_out: None,
-            legal_comments: None,
-            theme: None,
-            projection_manifests: None,
-            projection_manifest_objects: None,
-        };
-
-        let result = build(options);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_build_invalid_css() {
-        let dir = tempfile::TempDir::new().unwrap();
-        std::fs::write(dir.path().join("index.html"), "<h1>Hello</h1>").unwrap();
-
-        let options = JsBuildOptions {
-            app_dir: dir.path().to_string_lossy().to_string(),
-            entry: None,
-            css: Some("bogus".to_string()),
-            dom: None,
-            css_bundle: None,
-            plugin: None,
-            components: None,
-            component_asset_roots: None,
-            metafile: None,
-            css_file_name_template: None,
-            asset_base: None,
-            component_modules: None,
-            modules_out: None,
-            legal_comments: None,
-            theme: None,
-            projection_manifests: None,
-            projection_manifest_objects: None,
-        };
-
-        let result = build(options);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_build_invalid_dom_strategy() {
-        let dir = tempfile::TempDir::new().unwrap();
-        std::fs::write(dir.path().join("index.html"), "<h1>Hello</h1>").unwrap();
-
-        let options = JsBuildOptions {
-            app_dir: dir.path().to_string_lossy().to_string(),
-            entry: None,
-            css: None,
-            dom: Some("closed".to_string()),
-            css_bundle: None,
-            plugin: None,
-            components: None,
-            component_asset_roots: None,
-            metafile: None,
-            css_file_name_template: None,
-            asset_base: None,
-            component_modules: None,
-            modules_out: None,
-            legal_comments: None,
-            theme: None,
-            projection_manifests: None,
-            projection_manifest_objects: None,
-        };
-
-        assert!(build(options).is_err());
-    }
-
-    #[test]
-    fn test_build_with_components_css() {
-        let dir = tempfile::TempDir::new().unwrap();
-        std::fs::write(dir.path().join("index.html"), "<my-card>Hello</my-card>").unwrap();
-        std::fs::write(dir.path().join("my-card.html"), "<div>content</div>").unwrap();
-        std::fs::write(dir.path().join("my-card.css"), ".card { color: red; }").unwrap();
-
-        let options = JsBuildOptions {
-            app_dir: dir.path().to_string_lossy().to_string(),
-            entry: None,
-            css: Some("link".to_string()),
-            dom: None,
-            css_bundle: None,
-            plugin: None,
-            components: None,
-            component_asset_roots: None,
-            metafile: None,
-            css_file_name_template: None,
-            asset_base: None,
-            component_modules: None,
-            modules_out: None,
-            legal_comments: None,
-            theme: None,
-            projection_manifests: None,
-            projection_manifest_objects: None,
-        };
-
-        let result = build(options).unwrap();
-        // css_files is flattened: [filename, content, filename, content, ...]
-        assert_eq!(result.css_files.len(), 2);
-        assert_eq!(result.css_files[0], "my-card.css");
-        assert!(result.css_files[1].contains("color: red"));
-        assert_eq!(result.stats.css_file_count, 1);
-    }
-
-    #[test]
-    fn test_build_with_theme_missing_token_errors() {
-        let dir = tempfile::TempDir::new().unwrap();
-        std::fs::write(dir.path().join("index.html"), "<my-card></my-card>").unwrap();
-        std::fs::write(dir.path().join("my-card.html"), "<div>Card</div>").unwrap();
-        std::fs::write(
-            dir.path().join("my-card.css"),
-            ":host { --token-a: red; --foo-bar: var(--token-a, var(--token-b, var(--token-c))); }",
-        )
-        .unwrap();
-        let theme_path = dir.path().join("theme.json");
-        std::fs::write(&theme_path, r#"{"themes":{"light":{"token-b":"green"}}}"#).unwrap();
-
-        let options = JsBuildOptions {
-            app_dir: dir.path().to_string_lossy().to_string(),
-            entry: None,
-            css: Some("link".to_string()),
-            dom: None,
-            css_bundle: None,
-            plugin: None,
-            components: None,
-            component_asset_roots: None,
-            metafile: None,
-            css_file_name_template: None,
-            asset_base: None,
-            component_modules: None,
-            modules_out: None,
-            legal_comments: None,
-            theme: Some(theme_path.to_string_lossy().to_string()),
-            projection_manifests: None,
-            projection_manifest_objects: None,
-        };
-
-        let Err(err) = build(options) else {
-            panic!("missing theme token must fail");
-        };
-        let message = err.to_string();
-        assert!(message.contains("missing-theme-token"), "msg: {message}");
-        assert!(message.contains("--token-c"), "msg: {message}");
-    }
-
-    #[test]
-    fn test_build_reports_lazy_packs_and_the_generated_scripts_module() {
-        let dir = tempfile::TempDir::new().unwrap();
-        std::fs::write(dir.path().join("index.html"), "<app-shell></app-shell>").unwrap();
-        std::fs::write(
-            dir.path().join("app-shell.html"),
-            r#"<if condition="open" lazy="eager"><settings-panel></settings-panel></if>"#,
-        )
-        .unwrap();
-        std::fs::write(dir.path().join("settings-panel.html"), "<p>Settings</p>").unwrap();
-        std::fs::write(dir.path().join("settings-panel.js"), "export {};").unwrap();
-        std::fs::write(dir.path().join("settings-panel.css"), "p { margin: 0; }").unwrap();
-
-        let options = |metafile: bool, modules: Option<HashMap<String, String>>| JsBuildOptions {
-            app_dir: dir.path().to_string_lossy().to_string(),
-            entry: None,
-            css: None,
-            dom: None,
-            css_bundle: None,
-            plugin: Some("webui".to_string()),
-            components: None,
-            component_asset_roots: None,
-            metafile: Some(metafile),
-            css_file_name_template: None,
-            asset_base: None,
-            component_modules: modules,
-            modules_out: Some(dir.path().join("generated").to_string_lossy().to_string()),
-            legal_comments: None,
-            theme: None,
-            projection_manifests: None,
-            projection_manifest_objects: None,
-        };
-
-        let result = build(options(true, None)).unwrap();
-        let [pack] = result.lazy_pack_files.as_slice() else {
-            panic!("expected one lazy pack");
-        };
-        assert_eq!(pack.region, "app-shell::lazy:@0");
-        assert_eq!(pack.owner, "app-shell");
-        assert_eq!(pack.trigger, "eager");
-        assert_eq!(pack.path, format!("_webui/packs/{}", pack.file_name));
-        assert!(pack.file_name.contains(&pack.hash));
-        assert_eq!(pack.bytes as usize, pack.content.len());
-        assert!(pack.brotli_bytes.is_some_and(|bytes| bytes > 0));
-        assert_eq!(pack.scripts, ["../settings-panel.js"]);
-        assert_eq!(pack.stylesheets, ["settings-panel.css"]);
-        let module = result.lazy_scripts_module.as_ref().unwrap();
-        assert_eq!(module.file_name, "lazy.webui.js");
-        assert!(module
-            .content
-            .contains(r#""settings-panel": () => import("../settings-panel.js"),"#));
-        assert_eq!(module.declaration.file_name, "lazy.webui.d.ts");
-        assert_eq!(
-            module.declaration.content,
-            concat!(
-                "// Generated by WebUI. Do not edit.\n",
-                "import '@microsoft/webui-framework/lazy.js';\n",
-            )
-        );
-        let metafile: serde_json::Value =
-            serde_json::from_str(result.metafile.as_deref().unwrap()).unwrap();
-        assert_eq!(metafile["lazyPacks"][0]["path"], pack.path.as_str());
-        assert_eq!(
-            metafile["lazyPacks"][0]["stylesheets"],
-            serde_json::json!(["settings-panel.css"])
-        );
-        let mut inline = options(false, None);
-        inline.css = Some("style".to_string());
-        let inline = build(inline).unwrap();
-        assert!(
-            inline.lazy_pack_files[0].stylesheets.is_empty(),
-            "style packs carry CSS text"
-        );
-
-        let mapped = build(options(
-            false,
-            Some(HashMap::from([(
-                "settings-panel".to_string(),
-                "@contoso/settings.js".to_string(),
-            )])),
-        ))
-        .unwrap();
-        assert_eq!(mapped.lazy_pack_files[0].brotli_bytes, None);
-        assert_eq!(mapped.lazy_pack_files[0].scripts, ["@contoso/settings.js"]);
-        assert!(mapped.metafile.is_none());
-
-        let invalid = build(options(
-            false,
-            Some(HashMap::from([(
-                "settings-panel".to_string(),
-                "./has space.js".to_string(),
-            )])),
-        ));
-        let Err(error) = invalid else {
-            panic!("invalid component module must fail");
-        };
-        assert!(
-            error.to_string().contains("invalid-component-module"),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn test_build_returns_component_asset_files() {
-        let dir = tempfile::TempDir::new().unwrap();
-        std::fs::write(dir.path().join("index.html"), "<app-shell></app-shell>").unwrap();
-        std::fs::write(dir.path().join("app-shell.html"), "<div></div>").unwrap();
-        std::fs::write(dir.path().join("lazy-panel.html"), "<p>{{title}}</p>").unwrap();
-        std::fs::write(dir.path().join("lazy-panel.ts"), "export {};").unwrap();
-
-        let options = JsBuildOptions {
-            app_dir: dir.path().to_string_lossy().to_string(),
-            entry: None,
-            css: Some("link".to_string()),
-            dom: None,
-            css_bundle: None,
-            plugin: Some("webui".to_string()),
-            components: None,
-            component_asset_roots: Some(vec!["lazy-panel".to_string()]),
-            metafile: Some(true),
-            css_file_name_template: None,
-            asset_base: None,
-            component_modules: None,
-            modules_out: None,
-            legal_comments: None,
-            theme: None,
-            projection_manifests: None,
-            projection_manifest_objects: None,
-        };
-
-        let result = build(options).unwrap();
-
-        assert_eq!(result.component_asset_files.len(), 4);
-        assert_eq!(result.component_asset_files[0], "lazy-panel.webui.js");
-        assert!(result.component_asset_files[1].contains("webui-component-asset"));
-        assert!(result.component_asset_files[1].contains("export default asset;"));
-        assert!(!result.component_asset_files[1].contains("defineComponentAsset"));
-        assert!(result.component_asset_files[2].starts_with("components/lazy-panel."));
-        assert!(result.component_asset_files[2].ends_with(".webui.js"));
-        assert!(result.component_asset_files[3].contains("export default asset;"));
-        let metafile = result
-            .metafile
-            .as_deref()
-            .expect("requested metafile must be returned");
-        let parsed: serde_json::Value = serde_json::from_str(metafile).unwrap();
-        assert!(parsed["inputs"].get("webui:component/lazy-panel").is_some());
-        assert!(parsed["outputs"].get("lazy-panel.webui.js").is_some());
-    }
-
-    #[test]
-    fn test_build_legal_comments_none_strips_legal_css() {
-        let dir = tempfile::TempDir::new().unwrap();
-        std::fs::write(dir.path().join("index.html"), "<my-card>Hello</my-card>").unwrap();
-        std::fs::write(
-            dir.path().join("my-card.html"),
-            r#"<template shadowrootmode="open"><div>content</div></template>"#,
-        )
-        .unwrap();
-        std::fs::write(
-            dir.path().join("my-card.css"),
-            "/*! @license MIT */ .card { color: red; }",
-        )
-        .unwrap();
-
-        let options = JsBuildOptions {
-            app_dir: dir.path().to_string_lossy().to_string(),
-            entry: None,
-            css: Some("link".to_string()),
-            dom: None,
-            css_bundle: None,
-            plugin: None,
-            components: None,
-            component_asset_roots: None,
-            metafile: None,
-            css_file_name_template: None,
-            asset_base: None,
-            component_modules: None,
-            modules_out: None,
-            legal_comments: Some("none".to_string()),
-            theme: None,
-            projection_manifests: None,
-            projection_manifest_objects: None,
-        };
-
-        let result = build(options).unwrap();
-        assert_eq!(result.css_files[1], " .card { color: red; }");
-    }
-
-    #[test]
-    fn test_build_invalid_legal_comments() {
-        let dir = tempfile::TempDir::new().unwrap();
-        std::fs::write(dir.path().join("index.html"), "<h1>Hello</h1>").unwrap();
-
-        let options = JsBuildOptions {
-            app_dir: dir.path().to_string_lossy().to_string(),
-            entry: None,
-            css: None,
-            dom: None,
-            css_bundle: None,
-            plugin: None,
-            components: None,
-            component_asset_roots: None,
-            metafile: None,
-            css_file_name_template: None,
-            asset_base: None,
-            component_modules: None,
-            modules_out: None,
-            legal_comments: Some("linked".to_string()),
-            theme: None,
-            projection_manifests: None,
-            projection_manifest_objects: None,
-        };
-
-        let result = build(options);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_build_with_unwrapped_component_defaults_to_shadow() {
-        let dir = tempfile::TempDir::new().unwrap();
-        std::fs::write(dir.path().join("index.html"), "<my-card>Hi</my-card>").unwrap();
-        std::fs::write(dir.path().join("my-card.html"), "<div>content</div>").unwrap();
-
-        let options = JsBuildOptions {
-            app_dir: dir.path().to_string_lossy().to_string(),
-            entry: None,
-            css: None,
-            dom: None,
-            css_bundle: None,
-            plugin: None,
-            components: None,
-            component_asset_roots: None,
-            metafile: None,
-            css_file_name_template: None,
-            asset_base: None,
-            component_modules: None,
-            modules_out: None,
-            legal_comments: None,
-            theme: None,
-            projection_manifests: None,
-            projection_manifest_objects: None,
-        };
-
-        let result = build(options).unwrap();
-        let json = inspect(result.protocol).unwrap();
-        assert!(json.contains("shadowrootmode"));
-    }
-
-    #[test]
-    fn test_build_with_light_dom_omits_generated_shadow_root() {
-        let dir = tempfile::TempDir::new().unwrap();
-        std::fs::write(dir.path().join("index.html"), "<my-card>Hi</my-card>").unwrap();
-        std::fs::write(dir.path().join("my-card.html"), "<div>content</div>").unwrap();
-
-        let options = JsBuildOptions {
-            app_dir: dir.path().to_string_lossy().to_string(),
-            entry: None,
-            css: None,
-            dom: Some("light".to_string()),
-            css_bundle: None,
-            plugin: None,
-            components: None,
-            component_asset_roots: None,
-            metafile: None,
-            css_file_name_template: None,
-            asset_base: None,
-            component_modules: None,
-            modules_out: None,
-            legal_comments: None,
-            theme: None,
-            projection_manifests: None,
-            projection_manifest_objects: None,
-        };
-
-        let result = build(options).unwrap();
-        let json = inspect(result.protocol).unwrap();
-        assert!(!json.contains("shadowrootmode"));
-    }
-
-    #[test]
-    fn test_build_with_authored_shadow_dom_preserves_shadow_root_template() {
-        let dir = tempfile::TempDir::new().unwrap();
-        std::fs::write(dir.path().join("index.html"), "<my-card>Hi</my-card>").unwrap();
-        std::fs::write(
-            dir.path().join("my-card.html"),
-            r#"<template shadowrootmode="open"><div><slot></slot></div></template>"#,
-        )
-        .unwrap();
-
-        let options = JsBuildOptions {
-            app_dir: dir.path().to_string_lossy().to_string(),
-            entry: None,
-            css: None,
-            dom: None,
-            css_bundle: None,
-            plugin: None,
-            components: None,
-            component_asset_roots: None,
-            metafile: None,
-            css_file_name_template: None,
-            asset_base: None,
-            component_modules: None,
-            modules_out: None,
-            legal_comments: None,
-            theme: None,
-            projection_manifests: None,
-            projection_manifest_objects: None,
-        };
-
-        let result = build(options).unwrap();
-        let json = inspect(result.protocol).unwrap();
-        assert!(
-            json.contains("shadowrootmode"),
-            "authored Shadow DOM wrapper should be preserved, got: {json}"
-        );
-    }
-
-    #[test]
-    fn test_build_rejects_invalid_shadow_wrapper() {
-        let dir = tempfile::TempDir::new().unwrap();
-        std::fs::write(dir.path().join("index.html"), "<my-card></my-card>").unwrap();
-        std::fs::write(
-            dir.path().join("my-card.html"),
-            r#"<template shadowrootmode="closed"><p>invalid</p></template>"#,
-        )
-        .unwrap();
-
-        let options = JsBuildOptions {
-            app_dir: dir.path().to_string_lossy().to_string(),
-            entry: None,
-            css: None,
-            dom: None,
-            css_bundle: None,
-            plugin: None,
-            components: None,
-            component_asset_roots: None,
-            metafile: None,
-            css_file_name_template: None,
-            asset_base: None,
-            component_modules: None,
-            modules_out: None,
-            legal_comments: None,
-            theme: None,
-            projection_manifests: None,
-            projection_manifest_objects: None,
-        };
-
-        let result = build(options);
-        assert!(result.is_err());
-    }
-
     #[test]
     fn test_inspect_valid_protocol() {
         let proto = build_protocol("<h1>Hello {{name}}</h1>");
@@ -2000,6 +1052,16 @@ mod tests {
     fn test_inspect_invalid_protocol() {
         let result = inspect(napi::bindgen_prelude::Buffer::from(vec![0xFF, 0xFF]));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn inspect_preserves_invalid_protocol_error_contract() -> napi::Result<()> {
+        let error = inspect(Buffer::from(vec![0xFF, 0xFF]))
+            .err()
+            .ok_or_else(|| NapiError::from_reason("invalid protocol was accepted"))?;
+        assert_eq!(error.status, napi::Status::GenericFailure);
+        assert_eq!(error.reason, "Inspect error: protocol error");
+        Ok(())
     }
 
     #[test]

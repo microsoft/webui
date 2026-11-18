@@ -181,7 +181,7 @@ This setup bundles TypeScript natively; type checking is a separate operation.
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { bundleClient } from '@microsoft/webui';
+import { bundleClient } from '@microsoft/webui/build';
 
 await bundleClient({
   project: process.cwd(),

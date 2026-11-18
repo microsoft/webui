@@ -520,13 +520,18 @@ non-streaming output does not acquire streaming markers or state.
 | Surface | Responsibility |
 | --- | --- |
 | `webui` Rust library and CLI | Build/inspect protocols, render requests, serve template previews, and supervise native application builds and hosts. |
-| `@microsoft/webui` | Node build API and native-addon runtime; its projection subpath is build-only. Browser framework and router are separate packages. |
+| `@microsoft/webui` | Runtime-only Node API for protocol loading, rendering, streaming, and inspection. The explicit `@microsoft/webui/build` entry owns compilation and browser bundling. Browser framework and router are separate packages. |
 | C FFI, .NET, Go, Python, WASM | Load a protocol once and expose rendering through host-native ownership and errors. Binding-specific APIs expose partial, token, and streaming operations where supported. WASM can also build protocols when its parser feature is selected. |
 | `webui-press` | Convert Markdown/site templates to WebUI page inputs, resolve nested site regions and theme-family styles at build time, and share a validated client projection across page builds. |
 | `webui-desktop` | Run a compiled artifact through a native webview and Rust host, or opt into a native window for an existing loopback HTTP host without rendering its artifact again. |
 
 FFI uses opaque handles and explicit ownership; .NET wraps those lifetimes in
-safe handles, Python uses a direct PyO3 binding, and Node uses a native addon.
+safe handles, Python uses a direct PyO3 binding, and Node uses separate runtime
+and compiler native addons distributed in one npm package. Each Node API loads
+only its own addon; root imports never reach compiler code. The runtime binding
+depends on the handler, not the compiler. The compiler may reuse handler
+functionality internally, but only serialized protocol bytes cross from build
+to runtime; native handles stay within their owning addon.
 The Go module wraps the C ABI with shared, explicitly closed ownership:
 concurrent renders borrow an immutable loaded protocol, closure waits for
 active calls, thread-local errors are copied on their calling OS thread, and

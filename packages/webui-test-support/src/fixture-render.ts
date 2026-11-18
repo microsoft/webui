@@ -6,7 +6,7 @@
  *
  * Each fixture directory may contain a `src/` subdirectory with real WebUI
  * template files (index.html, component HTML).  When present, this module
- * compiles the templates via `@microsoft/webui` build() and renders them
+ * compiles the templates via `@microsoft/webui/build` build() and renders them
  * into full SSR HTML — replacing the need for hand-crafted fixture.html
  * files and manual TemplateMeta construction.
  */
@@ -23,7 +23,8 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
-import { build, Protocol } from '@microsoft/webui';
+import { build } from '@microsoft/webui/build';
+import { Protocol } from '@microsoft/webui';
 
 export interface RenderedFixture {
   /** Fixture directory name (e.g. "counter"). */

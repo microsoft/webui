@@ -3,7 +3,7 @@
 
 import { readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve, sep } from 'node:path';
-import type { ClientProjectionManifest } from '@microsoft/webui';
+import type { ClientProjectionManifest } from '@microsoft/webui/build';
 import { expect, test, type Page } from '@playwright/test';
 import type { LazyDialog } from '../src/lazy-dialog/lazy-dialog.js';
 import {

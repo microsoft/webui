@@ -12,12 +12,14 @@ import {
   build,
   bundleClient,
   prepareBuild,
+} from '@microsoft/webui/build';
+import {
   inspect,
   Protocol,
 } from '@microsoft/webui';
+import type { BuildOptions } from '@microsoft/webui/build';
 import type {
   BoundaryDescriptor,
-  BuildOptions,
   ComponentTemplatesResponse,
   PreparedState,
   StreamStep,
@@ -316,10 +318,10 @@ describe('build', () => {
   });
 
   test('BuildOptions exposes the DOM strategy union', () => {
-    const options: import('@microsoft/webui').BuildOptions = { appDir, dom: 'light' };
+    const options: BuildOptions = { appDir, dom: 'light' };
     assert.equal(options.dom, 'light');
     // @ts-expect-error only open Shadow or global Light strategies are supported.
-    const invalid: import('@microsoft/webui').BuildOptions = { appDir, dom: 'closed' };
+    const invalid: BuildOptions = { appDir, dom: 'closed' };
     assert.equal(invalid.appDir, appDir);
   });
 

@@ -17,6 +17,7 @@ mod native_assets;
 mod native_ipc;
 mod native_toolchain;
 mod native_toolchain_command;
+mod node_addons;
 mod node_tests;
 mod process;
 mod publish;
@@ -627,17 +628,16 @@ fn bench_node_addon(save: Option<String>, compare: Option<String>) -> ExitCode {
     }
 
     eprintln!(
-        "  {} building microsoft-webui-node (release)",
+        "  {} building handler and compiler Node addons (release)",
         console::style("•").dim()
     );
-    if let Err(message) = run_command(
-        "cargo",
-        &["build", "--release", "-p", "microsoft-webui-node"],
-        None,
-    ) {
-        eprintln!("node-addon bench: release addon build failed: {message}");
-        return ExitCode::FAILURE;
-    }
+    let addons = match node_addons::build(true) {
+        Ok(addons) => addons,
+        Err(message) => {
+            eprintln!("node-addon bench: release addons build failed: {message}");
+            return ExitCode::FAILURE;
+        }
+    };
 
     eprintln!(
         "  {} building @microsoft/webui package",
@@ -648,31 +648,9 @@ fn bench_node_addon(save: Option<String>, compare: Option<String>) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let addon_file = if cfg!(target_os = "windows") {
-        "webui_node.dll"
-    } else if cfg!(target_os = "macos") {
-        "libwebui_node.dylib"
-    } else {
-        "libwebui_node.so"
-    };
-    let addon_path = match std::env::current_dir() {
-        Ok(root) => root.join("target").join("release").join(addon_file),
-        Err(error) => {
-            eprintln!("node-addon bench: failed to resolve workspace directory: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
-    if !addon_path.is_file() {
-        eprintln!(
-            "node-addon bench: release addon not found at {}",
-            addon_path.display()
-        );
-        return ExitCode::FAILURE;
-    }
-
     let mut cmd = build_command("pnpm", &["run", "bench"]);
+    addons.apply(&mut cmd);
     cmd.current_dir(&bench_dir)
-        .env("WEBUI_ADDON_PATH", &addon_path)
         .env_remove("WEBUI_BENCH_SAVE")
         .env_remove("WEBUI_BENCH_COMPARE")
         .env_remove("WEBUI_BENCH_QUICK");

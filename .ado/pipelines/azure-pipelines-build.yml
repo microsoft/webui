@@ -337,7 +337,7 @@ stages:
             --profile release \
             --portable-only \
             --output "$BUILD_ARTIFACT_STAGING_DIRECTORY/$ARTIFACT_NAME"
-          for name in webui webui-press libwebui_node.so libwebui_ffi.so; do
+          for name in webui webui-press libwebui_node.so libwebui_node_build.so libwebui_ffi.so; do
             required=$(readelf --version-info --wide "target/$TARGET_TRIPLE/release/$name" |
               grep -oE 'GLIBC_[0-9.]+' | sort -Vu | tail -n 1)
             if [[ $(printf '%s\n' GLIBC_2.35 "$required" | sort -V | tail -n 1) != GLIBC_2.35 ]]; then
@@ -766,6 +766,8 @@ stages:
             --pack-only \
             --prebuilt-wasm \
             --profile release
+          node scripts/validate-node-packages.mjs \
+            publish/npm/microsoft-webui-{darwin,linux,win32}-{arm64,x64}-"$RELEASE_VERSION".tgz
           # Preserve the standards-compliant proxy tree as a downloadable
           # release asset as well as an unpacked Azure pipeline artifact.
           proxy_archive="webui-go-proxy-${RELEASE_VERSION}.tar.gz"

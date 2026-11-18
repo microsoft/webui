@@ -2587,10 +2587,21 @@ dependencies = [
 name = "microsoft-webui-node"
 version = "3.1.2"
 dependencies = [
- "microsoft-webui",
- "microsoft-webui-client-build",
  "microsoft-webui-handler",
  "microsoft-webui-parser",
+ "microsoft-webui-protocol",
+ "napi",
+ "napi-build",
+ "napi-derive",
+ "serde_json",
+]
+
+[[package]]
+name = "microsoft-webui-node-build"
+version = "3.1.2"
+dependencies = [
+ "microsoft-webui",
+ "microsoft-webui-client-build",
  "microsoft-webui-protocol",
  "napi",
  "napi-build",

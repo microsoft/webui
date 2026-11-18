@@ -6,6 +6,12 @@ Node.js native addon for the [WebUI](https://github.com/microsoft/webui) framewo
 
 `microsoft-webui-node` compiles to a platform-specific `.node` addon that exposes WebUI's rendering API to Node.js hosts (e.g. Express, Fastify) without spawning a subprocess.
 
+This addon is runtime-only: it exports `Protocol`, `StreamingSession`, and
+`inspect`, without linking the template compiler or browser bundler.
+`@microsoft/webui/build` loads the separate `microsoft-webui-node-build` addon
+for `build`, `prepareBuild`, and `bundleClient`. Protocol buffers are ordinary
+owned bytes shared between those APIs, not addon-specific handles.
+
 ## Host-driven streaming
 
 `Protocol.streamResponse(entry, requestPath, options)` returns a

@@ -43,6 +43,7 @@ struct PlatformEntry {
     nuget_rid: &'static str,
     ffi_lib: &'static str,
     node_addon: &'static str,
+    node_build_addon: &'static str,
     cli_binary: &'static str,
     /// Suffix appended to CLI binary in `publish/native/` (e.g. `"darwin-arm64"`).
     platform_suffix: &'static str,
@@ -59,6 +60,7 @@ const PLATFORMS: &[PlatformEntry] = &[
         nuget_rid: "linux-x64",
         ffi_lib: "libwebui_ffi.so",
         node_addon: "libwebui_node.so",
+        node_build_addon: "libwebui_node_build.so",
         cli_binary: "webui",
         platform_suffix: "linux-x64",
         python_platform_tag: "manylinux_2_17_x86_64.manylinux2014_x86_64",
@@ -71,6 +73,7 @@ const PLATFORMS: &[PlatformEntry] = &[
         nuget_rid: "linux-arm64",
         ffi_lib: "libwebui_ffi.so",
         node_addon: "libwebui_node.so",
+        node_build_addon: "libwebui_node_build.so",
         cli_binary: "webui",
         platform_suffix: "linux-arm64",
         python_platform_tag: "manylinux_2_17_aarch64.manylinux2014_aarch64",
@@ -83,6 +86,7 @@ const PLATFORMS: &[PlatformEntry] = &[
         nuget_rid: "win-x64",
         ffi_lib: "webui_ffi.dll",
         node_addon: "webui_node.dll",
+        node_build_addon: "webui_node_build.dll",
         cli_binary: "webui.exe",
         platform_suffix: "win32-x64",
         python_platform_tag: "win_amd64",
@@ -95,6 +99,7 @@ const PLATFORMS: &[PlatformEntry] = &[
         nuget_rid: "win-arm64",
         ffi_lib: "webui_ffi.dll",
         node_addon: "webui_node.dll",
+        node_build_addon: "webui_node_build.dll",
         cli_binary: "webui.exe",
         platform_suffix: "win32-arm64",
         python_platform_tag: "win_arm64",
@@ -107,6 +112,7 @@ const PLATFORMS: &[PlatformEntry] = &[
         nuget_rid: "osx-x64",
         ffi_lib: "libwebui_ffi.dylib",
         node_addon: "libwebui_node.dylib",
+        node_build_addon: "libwebui_node_build.dylib",
         cli_binary: "webui",
         platform_suffix: "darwin-x64",
         python_platform_tag: "macosx_10_12_x86_64",
@@ -119,6 +125,7 @@ const PLATFORMS: &[PlatformEntry] = &[
         nuget_rid: "osx-arm64",
         ffi_lib: "libwebui_ffi.dylib",
         node_addon: "libwebui_node.dylib",
+        node_build_addon: "libwebui_node_build.dylib",
         cli_binary: "webui",
         platform_suffix: "darwin-arm64",
         python_platform_tag: "macosx_11_0_arm64",
@@ -876,7 +883,7 @@ fn native_build_args<'a>(
     profile: &str,
     include_desktop: bool,
 ) -> Result<Vec<&'a str>, String> {
-    let mut args = Vec::with_capacity(17);
+    let mut args = Vec::with_capacity(19);
     args.push("build");
     match profile {
         "release" => args.push("--release"),
@@ -891,6 +898,8 @@ fn native_build_args<'a>(
         "microsoft-webui-ffi",
         "-p",
         "microsoft-webui-node",
+        "-p",
+        "microsoft-webui-node-build",
         "-p",
         "microsoft-webui-press",
     ]);
@@ -1109,8 +1118,9 @@ fn stage_all_platforms(root: &Path, profile: &str) -> ExitCode {
         let has_ffi = build_dir.join(platform.ffi_lib).exists();
         let has_cli = build_dir.join(platform.cli_binary).exists();
         let has_addon = build_dir.join(platform.node_addon).exists();
+        let has_build_addon = build_dir.join(platform.node_build_addon).exists();
 
-        if !has_ffi && !has_cli && !has_addon {
+        if !has_ffi && !has_cli && !has_addon && !has_build_addon {
             skipped += 1;
             continue;
         }
@@ -1155,7 +1165,7 @@ fn stage_all_platforms(root: &Path, profile: &str) -> ExitCode {
         eprintln!(
             "  {} No build artifacts found. Build first:\n    {}",
             console::style("⚠").yellow(),
-            console::style("cargo build --release -p microsoft-webui-ffi -p microsoft-webui-node -p microsoft-webui-cli -p microsoft-webui-press -p microsoft-webui-desktop --features microsoft-webui-desktop/cli").dim(),
+            console::style("cargo build --release -p microsoft-webui-ffi -p microsoft-webui-node -p microsoft-webui-node-build -p microsoft-webui-cli -p microsoft-webui-press -p microsoft-webui-desktop --features microsoft-webui-desktop/cli").dim(),
         );
         return ExitCode::FAILURE;
     }
@@ -1285,13 +1295,18 @@ fn stage_platform_artifacts(
         }
     }
 
-    // npm: Node addon (renamed to webui.node)
-    ok &= stage_file(&CopySpec {
-        src: &build_dir.join(platform.node_addon),
-        dest_dir: &root.join("packages").join(platform.npm_package),
-        dest_name: "webui.node",
-        label: "npm addon",
-    });
+    // npm: independent handler and compiler addons, in the same platform package.
+    for (source, destination) in [
+        (platform.node_addon, "webui.node"),
+        (platform.node_build_addon, "webui-build.node"),
+    ] {
+        ok &= stage_file(&CopySpec {
+            src: &build_dir.join(source),
+            dest_dir: &root.join("packages").join(platform.npm_package),
+            dest_name: destination,
+            label: "npm addon",
+        });
+    }
 
     // publish/native/: CLI binary with platform suffix for direct download
     let native_name = native_binary_name(platform);
@@ -1392,6 +1407,10 @@ fn pack_npm_tarballs(root: &Path) -> Result<(), String> {
             continue;
         }
 
+        if let Some(platform) = PLATFORMS.iter().find(|p| p.npm_package == pkg_name) {
+            validate_node_package(&path, platform)?;
+        }
+
         // Run pnpm pack in the package directory
         let mut cmd = build_command(
             "pnpm",
@@ -1439,6 +1458,24 @@ fn is_private_package(pkg_dir: &Path) -> bool {
         return false;
     };
     json.get("private").and_then(serde_json::Value::as_bool) == Some(true)
+}
+
+/// `pnpm pack` silently omits missing files; reject incomplete platform packages.
+fn validate_node_package(pkg_dir: &Path, platform: &PlatformEntry) -> Result<(), String> {
+    for file in [
+        PathBuf::from("bin").join(platform.cli_binary),
+        PathBuf::from("webui.node"),
+        PathBuf::from("webui-build.node"),
+    ] {
+        if !pkg_dir.join(&file).is_file() {
+            return Err(format!(
+                "missing npm platform artifact {}; rebuild and stage {} before packing",
+                pkg_dir.join(file).display(),
+                platform.triple
+            ));
+        }
+    }
+    Ok(())
 }
 
 // ── Phase 3: NuGet packaging ────────────────────────────────────────────
@@ -2227,6 +2264,119 @@ mod tests {
     use super::*;
 
     #[test]
+    fn node_addons_stage_and_export_independently_for_all_six_targets(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        for platform in PLATFORMS {
+            let root = tempfile::tempdir()?;
+            let output = tempfile::tempdir()?;
+            sdk::tests::fixture(root.path(), platform);
+            let build = root.path().join("build");
+            fs::create_dir_all(&build)?;
+            for name in [
+                platform.ffi_lib,
+                platform.cli_binary,
+                platform.node_addon,
+                platform.node_build_addon,
+                press_cli_binary(platform),
+                desktop_cli_binary(platform),
+                "webui_ffi.dll.lib",
+                desktop_deployment::BOOTSTRAP_DLL,
+            ]
+            .into_iter()
+            .chain(desktop_deployment::NOTICES)
+            {
+                fs::write(build.join(name), format!("{}:{name}", platform.triple))?;
+            }
+            assert!(stage_platform(root.path(), platform, &build));
+            let package = root.path().join("packages").join(platform.npm_package);
+            validate_node_package(&package, platform)?;
+            export_target(
+                root.path(),
+                output.path(),
+                platform.triple,
+                BuildMode::NativeOnly,
+            )?;
+            for (native, packaged) in [
+                (platform.node_addon, "webui.node"),
+                (platform.node_build_addon, "webui-build.node"),
+            ] {
+                let expected = fs::read(build.join(native))?;
+                assert_eq!(fs::read(package.join(packaged))?, expected);
+                assert_eq!(
+                    fs::read(
+                        output
+                            .path()
+                            .join("packages")
+                            .join(platform.npm_package)
+                            .join(packaged)
+                    )?,
+                    expected
+                );
+                fs::remove_file(package.join(packaged))?;
+                let Err(error) = validate_node_package(&package, platform) else {
+                    panic!("packing must reject either missing addon");
+                };
+                assert!(error.contains(packaged), "{error}");
+                fs::write(package.join(packaged), &expected)?;
+            }
+            fs::remove_file(build.join(platform.node_build_addon))?;
+            assert!(
+                !stage_platform(root.path(), platform, &build),
+                "a stale staged compiler must not make a missing build artifact successful"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn node_platform_manifests_keep_identity_version_and_both_addons(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .ok_or("workspace root")?;
+        let version = version::workspace_package_version(root)?;
+        for platform in PLATFORMS {
+            let manifest: serde_json::Value = serde_json::from_slice(&fs::read(
+                root.join("packages")
+                    .join(platform.npm_package)
+                    .join("package.json"),
+            )?)?;
+            let (os, cpu) = platform
+                .platform_suffix
+                .split_once('-')
+                .ok_or("platform identity")?;
+            assert_eq!(
+                manifest["name"],
+                format!("@microsoft/{}", platform.npm_package)
+            );
+            assert_eq!(manifest["version"], version);
+            assert_eq!(manifest["os"], serde_json::json!([os]));
+            assert_eq!(manifest["cpu"], serde_json::json!([cpu]));
+            assert_eq!(manifest["license"], "MIT");
+            assert_eq!(
+                manifest["files"],
+                serde_json::json!([
+                    format!("bin/{}", platform.cli_binary),
+                    "webui.node",
+                    "webui-build.node",
+                ])
+            );
+            for profile in ["debug", "release"] {
+                for desktop in [false, true] {
+                    let args = native_build_args(platform.triple, profile, desktop)?;
+                    assert!(args
+                        .windows(2)
+                        .any(|pair| pair == ["-p", "microsoft-webui-node"]));
+                    assert!(args
+                        .windows(2)
+                        .any(|pair| pair == ["-p", "microsoft-webui-node-build"]));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn foreign_target_staging_never_packages_host_artifacts() {
         let root = tempfile::tempdir_in(".").expect("staging workspace");
         let host = detect_host_triple();
@@ -2240,6 +2390,7 @@ mod tests {
         for name in [
             platform.ffi_lib,
             platform.node_addon,
+            platform.node_build_addon,
             platform.cli_binary,
             press_cli_binary(platform),
             desktop_cli_binary(platform),
@@ -2546,6 +2697,7 @@ mod tests {
                     "microsoft-webui-cli",
                     "microsoft-webui-ffi",
                     "microsoft-webui-node",
+                    "microsoft-webui-node-build",
                     "microsoft-webui-press",
                 ]
             );
@@ -2582,6 +2734,7 @@ mod tests {
                 platform.cli_binary,
                 platform.ffi_lib,
                 platform.node_addon,
+                platform.node_build_addon,
                 "webui-press",
             ] {
                 fs::write(build.join(name), "portable").expect("portable fixture");
@@ -2599,6 +2752,10 @@ mod tests {
             assert!(packages
                 .join(platform.npm_package)
                 .join("webui.node")
+                .is_file());
+            assert!(packages
+                .join(platform.npm_package)
+                .join("webui-build.node")
                 .is_file());
             assert!(packages
                 .join(platform.press_npm_package)
@@ -2624,6 +2781,7 @@ mod tests {
             nuget_rid: "osx-arm64",
             ffi_lib: "libwebui_ffi.dylib",
             node_addon: "libwebui_node.dylib",
+            node_build_addon: "libwebui_node_build.dylib",
             cli_binary: "webui",
             platform_suffix: "darwin-arm64",
             python_platform_tag: "macosx_11_0_arm64",
@@ -2643,6 +2801,7 @@ mod tests {
             nuget_rid: "win-x64",
             ffi_lib: "webui_ffi.dll",
             node_addon: "webui_node.dll",
+            node_build_addon: "webui_node_build.dll",
             cli_binary: "webui.exe",
             platform_suffix: "win32-x64",
             python_platform_tag: "win_amd64",
@@ -2666,6 +2825,7 @@ mod tests {
         for name in [
             platform.ffi_lib,
             platform.node_addon,
+            platform.node_build_addon,
             platform.cli_binary,
             press_cli_binary(platform),
             desktop_cli_binary(platform),

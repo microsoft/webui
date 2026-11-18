@@ -2,7 +2,7 @@
 // Licensed under the MIT license.
 
 import { test, expect, type Page } from '@playwright/test';
-import type { ClientProjectionManifest } from '@microsoft/webui';
+import type { ClientProjectionManifest } from '@microsoft/webui/build';
 import { readFile } from 'node:fs/promises';
 import { dirname, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';

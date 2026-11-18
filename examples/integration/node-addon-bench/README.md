@@ -20,12 +20,12 @@ cargo xtask bench node-addon
 pnpm --filter node-addon-bench bench:quick
 ```
 
-`cargo xtask bench node-addon` builds the release addon and
+`cargo xtask bench node-addon` builds the release addons and
 `@microsoft/webui` package before starting Node. When running the package
 script directly, build them first:
 
 ```bash
-cargo build --release -p microsoft-webui-node
+cargo build --release -p microsoft-webui-node -p microsoft-webui-node-build
 pnpm --filter @microsoft/webui build
 pnpm --filter node-addon-bench bench
 ```
@@ -33,6 +33,12 @@ pnpm --filter node-addon-bench bench
 A debug addon is rejected by normal benchmark commands. The runner's
 `--allow-debug` flag is only for local smoke checks; never use those numbers in
 a performance comparison.
+
+The fixture compiler comes from `@microsoft/webui/build`; the measured
+`Protocol` comes from `@microsoft/webui`. The npm package ships both native
+artifacts, but each API loads only its own addon. Use `WEBUI_ADDON_PATH` for
+the renderer and `WEBUI_BUILD_ADDON_PATH` for the compiler when selecting
+artifacts explicitly. The report records both paths.
 
 ## Before/after comparison
 

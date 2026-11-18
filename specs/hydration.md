@@ -163,8 +163,8 @@ There is no flash of content, because the HTML was already on screen at step 2. 
 
 ## SSR markers
 
-The handler emits five structural marker forms and a numbered pair for each raw
-HTML binding. The client counterparts are defined in
+SSR emits structural marker pairs for blocks, route outlets, and raw HTML
+bindings. The client counterparts are defined in
 `packages/webui-framework/src/element/markers.ts`:
 
 | Marker | Meaning |
@@ -174,11 +174,22 @@ HTML binding. The client counterparts are defined in
 | `<!--wi-->` | Repeat item boundary (one per iteration) |
 | `<!--wc-->` | Conditional block start (one per `<if>`) |
 | `<!--/wc-->` | Conditional block end |
+| `<!--wo-->` | Route outlet start |
+| `<!--/wo-->` | Route outlet end |
 | `<!--wN-->` | Raw HTML binding range start (`N` is its index) |
 | `<!--/wN-->` | Raw HTML binding range end |
 
 Ordinary escaped text bindings, attribute bindings, and event handlers are
 **not** marked. They are located via compiled element indices.
+
+The WebUI compiler brackets every SSR outlet, even when it renders no child
+routes. For hydration, the range occupies the single element slot that
+`<outlet>` occupies in the client template. The opening comment is also the
+text insertion boundary at that slot. Routed children stay unwrapped and are
+not indexed as part of the outlet's owner. Both comments stay in the DOM so
+reconnecting an outlet owner can adopt the same route range again.
+Rebuild existing SSR protocols with the matching
+compiler and runtime to get the corrected outlet topology.
 
 The compiled ownership bit includes dynamic text, raw ranges, conditions and
 repeats, even when a custom element has no static light-DOM children. Static

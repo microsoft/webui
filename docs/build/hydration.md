@@ -450,7 +450,7 @@ projection build reports an error rather than dropping inherited state.
 
 ```js
 // build-client.mjs
-import { bundleClient } from '@microsoft/webui';
+import { bundleClient } from '@microsoft/webui/build';
 
 await bundleClient({
   project: process.cwd(),

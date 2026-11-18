@@ -16,6 +16,7 @@ const NATIVE_PACKAGES: &[&str] = &[
     "microsoft-webui-cli",
     "microsoft-webui-ffi",
     "microsoft-webui-node",
+    "microsoft-webui-node-build",
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -359,6 +360,9 @@ fn expected_artifacts(root: &Path, target: &WindowsTarget) -> Vec<PathBuf> {
         root.join("packages")
             .join(target.npm_package)
             .join("webui.node"),
+        root.join("packages")
+            .join(target.npm_package)
+            .join("webui-build.node"),
         root.join("dotnet")
             .join("runtimes")
             .join(target.nuget_rid)
@@ -482,6 +486,8 @@ mod tests {
                 "microsoft-webui-ffi",
                 "-p",
                 "microsoft-webui-node",
+                "-p",
+                "microsoft-webui-node-build",
             ]
         );
     }
@@ -502,6 +508,7 @@ mod tests {
                 PathBuf::from("/repo/publish/native/webui-win32-arm64.exe"),
                 PathBuf::from("/repo/packages/webui-win32-arm64/bin/webui.exe"),
                 PathBuf::from("/repo/packages/webui-win32-arm64/webui.node"),
+                PathBuf::from("/repo/packages/webui-win32-arm64/webui-build.node"),
                 PathBuf::from("/repo/dotnet/runtimes/win-arm64/native/webui_ffi.dll"),
             ])
         );

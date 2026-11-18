@@ -43,7 +43,7 @@ Baseline environment variables:
   WEBUI_BENCH_COMPARE=NAME  Compare P50 and output shape with a saved baseline
 
 Build prerequisites:
-  cargo build --release -p microsoft-webui-node
+  cargo build --release -p microsoft-webui-node -p microsoft-webui-node-build
   pnpm --filter @microsoft/webui build`);
 }
 
@@ -531,26 +531,30 @@ async function main() {
         targetDurationNs: 750_000_000,
       };
 
-  // Resolve the native artifact before loading the public package.
+  // Resolve both artifacts before loading the public APIs.
   const { resolve: resolveArtifact } = await import("@microsoft/webui/platform.js");
   const addonPath = resolveArtifact("addon");
-  if (!addonPath) {
+  const buildAddonPath = resolveArtifact("build-addon");
+  if (!addonPath || !buildAddonPath) {
     throw new Error(
-      "Node addon not found. Run: cargo build --release -p microsoft-webui-node",
+      "Node addons not found. Run: cargo build --release -p microsoft-webui-node -p microsoft-webui-node-build",
     );
   }
 
-  const normalizedAddonPath = addonPath.replaceAll("\\", "/");
-  if (normalizedAddonPath.includes("/target/debug/") && !options.allowDebug) {
-    throw new Error(
-      `Refusing to benchmark debug addon ${addonPath}. ` +
-        "Build release or pass --allow-debug for a smoke run.",
-    );
+  for (const artifact of [addonPath, buildAddonPath]) {
+    if (artifact.replaceAll("\\", "/").includes("/target/debug/") && !options.allowDebug) {
+      throw new Error(
+        `Refusing to benchmark debug addon ${artifact}. ` +
+          "Build release or pass --allow-debug for a smoke run.",
+      );
+    }
   }
 
-  // Lock the public package to the artifact reported above before it loads.
+  // The compiler produces bytes; measured rendering uses only runtime handles.
   process.env.WEBUI_ADDON_PATH = addonPath;
-  const { build, Protocol } = await import("@microsoft/webui");
+  process.env.WEBUI_BUILD_ADDON_PATH = buildAddonPath;
+  const { build } = await import("@microsoft/webui/build");
+  const { Protocol } = await import("@microsoft/webui");
 
   // Build and validate the live fixture outside every timed region.
   const appDir = fileURLToPath(
@@ -742,6 +746,7 @@ async function main() {
     benchmark: "node-addon-runtime",
     environment: {
       addonPath,
+      buildAddonPath,
       node: process.versions.node,
       napi: process.versions.napi,
       platform: process.platform,

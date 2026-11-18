@@ -6,7 +6,8 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { build, Protocol } from '../dist/index.js';
+import { build } from '../dist/build.js';
+import { Protocol } from '../dist/index.js';
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const wasmRoot = join(repository, 'docs', '.webui-press', 'public', 'wasm');

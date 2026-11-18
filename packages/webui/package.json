@@ -23,6 +23,7 @@
     "dist/platform.*",
     "dist/binding.*",
     "dist/bundle.*",
+    "dist/build.*",
     "wasm/"
   ],
   "scripts": {
@@ -49,6 +50,12 @@
       "import": {
         "types": "./dist/platform.d.ts",
         "default": "./dist/platform.js"
+      }
+    },
+    "./build": {
+      "import": {
+        "types": "./dist/build.d.ts",
+        "default": "./dist/build.js"
       }
     }
   },

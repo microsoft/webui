@@ -16,6 +16,7 @@ test-results/
 # Staged native binaries (populated by cargo xtask publish-stage)
 dotnet/runtimes/
 packages/*/webui.node
+packages/*/webui-build.node
 publish/
 *.nupkg
 .last
