@@ -4,9 +4,9 @@
 use napi::Error;
 use napi_derive::napi;
 
-use crate::{
+use super::{
     build_options, js_build_result, projection_sources, JsBuildOptions, JsBuildResult,
-    JsGeneratedModule,
+    JsGeneratedDeclaration, JsGeneratedModule, JsLazyPackFile, JsProjectionManifest,
 };
 
 /// Completed client manifests for a retained compilation.
@@ -15,7 +15,7 @@ pub struct JsFinishBuildOptions {
     /// Filesystem paths of completed projection manifests.
     pub projection_manifests: Option<Vec<String>>,
     /// Inline manifests with their logical filesystem paths.
-    pub projection_manifest_objects: Option<Vec<crate::JsProjectionManifest>>,
+    pub projection_manifest_objects: Option<Vec<JsProjectionManifest>>,
 }
 
 /// A single-use native compilation retained during client bundling.
@@ -43,7 +43,7 @@ impl JsPreparedBuild {
             .map(|module| JsGeneratedModule {
                 file_name: module.file_name.clone(),
                 content: module.content.clone(),
-                declaration: crate::JsGeneratedDeclaration {
+                declaration: JsGeneratedDeclaration {
                     file_name: module.declaration.file_name.clone(),
                     content: module.declaration.content.clone(),
                 },
@@ -63,13 +63,13 @@ impl JsPreparedBuild {
 
     /// Projection-independent template packs and their region metadata.
     #[napi(getter)]
-    pub fn lazy_pack_files(&self) -> napi::Result<Vec<crate::JsLazyPackFile>> {
+    pub fn lazy_pack_files(&self) -> napi::Result<Vec<JsLazyPackFile>> {
         Ok(self
             .active()?
             .lazy_pack_files()
             .iter()
             .cloned()
-            .map(crate::js_lazy_pack_file)
+            .map(super::js_lazy_pack_file)
             .collect())
     }
 

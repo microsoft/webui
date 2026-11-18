@@ -38,7 +38,7 @@ async function loadBuildTools() {
     pathToFileURL(path.join(process.cwd(), "package.json")),
   );
   const { bundleClient, prepareBuild } = await import(
-    resolveImportEntry(require, "@microsoft/webui", "./build")
+    resolveImportEntry(require, "@microsoft/webui", "./build.js")
   );
   const { resolve } = await import(
     resolveImportEntry(require, "@microsoft/webui", "./platform.js")

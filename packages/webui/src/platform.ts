@@ -84,12 +84,14 @@ export function resolve(kind: "bin" | "addon" | "build-addon"): string | null {
     const debugPath = path.join(workspaceRoot, "target", "debug", binName);
     if (existsSync(debugPath)) return debugPath;
   } else {
-    const stem = kind === "build-addon" ? "webui_node_build" : "webui_node";
+    const stem = "webui_node";
     const addonName = process.platform === "win32" ? `${stem}.dll`
       : process.platform === "darwin" ? `lib${stem}.dylib` : `lib${stem}.so`;
-    const addonPath = path.join(releasePath, addonName);
+    const targetPath = kind === "build-addon"
+      ? path.join(workspaceRoot, "target", "node-build") : path.join(workspaceRoot, "target");
+    const addonPath = path.join(targetPath, "release", addonName);
     if (existsSync(addonPath)) return addonPath;
-    const debugPath = path.join(workspaceRoot, "target", "debug", addonName);
+    const debugPath = path.join(targetPath, "debug", addonName);
     if (existsSync(debugPath)) return debugPath;
   }
 

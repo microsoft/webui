@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use crate::{resources, ClientBuildError};
+use super::{resources, ClientBuildError};
 
 pub(super) fn path(path: &Path) -> Result<String, ClientBuildError> {
     let path = resources::utf8(path)?;

@@ -40,9 +40,15 @@ const trace = `
 `;
 
 try {
+  const legacy = run(`
+    await import("@microsoft/webui/build");
+  `);
+  assert.notEqual(legacy.status, 0);
+  assert.match(legacy.stderr, /ERR_PACKAGE_PATH_NOT_EXPORTED/);
+
   writeFileSync(path.join(fixture, "index.html"), "<p>Hello {{name}}</p>");
   const compiled = run(`${trace}
-    const { build } = await import("@microsoft/webui/build");
+    const { build } = await import("@microsoft/webui/build.js");
     assert.deepEqual(loaded, []);
     const result = build({ appDir: ${JSON.stringify(fixture)} });
     assert.deepEqual(loaded, ["webui-build.node"]);
@@ -63,7 +69,7 @@ try {
   assert.equal(rendered.status, 0, rendered.stderr);
 
   const together = run(`${trace}
-    const { build } = await import("@microsoft/webui/build");
+    const { build } = await import("@microsoft/webui/build.js");
     const { Protocol } = await import("@microsoft/webui");
     const result = build({ appDir: ${JSON.stringify(fixture)} });
     assert.ok(Buffer.isBuffer(result.protocol));
@@ -77,7 +83,7 @@ try {
   const require = createRequire(path.join(process.cwd(), "package.json"));
   const platformPackage = `@microsoft/webui-${process.platform}-${process.arch}`;
   const incompatibleBuild = run(`
-    const { build } = await import("@microsoft/webui/build");
+    const { build } = await import("@microsoft/webui/build.js");
     build({ appDir: ${JSON.stringify(fixture)} });
   `, { WEBUI_BUILD_ADDON_PATH: require.resolve(`${platformPackage}/webui.node`) });
   assert.notEqual(incompatibleBuild.status, 0);
@@ -95,7 +101,7 @@ try {
     const file = path.join(fixture, broken);
     if (broken === "broken.node") writeFileSync(file, "not a native addon");
     const failed = run(`
-      const { build } = await import("@microsoft/webui/build");
+      const { build } = await import("@microsoft/webui/build.js");
       build({ appDir: ${JSON.stringify(fixture)} });
     `, { WEBUI_BUILD_ADDON_PATH: file });
     assert.notEqual(failed.status, 0);

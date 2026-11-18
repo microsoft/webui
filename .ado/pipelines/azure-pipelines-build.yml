@@ -337,11 +337,24 @@ stages:
             --profile release \
             --portable-only \
             --output "$BUILD_ARTIFACT_STAGING_DIRECTORY/$ARTIFACT_NAME"
-          for name in webui webui-press libwebui_node.so libwebui_node_build.so libwebui_ffi.so; do
-            required=$(readelf --version-info --wide "target/$TARGET_TRIPLE/release/$name" |
+          # Audit the staged files, which came from each invocation's exact
+          # Cargo artifact (the compiler has a separate node-build target root).
+          staged="$BUILD_ARTIFACT_STAGING_DIRECTORY/$ARTIFACT_NAME/packages"
+          if [[ "$TARGET_TRIPLE" == aarch64-unknown-linux-gnu ]]; then
+            platform=linux-arm64
+          else
+            platform=linux-x64
+          fi
+          for file in \
+            "$staged/webui-$platform/bin/webui" \
+            "$staged/webui-press-$platform/bin/webui-press" \
+            "$staged/webui-$platform/webui.node" \
+            "$staged/webui-$platform/webui-build.node" \
+            "$BUILD_ARTIFACT_STAGING_DIRECTORY/$ARTIFACT_NAME/dotnet/runtimes/$platform/native/libwebui_ffi.so"; do
+            required=$(readelf --version-info --wide "$file" |
               grep -oE 'GLIBC_[0-9.]+' | sort -Vu | tail -n 1)
             if [[ $(printf '%s\n' GLIBC_2.35 "$required" | sort -V | tail -n 1) != GLIBC_2.35 ]]; then
-              echo "$name requires $required; expected glibc 2.35 or older" >&2
+              echo "$file requires $required; expected glibc 2.35 or older" >&2
               exit 1
             fi
           done

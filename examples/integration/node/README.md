@@ -8,7 +8,7 @@ templates and render HTML with state data — all from Node.js.
 1. Build the runtime and compiler native addons:
 
 ```bash
-cargo build -p microsoft-webui-node -p microsoft-webui-node-build
+cargo xtask build-node-addons
 ```
 
 2. Build the `@microsoft/webui` package:
@@ -38,7 +38,7 @@ node index.js ../../app/hello-world/dist/protocol.bin ../../app/hello-world/data
 ```
 
 Import `Protocol` from `@microsoft/webui` and `build()` from
-`@microsoft/webui/build`. The same npm package ships both native addons and
+`@microsoft/webui/build.js`. The same npm package ships both native addons and
 resolves them from workspace build output here. Only the API you use loads its
 addon; prebuilt-protocol mode never imports the compiler entry.
 `Protocol.render()` and `Protocol.renderStream()` reuse the decoded protocol.

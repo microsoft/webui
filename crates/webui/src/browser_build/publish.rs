@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use webui_protocol::projection_manifest::ProjectionManifest;
 
-use crate::{resources, ClientBuild, ClientBuildError};
+use super::{resources, ClientBuild, ClientBuildError};
 
 const STAGING: &str = ".webui-bundle-staging";
 

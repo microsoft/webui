@@ -40,18 +40,22 @@ the previous generation silently.
 
 ## Browser and resource boundary
 
-Build-only `webui-client-build` uses Rolldown 1.3.2; build-only
+The optional `webui::browser_build` module uses Rolldown 1.3.2; build-only
 `webui-projection` uses Oxc 0.158.0 for the shared
 [semantic proof](projection.md). Node's thin browser-build binding calls this
 complete native pipeline through N-API; it owns no projection graph, manifest
 builder, or optional compiler-peer compatibility layer. Press calls the native
 builder directly. Native compilation uses neither a JavaScript VM nor a Node
 subprocess. Handler crates and standalone native renderer hosts do not depend
-on these compiler crates. Node distributes two native artifacts in one npm
-package: `libwebui_node` is the runtime binding and `libwebui_node_build` is the
-compiler binding (platform extensions differ). The runtime root
+on the compiler module or analysis crate. One `microsoft-webui-node` crate
+produces two native artifacts in separate Cargo target roots, using mutually
+exclusive `handler` and `build` features. The default `handler` variant has no
+production compiler dependency. The `build` variant enables the optional
+browser compiler in `microsoft-webui`. Both have the Cargo library name
+`webui_node`; platform npm packages stage them as `webui.node` and
+`webui-build.node`. They share one npm installation. The runtime root
 `@microsoft/webui` exposes `Protocol`, streaming, inspection, and runtime types.
-The explicit `@microsoft/webui/build` entry owns `build`, `prepareBuild`,
+The explicit `@microsoft/webui/build.js` entry owns `build`, `prepareBuild`,
 `bundleClient`, and compiler types; none are re-exported by the root.
 Each entry loads only its own addon when used. `WEBUI_ADDON_PATH` overrides
 runtime resolution; `WEBUI_BUILD_ADDON_PATH` independently overrides build
@@ -155,6 +159,6 @@ Ordinary app commands do not implicitly consume stdin.
 - `crates/webui-cli/src/commands/{app,toolchain}/`
 - `crates/webui-cli/src/commands/{native.rs,init/}`
 - `crates/webui-cli/resources/build_support.rs`
-- `crates/webui-client-build/`, `crates/webui-projection/`
+- `crates/webui/src/browser_build/`, `crates/webui-projection/`
 - `crates/webui-dev-server/src/shutdown/`
 - `xtask/src/native_toolchain.rs`, `xtask/src/native_toolchain/`

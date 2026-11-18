@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-use crate::node_addons::{self, run_checked, Addons};
+use crate::node_addons::{self, run_checked, Addons, Variant};
 use crate::util::{build_command, run_command_quiet};
 use std::process::Command;
 
@@ -11,6 +11,13 @@ pub(crate) fn run() -> Result<(), String> {
         "WebUI runtime dependency audit",
     )?;
     check_runtime_dependencies(&dependencies.stdout)?;
+    // Workspace tests exercise the default handler; keep the compiler's Rust
+    // regressions in the same Node test sequence without feature unification.
+    let target_dir = node_addons::target_directory(&crate::util::workspace_root()?)?;
+    run_checked(
+        &mut node_addons::variant_command("test", Variant::Build, &target_dir),
+        "WebUI compiler addon Rust tests",
+    )?;
     let addons = node_addons::build(false)?;
 
     run_command_quiet("pnpm", &["--filter", "@microsoft/webui", "build"], None)
@@ -27,6 +34,9 @@ fn runtime_dependency_command() -> Command {
             "--locked",
             "-p",
             "microsoft-webui-node",
+            "--no-default-features",
+            "--features",
+            "handler",
             "--edges",
             "normal,build",
             "--target",
@@ -51,10 +61,8 @@ fn check_runtime_dependencies(output: &[u8]) -> Result<(), String> {
         if matches!(
             package,
             "microsoft-webui"
-                | "microsoft-webui-node-build"
                 | "microsoft-webui-parser"
                 | "microsoft-webui-discovery"
-                | "microsoft-webui-client-build"
                 | "microsoft-webui-projection"
                 | "rolldown"
                 | "oxc"
@@ -63,7 +71,7 @@ fn check_runtime_dependencies(output: &[u8]) -> Result<(), String> {
         {
             return Err(format!(
                 "WebUI handler addon has a production dependency on {package}; \
-                 move compiler dependencies to microsoft-webui-node-build (parser dev-tests are allowed)"
+                 gate compiler dependencies behind the build feature (parser dev-tests are allowed)"
             ));
         }
     }
@@ -88,7 +96,7 @@ mod tests {
     fn runs_the_package_script_with_both_explicit_fresh_addons() {
         let addons = Addons {
             runtime: "custom target/libwebui_node.so".into(),
-            builder: "custom target/libwebui_node_build.so".into(),
+            builder: "custom target/node-build/libwebui_node.so".into(),
         };
         let command = test_command(&addons);
         let args: Vec<_> = command.get_args().collect();
@@ -111,6 +119,10 @@ mod tests {
     fn audits_normal_and_build_dependencies_without_parser_dev_tests() {
         let command = runtime_dependency_command();
         let args: Vec<_> = command.get_args().collect();
+        assert!(args.contains(&OsStr::new("--no-default-features")));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == [OsStr::new("--features"), OsStr::new("handler")]));
         assert!(args
             .windows(2)
             .any(|pair| { pair == [OsStr::new("--edges"), OsStr::new("normal,build")] }));
@@ -124,10 +136,8 @@ mod tests {
         assert!(check_runtime_dependencies(b"").is_err());
         for forbidden in [
             "microsoft-webui",
-            "microsoft-webui-node-build",
             "microsoft-webui-parser",
             "microsoft-webui-discovery",
-            "microsoft-webui-client-build",
             "microsoft-webui-projection",
             "rolldown",
             "rolldown_common",

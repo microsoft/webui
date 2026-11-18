@@ -18,7 +18,7 @@ name = "webui"
 path = "src/main.rs"
 
 [dependencies]
-microsoft-webui = { path = "../webui", version = "3.1.2", features = ["cli"] }
+microsoft-webui = { path = "../webui", version = "3.1.2", features = ["cli", "browser-build"] }
 microsoft-webui-handler = { path = "../webui-handler", version = "3.1.2" }
 microsoft-webui-protocol = { path = "../webui-protocol", version = "3.1.2" }
 microsoft-webui-discovery = { path = "../webui-discovery", version = "3.1.2" }
@@ -43,7 +43,6 @@ tokio-stream = { workspace = true }
 log = { workspace = true }
 include_dir = { workspace = true }
 toml = { workspace = true }
-microsoft-webui-client-build = { path = "../webui-client-build", version = "3.1.2" }
 
 [build-dependencies]
 serde_json = { workspace = true }

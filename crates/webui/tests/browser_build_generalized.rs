@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
-use microsoft_webui_client_build::{build, ClientBuildOptions, Format, Loader, SourceMap};
+use webui::browser_build::{build, ClientBuildOptions, Format, Loader, SourceMap};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 

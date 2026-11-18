@@ -63,12 +63,12 @@ browser runtime, and a host can load `protocol.bin` without shipping the
 compiler. Only the selected optional browser entry points should reach an
 application's JavaScript bundle.
 
-Native application tooling adds build-only browser compilation
-(`webui-client-build`) and semantic state analysis (`webui-projection`).
+Native application tooling enables the optional browser compilation module in
+`webui` and semantic state analysis in `webui-projection`.
 Rolldown bundles the browser graph; Oxc analyzes its original TypeScript
 sources and resolved edges. Neither a JavaScript VM nor a Node subprocess is
 needed for native frontend compilation. Handler crates and standalone native
-renderer hosts do not depend on these bundler or analysis crates.
+renderer hosts do not depend on this compiler module or the analysis crate.
 
 Browser resource data, rendering, and delivery are separate layers. Template
 registration and style catalogs do not require a renderer or navigation
@@ -520,7 +520,7 @@ non-streaming output does not acquire streaming markers or state.
 | Surface | Responsibility |
 | --- | --- |
 | `webui` Rust library and CLI | Build/inspect protocols, render requests, serve template previews, and supervise native application builds and hosts. |
-| `@microsoft/webui` | Runtime-only Node API for protocol loading, rendering, streaming, and inspection. The explicit `@microsoft/webui/build` entry owns compilation and browser bundling. Browser framework and router are separate packages. |
+| `@microsoft/webui` | Runtime-only Node API for protocol loading, rendering, streaming, and inspection. The explicit `@microsoft/webui/build.js` entry owns compilation and browser bundling. Browser framework and router are separate packages. |
 | C FFI, .NET, Go, Python, WASM | Load a protocol once and expose rendering through host-native ownership and errors. Binding-specific APIs expose partial, token, and streaming operations where supported. WASM can also build protocols when its parser feature is selected. |
 | `webui-press` | Convert Markdown/site templates to WebUI page inputs, resolve nested site regions and theme-family styles at build time, and share a validated client projection across page builds. |
 | `webui-desktop` | Run a compiled artifact through a native webview and Rust host, or opt into a native window for an existing loopback HTTP host without rendering its artifact again. |
@@ -720,7 +720,7 @@ engineering another; they are not public application-authoring guides.
 | Desktop app and window APIs | `docs/build/desktop.md`, `crates/webui-desktop/src/` |
 | Host APIs and examples | `docs/build/integrations/`, `docs/reference/cli/`, package READMEs, `examples/` |
 | Native SDK distribution and compatibility | [`specs/native-sdk.md`](specs/native-sdk.md), `xtask/src/publish_sdk.rs` |
-| Native application tooling, resources, and checker distribution | [`specs/native-toolchain.md`](specs/native-toolchain.md), `crates/webui-cli/src/commands/app/`, `crates/webui-client-build/` |
+| Native application tooling, resources, and checker distribution | [`specs/native-toolchain.md`](specs/native-toolchain.md), `crates/webui-cli/src/commands/app/`, `crates/webui/src/browser_build/` |
 
 Tests at each boundary are the executable compatibility checks. Add focused
 tests when behavior changes, including producer/consumer parity for binary

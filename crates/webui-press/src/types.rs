@@ -392,7 +392,7 @@ pub struct BuildStats {
     pub pages: usize,
     pub protocol_bytes: usize,
     /// Nonfatal native browser-build advisories, without terminal styling.
-    pub warnings: Vec<microsoft_webui_client_build::BuildWarning>,
+    pub warnings: Vec<webui::browser_build::BuildWarning>,
 }
 
 impl BuildStats {

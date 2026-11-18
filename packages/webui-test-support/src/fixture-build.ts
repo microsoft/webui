@@ -5,7 +5,7 @@ import { existsSync, readdirSync, realpathSync, rmSync } from 'node:fs';
 import { extname, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { bundleClient, type ClientBundle, type ClientBundleOptions } from '@microsoft/webui/build';
+import { bundleClient, type ClientBundle, type ClientBundleOptions } from '@microsoft/webui/build.js';
 
 /** Physical root shared by fixture sources, workspace packages, and outputs. */
 export const workspaceRoot = realpathSync(fileURLToPath(new URL('../../../', import.meta.url)));

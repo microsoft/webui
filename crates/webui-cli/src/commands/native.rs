@@ -47,7 +47,7 @@ pub(crate) enum NativeError {
         source: std::io::Error,
     },
     #[error(transparent)]
-    Build(#[from] microsoft_webui_client_build::ClientBuildError),
+    Build(#[from] webui::browser_build::ClientBuildError),
 }
 
 impl NativeError {
@@ -61,7 +61,7 @@ impl NativeError {
             Self::Cleanup(_) => "native-shutdown-failed",
             Self::Metadata { .. } => "native-io",
             Self::Io { .. } => "native-io",
-            Self::Build(microsoft_webui_client_build::ClientBuildError::Projection(error)) => error
+            Self::Build(webui::browser_build::ClientBuildError::Projection(error)) => error
                 .0
                 .first()
                 .map_or("native-client-build-failed", |diagnostic| diagnostic.code),
@@ -79,7 +79,7 @@ impl NativeError {
             Self::Cleanup(_) => "Inspect the native process diagnostics; the containing supervisor will terminate remaining owned processes.",
             Self::Metadata { .. } => "Check the reported application metadata path and filesystem permissions.",
             Self::Io { .. } => "Check the reported application path and filesystem permissions.",
-            Self::Build(microsoft_webui_client_build::ClientBuildError::Projection(error)) =>
+            Self::Build(webui::browser_build::ClientBuildError::Projection(error)) =>
                 error.0.first().map_or("Fix the unproven browser component declaration.", |diagnostic| diagnostic.help.as_str()),
             Self::Build(_) => "Fix the browser source or resource error. Native builds never fall back to a Node toolchain.",
         }

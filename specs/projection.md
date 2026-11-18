@@ -55,7 +55,7 @@ Resolution, source capture, analysis, membership, manifest construction and
 hashing remain native. No JavaScript source graph or AST crosses that boundary,
 and no TypeScript/esbuild peer or public adapter SPI is involved.
 
-`webui-client-build` supplies the native adapter using Rolldown 1.3.2. One
+`webui::browser_build` supplies the native adapter using Rolldown 1.3.2. One
 invocation supplies resolved edges, original source, tree-shaken membership,
 static entry closures, and final emitted bytes. The caller writes these exact
 bytes before retained-build finalization validates the manifest against disk.
@@ -179,9 +179,9 @@ and their shared vector.
 ## Defining sources
 
 - [Semantic graph and compiler](../crates/webui-projection/src/lib.rs).
-- [Native source capture and bundling](../crates/webui-client-build/src/lib.rs)
-  and [proof construction](../crates/webui-client-build/src/manifest.rs).
+- [Native source capture and bundling](../crates/webui/src/browser_build/mod.rs)
+  and [proof construction](../crates/webui/src/browser_build/manifest.rs).
 - [Manifest schema, validator and shared golden vector](../crates/webui-protocol/src/projection_manifest.rs).
 - [Native semantic conformance](../crates/webui-projection/tests/semantics.rs),
-  [browser build contracts](../crates/webui-client-build/tests/build.rs), and
+  [browser build contracts](../crates/webui/tests/browser_build.rs), and
   [thin Node build binding](../crates/webui-node/src/client_build.rs).

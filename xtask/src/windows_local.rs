@@ -3,6 +3,7 @@
 
 //! Local macOS Windows artifact builds through cargo-xwin.
 
+use crate::node_addons::{self, Addons};
 use crate::util::which_exists;
 use std::fmt::Write;
 use std::fs;
@@ -12,12 +13,7 @@ use std::process::{Command, ExitCode};
 const CARGO_XWIN_VERSION: &str = "0.23.0";
 const PROFILE: &str = "release";
 const XWIN_CACHE_DIR: &str = "target/xwin-cache";
-const NATIVE_PACKAGES: &[&str] = &[
-    "microsoft-webui-cli",
-    "microsoft-webui-ffi",
-    "microsoft-webui-node",
-    "microsoft-webui-node-build",
-];
+const NATIVE_PACKAGES: &[&str] = &["microsoft-webui-cli", "microsoft-webui-ffi"];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct WindowsTarget {
@@ -94,15 +90,12 @@ fn run_inner(args: &[String]) -> Result<(), String> {
         console::style(cache_dir.display()).bold(),
     );
 
+    let mut built = Vec::with_capacity(targets.len());
     for target in &targets {
-        build_target(&root, target, &cache_dir)?;
+        built.push((target.triple, build_target(&root, target, &cache_dir)?));
     }
 
-    crate::publish::stage_native_targets(
-        &root,
-        targets.iter().map(|target| target.triple),
-        PROFILE,
-    )?;
+    crate::publish::stage_native_targets(&root, built, PROFILE)?;
     validate_staged_artifacts(&root, &targets)?;
 
     eprintln!(
@@ -282,7 +275,7 @@ fn llvm_tools_help() -> &'static str {
     "clang-cl and LLD are required for cargo-xwin. On macOS: brew install llvm lld, then ensure both Homebrew bin directories are on PATH"
 }
 
-fn build_target(root: &Path, target: &WindowsTarget, cache_dir: &Path) -> Result<(), String> {
+fn build_target(root: &Path, target: &WindowsTarget, cache_dir: &Path) -> Result<Addons, String> {
     eprintln!(
         "\n{} Building {}",
         console::style("▸").cyan().bold(),
@@ -306,7 +299,16 @@ fn build_target(root: &Path, target: &WindowsTarget, cache_dir: &Path) -> Result
             "failed to spawn cargo xwin build for {}: {error}",
             target.triple
         )),
-    }
+    }?;
+    node_addons::build_with(root, true, Some(target.triple), |cargo| {
+        let mut command = Command::new("cargo-xwin");
+        command
+            .args(cargo.get_args())
+            .current_dir(root)
+            .env("CARGO_INCREMENTAL", "0")
+            .env("XWIN_CACHE_DIR", cache_dir);
+        node_addons::run_checked(&mut command, "cargo xwin Node addon build")
+    })
 }
 
 fn cargo_xwin_build_args(target: &WindowsTarget) -> Vec<String> {
@@ -484,10 +486,6 @@ mod tests {
                 "microsoft-webui-cli",
                 "-p",
                 "microsoft-webui-ffi",
-                "-p",
-                "microsoft-webui-node",
-                "-p",
-                "microsoft-webui-node-build",
             ]
         );
     }

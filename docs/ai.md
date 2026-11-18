@@ -1445,7 +1445,7 @@ Projection is optional; rebuild its manifest whenever client inputs change.
 
 For custom Node hosts, import `Protocol`, streaming APIs, and runtime types
 from `@microsoft/webui`. Build scripts import `build`, `prepareBuild`,
-`bundleClient`, and compiler types from `@microsoft/webui/build`, not the root.
+`bundleClient`, and compiler types from `@microsoft/webui/build.js`, not the root.
 One npm package ships both native addons; using one API does not load the
 other addon. CLI installation stays the same. See
 [Node entry points](/build/integrations/node#choose-an-entry-point) for artifact overrides.

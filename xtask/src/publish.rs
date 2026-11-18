@@ -16,6 +16,7 @@
 //! - `publish/toolchains/` - native CLI/checker archives and SHA-256 sidecars
 //! - `publish/go/`      - source-only Go module proxy for offline release testing
 
+use crate::node_addons::{self, Addons};
 use crate::release_version::ReleaseVersion;
 use crate::util::{build_command, run_command, run_command_quiet};
 use crate::version;
@@ -43,7 +44,6 @@ struct PlatformEntry {
     nuget_rid: &'static str,
     ffi_lib: &'static str,
     node_addon: &'static str,
-    node_build_addon: &'static str,
     cli_binary: &'static str,
     /// Suffix appended to CLI binary in `publish/native/` (e.g. `"darwin-arm64"`).
     platform_suffix: &'static str,
@@ -60,7 +60,6 @@ const PLATFORMS: &[PlatformEntry] = &[
         nuget_rid: "linux-x64",
         ffi_lib: "libwebui_ffi.so",
         node_addon: "libwebui_node.so",
-        node_build_addon: "libwebui_node_build.so",
         cli_binary: "webui",
         platform_suffix: "linux-x64",
         python_platform_tag: "manylinux_2_17_x86_64.manylinux2014_x86_64",
@@ -73,7 +72,6 @@ const PLATFORMS: &[PlatformEntry] = &[
         nuget_rid: "linux-arm64",
         ffi_lib: "libwebui_ffi.so",
         node_addon: "libwebui_node.so",
-        node_build_addon: "libwebui_node_build.so",
         cli_binary: "webui",
         platform_suffix: "linux-arm64",
         python_platform_tag: "manylinux_2_17_aarch64.manylinux2014_aarch64",
@@ -86,7 +84,6 @@ const PLATFORMS: &[PlatformEntry] = &[
         nuget_rid: "win-x64",
         ffi_lib: "webui_ffi.dll",
         node_addon: "webui_node.dll",
-        node_build_addon: "webui_node_build.dll",
         cli_binary: "webui.exe",
         platform_suffix: "win32-x64",
         python_platform_tag: "win_amd64",
@@ -99,7 +96,6 @@ const PLATFORMS: &[PlatformEntry] = &[
         nuget_rid: "win-arm64",
         ffi_lib: "webui_ffi.dll",
         node_addon: "webui_node.dll",
-        node_build_addon: "webui_node_build.dll",
         cli_binary: "webui.exe",
         platform_suffix: "win32-arm64",
         python_platform_tag: "win_arm64",
@@ -112,7 +108,6 @@ const PLATFORMS: &[PlatformEntry] = &[
         nuget_rid: "osx-x64",
         ffi_lib: "libwebui_ffi.dylib",
         node_addon: "libwebui_node.dylib",
-        node_build_addon: "libwebui_node_build.dylib",
         cli_binary: "webui",
         platform_suffix: "darwin-x64",
         python_platform_tag: "macosx_10_12_x86_64",
@@ -125,7 +120,6 @@ const PLATFORMS: &[PlatformEntry] = &[
         nuget_rid: "osx-arm64",
         ffi_lib: "libwebui_ffi.dylib",
         node_addon: "libwebui_node.dylib",
-        node_build_addon: "libwebui_node_build.dylib",
         cli_binary: "webui",
         platform_suffix: "darwin-arm64",
         python_platform_tag: "macosx_11_0_arm64",
@@ -290,16 +284,19 @@ pub fn run_build(args: &[String]) -> ExitCode {
             console::style("▸").cyan().bold(),
             console::style(&options.target_triple).bold(),
         );
-        if let Err(error) = build_native_target(&root, &options) {
-            eprintln!(
-                "  {} Failed to build {}: {error}",
-                console::style("✘").red().bold(),
-                options.target_triple,
-            );
-            return ExitCode::FAILURE;
-        }
+        let addons = match build_native_target(&root, &options) {
+            Ok(addons) => addons,
+            Err(error) => {
+                eprintln!(
+                    "  {} Failed to build {}: {error}",
+                    console::style("✘").red().bold(),
+                    options.target_triple,
+                );
+                return ExitCode::FAILURE;
+            }
+        };
 
-        if let Err(error) = stage_build_artifacts(&root, &options) {
+        if let Err(error) = stage_build_artifacts(&root, &options, &addons) {
             eprintln!(
                 "  {} Failed to stage native release artifacts: {error}",
                 console::style("✘").red().bold(),
@@ -545,12 +542,18 @@ pub(crate) fn stage_native_targets<'a, I>(
     profile: &str,
 ) -> Result<(), String>
 where
-    I: IntoIterator<Item = &'a str>,
+    I: IntoIterator<Item = (&'a str, Addons)>,
 {
     prepare_publish_dirs(root, StageMode::NativeOnly)?;
 
-    for triple in triples {
-        if stage_one_platform(root, triple, profile) != ExitCode::SUCCESS {
+    let target_dir = node_addons::target_directory(root)?;
+    for (triple, addons) in triples {
+        let platform = PLATFORMS
+            .iter()
+            .find(|platform| platform.triple == triple)
+            .ok_or_else(|| format!("unknown target triple: {triple}"))?;
+        let build_dir = target_dir.join(triple).join(profile);
+        if !stage_platform(root, platform, &build_dir, &addons) {
             return Err(format!("failed to stage native artifacts for {triple}"));
         }
     }
@@ -849,31 +852,41 @@ fn set_build_mode(current: BuildMode, requested: BuildMode) -> Result<BuildMode,
     Ok(requested)
 }
 
-fn build_native_target(root: &Path, options: &BuildOptions) -> Result<(), String> {
+fn build_native_target(root: &Path, options: &BuildOptions) -> Result<Addons, String> {
     let args = native_build_args(
         &options.target_triple,
         &options.profile,
         options.mode.includes_desktop(),
     )?;
-    run_command("cargo", &args, Some(root))
+    run_command("cargo", &args, Some(root))?;
+    node_addons::build_for(
+        root,
+        options.profile == "release",
+        Some(&options.target_triple),
+    )
 }
 
-fn stage_build_artifacts(root: &Path, options: &BuildOptions) -> Result<(), String> {
-    if options.mode != BuildMode::PortableOnly {
-        return stage_native_targets(
-            root,
-            std::iter::once(options.target_triple.as_str()),
-            &options.profile,
-        );
-    }
+fn stage_build_artifacts(
+    root: &Path,
+    options: &BuildOptions,
+    addons: &Addons,
+) -> Result<(), String> {
     prepare_publish_dirs(root, StageMode::NativeOnly)?;
     let platform = PLATFORMS
         .iter()
         .find(|platform| platform.triple == options.target_triple)
         .ok_or_else(|| format!("unknown target triple: {}", options.target_triple))?;
-    let build_dir = resolve_build_dir(root, platform.triple, &options.profile);
-    if !stage_platform_artifacts(root, platform, &build_dir, false) {
-        return Err("failed to stage portable artifacts".to_string());
+    let build_dir = node_addons::target_directory(root)?
+        .join(platform.triple)
+        .join(&options.profile);
+    if !stage_platform_artifacts(
+        root,
+        platform,
+        &build_dir,
+        addons,
+        options.mode.includes_desktop(),
+    ) {
+        return Err("failed to stage native artifacts".to_string());
     }
     Ok(())
 }
@@ -896,10 +909,6 @@ fn native_build_args<'a>(
         "microsoft-webui-cli",
         "-p",
         "microsoft-webui-ffi",
-        "-p",
-        "microsoft-webui-node",
-        "-p",
-        "microsoft-webui-node-build",
         "-p",
         "microsoft-webui-press",
     ]);
@@ -1103,22 +1112,25 @@ fn stage_all_platforms(root: &Path, profile: &str) -> ExitCode {
         console::style(profile).dim(),
     );
 
-    let host = detect_host_triple();
+    let target_dir = match node_addons::target_directory(root) {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("Failed to discover Cargo target directory: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
     let mut staged = 0u32;
     let mut skipped = 0u32;
     let mut failed = 0u32;
 
     for platform in PLATFORMS {
-        let build_dir = if platform.triple == host {
-            resolve_build_dir(root, platform.triple, profile)
-        } else {
-            root.join("target").join(platform.triple).join(profile)
-        };
+        let build_dir = resolve_build_dir(&target_dir, platform.triple, profile);
+        let addons = resolve_addons(&target_dir, platform, profile);
 
         let has_ffi = build_dir.join(platform.ffi_lib).exists();
         let has_cli = build_dir.join(platform.cli_binary).exists();
-        let has_addon = build_dir.join(platform.node_addon).exists();
-        let has_build_addon = build_dir.join(platform.node_build_addon).exists();
+        let has_addon = addons.runtime.exists();
+        let has_build_addon = addons.builder.exists();
 
         if !has_ffi && !has_cli && !has_addon && !has_build_addon {
             skipped += 1;
@@ -1131,7 +1143,7 @@ fn stage_all_platforms(root: &Path, profile: &str) -> ExitCode {
             console::style(platform.triple).bold(),
         );
 
-        if stage_platform(root, platform, &build_dir) {
+        if stage_platform(root, platform, &build_dir, &addons) {
             staged += 1;
         } else {
             failed += 1;
@@ -1165,7 +1177,7 @@ fn stage_all_platforms(root: &Path, profile: &str) -> ExitCode {
         eprintln!(
             "  {} No build artifacts found. Build first:\n    {}",
             console::style("⚠").yellow(),
-            console::style("cargo build --release -p microsoft-webui-ffi -p microsoft-webui-node -p microsoft-webui-node-build -p microsoft-webui-cli -p microsoft-webui-press -p microsoft-webui-desktop --features microsoft-webui-desktop/cli").dim(),
+            console::style("cargo xtask publish-build --target <triple> --native-only").dim(),
         );
         return ExitCode::FAILURE;
     }
@@ -1191,7 +1203,15 @@ fn stage_one_platform(root: &Path, triple: &str, profile: &str) -> ExitCode {
         return ExitCode::FAILURE;
     };
 
-    let build_dir = resolve_build_dir(root, triple, profile);
+    let target_dir = match node_addons::target_directory(root) {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("Failed to discover Cargo target directory: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let build_dir = resolve_build_dir(&target_dir, triple, profile);
+    let addons = resolve_addons(&target_dir, platform, profile);
 
     eprintln!(
         "{} Staging native binaries for {} ({})",
@@ -1200,7 +1220,7 @@ fn stage_one_platform(root: &Path, triple: &str, profile: &str) -> ExitCode {
         console::style(profile).dim(),
     );
 
-    if stage_platform(root, platform, &build_dir) {
+    if stage_platform(root, platform, &build_dir, &addons) {
         eprintln!(
             "\n  {} All binaries staged for {}",
             console::style("✔").green(),
@@ -1217,14 +1237,20 @@ fn stage_one_platform(root: &Path, triple: &str, profile: &str) -> ExitCode {
 }
 
 /// Copy all artifacts for a single platform. Returns true if all found files staged.
-fn stage_platform(root: &Path, platform: &PlatformEntry, build_dir: &Path) -> bool {
-    stage_platform_artifacts(root, platform, build_dir, true)
+fn stage_platform(
+    root: &Path,
+    platform: &PlatformEntry,
+    build_dir: &Path,
+    addons: &Addons,
+) -> bool {
+    stage_platform_artifacts(root, platform, build_dir, addons, true)
 }
 
 fn stage_platform_artifacts(
     root: &Path,
     platform: &PlatformEntry,
     build_dir: &Path,
+    addons: &Addons,
     include_desktop: bool,
 ) -> bool {
     let mut ok = true;
@@ -1297,11 +1323,11 @@ fn stage_platform_artifacts(
 
     // npm: independent handler and compiler addons, in the same platform package.
     for (source, destination) in [
-        (platform.node_addon, "webui.node"),
-        (platform.node_build_addon, "webui-build.node"),
+        (&addons.runtime, "webui.node"),
+        (&addons.builder, "webui-build.node"),
     ] {
         ok &= stage_file(&CopySpec {
-            src: &build_dir.join(source),
+            src: source,
             dest_dir: &root.join("packages").join(platform.npm_package),
             dest_name: destination,
             label: "npm addon",
@@ -1975,12 +2001,20 @@ fn stage_file(spec: &CopySpec<'_>) -> bool {
     true
 }
 
-fn resolve_build_dir(root: &Path, triple: &str, profile: &str) -> PathBuf {
-    let cross = root.join("target").join(triple).join(profile);
+fn resolve_build_dir(target_dir: &Path, triple: &str, profile: &str) -> PathBuf {
+    let cross = target_dir.join(triple).join(profile);
     if cross.exists() || triple != detect_host_triple() {
         return cross;
     }
-    root.join("target").join(profile)
+    target_dir.join(profile)
+}
+
+fn resolve_addons(target_dir: &Path, platform: &PlatformEntry, profile: &str) -> Addons {
+    Addons {
+        runtime: resolve_build_dir(target_dir, platform.triple, profile).join(platform.node_addon),
+        builder: resolve_build_dir(&target_dir.join("node-build"), platform.triple, profile)
+            .join(platform.node_addon),
+    }
 }
 
 pub(crate) fn detect_host_triple() -> String {
@@ -2271,12 +2305,22 @@ mod tests {
             let output = tempfile::tempdir()?;
             sdk::tests::fixture(root.path(), platform);
             let build = root.path().join("build");
+            let builder_dir = root
+                .path()
+                .join("custom target/node-build")
+                .join(platform.triple)
+                .join("release");
+            fs::create_dir_all(&builder_dir)?;
+            let addons = Addons {
+                runtime: build.join(platform.node_addon),
+                builder: builder_dir.join(platform.node_addon),
+            };
+            fs::write(&addons.builder, format!("{}:compiler", platform.triple))?;
             fs::create_dir_all(&build)?;
             for name in [
                 platform.ffi_lib,
                 platform.cli_binary,
                 platform.node_addon,
-                platform.node_build_addon,
                 press_cli_binary(platform),
                 desktop_cli_binary(platform),
                 "webui_ffi.dll.lib",
@@ -2287,7 +2331,7 @@ mod tests {
             {
                 fs::write(build.join(name), format!("{}:{name}", platform.triple))?;
             }
-            assert!(stage_platform(root.path(), platform, &build));
+            assert!(stage_platform(root.path(), platform, &build, &addons));
             let package = root.path().join("packages").join(platform.npm_package);
             validate_node_package(&package, platform)?;
             export_target(
@@ -2297,10 +2341,10 @@ mod tests {
                 BuildMode::NativeOnly,
             )?;
             for (native, packaged) in [
-                (platform.node_addon, "webui.node"),
-                (platform.node_build_addon, "webui-build.node"),
+                (&addons.runtime, "webui.node"),
+                (&addons.builder, "webui-build.node"),
             ] {
-                let expected = fs::read(build.join(native))?;
+                let expected = fs::read(native)?;
                 assert_eq!(fs::read(package.join(packaged))?, expected);
                 assert_eq!(
                     fs::read(
@@ -2319,9 +2363,9 @@ mod tests {
                 assert!(error.contains(packaged), "{error}");
                 fs::write(package.join(packaged), &expected)?;
             }
-            fs::remove_file(build.join(platform.node_build_addon))?;
+            fs::remove_file(&addons.builder)?;
             assert!(
-                !stage_platform(root.path(), platform, &build),
+                !stage_platform(root.path(), platform, &build, &addons),
                 "a stale staged compiler must not make a missing build artifact successful"
             );
         }
@@ -2364,12 +2408,12 @@ mod tests {
             for profile in ["debug", "release"] {
                 for desktop in [false, true] {
                     let args = native_build_args(platform.triple, profile, desktop)?;
-                    assert!(args
+                    assert!(!args
                         .windows(2)
                         .any(|pair| pair == ["-p", "microsoft-webui-node"]));
-                    assert!(args
-                        .windows(2)
-                        .any(|pair| pair == ["-p", "microsoft-webui-node-build"]));
+                    // Node variants are built by their own invocations, never
+                    // unified into the multi-package native build.
+                    assert!(!args.iter().any(|arg| arg.contains("node-build")));
                 }
             }
         }
@@ -2390,7 +2434,6 @@ mod tests {
         for name in [
             platform.ffi_lib,
             platform.node_addon,
-            platform.node_build_addon,
             platform.cli_binary,
             press_cli_binary(platform),
             desktop_cli_binary(platform),
@@ -2414,10 +2457,42 @@ mod tests {
         for profile in ["debug", "release"] {
             let implicit = root.path().join("target").join(profile);
             fs::create_dir_all(&implicit).expect("implicit host build");
-            assert_eq!(resolve_build_dir(root.path(), &host, profile), implicit);
+            assert_eq!(
+                resolve_build_dir(&root.path().join("target"), &host, profile),
+                implicit
+            );
             let explicit = root.path().join("target").join(&host).join(profile);
             fs::create_dir_all(&explicit).expect("explicit host build");
-            assert_eq!(resolve_build_dir(root.path(), &host, profile), explicit);
+            assert_eq!(
+                resolve_build_dir(&root.path().join("target"), &host, profile),
+                explicit
+            );
+        }
+    }
+
+    #[test]
+    fn addon_staging_resolves_each_effective_root_without_reusing_the_handler() {
+        let root = tempfile::tempdir().expect("custom target root");
+        let target_dir = root.path().join("custom target");
+        for platform in PLATFORMS {
+            for profile in ["debug", "release"] {
+                let ordinary = target_dir.join(platform.triple).join(profile);
+                let compiler = target_dir
+                    .join("node-build")
+                    .join(platform.triple)
+                    .join(profile);
+                fs::create_dir_all(&ordinary).expect("handler directory");
+                fs::create_dir_all(&compiler).expect("compiler directory");
+                let addons = resolve_addons(&target_dir, platform, profile);
+                assert_eq!(addons.runtime, ordinary.join(platform.node_addon));
+                assert_eq!(addons.builder, compiler.join(platform.node_addon));
+                assert_ne!(addons.runtime, addons.builder);
+                fs::write(&addons.runtime, "handler is not a compiler").expect("handler fixture");
+                assert!(
+                    !addons.builder.exists(),
+                    "a handler must never fill a missing compiler"
+                );
+            }
         }
     }
 
@@ -2696,8 +2771,6 @@ mod tests {
                 [
                     "microsoft-webui-cli",
                     "microsoft-webui-ffi",
-                    "microsoft-webui-node",
-                    "microsoft-webui-node-build",
                     "microsoft-webui-press",
                 ]
             );
@@ -2734,14 +2807,17 @@ mod tests {
                 platform.cli_binary,
                 platform.ffi_lib,
                 platform.node_addon,
-                platform.node_build_addon,
                 "webui-press",
             ] {
                 fs::write(build.join(name), "portable").expect("portable fixture");
             }
             let options = parse_build(&["--target", platform.triple, "--portable-only"])
                 .expect("portable build should parse");
-            stage_build_artifacts(root.path(), &options).expect("portable staging");
+            let addons = resolve_addons(&root.path().join("target"), platform, "release");
+            fs::create_dir_all(addons.builder.parent().expect("compiler directory"))
+                .expect("compiler directory");
+            fs::write(&addons.builder, "compiler").expect("compiler fixture");
+            stage_build_artifacts(root.path(), &options, &addons).expect("portable staging");
             export_target(root.path(), output.path(), platform.triple, options.mode)
                 .expect("portable export");
             let packages = output.path().join("packages");
@@ -2781,7 +2857,6 @@ mod tests {
             nuget_rid: "osx-arm64",
             ffi_lib: "libwebui_ffi.dylib",
             node_addon: "libwebui_node.dylib",
-            node_build_addon: "libwebui_node_build.dylib",
             cli_binary: "webui",
             platform_suffix: "darwin-arm64",
             python_platform_tag: "macosx_11_0_arm64",
@@ -2801,7 +2876,6 @@ mod tests {
             nuget_rid: "win-x64",
             ffi_lib: "webui_ffi.dll",
             node_addon: "webui_node.dll",
-            node_build_addon: "webui_node_build.dll",
             cli_binary: "webui.exe",
             platform_suffix: "win32-x64",
             python_platform_tag: "win_amd64",
@@ -2825,7 +2899,6 @@ mod tests {
         for name in [
             platform.ffi_lib,
             platform.node_addon,
-            platform.node_build_addon,
             platform.cli_binary,
             press_cli_binary(platform),
             desktop_cli_binary(platform),
@@ -2836,7 +2909,14 @@ mod tests {
         {
             fs::write(build_dir.join(name), name).expect("build artifact");
         }
-        assert!(stage_platform(root.path(), platform, &build_dir));
+        let addons = Addons {
+            runtime: build_dir.join(platform.node_addon),
+            builder: root.path().join("node-build").join(platform.node_addon),
+        };
+        fs::create_dir_all(addons.builder.parent().expect("compiler directory"))
+            .expect("compiler directory");
+        fs::write(&addons.builder, "compiler").expect("compiler fixture");
+        assert!(stage_platform(root.path(), platform, &build_dir, &addons));
         let staged = root.path().join("packages/webui-desktop-win32-arm64/bin");
         for name in std::iter::once(desktop_cli_binary(platform))
             .chain(std::iter::once(desktop_deployment::BOOTSTRAP_DLL))

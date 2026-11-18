@@ -4,13 +4,13 @@
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
-use crate::ClientBuildError;
+use super::ClientBuildError;
 
 pub(super) type FrameworkAliases = Vec<(String, Vec<Option<String>>)>;
 
 pub(super) fn input_key(root: &Path, id: &str) -> Result<String, ClientBuildError> {
     if let Some(id) = id.strip_prefix('\0') {
-        return Ok(crate::manifest::hex("virtual:", id.as_bytes()));
+        return Ok(super::manifest::hex("virtual:", id.as_bytes()));
     }
     // Oxc resolves Windows IDs without the verbatim prefix returned by std's
     // canonicalize. Recover the physical identity before comparing boundaries.
@@ -162,7 +162,7 @@ pub(super) fn framework_exports(root: &Path) -> Result<FrameworkAliases, ClientB
         let resolved = contained(root, Path::new(target))?;
         aliases.push((
             format!("@microsoft/webui-framework{suffix}$"),
-            vec![Some(crate::resolver_path::path(&resolved)?)],
+            vec![Some(super::resolver_path::path(&resolved)?)],
         ));
     }
     Ok(aliases)

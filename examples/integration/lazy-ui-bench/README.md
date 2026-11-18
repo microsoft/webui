@@ -8,10 +8,10 @@ benchmark of `w-hydrate="lazy"` or `w-render="lazy"`.
 Build the release runtime and compiler addons first. From the repository root on Windows:
 
 ```powershell
-cargo build --release -p microsoft-webui-node -p microsoft-webui-node-build
+cargo xtask build-node-addons --release
 pnpm --filter @microsoft/webui --filter @microsoft/webui-framework build
 $env:WEBUI_ADDON_PATH = Join-Path (Get-Location) 'target\release\webui_node.dll'
-$env:WEBUI_BUILD_ADDON_PATH = Join-Path (Get-Location) 'target\release\webui_node_build.dll'
+$env:WEBUI_BUILD_ADDON_PATH = Join-Path (Get-Location) 'target\node-build\release\webui_node.dll'
 node examples\integration\lazy-ui-bench\ntp.mjs
 node examples\integration\lazy-ui-bench\triggers.mjs
 node examples\integration\lazy-ui-bench\bench.mjs
@@ -19,9 +19,9 @@ cargo bench -p microsoft-webui --bench lazy_bench
 ```
 
 On macOS/Linux point `WEBUI_ADDON_PATH` at the release `libwebui_node.dylib` /
-`libwebui_node.so` and `WEBUI_BUILD_ADDON_PATH` at
-`libwebui_node_build.dylib` / `libwebui_node_build.so`.
-Build APIs use `@microsoft/webui/build`; `Protocol` uses `@microsoft/webui`.
+`libwebui_node.so` under `target/release`, and `WEBUI_BUILD_ADDON_PATH` at
+the same library filename under `target/node-build/release`.
+Build APIs use `@microsoft/webui/build.js`; `Protocol` uses `@microsoft/webui`.
 Playwright Chromium must be installed; `ntp.mjs` and
 `triggers.mjs` use Microsoft Edge when available (`WEBUI_BENCH_CHANNEL`
 overrides it). With their defaults, `ntp.mjs` takes about 75 minutes and

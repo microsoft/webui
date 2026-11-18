@@ -52,7 +52,7 @@
         "default": "./dist/platform.js"
       }
     },
-    "./build": {
+    "./build.js": {
       "import": {
         "types": "./dist/build.d.ts",
         "default": "./dist/build.js"

@@ -4,7 +4,7 @@
 use rolldown_error::{BuildDiagnostic, EventKind};
 use serde::Serialize;
 
-use crate::ClientBuildError;
+use super::ClientBuildError;
 
 /// One actionable, nonfatal native bundler warning.
 #[derive(Debug, Serialize)]

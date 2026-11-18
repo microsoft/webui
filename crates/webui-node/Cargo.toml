@@ -1,6 +1,6 @@
 [package]
 name = "microsoft-webui-node"
-description = "Runtime-only Node.js native addon for WebUI rendering via napi-rs"
+description = "Separate runtime and build Node.js native addons for WebUI via napi-rs"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -16,18 +16,27 @@ categories = ["api-bindings", "web-programming"]
 name = "webui_node"
 crate-type = ["cdylib"]
 
+[features]
+default = ["handler"]
+handler = ["dep:microsoft-webui-handler", "dep:microsoft-webui-protocol"]
+build = ["dep:microsoft-webui", "dep:tokio"]
+
 [dependencies]
 napi = { workspace = true }
 napi-derive = { workspace = true }
-microsoft-webui-handler = { path = "../webui-handler", version = "3.1.2" }
-microsoft-webui-protocol = { path = "../webui-protocol", version = "3.1.2" }
+microsoft-webui-handler = { path = "../webui-handler", version = "3.1.2", optional = true }
+microsoft-webui-protocol = { path = "../webui-protocol", version = "3.1.2", optional = true }
+microsoft-webui = { path = "../webui", version = "3.1.2", optional = true, features = ["browser-build"] }
 serde_json = { workspace = true }
+tokio = { workspace = true, optional = true }
 
 [build-dependencies]
 napi-build = { workspace = true }
 
 [dev-dependencies]
 microsoft-webui-parser = { path = "../webui-parser", version = "3.1.2", default-features = false }
+microsoft-webui-protocol = { path = "../webui-protocol", version = "3.1.2", features = ["projection-manifest"] }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

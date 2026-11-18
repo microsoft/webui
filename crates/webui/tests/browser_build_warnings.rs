@@ -4,7 +4,7 @@
 use std::fs;
 use std::path::Path;
 
-use microsoft_webui_client_build::{build, ClientBuildOptions};
+use webui::browser_build::{build, ClientBuildOptions};
 
 #[tokio::test]
 async fn intentional_static_and_dynamic_use_returns_a_serializable_advisory(

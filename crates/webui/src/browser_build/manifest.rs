@@ -11,7 +11,7 @@ use webui_protocol::projection_manifest::{
     SCHEMA_ID,
 };
 
-use crate::{resources, ClientBuild, ClientBuildError, Import};
+use super::{resources, ClientBuild, ClientBuildError, Import};
 
 // Keep aligned with the exact workspace pin; this identity is part of the proof.
 const BUNDLER: &str = "rolldown@1.3.2";
@@ -257,10 +257,10 @@ fn analysis_hash(
         record(&mut hash, "module", fields.iter().map(String::as_str));
         if let Some(syntax) = module.syntax {
             let name = match syntax {
-                crate::ScriptSyntax::Js => "js",
-                crate::ScriptSyntax::Jsx => "jsx",
-                crate::ScriptSyntax::Ts => "ts",
-                crate::ScriptSyntax::Tsx => "tsx",
+                super::ScriptSyntax::Js => "js",
+                super::ScriptSyntax::Jsx => "jsx",
+                super::ScriptSyntax::Ts => "ts",
+                super::ScriptSyntax::Tsx => "tsx",
             };
             record(&mut hash, "syntax", [&identities[id.as_str()], name]);
         }

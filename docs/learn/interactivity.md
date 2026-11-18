@@ -979,7 +979,7 @@ The mismatch warning is removed from native production builds. Keep
 `development` disabled when bundling the framework for deployment:
 
 ```typescript
-import { bundleClient } from '@microsoft/webui/build';
+import { bundleClient } from '@microsoft/webui/build.js';
 
 await bundleClient({
   project: process.cwd(),

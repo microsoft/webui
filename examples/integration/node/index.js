@@ -5,7 +5,7 @@
 // templates into a protocol and render HTML with state data.
 //
 // Prerequisites:
-//   1. Build the native addons: cargo build -p microsoft-webui-node -p microsoft-webui-node-build
+//   1. Build the native addons: cargo xtask build-node-addons
 //   2. Build the @microsoft/webui package: pnpm --filter @microsoft/webui build
 //   3. Install workspace dependencies: pnpm install
 //
@@ -32,7 +32,7 @@ if (process.argv[2] && process.argv[3]) {
   process.stdout.write("\n");
 } else {
   // Build + render mode (default): compile hello-world templates, then render
-  const { build } = await import("@microsoft/webui/build");
+  const { build } = await import("@microsoft/webui/build.js");
   const state = JSON.parse(readFileSync(stateFile, "utf-8"));
   const result = build({ appDir });
 

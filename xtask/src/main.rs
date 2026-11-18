@@ -92,6 +92,7 @@ fn main() -> ExitCode {
         Some("native-ipc") => with_desktop_assets(|| native_ipc::run(&args[2..])),
         Some("build") => with_desktop_assets(|| run_steps(&[Step::BUILD, Step::BUILD_EXAMPLES])),
         Some("build-examples") => run_steps(&[Step::BUILD_EXAMPLES]),
+        Some("build-node-addons") => node_addons::run(&args[2..]),
         Some("build-wasm") => run_steps(&[Step::BUILD_WASM]),
         Some("docs") => run_steps(&[Step::DOCS]),
         Some("bench") => with_desktop_assets(|| {
@@ -186,6 +187,7 @@ fn usage() -> ExitCode {
            native-ipc [--timeout SECONDS] [--fail-fast] [--plan darwin|win32|linux]  Run native IPC source/package and no-IPC contracts\n  \
            build   Build the workspace\n  \
            build-examples  Build all example integrations and apps\n  \
+           build-node-addons [--release]  Build independent handler and compiler Node addons (default debug)\n  \
            build-wasm  Build WASM playground module\n  \
            docs    Build the documentation site\n  \
            bench <target> [-- <extra>] [--save-baseline NAME | --baseline NAME]\n  \
@@ -814,7 +816,14 @@ impl Step {
                     "warnings",
                 ],
                 None,
-            )
+            )?;
+            let target_dir = node_addons::target_directory(&workspace_root()?)?;
+            node_addons::run_checked(
+                node_addons::variant_command("clippy", node_addons::Variant::Build, &target_dir)
+                    .args(["--", "-D", "warnings"]),
+                "WebUI compiler addon Clippy",
+            )?;
+            Ok(())
         },
     };
     const DENY: Self = Self {
@@ -844,6 +853,7 @@ impl Step {
                     "--test",
                     "crates/webui-cli/tests/starter.test.mjs",
                     "scripts/tag-release.test.mjs",
+                    "scripts/validate-node-packages.test.mjs",
                 ],
                 None,
             )?;

@@ -2365,11 +2365,14 @@ name = "microsoft-webui"
 version = "3.1.2"
 dependencies = [
  "actix-web",
+ "anyhow",
+ "base64",
  "brotli",
  "bytes",
  "crc32fast",
  "criterion",
  "crossbeam-queue",
+ "either",
  "futures-util",
  "libc",
  "log",
@@ -2377,13 +2380,20 @@ dependencies = [
  "microsoft-webui-discovery",
  "microsoft-webui-handler",
  "microsoft-webui-parser",
+ "microsoft-webui-projection",
  "microsoft-webui-protocol",
  "microsoft-webui-tokens",
+ "mime_guess",
+ "oxc",
  "rayon",
  "reqwest",
+ "rolldown",
+ "rolldown_common",
+ "rolldown_error",
  "serde",
  "serde_json",
  "sha2",
+ "string_wizard",
  "tempfile",
  "thiserror",
  "tokio",
@@ -2406,7 +2416,6 @@ dependencies = [
  "log",
  "memchr",
  "microsoft-webui",
- "microsoft-webui-client-build",
  "microsoft-webui-dev-server",
  "microsoft-webui-discovery",
  "microsoft-webui-handler",
@@ -2423,30 +2432,6 @@ dependencies = [
  "tokio-stream",
  "toml 1.1.6+spec-1.1.0",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "microsoft-webui-client-build"
-version = "3.1.2"
-dependencies = [
- "anyhow",
- "base64",
- "either",
- "microsoft-webui",
- "microsoft-webui-projection",
- "microsoft-webui-protocol",
- "mime_guess",
- "oxc",
- "rolldown",
- "rolldown_common",
- "rolldown_error",
- "serde",
- "serde_json",
- "sha2",
- "string_wizard",
- "tempfile",
- "thiserror",
- "tokio",
 ]
 
 [[package]]
@@ -2587,21 +2572,9 @@ dependencies = [
 name = "microsoft-webui-node"
 version = "3.1.2"
 dependencies = [
+ "microsoft-webui",
  "microsoft-webui-handler",
  "microsoft-webui-parser",
- "microsoft-webui-protocol",
- "napi",
- "napi-build",
- "napi-derive",
- "serde_json",
-]
-
-[[package]]
-name = "microsoft-webui-node-build"
-version = "3.1.2"
-dependencies = [
- "microsoft-webui",
- "microsoft-webui-client-build",
  "microsoft-webui-protocol",
  "napi",
  "napi-build",
@@ -2638,7 +2611,6 @@ dependencies = [
  "html-escape",
  "include_dir",
  "microsoft-webui",
- "microsoft-webui-client-build",
  "microsoft-webui-dev-server",
  "microsoft-webui-discovery",
  "microsoft-webui-handler",

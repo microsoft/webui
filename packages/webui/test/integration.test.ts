@@ -12,12 +12,12 @@ import {
   build,
   bundleClient,
   prepareBuild,
-} from '@microsoft/webui/build';
+} from '@microsoft/webui/build.js';
 import {
   inspect,
   Protocol,
 } from '@microsoft/webui';
-import type { BuildOptions } from '@microsoft/webui/build';
+import type { BuildOptions } from '@microsoft/webui/build.js';
 import type {
   BoundaryDescriptor,
   ComponentTemplatesResponse,

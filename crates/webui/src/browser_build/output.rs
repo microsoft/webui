@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use rolldown_common::Output;
 
-use crate::{
+use super::{
     resources, urls, ClientBuild, ClientBuildError, ImportKind, MetadataImport, ModuleContribution,
     OutputMetadata,
 };

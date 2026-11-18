@@ -8,7 +8,7 @@ use base64::Engine;
 use rolldown::plugin::{HookLoadArgs, HookLoadOutput, HookLoadReturn, SharedLoadPluginContext};
 use rolldown_common::{EmittedAsset, ModuleType};
 
-use crate::{ClientBuildError, Loader, ScriptSyntax};
+use super::{ClientBuildError, Loader, ScriptSyntax};
 
 pub(super) enum Kind {
     Native(ModuleType),

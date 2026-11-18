@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use microsoft_webui_client_build::{build, ClientBuildOptions, SourceMap};
+use webui::browser_build::{build, ClientBuildOptions, SourceMap};
 
 use super::config::{validate_relative, Project};
 use crate::commands::native::control::Stop;

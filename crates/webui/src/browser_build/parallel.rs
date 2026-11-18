@@ -7,7 +7,7 @@ use std::path::Path;
 
 use rolldown::plugin::HookRenderChunkArgs;
 
-use crate::{loaders::ascii_literal, resources, ClientBuildError};
+use super::{loaders::ascii_literal, resources, ClientBuildError};
 
 /// Preliminary output identities, established by this exact Rolldown invocation.
 pub(super) fn static_closure<'a>(

@@ -13,7 +13,7 @@ npm install @microsoft/webui
 The package automatically installs the correct platform-specific native binary
 for your OS and architecture (Windows, macOS, Linux - x64 and arm64).
 `@microsoft/webui` loads the handler addon only when used.
-`@microsoft/webui/build` loads the separate template/browser compiler addon.
+`@microsoft/webui/build.js` loads the separate template/browser compiler addon.
 One installation includes both, but a rendering server does not load the
 compiler or Rolldown/Oxc. Each API surfaces loading errors directly. It never
 falls back to a subprocess. Use the `webui` CLI explicitly for filesystem
@@ -45,7 +45,7 @@ for setup details.
 ## Quick start
 
 ```js
-import { build } from "@microsoft/webui/build";
+import { build } from "@microsoft/webui/build.js";
 import { Protocol } from "@microsoft/webui";
 
 // Build templates into a protocol
@@ -126,7 +126,7 @@ Misspelled literal-fallback tokens are returned as non-fatal warnings.
 Rust compiler. No TypeScript or esbuild peer dependency is required.
 
 ```js
-import { bundleClient, build } from "@microsoft/webui/build";
+import { bundleClient, build } from "@microsoft/webui/build.js";
 
 const client = await bundleClient({
   project: process.cwd(),

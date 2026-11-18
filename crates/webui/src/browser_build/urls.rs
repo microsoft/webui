@@ -18,7 +18,7 @@ use rolldown::plugin::{
 };
 use string_wizard::{MagicString, SourceMapOptions};
 
-use crate::{loaders::ascii_literal, parallel, resources, ClientBuildError};
+use super::{loaders::ascii_literal, parallel, resources, ClientBuildError};
 
 #[derive(Debug)]
 pub(super) struct InternalImports {

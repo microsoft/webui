@@ -4,10 +4,10 @@
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-use microsoft_webui_client_build::{build, BuildWarning, ClientBuildOptions};
 use napi::bindgen_prelude::{AsyncTask, Buffer};
 use napi::{Env, Error, Task};
 use napi_derive::napi;
+use webui::browser_build::{build, BuildWarning, ClientBuildOptions};
 
 /// One final native browser output, with its absolute destination.
 #[napi(object)]

@@ -2,7 +2,7 @@
 // Licensed under the MIT license.
 
 //! Semantic cases from ALL_CASES in the former Node conformance oracle.
-//! Output membership, hashing and publication belong to webui-client-build.
+//! Output membership, hashing and publication belong to webui::browser_build.
 
 use crate::support::{edge, failure, framework, graph, module, single, success};
 

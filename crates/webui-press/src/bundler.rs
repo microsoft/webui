@@ -10,7 +10,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::Instant;
 
-use microsoft_webui_client_build as webui_client_build;
+use webui::browser_build as webui_client_build;
 
 use crate::error::{Error, Result};
 use crate::types::BundlerConfig;

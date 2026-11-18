@@ -4,7 +4,7 @@
 use std::fs;
 use std::path::Path;
 
-use microsoft_webui_client_build::{build, ClientBuildOptions, ImportKind, SourceMap};
+use webui::browser_build::{build, ClientBuildOptions, ImportKind, SourceMap};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 

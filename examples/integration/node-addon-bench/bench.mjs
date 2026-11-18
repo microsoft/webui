@@ -43,7 +43,7 @@ Baseline environment variables:
   WEBUI_BENCH_COMPARE=NAME  Compare P50 and output shape with a saved baseline
 
 Build prerequisites:
-  cargo build --release -p microsoft-webui-node -p microsoft-webui-node-build
+  cargo xtask build-node-addons --release
   pnpm --filter @microsoft/webui build`);
 }
 
@@ -537,7 +537,7 @@ async function main() {
   const buildAddonPath = resolveArtifact("build-addon");
   if (!addonPath || !buildAddonPath) {
     throw new Error(
-      "Node addons not found. Run: cargo build --release -p microsoft-webui-node -p microsoft-webui-node-build",
+      "Node addons not found. Run: cargo xtask build-node-addons --release",
     );
   }
 
@@ -553,7 +553,7 @@ async function main() {
   // The compiler produces bytes; measured rendering uses only runtime handles.
   process.env.WEBUI_ADDON_PATH = addonPath;
   process.env.WEBUI_BUILD_ADDON_PATH = buildAddonPath;
-  const { build } = await import("@microsoft/webui/build");
+  const { build } = await import("@microsoft/webui/build.js");
   const { Protocol } = await import("@microsoft/webui");
 
   // Build and validate the live fixture outside every timed region.

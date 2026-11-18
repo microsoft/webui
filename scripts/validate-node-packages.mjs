@@ -8,13 +8,16 @@ import { createHash } from "node:crypto";
 import { createReadStream, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { tarInvocation } from "./node-package-archive.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const archives = process.argv.slice(2);
 assert.ok(archives.length, "Pass one or more packed npm platform tarballs");
 
-function tarText(archive, ...args) {
-  const result = spawnSync("tar", [...args, archive], {
+function tarText(archive, flags, ...entries) {
+  const { args, cwd } = tarInvocation(archive, flags, ...entries);
+  const result = spawnSync("tar", args, {
+    cwd,
     encoding: "utf8",
     maxBuffer: 1024 * 1024,
   });
@@ -30,7 +33,9 @@ async function digest(stream) {
 }
 
 async function entryDigest(archive, entry) {
-  const child = spawn("tar", ["-xOf", archive, entry], {
+  const { args, cwd } = tarInvocation(archive, "-xOf", entry);
+  const child = spawn("tar", args, {
+    cwd,
     stdio: ["ignore", "pipe", "inherit"],
   });
   const completed = new Promise((resolve) => {
@@ -44,11 +49,7 @@ async function entryDigest(archive, entry) {
 
 for (const archive of archives) {
   const inventory = tarText(archive, "-tzf").trim().split(/\r?\n/);
-  // Keep the filename last for the -f option.
-  const result = spawnSync("tar", ["-xOf", archive, "package/package.json"], { encoding: "utf8" });
-  assert.ifError(result.error);
-  assert.equal(result.status, 0, result.stderr);
-  const packed = JSON.parse(result.stdout);
+  const packed = JSON.parse(tarText(archive, "-xOf", "package/package.json"));
   assert.match(packed.name, /^@microsoft\/webui-(darwin|linux|win32)-(arm64|x64)$/);
   assert.equal(
     path.basename(archive),

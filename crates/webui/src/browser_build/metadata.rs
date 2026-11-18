@@ -27,7 +27,7 @@ pub struct InputMetadata {
     pub opaque: bool,
     /// Script grammar selected by the actual loader, absent for opaque inputs.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub syntax: Option<crate::ScriptSyntax>,
+    pub syntax: Option<super::ScriptSyntax>,
     /// Edges actually resolved by the native bundler.
     pub imports: Vec<MetadataImport>,
 }

@@ -13,7 +13,6 @@ on:
       - 'crates/webui-handler/**'
       - 'crates/webui-protocol/**'
       - 'crates/webui-node/**'
-      - 'crates/webui-node-build/**'
       - 'crates/webui-press/**'
       - 'crates/webui-wasm/**'
       - 'packages/webui/**'

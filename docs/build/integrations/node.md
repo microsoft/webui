@@ -57,25 +57,26 @@ JavaScript-only edge-runtime package.
 
 One npm package ships both native addons. Import runtime APIs (`Protocol`,
 streaming, and `inspect`) from `@microsoft/webui`. Import compiler APIs
-(`build`, `prepareBuild`, and `bundleClient`) from `@microsoft/webui/build`;
+(`build`, `prepareBuild`, and `bundleClient`) from `@microsoft/webui/build.js`;
 the root does not export them.
 
 ```typescript
 import { Protocol } from '@microsoft/webui';
-import { build, type BuildOptions } from '@microsoft/webui/build';
+import { build, type BuildOptions } from '@microsoft/webui/build.js';
 ```
 
 Each entry loads only its own native addon when its API is used. A server that
 loads prebuilt protocols does not load the compiler addon. Compiler types,
 including `BuildOptions`, `BuildResult`, `PreparedBuild`, `LazyPackFile`, and
-the `Client*` bundling/projection types, also come from `/build`; runtime
+the `Client*` bundling/projection types, also come from `/build.js`; runtime
 types come from the root.
 
 For source builds or custom artifact locations, `WEBUI_ADDON_PATH` selects the
 runtime addon (`libwebui_node.dylib`, `libwebui_node.so`, or `webui_node.dll`).
-`WEBUI_BUILD_ADDON_PATH` independently selects the compiler addon
-(`libwebui_node_build.dylib`, `libwebui_node_build.so`, or
-`webui_node_build.dll`). Loading errors are reported by the selected API.
+`WEBUI_BUILD_ADDON_PATH` independently selects the compiler variant. Source
+builds use the same library filename in a separate `target/node-build` root;
+packaged addons are named `webui.node` and `webui-build.node`.
+Loading errors are reported by the selected API.
 The `webui` CLI is installed from the same package as before.
 
 ## Scaffold an application
@@ -179,7 +180,7 @@ Bun.serve({
 | `protocol.tokens()` | Return CSS token names in build order |
 | `inspect(protocol)` | Convert protocol to JSON for debugging |
 
-Compiler APIs from `@microsoft/webui/build`:
+Compiler APIs from `@microsoft/webui/build.js`:
 
 | API | Description |
 |----------|-------------|
@@ -207,7 +208,7 @@ When your client imports generated lazy or component modules and also produces
 a state-projection manifest, retain one compilation across client bundling:
 
 ```typescript
-import { prepareBuild, bundleClient } from '@microsoft/webui/build';
+import { prepareBuild, bundleClient } from '@microsoft/webui/build.js';
 import { writeFileSync } from 'node:fs';
 
 const prepared = prepareBuild({
@@ -269,7 +270,7 @@ idle warming and path prefetch available. See [lazy integration](/learn/lazy).
 Publish the generated files like this:
 
 ```typescript
-import { build } from '@microsoft/webui/build';
+import { build } from '@microsoft/webui/build.js';
 
 const result = build({ appDir: './src', plugin: 'webui', modulesOut: './.webui' });
 for (const pack of result.lazyPackFiles) {
@@ -399,7 +400,7 @@ allocation pressure. Ordinary per-request state should continue to use
 
 ### BuildOptions
 
-Import this type from `@microsoft/webui/build`.
+Import this type from `@microsoft/webui/build.js`.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -427,7 +428,7 @@ Light CSS uses ordinary selectors, and `:host`, `:host-context`, and
 `::slotted` fail with `unsupported-light-css`.
 
 ```js
-import { build } from '@microsoft/webui/build';
+import { build } from '@microsoft/webui/build.js';
 
 const result = build({
   appDir: './src',

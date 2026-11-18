@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { build } from '@microsoft/webui/build';
+import { build } from '@microsoft/webui/build.js';
 import { Protocol } from '@microsoft/webui';
 import { mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';

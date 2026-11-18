@@ -10,7 +10,7 @@ use rolldown_common::{
     PreserveEntrySignatures, SourceMapType, TsConfig,
 };
 
-use crate::{
+use super::{
     graph, resolver_path, resources, urls, ClientBuildError, ClientBuildOptions, Format, Loader,
     SourceMap,
 };

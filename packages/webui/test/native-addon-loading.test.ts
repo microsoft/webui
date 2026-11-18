@@ -13,13 +13,19 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { test } from "node:test";
-import { build } from "@microsoft/webui/build";
+import { build } from "@microsoft/webui/build.js";
 import { resolve as resolveNative } from "@microsoft/webui/platform.js";
 
 const PACKAGE_ENTRY = pathToFileURL(
   path.resolve("dist", "index.js")
 ).href;
 const BUILD_ENTRY = pathToFileURL(path.resolve("dist", "build.js")).href;
+
+test("compiler export uses the explicit build.js entry", async () => {
+  assert.equal(import.meta.resolve("@microsoft/webui/build.js"), BUILD_ENTRY);
+  const obsoleteEntry = "@microsoft/webui/build";
+  await assert.rejects(import(obsoleteEntry), { code: "ERR_PACKAGE_PATH_NOT_EXPORTED" });
+});
 
 test("build propagates native addon load failures without invoking the CLI", (t) => {
   const root = mkdtempSync(path.join(tmpdir(), "webui-native-load-"));
@@ -128,9 +134,9 @@ test("runtime and compiler imports load only their own native binaries", t => {
     import assert from 'node:assert/strict';
     const loaded = [];
     const dlopen = process.dlopen;
-    process.dlopen = function(module, filename, flags) {
+    process.dlopen = function(module, filename, ...args) {
       loaded.push(filename);
-      return dlopen.call(this, module, filename, flags);
+      return dlopen.call(this, module, filename, ...args);
     };
     const runtime = await import(${JSON.stringify(PACKAGE_ENTRY)});
     const compiler = await import(${JSON.stringify(BUILD_ENTRY)});

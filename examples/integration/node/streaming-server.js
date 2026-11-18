@@ -11,7 +11,7 @@
 // it drop into an existing Node service.
 //
 // Prerequisites:
-//   1. Build the native addons: cargo build -p microsoft-webui-node -p microsoft-webui-node-build
+//   1. Build the native addons: cargo xtask build-node-addons
 //   2. Build the packages:      pnpm --filter @microsoft/webui --filter @microsoft/webui-framework run build
 //   3. Install dependencies:    pnpm install
 //
@@ -24,7 +24,7 @@ import { createServer } from "node:http";
 import { dirname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { build } from "@microsoft/webui/build";
+import { build } from "@microsoft/webui/build.js";
 import { Protocol } from "@microsoft/webui";
 
 const options = parseOptions(process.argv.slice(2));

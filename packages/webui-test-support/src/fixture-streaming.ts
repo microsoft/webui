@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { build as buildProtocol } from '@microsoft/webui/build';
+import { build as buildProtocol } from '@microsoft/webui/build.js';
 import { Protocol } from '@microsoft/webui';
 import type { StreamStep } from '@microsoft/webui';
 import { relative, resolve, sep } from 'node:path';

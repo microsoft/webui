@@ -10,9 +10,9 @@ use std::time::Duration;
 
 use anyhow::Result;
 use clap::Args;
-use microsoft_webui_client_build::{build, ClientBuild, ClientBuildOptions};
 use sha2::{Digest, Sha256};
 use tokio::sync::Notify;
+use webui::browser_build::{build, ClientBuild, ClientBuildOptions};
 use webui_dev_server::shutdown::{self, Mode};
 use webui_dev_server::{spawn_watcher, WatchConfig};
 

@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test, type TestContext } from "node:test";
-import { bundleClient, build, prepareBuild } from "@microsoft/webui/build";
+import { bundleClient, build, prepareBuild } from "@microsoft/webui/build.js";
 import { inspect, Protocol } from "@microsoft/webui";
 
 const project = path.resolve(process.cwd(), "../..");

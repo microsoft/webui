@@ -13,7 +13,7 @@ use rolldown::plugin::{
 };
 use rolldown_common::{ModuleId, ResolvedId};
 
-use crate::{
+use super::{
     loaders, manifest, resolver_path, resources, ClientBuildError, ClientBuildOptions,
     InputMetadata,
 };
