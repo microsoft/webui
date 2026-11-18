@@ -186,8 +186,9 @@ The WebUI compiler brackets every SSR outlet, even when it renders no child
 routes. For hydration, the range occupies the single element slot that
 `<outlet>` occupies in the client template. The opening comment is also the
 text insertion boundary at that slot. Routed children stay unwrapped and are
-not indexed as part of the outlet's owner. Hydration removes both comments
-after binding resolution. Rebuild existing SSR protocols with the matching
+not indexed as part of the outlet's owner. Both comments stay in the DOM so
+reconnecting an outlet owner can adopt the same route range again.
+Rebuild existing SSR protocols with the matching
 compiler and runtime to get the corrected outlet topology.
 
 The compiled ownership bit includes dynamic text, raw ranges, conditions and

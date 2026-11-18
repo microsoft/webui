@@ -1970,7 +1970,6 @@ export class TemplateElement extends HTMLElement {
       meta.c !== undefined || meta.r !== undefined || rawTextCount !== 0,
       rangeStart ? rangeStart.nextSibling : ssrRoot.firstChild,
       rangeEnd,
-      staleMarkers,
     );
     const ssrElements = ssrIndex.elements;
     const textMarkerBoundaries = meta.tx && (meta.c?.length || meta.r?.length || rawTextCount)

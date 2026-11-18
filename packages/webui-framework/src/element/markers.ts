@@ -25,9 +25,7 @@ import { isComponentStyleResourceMarker } from './style-markers.js';
 
 // Marker data constants matching the handler plugin output.
 export const MARKER_REPEAT_START = 'wr';
-export const MARKER_REPEAT_END = '/wr';
 export const MARKER_COND_START = 'wc';
-export const MARKER_COND_END = '/wc';
 export const MARKER_RAW_START = 'w';
 export const MARKER_RAW_END = '/w';
 
@@ -205,7 +203,6 @@ export function buildSSRIndex(
   needMarkers: boolean,
   first: ChildNode | null = ssrRoot.firstChild,
   rangeEnd: Node | null = null,
-  staleMarkers?: Node[],
 ): SSRIndex {
   const elements: Array<Node | undefined> = [ssrRoot];
   if (!needMarkers && shape.length === 1) return { elements, conds: EMPTY, repeats: EMPTY, raws: EMPTY };
@@ -270,7 +267,6 @@ export function buildSSRIndex(
     if (outletEnd) {
       // One compiled <outlet> slot, but no live element belongs to this template.
       // Skip the child routes, which hydrate independently.
-      staleMarkers?.push(s as Comment, outletEnd);
       frame.s = outletEnd.nextSibling;
       s = null;
     } else if (s) {
