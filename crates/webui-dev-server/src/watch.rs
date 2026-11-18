@@ -546,7 +546,14 @@ mod tests {
         std::fs::write(&source, "export const value = 2;")?;
         watcher.set_ignored_paths(vec![dir.path().join("dist")]);
         let changed = receiver.recv_timeout(Duration::from_secs(5))?;
-        assert!(changed.contains(&source.canonicalize()?));
+        let source = source.canonicalize()?;
+        assert!(
+            changed
+                .iter()
+                .any(|path| path.canonicalize().is_ok_and(|path| path == source)),
+            "missing {} in {changed:?}",
+            source.display()
+        );
         Ok(())
     }
 
