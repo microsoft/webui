@@ -5,7 +5,7 @@
   "private": true,
   "scripts": {
     "build": "pnpm run build:protocol && pnpm run build:client",
-    "build:protocol": "cargo run -p microsoft-webui-cli -- build ./src --out ./dist --plugin=webui --theme=@microsoft/webui-examples-theme",
+    "build:protocol": "node ../../native-build.mjs cli build ./src --out ./dist --plugin=webui --theme=@microsoft/webui-examples-theme",
     "build:client": "esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --sourcemap",
     "start:client": "esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --sourcemap --watch",
     "start:server": "cargo run -p microsoft-webui-cli -- serve ./src --state ./data/state.json --plugin=webui --theme=@microsoft/webui-examples-theme --servedir ./dist --port 3022 --watch",

@@ -33,12 +33,12 @@ test('standalone example builds prepare the compiler addon and client watches pr
     const { scripts } = JSON.parse(await readFile(manifest, 'utf8'));
     const buildSteps = scripts.build.split(' && ');
     assert.equal(buildSteps[0], 'pnpm run build:deps', app);
-    assert.ok(buildSteps.indexOf(
-      'cargo xtask build-node-addons --release -- pnpm run build:client',
-    ) > 0, app);
     // The E2E and desktop callers can still build a client with prepared dependencies.
     const client = scripts['build:client'];
     assert.match(client, /^node \S*build-client\.mjs$/, app);
+    assert.ok(buildSteps.indexOf(
+      `node ../../native-build.mjs client ${client.slice('node '.length)}`,
+    ) > 0, app);
     assert.deepEqual(scripts['start:client'].split(' && '), [
       'pnpm run build:deps',
       'cargo build --release -p microsoft-webui-cli',

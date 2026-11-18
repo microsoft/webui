@@ -3,6 +3,7 @@
 
 //! Examples build tasks.
 
+use crate::cargo_artifacts::{self, Kind};
 use crate::node_addons::{self, Addons};
 use crate::util::{
     build_command, collect_child_dirs, display_name, run_command, run_command_quiet,
@@ -167,7 +168,7 @@ fn is_example_app_dir(app_dir: &Path) -> bool {
     app_dir.join("package.json").is_file()
 }
 
-fn run_app_builds(addons: &Addons) -> Result<(), String> {
+fn run_app_builds(addons: &Addons, cli: &Path) -> Result<(), String> {
     use std::thread;
 
     let apps_root = Path::new("examples/app");
@@ -189,6 +190,7 @@ fn run_app_builds(addons: &Addons) -> Result<(), String> {
         .into_iter()
         .map(|app_dir| {
             let addons = addons.clone();
+            let cli = cli.to_path_buf();
             thread::spawn(move || {
                 let app_name = display_name(&app_dir);
                 if !has_script(&app_dir, "build") {
@@ -199,7 +201,7 @@ fn run_app_builds(addons: &Addons) -> Result<(), String> {
                     ));
                 }
 
-                run_app_build_script(&app_dir, &addons)
+                run_app_build_script(&app_dir, &addons, &cli)
                     .map_err(|message| format!("app '{}' build failed: {}", app_name, message))?;
 
                 eprintln!("  {} app: {}", console::style("•").dim(), app_name);
@@ -229,7 +231,23 @@ pub fn run_example_builds() -> Result<(), String> {
     run_integration_builds(&addons)?;
     ensure_example_wasm()?;
     ensure_example_deps()?;
-    run_app_builds(&addons)
+    let cli = build_example_cli()?;
+    run_app_builds(&addons, &cli)
+}
+
+fn build_example_cli() -> Result<std::path::PathBuf, String> {
+    let mut command = build_command(
+        "cargo",
+        &[
+            "build",
+            "--locked",
+            "-p",
+            "microsoft-webui-cli",
+            "--message-format=json-render-diagnostics",
+        ],
+    );
+    let output = node_addons::run_checked(&mut command, "example CLI build")?;
+    cargo_artifacts::find(&output.stdout, "webui", Kind::Executable)
 }
 
 /// Build the shared workspace JS packages once, before the parallel app builds.
@@ -285,11 +303,12 @@ fn ensure_example_wasm() -> Result<(), String> {
     crate::build_wasm::run()
 }
 
-fn run_app_build_script(app_dir: &Path, addons: &Addons) -> Result<(), String> {
+fn run_app_build_script(app_dir: &Path, addons: &Addons, cli: &Path) -> Result<(), String> {
     let mut command = build_command("pnpm", &["run", "build"]);
     addons.apply(&mut command);
     command
         .current_dir(app_dir)
+        .env("WEBUI_BINARY_PATH", cli)
         .env("CARGO_INCREMENTAL", "0")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
