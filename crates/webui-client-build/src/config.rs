@@ -11,7 +11,8 @@ use rolldown_common::{
 };
 
 use crate::{
-    graph, resources, urls, ClientBuildError, ClientBuildOptions, Format, Loader, SourceMap,
+    graph, resolver_path, resources, urls, ClientBuildError, ClientBuildOptions, Format, Loader,
+    SourceMap,
 };
 
 pub(super) struct Prepared {
@@ -51,9 +52,9 @@ pub(super) fn prepare(options: &ClientBuildOptions) -> Result<Prepared, ClientBu
         dependencies.insert(framework.join("package.json"));
     }
     let bundler_options = BundlerOptions {
-        cwd: Some(project.clone()),
+        cwd: Some(resolver_path::path(&project)?.into()),
         input: Some(entries(options, &project)?),
-        dir: Some(resources::utf8(&out)?.to_owned()),
+        dir: Some(resolver_path::path(&out)?),
         platform: Some(Platform::Browser),
         format: Some(match options.format {
             Format::Esm => OutputFormat::Esm,
@@ -70,7 +71,11 @@ pub(super) fn prepare(options: &ClientBuildOptions) -> Result<Prepared, ClientBu
             target: Some(either::Either::Left(options.target.clone())),
             ..Default::default()
         }),
-        tsconfig: tsconfig.map(TsConfig::Manual),
+        tsconfig: tsconfig
+            .as_deref()
+            .map(resolver_path::path)
+            .transpose()?
+            .map(|path| TsConfig::Manual(path.into())),
         sourcemap: match options.sourcemap {
             SourceMap::None => None,
             SourceMap::File => Some(SourceMapType::File),
@@ -117,7 +122,9 @@ fn aliases(
             ));
         }
         let target = if target.starts_with('.') {
-            resources::utf8(&project.join(target))?.to_owned()
+            resolver_path::path(&project.join(target))?
+        } else if Path::new(target).is_absolute() {
+            resolver_path::path(Path::new(target))?
         } else {
             target.clone()
         };
@@ -143,7 +150,7 @@ fn entries(
                 }
                 id.to_owned()
             } else {
-                resources::utf8(&resources::contained(project, entry)?)?.to_owned()
+                resolver_path::path(&resources::contained(project, entry)?)?
             };
             Ok(InputItem {
                 name: Some(name.clone()),

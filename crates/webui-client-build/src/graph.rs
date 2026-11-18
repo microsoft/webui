@@ -13,7 +13,10 @@ use rolldown::plugin::{
 };
 use rolldown_common::{ModuleId, ResolvedId};
 
-use crate::{loaders, manifest, resources, ClientBuildError, ClientBuildOptions, InputMetadata};
+use crate::{
+    loaders, manifest, resolver_path, resources, ClientBuildError, ClientBuildOptions,
+    InputMetadata,
+};
 
 pub use webui_projection::{Import, Module, ModuleGraph, ScriptSyntax};
 
@@ -230,9 +233,14 @@ impl Plugin for Capture {
                 // Virtual modules resolve relative imports from the explicitly chosen project.
                 // No independent resolver is introduced.
                 let importer = args.importer.filter(|id| !id.starts_with('\0'));
+                let specifier = if Path::new(args.specifier).is_absolute() {
+                    Cow::Owned(resolver_path::path(Path::new(args.specifier))?)
+                } else {
+                    Cow::Borrowed(args.specifier)
+                };
                 context
                     .resolve(
-                        args.specifier,
+                        &specifier,
                         importer,
                         Some(PluginContextResolveOptions {
                             import_kind: args.kind,
@@ -271,7 +279,7 @@ impl Plugin for Capture {
                 if let Some(config) = context
                     .options()
                     .transform_options
-                    .discover_tsconfig_file(&path)
+                    .discover_tsconfig_file(Path::new(&resolver_path::path(&path)?))
                 {
                     context.add_watch_file(resources::utf8(&config)?);
                 }

@@ -135,6 +135,82 @@ async fn native_bundle_watch_rebuilds_recovers_and_stops_without_node() -> Resul
 }
 
 #[test]
+fn native_bundle_resolves_canonical_entries_aliases_configs_and_virtual_imports() -> Result<()> {
+    let temp = tempfile::Builder::new()
+        .prefix("native browser paths ")
+        .tempdir()?;
+    let root = temp.path().canonicalize()?;
+    fs::create_dir(root.join("src"))?;
+    fs::create_dir(root.join("cfg"))?;
+    fs::write(root.join("src/index.ts"), "import { value } from 'alias-value'; import { mapped } from 'mapped'; export const marker: string = value + mapped;")?;
+    fs::write(
+        root.join("src/value.ts"),
+        "export const value = 'native-value';",
+    )?;
+    fs::write(
+        root.join("src/mapped.ts"),
+        "export const mapped = '-mapped';",
+    )?;
+    let tsconfig = root.join("cfg/tsconfig.json");
+    fs::write(
+        &tsconfig,
+        r#"{"compilerOptions":{"paths":{"mapped":["../src/mapped.ts"]}}}"#,
+    )?;
+    let entry = "\0native-entry";
+    let virtual_source = format!(
+        "export {{ value }} from {};",
+        serde_json::to_string(&root.join("src/value.ts"))?
+    );
+    let mut entries = Map::new();
+    entries.insert(
+        "index".into(),
+        serde_json::to_value(root.join("src/index.ts"))?,
+    );
+    entries.insert("virtual".into(), Value::from(entry));
+    let mut aliases = Map::new();
+    aliases.insert(
+        "alias-value$".into(),
+        serde_json::to_value(root.join("src/value.ts"))?,
+    );
+    let mut virtual_modules = Map::new();
+    virtual_modules.insert(entry.into(), Value::from(virtual_source));
+    let mut options = Map::new();
+    options.insert("project".into(), serde_json::to_value(&root)?);
+    options.insert("entries".into(), Value::Object(entries));
+    options.insert("outDir".into(), Value::from("dist"));
+    options.insert("tsconfig".into(), serde_json::to_value(tsconfig)?);
+    options.insert("aliases".into(), Value::Object(aliases));
+    options.insert("virtualModules".into(), Value::Object(virtual_modules));
+    let config = root.join("browser.json");
+    fs::write(&config, serde_json::to_vec(&options)?)?;
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_webui"))
+        .args(["bundle", "--config"])
+        .arg(&config)
+        .env("PATH", "")
+        .output()?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let manifest: Value =
+        serde_json::from_slice(&fs::read(root.join("dist/webui-projection.json"))?)?;
+    for path in ["src/index.ts", "src/value.ts", "src/mapped.ts"] {
+        assert!(manifest["inputs"][path]
+            .as_str()
+            .is_some_and(|hash| hash.starts_with("sha256:")));
+    }
+    for entry in ["dist/index.js", "dist/virtual.js"] {
+        assert!(!fs::read(root.join(entry))?.is_empty());
+        assert!(manifest["outputs"][entry]
+            .as_str()
+            .is_some_and(|hash| hash.starts_with("sha256:")));
+    }
+    assert_eq!(root, root.canonicalize()?);
+    Ok(())
+}
+
+#[test]
 fn native_bundle_cannot_replace_its_configuration() -> Result<()> {
     let temp = tempfile::tempdir_in(std::env::temp_dir().canonicalize()?)?;
     let root = temp.path();

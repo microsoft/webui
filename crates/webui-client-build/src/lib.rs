@@ -14,6 +14,7 @@ mod options;
 mod output;
 mod parallel;
 mod publish;
+mod resolver_path;
 mod resources;
 mod urls;
 mod warnings;
@@ -145,7 +146,7 @@ pub async fn build(options: ClientBuildOptions) -> Result<ClientBuild, ClientBui
         options.parallel_dynamic_imports,
     );
     let decorators = decorators::LegacyDecorators {
-        project: project.clone(),
+        project: resolver_path::path(&project)?.into(),
     };
     let capture = graph::Capture::new(project.clone(), framework, options);
     let mut bundler = Bundler::with_plugins(

@@ -162,7 +162,7 @@ pub(super) fn framework_exports(root: &Path) -> Result<FrameworkAliases, ClientB
         let resolved = contained(root, Path::new(target))?;
         aliases.push((
             format!("@microsoft/webui-framework{suffix}$"),
-            vec![Some(utf8(&resolved)?.to_owned())],
+            vec![Some(crate::resolver_path::path(&resolved)?)],
         ));
     }
     Ok(aliases)
