@@ -18,6 +18,7 @@ const counts = [25, 250, 1000];
 assert.ok(Number.isSafeInteger(samples) && samples >= 3 && samples <= 100);
 assert.ok(Number.isFinite(latencyMs) && latencyMs >= 0 && latencyMs <= 1000);
 assert.ok(process.env.WEBUI_ADDON_PATH, 'Set WEBUI_ADDON_PATH to the freshly built release addon.');
+assert.ok(process.env.WEBUI_BUILD_ADDON_PATH, 'Set WEBUI_BUILD_ADDON_PATH to the freshly built release compiler addon.');
 
 function stats(values) {
   const sorted = [...values].sort((a, b) => a - b);
@@ -141,6 +142,7 @@ try {
       os: `${platform()} ${release()}`, cpu: cpus()[0].model,
       samples, discardedWarmups: 2, stateDelayMs: latencyMs,
       addon: process.env.WEBUI_ADDON_PATH,
+      buildAddon: process.env.WEBUI_BUILD_ADDON_PATH,
     },
     methodology: 'Fresh browser contexts, gzip HTML/JS, real compiler/protocol, production-minified bundles. Alternating mode order, 2 warmups, forced-GC heap samples. Eager-local keeps initial state; eager-fresh and lazy both fetch fresh state with identical provider delay. No physical low-end-device claim.',
     results,

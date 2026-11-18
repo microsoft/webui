@@ -30,7 +30,7 @@ fn generated_rust_server_owns_its_workspace_inside_a_nonmember_app() -> Result<(
         String::from_utf8_lossy(&initialized.stdout),
         String::from_utf8_lossy(&initialized.stderr)
     );
-    let manifest = app.join("server/Cargo.toml");
+    let manifest = app.join("Cargo.toml");
     let output = Command::new(env!("CARGO"))
         .args(["metadata", "--format-version", "1", "--no-deps"])
         .arg("--manifest-path")
@@ -50,7 +50,7 @@ fn generated_rust_server_owns_its_workspace_inside_a_nonmember_app() -> Result<(
         .context("Cargo workspace root")?;
     assert_eq!(
         Path::new(workspace_root).canonicalize()?,
-        app.join("server").canonicalize()?
+        app.canonicalize()?
     );
     let package_manifest = metadata["packages"][0]["manifest_path"]
         .as_str()

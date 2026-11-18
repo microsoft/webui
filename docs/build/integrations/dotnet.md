@@ -19,18 +19,41 @@ feed; the command below requires that feed to be configured.
 
 [`webui init`](/reference/cli/#webui-init) with `--server dotnet` creates
 an ASP.NET Core app pinned to the compiler's WebUI version. Configure an
-approved source for that version. Alternatively, download the managed
+approved source for that version. The native frontend default creates root
+`App.csproj`, `Program.cs`, `web/`, and `webui.toml`, without a `package.json`
+or JavaScript build scripts. Install the
+[native toolchain](/start/installation#native-toolchain) for browser compilation
+and native TypeScript checking; Node/npm are not required.
+
+Alternatively, download the managed
 `Microsoft.WebUI` `.nupkg` and all six `Microsoft.WebUI.Runtime.*` `.nupkg`
 files from the same [official release](https://github.com/microsoft/webui/releases)
 into one directory, then restore from the app root:
 
 ```bash
-dotnet restore server/App.csproj --source /path/to/release-packages
+dotnet restore App.csproj --source /path/to/release-packages
 ```
 
 The generated build uses restored NuGet native runtime assets, not npm or
 `WEBUI_SDK_DIR`. It does not configure global feeds, fall back to an older
 package, or change package publication policy.
+
+```bash
+webui app check
+webui app dev
+webui app build
+webui app start
+```
+
+The .NET host check performs a native build, so it cannot run while another app
+build/dev/start owns the project. Start verifies the last complete host/protocol
+build without compiling or restoring. The generated server drains requests
+before disposing native render objects. For direct `dotnet` builds, first run
+`webui app build --frontend-only` to prepare browser assets and the protocol.
+Only `dist/public/` is public static content.
+
+See
+[app commands](/reference/cli/#webui-app).
 
 ```bash
 dotnet add package Microsoft.WebUI

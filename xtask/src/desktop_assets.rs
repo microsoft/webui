@@ -70,6 +70,7 @@ pub(crate) fn stage_built_assets(root: &Path) -> Result<PathBuf, String> {
 pub(crate) fn package_check() -> Result<(), String> {
     let root = workspace_root()?;
     generate()?;
+    crate::native_assets::stage(&root)?;
     with_packaged_assets(&root, || {
         verify_package_file_list()?;
         run_command_quiet(

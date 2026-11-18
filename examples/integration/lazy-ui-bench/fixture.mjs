@@ -11,7 +11,8 @@ import { dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
-import { build, Protocol } from '../../../packages/webui/dist/index.js';
+import { build } from '../../../packages/webui/dist/build.js';
+import { Protocol } from '../../../packages/webui/dist/index.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const require = createRequire(join(root, 'packages', 'webui-test-support', 'package.json'));

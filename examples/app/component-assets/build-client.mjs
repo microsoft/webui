@@ -5,7 +5,7 @@ import { writeFileSync } from 'node:fs';
 import { runWebUIClientBuild } from '../../build-client.mjs';
 
 const result = await runWebUIClientBuild({
-  define: { __WEBUI_DEV__: 'false' },
+  defines: { __WEBUI_DEV__: 'false' },
 });
 writeFileSync(
   'dist/client-metafile.json',

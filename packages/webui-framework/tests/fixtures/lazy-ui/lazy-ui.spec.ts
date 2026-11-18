@@ -361,8 +361,10 @@ test('focus inside an intent owner before the runtime listens prefetches its pac
   await ready(page, ['test-lazy-search']);
   await page.evaluate(() => new Promise<void>(resolve => setTimeout(resolve, 100)));
   expect(await page.evaluate(() => document.readyState)).not.toBe('complete');
-  // Focus that predates the runtime is no gesture, so startup requests nothing.
-  expect(sent.slice(started).filter(([url]) => !url.endsWith('/favicon.ico'))).toEqual([]);
+  // Static runtime chunks are startup work, not intent-triggered region loads.
+  expect(sent.slice(started).filter(([url]) =>
+    url.includes('/lazy-ui/_webui/packs/') || url.includes('/lazy-ui/state'))).toEqual([]);
+  expect(await page.evaluate(() => window.__lazyFixture.imports())).toEqual([]);
   expect(await page.evaluate(() => window.__lazyFixture.registered('test-lazy-search'))).toBe(false);
 
   finishLoading();

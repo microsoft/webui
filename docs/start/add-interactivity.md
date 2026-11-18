@@ -13,8 +13,8 @@ Continue in the `hello-webui` project from
 
 ## Install the browser runtime
 
-The CLI renders HTML. Interactive components also need the browser runtime
-and a bundler for their TypeScript:
+The CLI renders HTML. Interactive components also need the browser runtime.
+The WebUI native compiler bundles their TypeScript:
 
 <webui-press-tabs sync="package-manager" storage="local">
 <webui-press-tab slot="tab" value="npm" active>npm</webui-press-tab>
@@ -25,7 +25,6 @@ and a bundler for their TypeScript:
 
 ```bash
 npm install @microsoft/webui-framework
-npm install --save-dev esbuild
 ```
 
 </webui-press-tab-panel>
@@ -33,7 +32,6 @@ npm install --save-dev esbuild
 
 ```bash
 pnpm add @microsoft/webui-framework
-pnpm add -D esbuild
 ```
 
 </webui-press-tab-panel>
@@ -41,7 +39,6 @@ pnpm add -D esbuild
 
 ```bash
 yarn add @microsoft/webui-framework
-yarn add --dev esbuild
 ```
 
 </webui-press-tab-panel>
@@ -49,16 +46,13 @@ yarn add --dev esbuild
 
 ```bash
 bun add @microsoft/webui-framework
-bun add --dev esbuild
 ```
 
 </webui-press-tab-panel>
 </webui-press-tabs>
 
-Keep WebUI packages on matching releases.
-If your package manager reports blocked scripts for `esbuild`, review and
-approve that package separately using the
-[installation policies](/start/installation#installation-policies).
+Keep WebUI packages on matching releases. No separate JavaScript compiler peer
+is required.
 
 ## Add a button and its handler
 
@@ -132,7 +126,7 @@ import './my-counter/my-counter.js';
 startRuntime();
 ```
 
-The `.js` import is intentional: esbuild resolves it to the TypeScript source.
+The `.js` import is intentional: the native compiler resolves it to the TypeScript source.
 `startRuntime()` registers the imported component and starts hydration.
 
 Replace the entry template with this complete file:
@@ -179,7 +173,7 @@ initial server data and later browser updates.
 ```
 
 These decorator settings are required by WebUI's component decorators.
-This setup uses esbuild to transform TypeScript, not to type-check it.
+This setup bundles TypeScript natively; type checking is a separate operation.
 
 **`build-client.mjs`**
 
@@ -187,16 +181,15 @@ This setup uses esbuild to transform TypeScript, not to type-check it.
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { build } from 'esbuild';
+import { bundleClient } from '@microsoft/webui/build.js';
 
-await build({
-  entryPoints: ['src/index.ts'],
-  outfile: 'dist/index.js',
-  bundle: true,
-  format: 'esm',
-  target: 'es2022',
+await bundleClient({
+  project: process.cwd(),
+  entries: { index: 'src/index.ts' },
+  outDir: 'dist',
+  development: true,
+  minify: false,
   tsconfig: 'tsconfig.json',
-  define: { __WEBUI_DEV__: 'true' },
 });
 ```
 
@@ -209,7 +202,7 @@ Keep your dependencies, script approvals, and other fields.
 {
   "scripts": {
     "build:client": "node build-client.mjs",
-    "build:protocol": "webui build ./src --out ./dist --plugin webui",
+    "build:protocol": "webui build ./src --out ./dist --plugin webui --projection-manifest ./dist/webui-projection.json",
     "build": "npm run build:client && npm run build:protocol",
     "dev": "webui serve ./src --state ./data/state.json --plugin webui --servedir ./dist"
   }

@@ -37,6 +37,8 @@ fn mime(path: &Path) -> Option<&'static str> {
     match path.extension()?.to_str()? {
         "js" => Some("text/javascript; charset=utf-8"),
         "css" => Some("text/css; charset=utf-8"),
+        "txt" => Some("text/plain; charset=utf-8"),
+        "map" => Some("application/json"),
         "svg" => Some("image/svg+xml"),
         "png" => Some("image/png"),
         "jpg" => Some("image/jpeg"),
@@ -108,7 +110,10 @@ async fn request(request: HttpRequest, runtime: web::Data<Runtime>) -> HttpRespo
     if pathname.contains(['\\', '\0']) || pathname.split('/').any(|p| p == "." || p == "..") {
         return text(StatusCode::NOT_FOUND, "Not found");
     }
-    let state = match pathname.as_ref() {
+    // Use the same validated literal route for state and rendering. The generic
+    // matcher expects encoded input for dynamic segments, not these fixed pages.
+    let route = pathname.as_ref();
+    let state = match route {
         "/" => Some(serde_json::json!({"title":"Hello WebUI","count":0,"isHome":true})),
         "/about" => Some(serde_json::json!({"title":"About WebUI","isHome":false})),
         _ => None,
@@ -118,7 +123,7 @@ async fn request(request: HttpRequest, runtime: web::Data<Runtime>) -> HttpRespo
         match runtime.handler.render(
             &runtime.protocol,
             &state,
-            &RenderOptions::new("index.html", &pathname),
+            &RenderOptions::new("index.html", route),
             &mut html,
         ) {
             Ok(()) => {
@@ -176,14 +181,36 @@ async fn main() -> io::Result<()> {
     if port == 0 {
         return Err(io::Error::other("PORT must be from 1 to 65535"));
     }
-    println!("Listening on http://{host}:{port}");
-    HttpServer::new(move || {
+    let server = HttpServer::new(move || {
         App::new()
             .app_data(runtime.clone())
             .default_service(web::to(request))
     })
     .bind((host.as_str(), port))?
     .shutdown_timeout(5)
-    .run()
-    .await
+    .run();
+    if std::env::var("_WEBUI_APP_CONTROL").as_deref() == Ok("stdin-v1") {
+        let handle = server.handle();
+        let runtime = tokio::runtime::Handle::current();
+        std::thread::Builder::new()
+            .name("webui-supervisor".into())
+            .spawn(move || {
+                let mut command = [0_u8; 1];
+                match std::io::Read::read_exact(&mut io::stdin(), &mut command) {
+                    Ok(()) if command == *b"S" => {}
+                    Ok(()) => eprintln!("Invalid WebUI supervisor command; shutting down"),
+                    Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => {
+                        eprintln!("WebUI supervisor disconnected; shutting down")
+                    }
+                    Err(error) => {
+                        eprintln!("WebUI supervisor control failed: {error}; shutting down")
+                    }
+                }
+                let _ = runtime.spawn(async move {
+                    handle.stop(true).await;
+                });
+            })?;
+    }
+    println!("Listening on http://{host}:{port}");
+    server.await
 }

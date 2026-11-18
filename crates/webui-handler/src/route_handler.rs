@@ -11,10 +11,12 @@
 use crate::{route_matcher, route_renderer, HandlerError, StateSelection};
 use memchr::memchr2;
 use route_matcher::CompiledRouteIndex;
-use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
+use serde::de::{DeserializeSeed, MapAccess, Visitor};
 use serde::ser::SerializeMap;
 use serde::Serialize;
 use serde_json::{value::RawValue, Map, Value};
+
+mod raw_json;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -1070,6 +1072,7 @@ fn collect_component_styles_inner<'a>(
                         Value::Array(members.iter().cloned().map(Value::String).collect()),
                     );
                 }
+                entry.sort_keys();
                 resources.insert(name.to_owned(), Value::Object(entry));
             }
             ordered.push(Value::String(name.to_owned()));
@@ -1116,15 +1119,17 @@ fn covered_components<'a>(
 
 fn component_styles_payload(
     strategy: webui_protocol::CssStrategy,
-    resources: serde_json::Map<String, Value>,
-    closures: serde_json::Map<String, Value>,
+    mut resources: serde_json::Map<String, Value>,
+    mut closures: serde_json::Map<String, Value>,
 ) -> Value {
+    resources.sort_keys();
+    closures.sort_keys();
     let strategy = strategy.wire_name();
     let mut payload = serde_json::Map::new();
-    payload.insert("version".into(), Value::from(1));
-    payload.insert("strategy".into(), Value::String(strategy.into()));
-    payload.insert("resources".into(), Value::Object(resources));
     payload.insert("closures".into(), Value::Object(closures));
+    payload.insert("resources".into(), Value::Object(resources));
+    payload.insert("strategy".into(), Value::String(strategy.into()));
+    payload.insert("version".into(), Value::from(1));
     Value::Object(payload)
 }
 
@@ -1722,85 +1727,8 @@ impl<'de> DeserializeSeed<'de> for ValidJson {
     where
         D: serde::Deserializer<'de>,
     {
-        deserializer.deserialize_any(ValidJsonVisitor)
-    }
-}
-
-struct ValidJsonVisitor;
-
-impl<'de> Visitor<'de> for ValidJsonVisitor {
-    type Value = ();
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("valid JSON")
-    }
-
-    fn visit_bool<E>(self, _value: bool) -> std::result::Result<(), E> {
-        Ok(())
-    }
-
-    fn visit_i64<E>(self, _value: i64) -> std::result::Result<(), E> {
-        Ok(())
-    }
-
-    fn visit_u64<E>(self, _value: u64) -> std::result::Result<(), E> {
-        Ok(())
-    }
-
-    fn visit_f64<E>(self, value: f64) -> std::result::Result<(), E>
-    where
-        E: serde::de::Error,
-    {
-        if value.is_finite() {
-            Ok(())
-        } else {
-            Err(E::custom("number out of range"))
-        }
-    }
-
-    fn visit_str<E>(self, _value: &str) -> std::result::Result<(), E> {
-        Ok(())
-    }
-
-    fn visit_borrowed_str<E>(self, _value: &'de str) -> std::result::Result<(), E> {
-        Ok(())
-    }
-
-    fn visit_string<E>(self, _value: String) -> std::result::Result<(), E> {
-        Ok(())
-    }
-
-    fn visit_unit<E>(self) -> std::result::Result<(), E> {
-        Ok(())
-    }
-
-    fn visit_none<E>(self) -> std::result::Result<(), E> {
-        Ok(())
-    }
-
-    fn visit_some<D>(self, deserializer: D) -> std::result::Result<(), D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        ValidJson.deserialize(deserializer)
-    }
-
-    fn visit_seq<A>(self, mut sequence: A) -> std::result::Result<(), A::Error>
-    where
-        A: SeqAccess<'de>,
-    {
-        while sequence.next_element_seed(ValidJson)?.is_some() {}
-        Ok(())
-    }
-
-    fn visit_map<A>(self, mut map: A) -> std::result::Result<(), A::Error>
-    where
-        A: MapAccess<'de>,
-    {
-        while map.next_key::<IgnoredAny>()?.is_some() {
-            map.next_value_seed(ValidJson)?;
-        }
-        Ok(())
+        let value: &RawValue = serde::Deserialize::deserialize(deserializer)?;
+        raw_json::validate_literals(value).map_err(serde::de::Error::custom)
     }
 }
 
@@ -3982,6 +3910,14 @@ mod tests {
             (r#"{"h":"<p>Body</p>","v":3"#, false),
             (r#"{"h":"<p>Body</p>","v":3} trailing"#, false),
             (r#"{"h":"<p>Body</p>","v":1e9999}"#, false),
+            (r#"{"h":"<p>Body</p>","v":[{"nested":-1e9999}]}"#, false),
+            (r#"{"h":"<p>Body</p>","v":"1e9999"}"#, true),
+            (
+                r#"{"h":"<p>Body</p>","v":{"$serde_json::private::Number":"1e9999"}}"#,
+                true,
+            ),
+            (r#"{"h":"<p>Body</p>","v":"\uD800"}"#, false),
+            (r#"{"h":"<p>Body</p>","v":"\uD83D\uDE00"}"#, true),
         ] {
             let mut document = WebUIProtocol::default();
             if let Some(template_json) = component_template {
@@ -4585,19 +4521,73 @@ mod tests {
     }
 
     #[test]
-    fn partial_state_validation_matches_value_number_limits() {
+    fn partial_state_validation_matches_finite_number_limits() {
         for json in [
             r#"{"value":1e9999}"#,
             r#"{"value":-1e9999}"#,
             r#"{"value":1e308}"#,
+            r#"{"value":1E+309}"#,
+            r#"{"value":1e-9999}"#,
+            r#"{"value":0e9999}"#,
+            r#"{"value":1e0000309}"#,
+            r#"{"value":0.1e309}"#,
+            r#"{"value":1.7976931348623157e308}"#,
             r#"{"value":18446744073709551615}"#,
             r#"{"value":18446744073709551616}"#,
         ] {
             assert_eq!(
                 validate_json(json).is_ok(),
-                serde_json::from_str::<Value>(json).is_ok(),
+                serde_json::from_str::<HashMap<String, f64>>(json).is_ok(),
                 "validation mismatch for {json}"
             );
+        }
+    }
+
+    #[test]
+    fn raw_json_validation_checks_long_numbers_at_every_block_alignment() {
+        for length in [62, 63, 126, 127, 128, 254, 255, 308, 309, 400] {
+            let digits = "9".repeat(length);
+            for number in [
+                digits.clone(),
+                format!("-{digits}"),
+                format!("{digits}e99"),
+                format!("{digits}e-300"),
+                format!("0.{digits}E+300"),
+            ] {
+                let expected = serde_json::from_str::<f64>(&number).is_ok();
+                for padding in 0..128 {
+                    let json = format!("[{}{number}]", " ".repeat(padding));
+                    assert_eq!(
+                        validate_json_inner(&json).is_ok(),
+                        expected,
+                        "validation mismatch for {number} after {padding} spaces"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn partial_state_validation_checks_selected_and_skipped_escaped_strings() {
+        let prepared = prepared_partial_protocol(&["value"]);
+        for (literal, valid) in [
+            (r#""\uD800""#, false),
+            (r#""\uDC00""#, false),
+            (r#""\uD800\u0041""#, false),
+            (r#""\uD800\\uDC00""#, false),
+            (r#""\uD83D\uDE00""#, true),
+            (r#""\\uD800""#, true),
+            (r#""1e9999\"\\\u0041""#, true),
+            (r#"{"$serde_json::private::Number":"1e9999"}"#, true),
+        ] {
+            for key in ["value", "serverOnly"] {
+                let json = format!(r#"{{"{key}":{literal}}}"#);
+                let result = prepared.render_partial_json(&json, "index.html", "/", "");
+                assert_eq!(result.is_ok(), valid, "validation mismatch for {json}");
+                if valid && key == "value" {
+                    assert!(result.unwrap().contains(literal), "{json}");
+                }
+            }
         }
     }
 

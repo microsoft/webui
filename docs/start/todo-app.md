@@ -36,9 +36,9 @@ cd todo-webui
   "type": "module",
   "scripts": {
     "build:client": "node build-client.mjs",
-    "build:protocol": "webui build ./src --out ./dist --plugin webui",
+    "build:protocol": "webui build ./src --out ./dist --plugin webui --projection-manifest ./dist/webui-projection.json",
     "build": "npm run build:client && npm run build:protocol",
-    "dev": "webui serve ./src --state ./data/state.json --plugin webui --servedir ./dist"
+    "dev": "webui serve ./src --state ./data/state.json --plugin webui --servedir ./dist --projection-manifest ./dist/webui-projection.json"
   }
 }
 ```
@@ -52,7 +52,7 @@ cd todo-webui
 
 ```bash
 npm install @microsoft/webui-framework
-npm install --save-dev @microsoft/webui esbuild
+npm install --save-dev @microsoft/webui
 ```
 
 </webui-press-tab-panel>
@@ -60,7 +60,7 @@ npm install --save-dev @microsoft/webui esbuild
 
 ```bash
 pnpm add @microsoft/webui-framework
-pnpm add -D @microsoft/webui esbuild
+pnpm add -D @microsoft/webui
 ```
 
 </webui-press-tab-panel>
@@ -68,7 +68,7 @@ pnpm add -D @microsoft/webui esbuild
 
 ```bash
 yarn add @microsoft/webui-framework
-yarn add --dev @microsoft/webui esbuild
+yarn add --dev @microsoft/webui
 ```
 
 </webui-press-tab-panel>
@@ -76,14 +76,14 @@ yarn add --dev @microsoft/webui esbuild
 
 ```bash
 bun add @microsoft/webui-framework
-bun add --dev @microsoft/webui esbuild
+bun add --dev @microsoft/webui
 ```
 
 </webui-press-tab-panel>
 </webui-press-tabs>
 
 Keep WebUI packages on matching releases and keep optional dependencies enabled.
-If setup scripts for `@microsoft/webui` or `esbuild` are blocked, review and
+If setup scripts for `@microsoft/webui` are blocked, review and
 approve each package before building. See
 [installation policies](/start/installation#installation-policies) for npm 12,
 pnpm, Yarn, and Bun.
@@ -418,16 +418,15 @@ bundle.
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { build } from 'esbuild';
+import { bundleClient } from '@microsoft/webui/build.js';
 
-await build({
-  entryPoints: ['src/index.ts'],
-  outfile: 'dist/index.js',
-  bundle: true,
-  format: 'esm',
-  target: 'es2022',
+await bundleClient({
+  project: process.cwd(),
+  entries: { index: 'src/index.ts' },
+  outDir: 'dist',
+  development: true,
+  minify: false,
   tsconfig: 'tsconfig.json',
-  define: { __WEBUI_DEV__: 'true' },
 });
 ```
 
@@ -489,7 +488,7 @@ and that `/index.js` returns JavaScript.
 Add `--watch` to the dev command for template/state reloads. Rebuild browser code
 with `npm run build:client` after TypeScript edits, then refresh. This setup
 transforms TypeScript but does not type-check it. For release bundles, set
-`__WEBUI_DEV__` to `'false'` and enable esbuild's `minify` option after testing.
+`development` to `false` and enable `minify` after testing.
 
 ## 9. What You've Learned
 

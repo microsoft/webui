@@ -1160,6 +1160,11 @@ describe('component asset helpers', () => {
       );
       assert.equal(createCount, 1);
       assert.equal(getTemplate('generated-root')?.h, '<p>Generated</p>');
+
+      const { preload, create } = generated;
+      assert.equal(preload(), first, 'successful registration stays cached without a receiver');
+      await create();
+      assert.equal(createCount, 2, 'detached create uses the same registered graph');
     } finally {
       restoreGlobal('window', previousWindow);
       restoreGlobal('document', previousDocument);
@@ -1177,11 +1182,13 @@ describe('component asset helpers', () => {
       },
     });
     let includeMissing = true;
+    let registrations = 0;
     const asset = {
       ...componentAsset({
         'generated-retry-root': { v: 3, h: '<missing-generated-entry></missing-generated-entry>' },
       }),
       get externalComponents() {
+        registrations += 1;
         return includeMissing
           ? ['missing-generated-entry']
           : [];
@@ -1190,14 +1197,22 @@ describe('component asset helpers', () => {
 
     try {
       const generated = defineComponentAsset(asset);
-      await assert.rejects(
-        generated.preload(),
-        /requires entry template <missing-generated-entry>/,
-      );
+      const first = generated.preload();
+      assert.equal(generated.preload(), first);
+      await Promise.all([
+        assert.rejects(first, /requires entry template <missing-generated-entry>/),
+        assert.rejects(generated.create(), /requires entry template <missing-generated-entry>/),
+      ]);
+      assert.equal(registrations, 1, 'concurrent preload and create share the rejected attempt');
       assert.equal(getTemplate('generated-retry-root'), undefined);
 
       includeMissing = false;
-      await generated.preload();
+      const retry = generated.preload();
+      assert.notEqual(retry, first);
+      assert.equal(generated.preload(), retry);
+      await retry;
+      assert.equal(generated.preload(), retry, 'rejection cleanup cannot clear the successful retry');
+      assert.equal(registrations, 2, 'only one fresh registration follows rejection');
       assert.equal(
         getTemplate('generated-retry-root')?.h,
         '<missing-generated-entry></missing-generated-entry>',

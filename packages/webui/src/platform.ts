@@ -19,12 +19,6 @@ const PLATFORMS: Record<string, string> = {
   "win32-arm64": "@microsoft/webui-win32-arm64",
 };
 
-const ADDON_NAMES: Record<string, string> = {
-  darwin: "libwebui_node.dylib",
-  linux: "libwebui_node.so",
-  win32: "webui_node.dll",
-};
-
 export function platformKey(): string {
   return `${process.platform}-${os.arch()}`;
 }
@@ -45,16 +39,19 @@ export function packageName(): string {
  * Resolve a file from the platform-specific package, with fallback to
  * local cargo build output for workspace development.
  *
- * @param kind — "bin" for CLI binary, "addon" for .node file
+ * @param kind - CLI, runtime addon, or explicitly selected compiler addon.
  * @returns Absolute path, or null if not found.
  */
-export function resolve(kind: "bin" | "addon"): string | null {
+export function resolve(kind: "bin" | "addon" | "build-addon"): string | null {
   // Environment variable overrides
   if (kind === "bin" && process.env["WEBUI_BINARY_PATH"]) {
     return process.env["WEBUI_BINARY_PATH"];
   }
   if (kind === "addon" && process.env["WEBUI_ADDON_PATH"]) {
     return process.env["WEBUI_ADDON_PATH"];
+  }
+  if (kind === "build-addon" && process.env["WEBUI_BUILD_ADDON_PATH"]) {
+    return process.env["WEBUI_BUILD_ADDON_PATH"];
   }
 
   // Try platform-specific npm package
@@ -66,7 +63,7 @@ export function resolve(kind: "bin" | "addon"): string | null {
       const binPath = path.join(pkgDir, "bin", binName);
       if (existsSync(binPath)) return binPath;
     } else {
-      const addonPath = path.join(pkgDir, "webui.node");
+      const addonPath = path.join(pkgDir, kind === "build-addon" ? "webui-build.node" : "webui.node");
       if (existsSync(addonPath)) return addonPath;
     }
   } catch {
@@ -87,10 +84,14 @@ export function resolve(kind: "bin" | "addon"): string | null {
     const debugPath = path.join(workspaceRoot, "target", "debug", binName);
     if (existsSync(debugPath)) return debugPath;
   } else {
-    const addonName = ADDON_NAMES[process.platform] ?? "libwebui_node.so";
-    const addonPath = path.join(releasePath, addonName);
+    const stem = "webui_node";
+    const addonName = process.platform === "win32" ? `${stem}.dll`
+      : process.platform === "darwin" ? `lib${stem}.dylib` : `lib${stem}.so`;
+    const targetPath = kind === "build-addon"
+      ? path.join(workspaceRoot, "target", "node-build") : path.join(workspaceRoot, "target");
+    const addonPath = path.join(targetPath, "release", addonName);
     if (existsSync(addonPath)) return addonPath;
-    const debugPath = path.join(workspaceRoot, "target", "debug", addonName);
+    const debugPath = path.join(targetPath, "debug", addonName);
     if (existsSync(debugPath)) return debugPath;
   }
 

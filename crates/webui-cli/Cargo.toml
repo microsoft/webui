@@ -9,6 +9,7 @@ repository.workspace = true
 homepage.workspace = true
 readme = "README.md"
 description = "CLI tool for building WebUI applications"
+include = ["src/**", "tests/**", "build.rs", "resources/**", "assets/**", "Cargo.toml", "README.md"]
 keywords = ["webui", "cli", "build-tool", "ssr", "tooling"]
 categories = ["command-line-utilities", "development-tools", "web-programming"]
 
@@ -17,7 +18,7 @@ name = "webui"
 path = "src/main.rs"
 
 [dependencies]
-microsoft-webui = { path = "../webui", version = "3.1.2", features = ["cli"] }
+microsoft-webui = { path = "../webui", version = "3.1.2", features = ["cli", "browser-build"] }
 microsoft-webui-handler = { path = "../webui-handler", version = "3.1.2" }
 microsoft-webui-protocol = { path = "../webui-protocol", version = "3.1.2" }
 microsoft-webui-discovery = { path = "../webui-discovery", version = "3.1.2" }
@@ -29,6 +30,7 @@ thiserror = { workspace = true }
 console = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 actix-web = { workspace = true }
 reqwest = { workspace = true }
 expand-tilde = { workspace = true }
@@ -40,6 +42,10 @@ tokio = { workspace = true }
 tokio-stream = { workspace = true }
 log = { workspace = true }
 include_dir = { workspace = true }
+toml = { workspace = true }
+
+[build-dependencies]
+serde_json = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true }

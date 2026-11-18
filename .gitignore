@@ -16,6 +16,7 @@ test-results/
 # Staged native binaries (populated by cargo xtask publish-stage)
 dotnet/runtimes/
 packages/*/webui.node
+packages/*/webui-build.node
 publish/
 *.nupkg
 .last
@@ -25,3 +26,4 @@ packages/webui/bin/webui.exe
 # Built from source by PR FFI checks.
 crates/webui-ffi/tests/fixtures/protocol.bin
 crates/webui-desktop/assets/ipc/
+crates/webui-cli/assets/

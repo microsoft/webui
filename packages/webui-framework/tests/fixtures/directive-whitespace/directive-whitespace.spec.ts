@@ -1,6 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
+import { buildFixtureEntries, workspaceRoot } from '@microsoft/webui-test-support/fixture-build';
 import { FLUSH_UPDATES } from '../../../src/render-scheduler.js';
 import { expect, test, type Page } from '@playwright/test';
 import {
@@ -15,7 +18,7 @@ import {
 import { directiveCases, type DirectiveCase } from './sources.js';
 
 let workspace: string;
-let browserModule: string;
+let browserModule: Awaited<ReturnType<typeof buildBrowserModule>>;
 
 test.beforeAll(async () => {
   workspace = createWorkspace();
@@ -24,6 +27,27 @@ test.beforeAll(async () => {
 
 test.afterAll(() => {
   if (workspace) removeWorkspace(workspace);
+});
+
+test('fixture extra builds cannot replace the shared projection proof', async () => {
+  const fixturesRoot = resolve(import.meta.dirname, '..');
+  const outDir = resolve(workspace, 'manifest-collision');
+  const tsconfig = resolve(import.meta.dirname, '../../../tsconfig.test.json');
+  await expect(buildFixtureEntries({
+    fixturesRoot,
+    entryFileName: 'test-directive-whitespace.ts',
+    outDir,
+    tsconfig,
+    extraBuilds: [{
+      project: workspaceRoot,
+      entries: { alternate: resolve(import.meta.dirname, 'test-directive-whitespace.ts') },
+      tsconfig,
+      outDir,
+    }],
+  })).rejects.toThrow('Fixture extra builds must set a distinct manifestPath');
+  const proof = await readFile(resolve(outDir, 'webui-projection.json'), 'utf8');
+  expect(proof).toContain('directive-whitespace.js');
+  expect(proof).not.toContain('alternate.js');
 });
 
 for (const fixture of directiveCases) {

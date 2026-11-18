@@ -5,12 +5,13 @@ build-time template packs, the generated `lazy.webui.js` module with the
 framework's lazy runtime, and production-minified browser bundles. This is not a
 benchmark of `w-hydrate="lazy"` or `w-render="lazy"`.
 
-Build the release native addon first. From the repository root on Windows:
+Build the release runtime and compiler addons first. From the repository root on Windows:
 
 ```powershell
-cargo build --release -p microsoft-webui-node
+cargo xtask build-node-addons --release
 pnpm --filter @microsoft/webui --filter @microsoft/webui-framework build
 $env:WEBUI_ADDON_PATH = Join-Path (Get-Location) 'target\release\webui_node.dll'
+$env:WEBUI_BUILD_ADDON_PATH = Join-Path (Get-Location) 'target\node-build\release\webui_node.dll'
 node examples\integration\lazy-ui-bench\ntp.mjs
 node examples\integration\lazy-ui-bench\triggers.mjs
 node examples\integration\lazy-ui-bench\bench.mjs
@@ -18,7 +19,10 @@ cargo bench -p microsoft-webui --bench lazy_bench
 ```
 
 On macOS/Linux point `WEBUI_ADDON_PATH` at the release `libwebui_node.dylib` /
-`libwebui_node.so`. Playwright Chromium must be installed; `ntp.mjs` and
+`libwebui_node.so` under `target/release`, and `WEBUI_BUILD_ADDON_PATH` at
+the same library filename under `target/node-build/release`.
+Build APIs use `@microsoft/webui/build.js`; `Protocol` uses `@microsoft/webui`.
+Playwright Chromium must be installed; `ntp.mjs` and
 `triggers.mjs` use Microsoft Edge when available (`WEBUI_BENCH_CHANNEL`
 overrides it). With their defaults, `ntp.mjs` takes about 75 minutes and
 `triggers.mjs` about 26. Run one benchmark at a time on an otherwise idle machine.
@@ -298,8 +302,8 @@ node examples\integration\lazy-ui-bench\triggers.mjs --samples 9 --memory-sample
 node examples\integration\lazy-ui-bench\triggers.mjs --samples 9 --memory-samples 0 --profile none --scenarios s1,s30 --variants plain,demand --caches cold --baseline-framework target\before-framework\packages\webui-framework\dist\index.js --out target\paired.json
 ```
 
-For comparison A, first select a **matching main native addon** through
-`WEBUI_ADDON_PATH`, then use `--variants plain` and
+For comparison A, first select **matching runtime and compiler native addons**
+through `WEBUI_ADDON_PATH` and `WEBUI_BUILD_ADDON_PATH`, then use `--variants plain` and
 `--legacy-framework target\main-framework\packages\webui-framework\dist\index.js`.
 For full before/after comparison, likewise select the corresponding archived
 producer and use `--framework` for its client. Build public package entries

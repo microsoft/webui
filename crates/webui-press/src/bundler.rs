@@ -10,71 +10,15 @@ use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::Instant;
 
+use webui::browser_build as webui_client_build;
+
 use crate::error::{Error, Result};
 use crate::types::BundlerConfig;
 
 static BUNDLE_REBUILD_NONCE: AtomicU64 = AtomicU64::new(0);
-const WEBUI_TSCONFIG_RAW: &str =
+const APPEARANCE_MODULE: &str = "\0webui-press:appearance.ts";
+const WEBUI_TSCONFIG: &str =
     r#"{"compilerOptions":{"experimentalDecorators":true,"useDefineForClassFields":false}}"#;
-const ESBUILD_RUNNER: &str = r#"
-import { readFile } from "node:fs/promises";
-import { createRequire } from "node:module";
-import path from "node:path";
-import { pathToFileURL } from "node:url";
-
-const config = JSON.parse(await readFile(process.argv[2], "utf8"));
-const started = performance.now();
-const require = createRequire(pathToFileURL(path.join(config.resolveDir, "__webui_press__.cjs")));
-const esbuild = require(require.resolve("esbuild"));
-const projectionUrl = pathToFileURL(config.projectionEntry).href;
-const { esbuildProjection } = await import(projectionUrl);
-// A stable virtual identity keeps esbuild's chunk hashes independent of the
-// per-build scratch directory, without introducing shared filesystem writes.
-const appearance = {
-  name: "webui-press-appearance",
-  setup(build) {
-    build.onResolve({ filter: /^(@microsoft\/webui-press\/appearance\.js|webui-press:appearance)$/ }, () => ({
-      path: "appearance.ts",
-      namespace: "webui-press",
-    }));
-    build.onLoad({ filter: /^appearance\.ts$/, namespace: "webui-press" }, () => ({
-      contents: config.appearanceSource,
-      loader: "ts",
-    }));
-  },
-};
-try {
-  await esbuild.build({
-    ...config.build,
-    plugins: [appearance, esbuildProjection({ manifest: config.manifest })],
-  });
-} catch (error) {
-  // esbuild's own summary message drops note text, which is where projection
-  // diagnostics put their actionable `help:` line. Re-format the raw messages
-  // so the cause survives to the terminal. Press reads this stderr through a
-  // pipe, so set `exitCode` rather than calling `process.exit`, which can drop
-  // the pending write.
-  const errors = error?.errors;
-  if (!Array.isArray(errors) || errors.length === 0) {
-    throw error;
-  }
-  const formatted = await esbuild.formatMessages(errors, {
-    kind: "error",
-    color: false,
-  });
-  process.stderr.write(formatted.join(""));
-  process.exitCode = 1;
-}
-if (process.env.WEBUI_PROJECTION_PROFILE === "1") {
-  console.error(`[webui-press] esbuild-total=${(performance.now() - started).toFixed(1)}ms`);
-}
-"#;
-
-#[cfg(test)]
-struct EsbuildCommand {
-    program: PathBuf,
-    prefix_args: Vec<String>,
-}
 
 /// Resolve a configured component source for the per-page builds.
 ///
@@ -93,7 +37,7 @@ pub(crate) fn resolve_config_component_source(source: &str, cwd: &Path) -> Strin
 const BUNDLE_SCRIPT_EXTENSIONS: &[&str] = &["js", "mjs", "jsx", "ts", "tsx"];
 const SCRIPT_GRAPH_EXTENSIONS: &[&str] = &["js", "mjs", "jsx", "ts", "tsx"];
 
-/// A page-level esbuild entry generated from local component scripts and
+/// A page-level browser entry generated from local component scripts and
 /// explicit `<script bundle>` sources.
 #[derive(Debug, Clone)]
 pub(crate) struct PageBundleEntry {
@@ -107,7 +51,7 @@ pub(crate) struct PageBundleEntry {
     pub(crate) explicit_scripts: Vec<ScriptSource>,
 }
 
-/// Root esbuild entry for template chrome scripts shared by every page.
+/// Root browser entry for template chrome scripts shared by every page.
 #[derive(Debug, Clone)]
 pub(crate) struct RootBundleEntry {
     /// Template-level script such as `template/index.ts`.
@@ -406,7 +350,7 @@ pub(crate) struct BundleResult {
     pub(crate) page_entry_count: usize,
     /// Map from page-bundle ID to relative output paths.
     ///
-    /// Import-only esbuild entry wrappers are flattened to the chunks they
+    /// Import-only entry wrappers are flattened to the chunks they
     /// import so pages do not pay a request for a `page-N.js` file that only
     /// forwards to shared chunks.
     pub(crate) script_map: HashMap<usize, Vec<String>>,
@@ -416,6 +360,8 @@ pub(crate) struct BundleResult {
     pub(crate) preloads: BundlePreloadMap,
     /// Wall time spent producing and validating the client bundle.
     pub(crate) duration: std::time::Duration,
+    /// Plain, typed native advisories from this bundle invocation.
+    pub(crate) warnings: Vec<webui_client_build::BuildWarning>,
 }
 
 #[derive(Clone)]
@@ -479,47 +425,13 @@ pub(crate) struct BundleOptions<'a> {
     pub(crate) content_dir: &'a Path,
 }
 
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct EsbuildRunnerConfig {
-    resolve_dir: String,
-    projection_entry: String,
-    manifest: String,
-    appearance_source: &'static str,
-    build: EsbuildJsOptions,
-}
-
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct EsbuildJsOptions {
-    abs_working_dir: String,
-    entry_points: Vec<String>,
-    bundle: bool,
-    platform: &'static str,
-    format: &'static str,
-    splitting: bool,
-    target: String,
-    outdir: String,
-    outbase: String,
-    entry_names: &'static str,
-    chunk_names: &'static str,
-    loader: BTreeMap<String, String>,
-    tsconfig_raw: serde_json::Value,
-    log_level: &'static str,
-    minify: bool,
-    external: Vec<String>,
-    define: BTreeMap<String, String>,
-    alias: BTreeMap<String, String>,
-    write: bool,
-}
-
 /// Convert a filesystem path to a forward-slash string for use as an ES module
-/// specifier or esbuild argument.
+/// specifier.
 ///
 /// On Windows, [`Path::canonicalize`] returns verbatim (`\\?\`-prefixed) paths.
-/// Emitting one as-is normalizes to `//?/C:/…`, which neither esbuild nor the
+/// Emitting one as-is normalizes to `//?/C:/…`, which neither the bundler nor the
 /// browser can resolve, so bundled component scripts silently fail to load and
-/// custom elements never register. Strip the verbatim prefix first so esbuild
+/// custom elements never register. Strip the verbatim prefix first so the bundler
 /// resolves and inlines the entry exactly as it does with clean Unix paths. On
 /// non-Windows paths (no verbatim prefix) this is a plain separator swap.
 fn path_for_js(path: &Path) -> String {
@@ -542,20 +454,6 @@ fn push_import_once(entry: &mut String, imports: &mut HashSet<String>, specifier
         entry.push_str("import \"");
         entry.push_str(specifier);
         entry.push_str("\";\n");
-    }
-}
-
-#[cfg(test)]
-fn push_external_args(
-    args: &mut Vec<String>,
-    external: &[String],
-    aliases: &BTreeMap<String, String>,
-) {
-    for ext in external {
-        if aliases.contains_key(ext.as_str()) {
-            continue;
-        }
-        args.push(format!("--external:{ext}"));
     }
 }
 
@@ -1111,7 +1009,7 @@ fn page_script_paths(
                 full_path.display()
             ))
         })?;
-        // These imports are already content-addressed by esbuild. Keep their
+        // These imports are already content-addressed by the bundler. Keep their
         // exact URLs rather than creating query-versioned module duplicates.
         Ok(rel_paths)
     } else {
@@ -1179,7 +1077,7 @@ fn collect_versioned_output_urls(
     Ok(output_urls)
 }
 
-pub(crate) fn resolve_node_modules(config_dir: &Path) -> Result<PathBuf> {
+pub(crate) fn resolve_node_modules(config_dir: &Path) -> Result<Option<PathBuf>> {
     let start = config_dir.canonicalize().map_err(|e| {
         Error::Build(format!(
             "Cannot resolve config directory {} while locating node_modules: {e}",
@@ -1190,14 +1088,11 @@ pub(crate) fn resolve_node_modules(config_dir: &Path) -> Result<PathBuf> {
     for dir in start.ancestors() {
         let node_modules = dir.join("node_modules");
         if node_modules.exists() {
-            return Ok(node_modules);
+            return Ok(Some(node_modules));
         }
     }
 
-    Err(Error::Build(format!(
-        "Cannot find node_modules in {} or its ancestors. Run pnpm install from the docs project root before building bundled scripts.",
-        start.display()
-    )))
+    Ok(None)
 }
 
 fn default_framework_alias(node_modules: &Path) -> Option<PathBuf> {
@@ -1215,8 +1110,8 @@ fn default_framework_alias(node_modules: &Path) -> Option<PathBuf> {
     None
 }
 
-fn append_framework_runtime(entry: &mut String, has_components: bool, node_modules: &Path) {
-    if has_components && default_framework_alias(node_modules).is_some() {
+fn append_framework_runtime(entry: &mut String, has_components: bool, node_modules: Option<&Path>) {
+    if has_components && node_modules.and_then(default_framework_alias).is_some() {
         entry.push_str("import { startRuntime } from '@microsoft/webui-framework/runtime.js';\n");
         entry.push_str("import '@microsoft/webui-framework/styles.js';\n");
         entry.push_str("startRuntime();\n");
@@ -1247,104 +1142,46 @@ fn build_aliases(opts: &BundleOptions<'_>) -> Result<BTreeMap<String, String>> {
                 .unwrap_or("js");
             for (entry, file) in [("runtime", "runtime"), ("styles", "styles-entry")] {
                 aliases.insert(
-                    format!("@microsoft/webui-framework/{entry}.js"),
+                    format!("@microsoft/webui-framework/{entry}.js$"),
                     path_for_js(&path.with_file_name(format!("{file}.{extension}"))),
                 );
             }
-            aliases.insert("@microsoft/webui-framework".to_string(), path_for_js(&path));
+            aliases.insert(
+                "@microsoft/webui-framework$".to_string(),
+                path_for_js(&path),
+            );
         }
     }
 
     if let Some(cfg) = opts.bundler_config {
         for (from, to) in &cfg.alias {
-            if from == "@microsoft/webui-press/appearance.js" {
+            if from.trim_end_matches('$') == "@microsoft/webui-press/appearance.js" {
                 return Err(Error::Build(
                     "The Press appearance API alias is reserved. Import \
                      @microsoft/webui-press/appearance.js without overriding its alias."
                         .to_string(),
                 ));
             }
+            aliases.remove(&format!("{from}$"));
             aliases.insert(from.clone(), normalized_alias_target(&config_dir, to));
         }
     }
     aliases.insert(
-        "@microsoft/webui-press/appearance.js".to_string(),
-        "webui-press:appearance".to_string(),
+        "@microsoft/webui-press/appearance.js$".to_string(),
+        APPEARANCE_MODULE.to_string(),
     );
 
     Ok(aliases)
 }
 
-#[cfg(test)]
-fn push_alias_args(args: &mut Vec<String>, aliases: &BTreeMap<String, String>) {
-    for (from, to) in aliases {
-        args.push(format!("--alias:{from}={to}"));
-    }
-}
-
-#[cfg(test)]
-fn push_define_args(args: &mut Vec<String>, cfg: &BundlerConfig) {
-    for (key, value) in &cfg.define {
-        args.push(format!("--define:{key}={value}"));
-    }
-}
-
-#[cfg(test)]
-fn esbuild_args(
+fn native_build_options(
     opts: &BundleOptions<'_>,
     entry_files: &[(String, PathBuf)],
-    bundle_tmp: &Path,
-) -> Result<Vec<String>> {
+    tsconfig: &Path,
+) -> Result<webui_client_build::ClientBuildOptions> {
     let aliases = build_aliases(opts)?;
-    let target = opts
-        .bundler_config
-        .and_then(|cfg| cfg.target.as_deref())
-        .unwrap_or("es2022");
-    let mut args = Vec::with_capacity(14 + entry_files.len());
-    args.push("--bundle".to_string());
-    args.push("--platform=browser".to_string());
-    args.push("--format=esm".to_string());
-    args.push("--splitting".to_string());
-    args.push(format!("--target={target}"));
-    args.push(format!("--outdir={}", path_for_js(opts.site_dir)));
-    args.push(format!("--outbase={}", path_for_js(bundle_tmp)));
-    args.push("--entry-names=[dir]/[name]".to_string());
-    args.push("--chunk-names=assets/[name]-[hash]".to_string());
-    args.push("--loader:.html=text".to_string());
-    args.push("--loader:.css=text".to_string());
-    args.push(format!("--tsconfig-raw={WEBUI_TSCONFIG_RAW}"));
-    args.push("--log-level=warning".to_string());
-    if !opts.dev_mode {
-        args.push("--minify".to_string());
-        // Fold the framework's `__WEBUI_DEV__` flag to `false` for production
-        // builds so development-only diagnostics — e.g. the hydration-mismatch
-        // warning in `@microsoft/webui-framework` — and the modules they gate
-        // are dead-code eliminated from the bundle. Pushed before any user
-        // `define` entries below so an explicit `bundler.define` can override it.
-        args.push("--define:__WEBUI_DEV__=false".to_string());
-    }
-    if let Some(cfg) = opts.bundler_config {
-        push_external_args(&mut args, &cfg.external, &aliases);
-        push_define_args(&mut args, cfg);
-    }
-    push_alias_args(&mut args, &aliases);
-    for (_, path) in entry_files {
-        args.push(path_for_js(path));
-    }
-    Ok(args)
-}
-
-fn esbuild_build_config(
-    opts: &BundleOptions<'_>,
-    node_modules: &Path,
-    entry_files: &[(String, PathBuf)],
-    bundle_tmp: &Path,
-    manifest_path: &Path,
-) -> Result<serde_json::Value> {
-    let working_dir = absolute_path(opts.config_dir)?;
-    let site_dir = absolute_path(opts.site_dir)?;
-    let manifest_path = absolute_path(manifest_path)?;
-    let aliases = build_aliases(opts)?;
+    let site_dir = resolve_existing_path(opts.site_dir)?;
+    let project = bundle_project_root(opts, &aliases)?;
     let target = opts
         .bundler_config
         .and_then(|cfg| cfg.target.as_deref())
@@ -1354,7 +1191,11 @@ fn esbuild_build_config(
         .map(|cfg| {
             cfg.external
                 .iter()
-                .filter(|value| !aliases.contains_key(value.as_str()))
+                .filter(|value| {
+                    !aliases
+                        .keys()
+                        .any(|key| key.trim_end_matches('$') == value.as_str())
+                })
                 .cloned()
                 .collect()
         })
@@ -1368,44 +1209,48 @@ fn esbuild_build_config(
             define.insert(key.clone(), value.clone());
         }
     }
-    let tsconfig_raw: serde_json::Value = serde_json::from_str(WEBUI_TSCONFIG_RAW)
-        .map_err(|error| Error::Build(format!("Invalid WebUI tsconfig: {error}")))?;
-    let projection_entry = projection_package_entry(node_modules)?;
-    let loader = BTreeMap::from([
-        (".css".to_string(), "text".to_string()),
-        (".html".to_string(), "text".to_string()),
-    ]);
-    serde_json::to_value(EsbuildRunnerConfig {
-        resolve_dir: path_for_js(&working_dir),
-        projection_entry,
-        manifest: path_for_js(&manifest_path),
-        appearance_source: include_str!("../template/appearance.ts"),
-        build: EsbuildJsOptions {
-            abs_working_dir: path_for_js(&working_dir),
-            entry_points: entry_files
-                .iter()
-                .map(|(_, path)| path_for_js(path))
-                .collect(),
-            bundle: true,
-            platform: "browser",
-            format: "esm",
-            splitting: true,
-            target: target.to_string(),
-            outdir: path_for_js(&site_dir),
-            outbase: path_for_js(bundle_tmp),
-            entry_names: "[dir]/[name]",
-            chunk_names: "assets/[name]-[hash]",
-            loader,
-            tsconfig_raw,
-            log_level: "warning",
-            minify: !opts.dev_mode,
-            external,
-            define,
-            alias: aliases,
-            write: true,
-        },
+    let entries = entry_files
+        .iter()
+        .map(|(name, path)| {
+            let path = resolve_existing_path(path)?;
+            let relative = path.strip_prefix(&project).map_err(|_| {
+                Error::Build(format!(
+                    "Browser entry is outside the project: {}",
+                    path.display()
+                ))
+            })?;
+            Ok((name.clone(), relative.to_path_buf()))
+        })
+        .collect::<Result<_>>()?;
+    Ok(webui_client_build::ClientBuildOptions {
+        out_dir: site_dir
+            .strip_prefix(&project)
+            .map_err(|_| {
+                Error::Build("Site output is outside the browser build project".to_string())
+            })?
+            .to_path_buf(),
+        project,
+        entries,
+        tsconfig: Some(absolute_path(tsconfig)?),
+        framework: None,
+        development: opts.dev_mode,
+        minify: !opts.dev_mode,
+        target: target.to_string(),
+        defines: define,
+        aliases,
+        external,
+        entry_names: "[name].js".to_string(),
+        chunk_names: "assets/[name]-[hash].js".to_string(),
+        loaders: BTreeMap::from([
+            (".css".to_string(), webui_client_build::Loader::Text),
+            (".html".to_string(), webui_client_build::Loader::Text),
+        ]),
+        virtual_modules: BTreeMap::from([(
+            APPEARANCE_MODULE.to_string(),
+            include_str!("../template/appearance.ts").to_string(),
+        )]),
+        ..Default::default()
     })
-    .map_err(|error| Error::Build(format!("Cannot serialize esbuild config: {error}")))
 }
 
 fn absolute_path(path: &Path) -> Result<PathBuf> {
@@ -1417,78 +1262,160 @@ fn absolute_path(path: &Path) -> Result<PathBuf> {
         .map_err(|error| Error::Io(format!("Cannot resolve current directory: {error}")))
 }
 
-fn projection_package_entry(node_modules: &Path) -> Result<String> {
-    let package_dir = node_modules.join("@microsoft").join("webui");
-    let package_json_path = package_dir.join("package.json");
-    let package_json = fs::read_to_string(&package_json_path).map_err(|error| {
-        Error::Build(format!(
-            "Cannot read {}. Install @microsoft/webui in the docs project: {error}",
-            package_json_path.display()
-        ))
-    })?;
-    let value: serde_json::Value = serde_json::from_str(&package_json)
-        .map_err(|error| Error::Build(format!("Invalid @microsoft/webui package.json: {error}")))?;
-    let export = value
-        .pointer("/exports/.~1projection.js/import/default")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| {
-            Error::Build(
-                "@microsoft/webui does not export ./projection.js for ESM imports".to_string(),
-            )
-        })?;
-    let entry = package_dir.join(export);
-    if !entry.exists() {
-        return Err(Error::Build(format!(
-            "@microsoft/webui projection entry is missing: {}. Build the package first.",
-            entry.display()
-        )));
+fn bundle_project_root(
+    opts: &BundleOptions<'_>,
+    aliases: &BTreeMap<String, String>,
+) -> Result<PathBuf> {
+    let mut roots = allowed_script_roots(opts.config_dir, opts.content_dir)?;
+    roots.push(resolve_existing_path(opts.site_dir)?);
+    if let Some(node_modules) = opts.node_modules {
+        roots.push(resolve_existing_path(node_modules)?);
     }
-    Ok(entry.to_string_lossy().into_owned())
+    // Explicit aliases and discovered component scripts can be workspace
+    // symlinks. Include their canonical owners, never the entire filesystem.
+    for target in aliases
+        .values()
+        .filter(|target| Path::new(target).is_absolute())
+    {
+        roots.push(resolve_existing_path(Path::new(target))?);
+    }
+    if let Some(root) = opts.root_bundle {
+        for path in root.script_path.iter().chain(&root.component_scripts) {
+            roots.push(resolve_existing_path(path)?);
+        }
+    }
+    for page in opts.page_bundles {
+        for path in &page.component_scripts {
+            roots.push(resolve_existing_path(path)?);
+        }
+    }
+    common_project_root(&roots)
 }
 
-fn run_esbuild_with_projection(
-    opts: &BundleOptions<'_>,
-    node_modules: &Path,
-    entry_files: &[(String, PathBuf)],
-    bundle_tmp: &Path,
-    manifest_path: &Path,
-) -> Result<()> {
-    let runner_path = bundle_tmp.join("webui-press-esbuild.mjs");
-    let config_path = bundle_tmp.join("webui-press-esbuild.json");
-    fs::write(&runner_path, ESBUILD_RUNNER)
-        .map_err(|error| Error::Build(format!("Cannot write esbuild runner: {error}")))?;
-    let config = esbuild_build_config(opts, node_modules, entry_files, bundle_tmp, manifest_path)?;
-    fs::write(
-        &config_path,
-        serde_json::to_vec(&config)
-            .map_err(|error| Error::Build(format!("Cannot serialize esbuild config: {error}")))?,
-    )
-    .map_err(|error| Error::Build(format!("Cannot write esbuild config: {error}")))?;
+fn common_project_root(roots: &[PathBuf]) -> Result<PathBuf> {
+    let Some(first) = roots.first() else {
+        return Err(Error::Build(
+            "Browser build has no project roots".to_string(),
+        ));
+    };
+    let root = first
+        .ancestors()
+        .find(|ancestor| roots.iter().all(|path| path.starts_with(ancestor)))
+        .filter(|root| root.parent().is_some() && root.file_name().is_some());
+    root.map(Path::to_path_buf).ok_or_else(|| Error::Build(
+        "Browser build inputs must share a non-filesystem project root on the same volume. Move the content, config, dependencies and output into one project.".to_string()
+    ))
+}
 
-    let output = std::process::Command::new("node")
-        .arg(&runner_path)
-        .arg(&config_path)
-        .current_dir(absolute_path(opts.config_dir)?)
-        .env("NODE_PATH", node_modules)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .map_err(|error| Error::Build(format!("esbuild failed to start: {error}")))?;
-    if !output.status.success() {
+fn bundle_output_path(project: &Path, site: &Path, relative: &Path) -> Result<PathBuf> {
+    if relative.as_os_str().is_empty()
+        || relative
+            .components()
+            .any(|part| !matches!(part, std::path::Component::Normal(_)))
+    {
         return Err(Error::Build(format!(
-            "esbuild projection error: {}",
-            String::from_utf8_lossy(&output.stderr)
+            "Invalid native bundle output: {}",
+            relative.display()
         )));
     }
-    if std::env::var_os("WEBUI_PROJECTION_PROFILE").is_some() && !output.stderr.is_empty() {
-        eprint!("{}", String::from_utf8_lossy(&output.stderr));
+    let output = project.join(relative);
+    if !output.starts_with(site) {
+        return Err(Error::Build(format!(
+            "Native bundle output is outside the site: {}",
+            output.display()
+        )));
+    }
+    let parent = output
+        .parent()
+        .ok_or_else(|| Error::Build("Bundle output has no parent".to_string()))?;
+    // Check existing ancestors before creating directories through them.
+    if let Some(existing) = parent.ancestors().find(|path| path.exists()) {
+        if !resolve_existing_path(existing)?.starts_with(site) {
+            return Err(Error::Build(
+                "Native bundle output follows a symlink outside the site".to_string(),
+            ));
+        }
+    }
+    fs::create_dir_all(parent)
+        .map_err(|error| Error::Io(format!("Cannot create bundle output directory: {error}")))?;
+    if !resolve_existing_path(parent)?.starts_with(site)
+        || (output.symlink_metadata().is_ok() && !resolve_existing_path(&output)?.starts_with(site))
+    {
+        return Err(Error::Build(
+            "Native bundle output resolves outside the site".to_string(),
+        ));
+    }
+    Ok(output)
+}
+
+fn publish_bundle_files(
+    project: &Path,
+    site: &Path,
+    files: &BTreeMap<PathBuf, Vec<u8>>,
+) -> Result<()> {
+    let site = resolve_existing_path(site)?;
+    let outputs = files
+        .keys()
+        .map(|path| bundle_output_path(project, &site, path))
+        .collect::<Result<Vec<_>>>()?;
+    for (output, bytes) in outputs.iter().zip(files.values()) {
+        fs::write(output, bytes).map_err(|error| {
+            Error::Io(format!(
+                "Cannot write native browser output {}: {error}",
+                output.display()
+            ))
+        })?;
     }
     Ok(())
 }
 
-/// Bundle page-scoped scripts via esbuild.
+fn run_native_build(
+    opts: &BundleOptions<'_>,
+    entry_files: &[(String, PathBuf)],
+    tsconfig: &Path,
+    manifest_path: &Path,
+) -> Result<Vec<webui_client_build::BuildWarning>> {
+    let options = native_build_options(opts, entry_files, tsconfig)?;
+    let project = options.project.clone();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| Error::Build(format!("Cannot start native browser build: {error}")))?;
+    // Page compilation waits at the projection barrier on Press's global
+    // Rayon workers. Rolldown must not queue work behind those same waiters.
+    // The pool is owned by this invocation and joined before publication.
+    let workers = rayon::ThreadPoolBuilder::new()
+        .thread_name(|index| format!("webui-press-client-{index}"))
+        .build()
+        .map_err(|error| Error::Build(format!("Cannot start native browser workers: {error}")))?;
+    let bundle = workers
+        .install(|| runtime.block_on(webui_client_build::build(options)))
+        .map_err(|error| Error::Build(error.to_string()))?;
+    let site = resolve_existing_path(opts.site_dir)?;
+    let manifest_path = site.join(
+        manifest_path
+            .file_name()
+            .ok_or_else(|| Error::Build("Projection manifest has no filename".to_string()))?,
+    );
+    let relative_manifest = manifest_path.strip_prefix(&project).map_err(|_| {
+        Error::Build("Projection manifest is outside the browser build project".to_string())
+    })?;
+    let manifest = bundle
+        .projection_manifest(relative_manifest)
+        .map_err(|error| Error::Build(error.to_string()))?;
+    let bytes = serde_json::to_vec(&manifest).map_err(|error| {
+        Error::Build(format!("Cannot serialize native projection proof: {error}"))
+    })?;
+    let manifest_path = bundle_output_path(&project, &site, relative_manifest)?;
+    publish_bundle_files(&project, &site, &bundle.files)?;
+    fs::write(&manifest_path, bytes)
+        .map_err(|error| Error::Io(format!("Cannot write native projection proof: {error}")))?;
+    Ok(bundle.warnings)
+}
+
+/// Bundle page-scoped scripts through the canonical native client builder.
 ///
-/// Uses a single esbuild invocation with one virtual entry per page for
+/// Uses a single native invocation with one generated entry per page for
 /// optimal code splitting. Each page entry imports local component scripts
 /// discovered from that page's HTML plus any explicit `<script bundle>` or
 /// `scriptFile` sources.
@@ -1509,14 +1436,9 @@ pub(crate) fn bundle_assets(opts: &BundleOptions<'_>) -> Result<BundleResult> {
             projection,
             preloads,
             duration: started.elapsed(),
+            warnings: Vec::new(),
         });
     }
-    let Some(node_modules) = opts.node_modules else {
-        return Err(Error::Build(
-            "Bundled scripts require node_modules. Run pnpm install from the docs project root."
-                .to_string(),
-        ));
-    };
     let allowed_roots = allowed_script_roots(opts.config_dir, opts.content_dir)?;
 
     // Create a temp directory for the bundler entry files.
@@ -1528,6 +1450,9 @@ pub(crate) fn bundle_assets(opts: &BundleOptions<'_>) -> Result<BundleResult> {
     fs::create_dir_all(&bundle_tmp)
         .map_err(|e| Error::Build(format!("Cannot create bundle temp dir: {e}")))?;
     let bundle_tmp = TempDirGuard::new(bundle_tmp);
+    let tsconfig = bundle_tmp.path().join("tsconfig.json");
+    fs::write(&tsconfig, WEBUI_TSCONFIG)
+        .map_err(|error| Error::Build(format!("Cannot write browser tsconfig: {error}")))?;
 
     let assets_dir = opts.site_dir.join("assets");
     fs::create_dir_all(&assets_dir)
@@ -1540,7 +1465,11 @@ pub(crate) fn bundle_assets(opts: &BundleOptions<'_>) -> Result<BundleResult> {
         let entry_path = bundle_tmp.path().join("index.ts");
         let mut entry = String::with_capacity(32 + root.component_scripts.len() * 80);
         entry.push_str("// Root template script\n");
-        append_framework_runtime(&mut entry, !root.component_scripts.is_empty(), node_modules);
+        append_framework_runtime(
+            &mut entry,
+            !root.component_scripts.is_empty(),
+            opts.node_modules,
+        );
         let mut imports = HashSet::with_capacity(
             root.component_scripts.len() + usize::from(root.script_path.is_some()),
         );
@@ -1579,7 +1508,7 @@ pub(crate) fn bundle_assets(opts: &BundleOptions<'_>) -> Result<BundleResult> {
         append_framework_runtime(
             &mut entry,
             !bundle.component_scripts.is_empty(),
-            node_modules,
+            opts.node_modules,
         );
         let mut imports =
             HashSet::with_capacity(bundle.component_scripts.len() + bundle.explicit_scripts.len());
@@ -1628,13 +1557,7 @@ pub(crate) fn bundle_assets(opts: &BundleOptions<'_>) -> Result<BundleResult> {
     }
 
     let manifest_path = opts.site_dir.join("webui-projection.json");
-    run_esbuild_with_projection(
-        opts,
-        node_modules,
-        &entry_files,
-        bundle_tmp.path(),
-        &manifest_path,
-    )?;
+    let warnings = run_native_build(opts, &entry_files, &tsconfig, &manifest_path)?;
     let mut projection_sources = Vec::with_capacity(
         1 + opts
             .bundler_config
@@ -1715,7 +1638,7 @@ pub(crate) fn bundle_assets(opts: &BundleOptions<'_>) -> Result<BundleResult> {
     let mut script_map = HashMap::with_capacity(opts.page_bundles.len());
     for bundle in opts.page_bundles {
         let entry_name = format!("page-{}", bundle.id);
-        // esbuild outputs entry chunks as `{entry_name}.js` in the output dir.
+        // Named entries retain their stable page IDs in the output directory.
         let output_file = format!("assets/{entry_name}.js");
         let full_path = opts.site_dir.join(&output_file);
         if full_path.exists() {
@@ -1739,50 +1662,8 @@ pub(crate) fn bundle_assets(opts: &BundleOptions<'_>) -> Result<BundleResult> {
         projection,
         preloads,
         duration: started.elapsed(),
+        warnings,
     })
-}
-
-/// Resolve the esbuild invocation from node_modules.
-///
-/// Windows invokes the package's JavaScript entry through `node` directly.
-/// Going through pnpm's `.cmd` shim strips quotes from `--tsconfig-raw`.
-#[cfg(test)]
-fn esbuild_command(node_modules: &Path) -> EsbuildCommand {
-    if let Some(project_dir) = node_modules.parent() {
-        for dir in project_dir.ancestors() {
-            if cfg!(windows) {
-                let candidate = dir
-                    .join("node_modules")
-                    .join("esbuild")
-                    .join("bin")
-                    .join("esbuild");
-                if candidate.exists() {
-                    return EsbuildCommand {
-                        program: PathBuf::from("node"),
-                        prefix_args: vec![path_for_js(&candidate)],
-                    };
-                }
-                continue;
-            }
-
-            let candidate = dir.join("node_modules").join(".bin").join("esbuild");
-            if candidate.exists() {
-                return EsbuildCommand {
-                    program: candidate,
-                    prefix_args: Vec::new(),
-                };
-            }
-        }
-    }
-
-    EsbuildCommand {
-        program: PathBuf::from(if cfg!(windows) {
-            "esbuild.cmd"
-        } else {
-            "esbuild"
-        }),
-        prefix_args: Vec::new(),
-    }
 }
 
 /// Extract `<script type="module" bundle>` and `<script type="module" bundle src="...">` tags
@@ -2032,7 +1913,7 @@ mod tests {
     #[test]
     fn path_for_js_strips_windows_verbatim_prefix() {
         // `canonicalize()` on Windows yields `\\?\`-prefixed verbatim paths.
-        // Left intact they normalize to `//?/C:/…`, which esbuild and browsers
+        // Left intact they normalize to `//?/C:/…`, which bundlers and browsers
         // cannot resolve, so component scripts never load. These are pure
         // string transforms and assert identically on every platform.
         assert_eq!(
@@ -2049,74 +1930,137 @@ mod tests {
     }
 
     #[test]
-    fn esbuild_command_resolves_from_node_modules() -> TestResult {
-        let tmp = std::env::temp_dir().join("webui-press-esbuild-test");
-        let bin_path = if cfg!(windows) {
-            tmp.join("node_modules/esbuild/bin/esbuild")
-        } else {
-            tmp.join("node_modules/.bin/esbuild")
-        };
-        fs::remove_dir_all(&tmp).ok();
-        fs::create_dir_all(
-            bin_path
-                .parent()
-                .ok_or("Missing esbuild parent directory")?,
-        )?;
-        fs::write(&bin_path, "")?;
-        let resolved = esbuild_command(&tmp.join("node_modules"));
-        if cfg!(windows) {
-            assert_eq!(resolved.program, PathBuf::from("node"));
-            assert_eq!(resolved.prefix_args, [path_for_js(&bin_path)]);
-        } else {
-            assert_eq!(resolved.program, bin_path);
-            assert!(resolved.prefix_args.is_empty());
-        }
-        fs::remove_dir_all(&tmp).ok();
-        Ok(())
-    }
-
-    #[test]
-    fn projection_package_entry_reads_export_target() -> TestResult {
-        let root = std::env::temp_dir().join(format!(
-            "webui-press-projection-package-test-{}",
-            std::process::id()
-        ));
-        fs::remove_dir_all(&root).ok();
-        let package = root.join("node_modules/@microsoft/webui");
-        let entry = package.join("dist/projection/index.js");
-        fs::create_dir_all(entry.parent().ok_or("entry parent missing")?)?;
-        fs::write(&entry, "export {};")?;
-        fs::write(
-            package.join("package.json"),
-            r#"{"exports":{"./projection.js":{"import":{"default":"./dist/projection/index.js"}}}}"#,
-        )?;
-
-        let resolved = projection_package_entry(&root.join("node_modules"))?;
-        fs::remove_dir_all(&root)?;
-
-        assert_eq!(PathBuf::from(resolved), entry);
-        Ok(())
-    }
-
-    #[test]
-    fn push_external_args_filters_aliased_packages() {
-        let external = vec![
-            "@microsoft/webui-framework".to_string(),
-            "cdn-only-package".to_string(),
-        ];
-        let mut aliases = BTreeMap::new();
-        aliases.insert(
-            "@microsoft/webui-framework".to_string(),
-            "/repo/packages/webui-framework/dist/index.js".to_string(),
+    fn dependency_free_scripts_build_without_node_modules() -> TestResult {
+        let fixture = tempfile::tempdir()?;
+        let config = fixture.path().join(".webui-press");
+        let site = fixture.path().join("dist");
+        fs::create_dir_all(&config)?;
+        fs::create_dir_all(&site)?;
+        let pages = [PageBundleEntry {
+            id: 7,
+            page_path: "/native/".to_string(),
+            component_scripts: Vec::new(),
+            explicit_scripts: vec![ScriptSource::Inline(
+                "document.documentElement.dataset.nativePress = 'ready';".to_string(),
+            )],
+        }];
+        let result = bundle_assets(&BundleOptions {
+            site_dir: &site,
+            base_path: "/docs/",
+            node_modules: None,
+            root_bundle: None,
+            page_bundles: &pages,
+            bundler_config: None,
+            dev_mode: false,
+            config_dir: &config,
+            content_dir: fixture.path(),
+        })?;
+        assert_eq!(result.page_entry_count, 1);
+        assert_eq!(result.component_count, 0);
+        assert!(result.script_map[&7][0].starts_with("assets/page-7.js?v="));
+        assert!(fs::read_to_string(site.join("assets/page-7.js"))?.contains("nativePress"));
+        assert!(!site.join("webui-projection.json").exists());
+        assert_eq!(
+            fs::read_dir(&site)?.count(),
+            1,
+            "scratch entries must be removed"
         );
-        let mut args = Vec::new();
+        Ok(())
+    }
 
-        push_external_args(&mut args, &external, &aliases);
+    #[test]
+    fn common_project_root_rejects_filesystem_scope() {
+        #[cfg(not(windows))]
+        let roots = [PathBuf::from("/a/project"), PathBuf::from("/b/project")];
+        #[cfg(windows)]
+        let roots = [PathBuf::from("C:/project"), PathBuf::from("D:/project")];
+        assert!(common_project_root(&roots).is_err());
+    }
 
-        assert!(!args
-            .iter()
-            .any(|arg| arg.contains("@microsoft/webui-framework")));
-        assert!(args.contains(&"--external:cdn-only-package".to_string()));
+    #[test]
+    fn native_outputs_are_validated_before_any_file_is_published() -> TestResult {
+        let fixture = tempfile::tempdir()?;
+        let project = fixture.path().canonicalize()?;
+        let site = project.join("dist");
+        fs::create_dir_all(&site)?;
+        for invalid in ["outside.js", "dist/../outside.js"] {
+            let files = BTreeMap::from([
+                (PathBuf::from("dist/assets/valid.js"), b"valid".to_vec()),
+                (PathBuf::from(invalid), b"invalid".to_vec()),
+            ]);
+            assert!(publish_bundle_files(&project, &site, &files).is_err());
+            assert!(!site.join("assets/valid.js").exists());
+            assert!(!project.join("outside.js").exists());
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_outputs_cannot_follow_symlinks_outside_the_site() -> TestResult {
+        let fixture = tempfile::tempdir()?;
+        let project = fixture.path().canonicalize()?;
+        let site = project.join("dist");
+        let outside = project.join("outside");
+        fs::create_dir_all(&site)?;
+        fs::create_dir_all(&outside)?;
+        std::os::unix::fs::symlink(&outside, site.join("assets"))?;
+        let files = BTreeMap::from([(
+            PathBuf::from("dist/assets/escape.js"),
+            b"must not be published".to_vec(),
+        )]);
+        assert!(publish_bundle_files(&project, &site, &files).is_err());
+        assert!(!outside.join("escape.js").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn native_text_loaders_and_virtual_appearance_have_stable_output() -> TestResult {
+        let fixture = tempfile::tempdir()?;
+        let config = fixture.path().join(".webui-press");
+        let site = fixture.path().join("dist");
+        fs::create_dir_all(&config)?;
+        fs::create_dir_all(&site)?;
+        fs::write(config.join("style.css"), ".native-press { color: red; }")?;
+        fs::write(config.join("card.html"), "<p>native text loader</p>")?;
+        fs::write(
+            config.join("entry.ts"),
+            concat!(
+                "import css from './style.css';\n",
+                "import html from './card.html';\n",
+                "import { getAppearance } from '@microsoft/webui-press/appearance.js';\n",
+                "document.documentElement.dataset.nativePress = css + html;\n",
+                "globalThis.nativeAppearance = getAppearance;\n",
+            ),
+        )?;
+        let pages = [PageBundleEntry {
+            id: 0,
+            page_path: "/native/".to_string(),
+            component_scripts: Vec::new(),
+            explicit_scripts: vec![ScriptSource::File("entry.ts".to_string())],
+        }];
+        let opts = BundleOptions {
+            site_dir: &site,
+            base_path: "/",
+            node_modules: None,
+            root_bundle: None,
+            page_bundles: &pages,
+            bundler_config: None,
+            dev_mode: false,
+            config_dir: &config,
+            content_dir: fixture.path(),
+        };
+        let first = bundle_assets(&opts)?;
+        let bytes = fs::read(site.join("assets/page-0.js"))?;
+        let second = bundle_assets(&opts)?;
+        assert_eq!(first.script_map, second.script_map);
+        assert_eq!(bytes, fs::read(site.join("assets/page-0.js"))?);
+        let source = String::from_utf8(bytes)?;
+        assert!(source.contains(".native-press"));
+        assert!(source.contains("native text loader"));
+        assert!(source.contains("@microsoft/webui-press/appearance"));
+        assert!(!source.contains(".webui-press-bundle-"));
+        Ok(())
     }
 
     #[test]
@@ -2130,9 +2074,9 @@ mod tests {
         fs::create_dir_all(&framework)?;
         fs::write(framework.join("index.js"), "export {};")?;
         let mut entry = String::new();
-        append_framework_runtime(&mut entry, false, temporary.path());
+        append_framework_runtime(&mut entry, false, Some(temporary.path()));
         assert!(entry.is_empty());
-        append_framework_runtime(&mut entry, true, temporary.path());
+        append_framework_runtime(&mut entry, true, Some(temporary.path()));
         assert_eq!(
             entry,
             "import { startRuntime } from '@microsoft/webui-framework/runtime.js';\nimport '@microsoft/webui-framework/styles.js';\nstartRuntime();\n"
@@ -2141,77 +2085,209 @@ mod tests {
     }
 
     #[test]
-    fn esbuild_args_force_webui_decorator_semantics() -> TestResult {
-        let site_dir = Path::new("/site");
-        let config_dir = Path::new("/site/.webui-press");
+    fn native_options_preserve_build_contract() -> TestResult {
+        let fixture = tempfile::tempdir()?;
+        let site_dir = fixture.path().join("dist");
+        let config_dir = fixture.path().join(".webui-press");
+        fs::create_dir_all(&site_dir)?;
+        fs::create_dir_all(&config_dir)?;
+        let cfg = BundlerConfig {
+            target: Some("es2020".to_string()),
+            external: vec!["aliased".to_string(), "external-package".to_string()],
+            alias: HashMap::from([("aliased".to_string(), "./alias.ts".to_string())]),
+            define: HashMap::from([("__WEBUI_DEV__".to_string(), "true".to_string())]),
+            ..Default::default()
+        };
+        fs::write(config_dir.join("alias.ts"), "export {};")?;
         let opts = BundleOptions {
-            site_dir,
+            site_dir: &site_dir,
+            base_path: "/",
+            node_modules: None,
+            root_bundle: None,
+            page_bundles: &[],
+            bundler_config: Some(&cfg),
+            dev_mode: false,
+            config_dir: &config_dir,
+            content_dir: fixture.path(),
+        };
+        let entries = [("assets/page-2".to_string(), config_dir.join("alias.ts"))];
+        let tsconfig = config_dir.join("tsconfig.json");
+        let options = native_build_options(&opts, &entries, &tsconfig)?;
+        assert_eq!(options.project, fixture.path().canonicalize()?);
+        assert_eq!(
+            options.entries,
+            BTreeMap::from([(
+                "assets/page-2".to_string(),
+                PathBuf::from(".webui-press/alias.ts"),
+            )])
+        );
+        assert_eq!(options.out_dir, PathBuf::from("dist"));
+        assert_eq!(options.target, "es2020");
+        assert_eq!(options.external, ["external-package"]);
+        assert_eq!(options.defines["__WEBUI_DEV__"], "true");
+        assert_eq!(options.entry_names, "[name].js");
+        assert_eq!(options.chunk_names, "assets/[name]-[hash].js");
+        assert!(options.minify);
+        assert!(!options.development);
+        assert!(options.framework.is_none());
+        assert_eq!(
+            options.aliases["@microsoft/webui-press/appearance.js$"],
+            APPEARANCE_MODULE
+        );
+        assert_eq!(
+            options.virtual_modules[APPEARANCE_MODULE],
+            include_str!("../template/appearance.ts")
+        );
+        assert!(matches!(
+            options.loaders[".html"],
+            webui_client_build::Loader::Text
+        ));
+        assert!(matches!(
+            options.loaders[".css"],
+            webui_client_build::Loader::Text
+        ));
+        assert_eq!(options.tsconfig, Some(tsconfig));
+        let semantics: serde_json::Value = serde_json::from_str(WEBUI_TSCONFIG)?;
+        assert_eq!(semantics["compilerOptions"]["experimentalDecorators"], true);
+        assert_eq!(
+            semantics["compilerOptions"]["useDefineForClassFields"],
+            false
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn native_options_fold_production_flag_but_not_development() -> TestResult {
+        let fixture = tempfile::tempdir()?;
+        let site = fixture.path().join("dist");
+        fs::create_dir_all(&site)?;
+        let mut opts = BundleOptions {
+            site_dir: &site,
             base_path: "/",
             node_modules: None,
             root_bundle: None,
             page_bundles: &[],
             bundler_config: None,
             dev_mode: false,
-            config_dir,
-            content_dir: Path::new("/site"),
+            config_dir: fixture.path(),
+            content_dir: fixture.path(),
         };
-        let args = esbuild_args(&opts, &[], Path::new("/tmp/webui-press-bundle"))?;
-
-        assert!(args.contains(&format!("--tsconfig-raw={WEBUI_TSCONFIG_RAW}")));
+        let tsconfig = fixture.path().join("tsconfig.json");
+        let prod = native_build_options(&opts, &[], &tsconfig)?;
+        assert_eq!(prod.defines["__WEBUI_DEV__"], "false");
+        opts.dev_mode = true;
+        let dev = native_build_options(&opts, &[], &tsconfig)?;
+        assert!(!dev.defines.contains_key("__WEBUI_DEV__"));
+        assert!(!dev.minify);
+        assert!(dev.development);
         Ok(())
     }
 
     #[test]
-    fn esbuild_args_folds_webui_dev_flag_for_production_only() -> TestResult {
-        fn opts<'a>(
-            site_dir: &'a Path,
-            config_dir: &'a Path,
-            dev_mode: bool,
-            cfg: Option<&'a BundlerConfig>,
-        ) -> BundleOptions<'a> {
-            BundleOptions {
-                site_dir,
-                base_path: "/",
-                node_modules: None,
-                root_bundle: None,
-                page_bundles: &[],
-                bundler_config: cfg,
-                dev_mode,
-                config_dir,
-                content_dir: site_dir,
-            }
+    fn native_build_preserves_package_subpath_externals() -> TestResult {
+        let fixture = tempfile::tempdir()?;
+        let site = fixture.path().join("dist");
+        fs::create_dir_all(&site)?;
+        let pages = [PageBundleEntry {
+            id: 0,
+            page_path: "/native/".to_string(),
+            component_scripts: Vec::new(),
+            explicit_scripts: vec![ScriptSource::Inline(
+                concat!(
+                    "import { value } from 'external-package/subpath';\n",
+                    "globalThis.nativeExternal = [value, __WEBUI_DEV__];\n",
+                )
+                .to_string(),
+            )],
+        }];
+        let cfg = BundlerConfig {
+            external: vec!["external-package".to_string()],
+            ..Default::default()
+        };
+        let result = bundle_assets(&BundleOptions {
+            site_dir: &site,
+            base_path: "/",
+            node_modules: None,
+            root_bundle: None,
+            page_bundles: &pages,
+            bundler_config: Some(&cfg),
+            dev_mode: false,
+            config_dir: fixture.path(),
+            content_dir: fixture.path(),
+        })?;
+        assert_eq!(result.page_entry_count, 1);
+        let source = fs::read_to_string(site.join("assets/page-0.js"))?;
+        assert!(source.contains("external-package/subpath"));
+        assert!(source.contains("nativeExternal"));
+        assert!(!source.contains("__WEBUI_DEV__"));
+        Ok(())
+    }
+
+    #[test]
+    fn native_build_preserves_explicit_production_defines() -> TestResult {
+        let fixture = tempfile::tempdir()?;
+        let site = fixture.path().join("dist");
+        fs::create_dir_all(&site)?;
+        let pages = [PageBundleEntry {
+            id: 0,
+            page_path: "/native/".to_string(),
+            component_scripts: Vec::new(),
+            explicit_scripts: vec![ScriptSource::Inline(
+                "globalThis.nativeDevOverride = __WEBUI_DEV__;".to_string(),
+            )],
+        }];
+        let cfg = BundlerConfig {
+            define: HashMap::from([("__WEBUI_DEV__".to_string(), "true".to_string())]),
+            ..Default::default()
+        };
+        bundle_assets(&BundleOptions {
+            site_dir: &site,
+            base_path: "/",
+            node_modules: None,
+            root_bundle: None,
+            page_bundles: &pages,
+            bundler_config: Some(&cfg),
+            dev_mode: false,
+            config_dir: fixture.path(),
+            content_dir: fixture.path(),
+        })?;
+        let source = fs::read_to_string(site.join("assets/page-0.js"))?;
+        assert!(source.contains("nativeDevOverride"));
+        assert!(!source.contains("__WEBUI_DEV__"));
+        Ok(())
+    }
+
+    #[test]
+    fn native_build_errors_remove_owned_scratch_without_publishing_entries() -> TestResult {
+        let fixture = tempfile::tempdir()?;
+        let site = fixture.path().join("dist");
+        fs::create_dir_all(&site)?;
+        let pages = [PageBundleEntry {
+            id: 0,
+            page_path: "/invalid/".to_string(),
+            component_scripts: Vec::new(),
+            explicit_scripts: vec![ScriptSource::Inline("const invalid = ;".to_string())],
+        }];
+        let result = bundle_assets(&BundleOptions {
+            site_dir: &site,
+            base_path: "/",
+            node_modules: None,
+            root_bundle: None,
+            page_bundles: &pages,
+            bundler_config: None,
+            dev_mode: false,
+            config_dir: fixture.path(),
+            content_dir: fixture.path(),
+        });
+        assert!(result.is_err());
+        assert!(!site.join("assets/page-0.js").exists());
+        assert!(!site.join("webui-projection.json").exists());
+        for entry in fs::read_dir(&site)? {
+            assert!(!entry?
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".webui-press-bundle-"));
         }
-        let site_dir = Path::new("/site");
-        let config_dir = Path::new("/site/.webui-press");
-        let tmp = Path::new("/tmp/b");
-        let define = "--define:__WEBUI_DEV__=false".to_string();
-
-        // Production build: the flag is folded to `false` so the framework's
-        // dev-only diagnostics (and the module gating them) tree-shake out.
-        let prod = esbuild_args(&opts(site_dir, config_dir, false, None), &[], tmp)?;
-        assert!(prod.contains(&define));
-
-        // Development build (`webui-press serve`): the flag is left undefined so
-        // the `typeof` guard defaults it to on and diagnostics run.
-        let dev = esbuild_args(&opts(site_dir, config_dir, true, None), &[], tmp)?;
-        assert!(!dev.iter().any(|arg| arg.contains("__WEBUI_DEV__")));
-
-        // A user-supplied define wins: esbuild honors the last `--define` for a
-        // key, so our production default must be emitted before user defines.
-        let mut cfg = BundlerConfig::default();
-        cfg.define
-            .insert("__WEBUI_DEV__".to_string(), "true".to_string());
-        let overridden = esbuild_args(&opts(site_dir, config_dir, false, Some(&cfg)), &[], tmp)?;
-        let ours = overridden.iter().position(|arg| arg == &define);
-        let theirs = overridden
-            .iter()
-            .position(|arg| arg == "--define:__WEBUI_DEV__=true");
-        assert!(ours.is_some(), "framework default define should be present");
-        assert!(theirs.is_some(), "user override define should be present");
-        assert!(
-            ours < theirs,
-            "framework default must precede the user override so esbuild's last-wins keeps the user's value",
-        );
         Ok(())
     }
 
@@ -2409,7 +2485,7 @@ mod tests {
     }
 
     #[test]
-    fn generated_bundle_entries_use_absolute_child_process_paths() -> TestResult {
+    fn generated_bundle_entries_use_absolute_native_paths() -> TestResult {
         let generated = resolved_bundle_temp_path(Path::new("relative-site"), "abc")?;
         assert!(generated.is_absolute());
         Ok(())

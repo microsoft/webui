@@ -975,11 +975,19 @@ If `count` should already read `3` in the server-rendered HTML, seed it in the S
 
 #### Development warning
 
-The mismatch warning is removed from `webui-press` production builds. If you
-bundle the framework yourself, define `__WEBUI_DEV__` as `false` in production:
+The mismatch warning is removed from native production builds. Keep
+`development` disabled when bundling the framework for deployment:
 
-```bash
-esbuild app.ts --bundle --minify --define:__WEBUI_DEV__=false
+```typescript
+import { bundleClient } from '@microsoft/webui/build.js';
+
+await bundleClient({
+  project: process.cwd(),
+  entries: { app: 'app.ts' },
+  outDir: 'dist',
+  development: false,
+  minify: true,
+});
 ```
 
 

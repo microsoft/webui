@@ -10,6 +10,11 @@ artifacts = {artifact["name"] for artifact in json.load(sys.stdin)["value"]}
 patterns = []
 for artifact, variable, assets in [
     (
+        "standalone_native_toolchains",
+        "toolchainsAvailable",
+        ["toolchains/*.tar.gz", "toolchains/*.tar.gz.sha256"],
+    ),
+    (
         "standalone_sdk_archives",
         "sdkAvailable",
         ["sdk/*.tar.gz", "sdk/*.tar.gz.sha256"],

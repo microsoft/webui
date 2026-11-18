@@ -4,7 +4,7 @@
 import { readFile } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import { Protocol } from '@microsoft/webui';
-import { listenAddress, openAsset, pageState, requestPath } from '../scripts/http.mjs';
+import { listenAddress, openAsset, pageState, requestPath } from './http.mjs';
 
 const protocol = new Protocol(await readFile('dist/protocol.bin'), { plugin: 'webui' });
 const address = listenAddress();
@@ -42,10 +42,29 @@ const server = Bun.serve({
   },
 });
 console.log(`Listening on http://${address.hostname}:${address.port}`);
+let stopping = false;
 function shutdown() {
+  if (stopping) return;
+  stopping = true;
+  if (process.env._WEBUI_APP_CONTROL === 'stdin-v1') process.stdin.destroy();
   void server.stop(false);
   const timeout = setTimeout(() => { void server.stop(true); }, 5000);
   timeout.unref();
 }
 process.once('SIGINT', shutdown);
 process.once('SIGTERM', shutdown);
+if (process.env._WEBUI_APP_CONTROL === 'stdin-v1') {
+  process.stdin.once('data', command => {
+    if (command[0] !== 83) console.error('Invalid WebUI supervisor command; shutting down');
+    shutdown();
+  });
+  process.stdin.once('end', () => {
+    if (!stopping) console.error('WebUI supervisor disconnected; shutting down');
+    shutdown();
+  });
+  process.stdin.once('error', error => {
+    console.error('WebUI supervisor control failed:', error);
+    shutdown();
+  });
+  process.stdin.resume();
+}

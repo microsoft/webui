@@ -209,7 +209,7 @@ extends:
             CleanTargetFolder: true
 
       - job: StagePythonAndStandalone
-        displayName: Stage Python, standalone SDK, and Go artifacts
+        displayName: Stage Python, standalone toolchain/SDK, and Go artifacts
         templateContext:
           outputs:
           - output: pipelineArtifact
@@ -226,7 +226,7 @@ extends:
 
         - task: Bash@3
           name: distributions
-          displayName: Detect selected build SDK and Go distributions
+          displayName: Detect selected build toolchain, SDK and Go distributions
           inputs:
             targetType: inline
             script: |
@@ -250,6 +250,10 @@ extends:
           artifact: standalone_sdk_archives
           displayName: Download standalone SDK archives and checksums
           condition: and(succeeded(), eq(variables['distributions.sdkAvailable'], 'true'))
+        - download: releaseBuild
+          artifact: standalone_native_toolchains
+          displayName: Download standalone native toolchains and checksums
+          condition: and(succeeded(), eq(variables['distributions.toolchainsAvailable'], 'true'))
         - download: releaseBuild
           artifact: go_module_proxy
           displayName: Download Go module proxy
@@ -285,6 +289,14 @@ extends:
             SourceFolder: $(Pipeline.Workspace)/releaseBuild/go_module_proxy
             Contents: '**'
             TargetFolder: $(Build.SourcesDirectory)/publish_artifacts_standalone/go
+            CleanTargetFolder: true
+        - task: CopyFiles@2
+          displayName: Stage standalone native toolchains and checksums
+          condition: and(succeeded(), eq(variables['distributions.toolchainsAvailable'], 'true'))
+          inputs:
+            SourceFolder: $(Pipeline.Workspace)/releaseBuild/standalone_native_toolchains
+            Contents: '**'
+            TargetFolder: $(Build.SourcesDirectory)/publish_artifacts_standalone/toolchains
             CleanTargetFolder: true
 
     - ${{ if eq(parameters.validationMode, 'false') }}:

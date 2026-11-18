@@ -13,8 +13,9 @@
 //!
 //! On Windows that happens whenever `TEMP`/`TMP` point at `C:\…` while the
 //! build sits on another drive. This module keeps every Press scratch
-//! directory on the build's own volume in that case, and otherwise keeps the
-//! shared system temp directory so unrelated projects still share one cache.
+//! compilation scratch directory on the build's own volume in that case.
+//! Extracted browser sources always use a project-local cache so their native
+//! build boundary never has to encompass a shared system directory.
 //!
 //! Staying on one volume also keeps the cache publish step a same-volume
 //! `rename`, which is the only form that is atomic on Windows.
@@ -23,14 +24,14 @@ use std::io;
 use std::path::{Component, Path, PathBuf, Prefix};
 use std::{fs, path};
 
-/// Project-local scratch directory used when the system temp directory lives
-/// on another volume. Self-ignoring, so consuming repositories need no change.
+/// Project-local browser cache and cross-volume compilation scratch.
+/// Self-ignoring, so consuming repositories need no change.
 pub(crate) const PROJECT_SCRATCH_DIR: &str = ".webui-press-cache";
 
 /// Returns the base directory for Press scratch and cache directories.
 ///
 /// `build_dir` is the configured output directory, which decides the volume:
-/// it holds the generated entry points, the esbuild `outbase`/`outdir`, and the
+/// it holds the generated entry points, browser output, and the
 /// projection manifest, so the build root always contains it. `out_dir` is
 /// resolved independently of the config file (it may be absolute or relative to
 /// the working directory), which is why it cannot be inferred from
@@ -39,12 +40,32 @@ pub(crate) const PROJECT_SCRATCH_DIR: &str = ".webui-press-cache";
 /// `project_dir` is the config directory, and only supplies a home for the
 /// fallback cache. A project whose sources and output directory are themselves
 /// on different volumes cannot be expressed in one build root at all; no
-/// scratch placement changes that, and `PROJ-C015` reports it.
+/// scratch placement changes that, and the browser build rejects it.
 ///
 /// Callers hoist the result for the whole build, so this stays uncached: a
 /// process-wide cache would hand a second project the first project's base.
 pub(crate) fn scratch_base(build_dir: &Path, project_dir: &Path) -> io::Result<PathBuf> {
     resolve_scratch_base(build_dir, project_dir, &std::env::temp_dir())
+}
+
+/// Keep extracted browser sources inside the consuming project boundary.
+///
+/// Unlike transient template compilation scratch, these are physical inputs
+/// to the native browser graph. A shared system cache could force that graph's
+/// project root to encompass the entire filesystem.
+#[allow(dead_code)] // Embedded asset extraction belongs to the standalone binary.
+pub(crate) fn browser_cache_base(build_dir: &Path, project_dir: &Path) -> io::Result<PathBuf> {
+    let build = path::absolute(build_dir)?;
+    let project = path::absolute(project_dir)?;
+    if !same_volume(&build, &project) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Press browser sources and output must share a filesystem volume",
+        ));
+    }
+    let local = project.join(PROJECT_SCRATCH_DIR);
+    prepare_project_scratch(&local)?;
+    Ok(local)
 }
 
 /// Resolves the scratch base against an explicit `system_temp`.
@@ -224,5 +245,25 @@ mod tests {
         })();
         let _ = fs::remove_dir_all(&directory);
         outcome
+    }
+
+    #[test]
+    fn browser_cache_stays_inside_project_even_on_the_system_volume() -> TestResult {
+        let project = tempfile::tempdir()?;
+        let build = project.path().join("dist");
+        let cache = browser_cache_base(&build, project.path())?;
+        assert_eq!(cache, project.path().join(PROJECT_SCRATCH_DIR));
+        assert_eq!(fs::read_to_string(cache.join(".gitignore"))?, "*\n");
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn browser_cache_rejects_cross_volume_sources_and_output() {
+        assert!(browser_cache_base(
+            Path::new("C:/site/dist"),
+            Path::new(r"\\webui-press-test\project"),
+        )
+        .is_err());
     }
 }

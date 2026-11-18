@@ -86,7 +86,7 @@ pub(crate) fn run() -> Result<(), String> {
     let proxy = root.join("proxy");
     let workspace = std::env::current_dir().map_err(|error| error.to_string())?;
     crate::publish::stage_go_proxy(&workspace, &version, &proxy)?;
-    check_external_consumer(&workspace, &root, library_dir, &protocol, &proxy)?;
+    check_external_consumer(&workspace, &root, (&cli, library_dir), &protocol, &proxy)?;
     check_generated_consumer(&root, &cli, &library, &protocol, &proxy)
 }
 
@@ -139,10 +139,11 @@ fn checked(command: &mut Command, label: &str) -> Result<(), String> {
 fn check_external_consumer(
     workspace: &Path,
     root: &Path,
-    library_dir: &Path,
+    native: (&Path, &Path),
     protocol: &Path,
     proxy: &Path,
 ) -> Result<(), String> {
+    let (cli, library_dir) = native;
     let version = crate::version::workspace_package_version(workspace)?;
     let module_version = crate::release_version::ReleaseVersion::parse(&version)
         .and_then(crate::release_version::ReleaseVersion::go_version)
@@ -175,6 +176,13 @@ fn check_external_consumer(
             .arg(&sdk),
         "extract standalone SDK",
     )?;
+    checked(
+        Command::new(cli)
+            .args(["--format", "json", "sdk", "check"])
+            .env("WEBUI_SDK_DIR", &sdk)
+            .env("PATH", ""),
+        "validate genuine standalone SDK without Node or npm",
+    )?;
     let app = root.join("consumer");
     fs::create_dir_all(&app).map_err(|error| error.to_string())?;
     fs::write(
@@ -191,9 +199,15 @@ fn check_external_consumer(
     } else {
         "consumer"
     });
-    let mut build = build_command("go", &["build", "-mod=mod", "-o"]);
-    build.arg(&executable).arg(".").current_dir(&app);
-    configure_environment(&mut build, &sdk.join("include"), &sdk.join("lib"), protocol)?;
+    let mut build = Command::new(cli);
+    build
+        .args(["sdk", "exec", "--", "go", "build", "-mod=mod", "-o"])
+        .arg(&executable)
+        .arg(".")
+        .current_dir(&app)
+        .env("WEBUI_SDK_DIR", &sdk)
+        .env("GOTOOLCHAIN", "local")
+        .env("GOWORK", "off");
     build
         .env("GOPROXY", crate::publish::go_proxy_url(proxy)?)
         .env("GOSUMDB", "off")

@@ -2,6 +2,8 @@
 // Licensed under the MIT license.
 
 import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   brotliCompressSync,
   constants,
@@ -40,8 +42,9 @@ const BUDGETS = {
 };
 
 const metafile = JSON.parse(readFileSync('dist/client-metafile.json', 'utf8'));
-if (Object.values(metafile.outputs).some(output => Object.entries(output.inputs).some(
-  ([input, contribution]) => input.endsWith('/hydration-mismatch.js') && contribution.bytesInOutput > 0,
+const workspaceRoot = fileURLToPath(new URL('../../../../', import.meta.url));
+if (Object.values(metafile.outputs).some(output => Object.keys(output.inputs).some(
+  input => /\/hydration-mismatch\.[jt]s$/.test(input.replaceAll('\\', '/')),
 ))) {
   throw new Error('Production builds must set __WEBUI_DEV__=false to exclude hydration diagnostics.');
 }
@@ -83,7 +86,8 @@ if (failed) {
 
 function findOutput(entryPoint) {
   const match = Object.entries(outputs)
-    .find(([, output]) => output.entryPoint === entryPoint);
+    .find(([, output]) => output.entryPoint &&
+      resolve(workspaceRoot, output.entryPoint) === resolve(entryPoint));
   if (!match) throw new Error(`Missing bundle output for ${entryPoint}.`);
   return match[0];
 }
@@ -111,7 +115,7 @@ function sizes(prefix, paths) {
   let gzip = 0;
   let brotli = 0;
   for (const path of paths) {
-    const bytes = readFileSync(path);
+    const bytes = readFileSync(resolve(workspaceRoot, path));
     raw += bytes.length;
     gzip += gzipSync(bytes, { level: 9 }).length;
     brotli += brotliCompressSync(bytes, {

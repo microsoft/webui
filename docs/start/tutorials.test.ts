@@ -55,8 +55,10 @@ function fixtureFrom(t: TestContext, markdown: string): string {
     write(path.join(root, file), content);
   }
   const framework = path.join(root, 'node_modules/@microsoft/webui-framework');
-  fs.mkdirSync(path.dirname(framework), { recursive: true });
-  fs.symlinkSync(path.join(workspace, 'packages/webui-framework'), framework, 'junction');
+  fs.mkdirSync(framework, { recursive: true });
+  const frameworkPackage = path.join(workspace, 'packages/webui-framework');
+  fs.copyFileSync(path.join(frameworkPackage, 'package.json'), path.join(framework, 'package.json'));
+  fs.cpSync(path.join(frameworkPackage, 'dist'), path.join(framework, 'dist'), { recursive: true });
   return root;
 }
 
@@ -125,7 +127,7 @@ test('package-manager command tabs render and switch across the documentation', 
     ['start/todo-app', 2],
     ['learn/how-it-works', 1],
     ['build/desktop', 2],
-    ['build/hydration', 1],
+    ['build/hydration', 0],
     ['build/routing', 1],
     ['build/integrations/node', 1],
     ['reference/cli', 3],
@@ -216,12 +218,13 @@ test('installation keeps first-page setup separate from deep integrations', asyn
   const content = page.locator('.doc-content');
   await expect(content.getByRole('heading', { level: 2 })).toHaveText([
     'Scaffold an application #',
-    'Install the CLI #', 'Verify the CLI #', 'Create your first page #',
+    'Native toolchain #', 'Package-managed lesson setup #',
+    'Verify the CLI #', 'Create your first page #',
     'Installation policies #', 'Deep integrations #', 'Add what your app needs #',
     'AI coding agents #',
   ]);
   for (const host of ['rust', 'node', 'dotnet', 'python', 'ffi', 'wasm']) {
-    await expect(content.locator(`a[href="/webui/build/integrations/${host}"]`)).toHaveCount(1);
+    await expect(content.locator(`a[href="/webui/build/integrations/${host}"]`).first()).toBeVisible();
   }
   await expect(content.locator('a[href="/webui/start/first-page"]')).toBeVisible();
   await expect(content.locator('details[open]')).toHaveCount(0);
@@ -375,9 +378,7 @@ test('the first component renders its data and paired CSS without browser JavaSc
 
 test('Todo documented component templates compile', t => {
   const root = fixtureFrom(t, tutorial('todo-app'));
-  const command = scriptsAt(root)['build:protocol'] ??
-    'webui build ./src --out ./dist --plugin webui';
-  compile(root, command);
+  bundle(root);
 });
 
 test('the interaction lesson adopts SSR and responds to clicks', async t => {

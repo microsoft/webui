@@ -141,8 +141,12 @@ test('full Press output preserves module identity, document metadata and native 
     for (const [pathname, urls] of byPath) {
       assert.equal(urls.length, 1, `${pathname} was requested more than once: ${urls.join(', ')}`);
     }
-    assert.ok(preloads.some(url => /\/assets\/chunk-[^/]+\.js$/.test(url)),
-      'Content-hashed dependencies must use the exact unversioned import URL');
+    assert.ok(preloads.every(url => {
+      const dependency = new URL(url);
+      return dependency.pathname.startsWith(`${basePath}assets/`) &&
+        dependency.pathname.endsWith('.js') && !dependency.search &&
+        resources.includes(url);
+    }), 'Dependencies must preload at their exact unversioned import URLs');
     const entryBefore = await page.locator('script[type="module"][src]').evaluateAll(scripts =>
       scripts.map(script => (script as HTMLScriptElement).src),
     );

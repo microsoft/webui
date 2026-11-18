@@ -13,7 +13,11 @@ mod e2e_approve;
 mod go_tests;
 mod hotfix;
 mod license_headers;
+mod native_assets;
 mod native_ipc;
+mod native_toolchain;
+mod native_toolchain_command;
+mod node_addons;
 mod node_tests;
 mod process;
 mod publish;
@@ -34,6 +38,15 @@ use util::{
 };
 
 fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().collect();
+    let task = args.get(1).map(|s| s.as_str());
+
+    // The addon build resolves the workspace itself. Keep the caller's
+    // directory for the optional command, such as a package-local build.
+    if task == Some("build-node-addons") {
+        return node_addons::run(&args[2..]);
+    }
+
     let workspace_root = match workspace_root() {
         Ok(path) => path,
         Err(message) => {
@@ -50,9 +63,6 @@ fn main() -> ExitCode {
         );
         return ExitCode::FAILURE;
     }
-
-    let args: Vec<String> = std::env::args().collect();
-    let task = args.get(1).map(|s| s.as_str());
 
     match task {
         #[cfg(feature = "windows-app-sdk-tools")]
@@ -125,6 +135,7 @@ fn main() -> ExitCode {
             publish::run_stage(&extra)
         }
         Some("sdk-stage") => publish::run_sdk(&args[2..]),
+        Some("toolchain-stage") => native_toolchain_command::run(&workspace_root, &args[2..]),
         Some("publish-build") => {
             let extra: Vec<String> = args.iter().skip(2).cloned().collect();
             publish::run_build(&extra)
@@ -181,6 +192,7 @@ fn usage() -> ExitCode {
            native-ipc [--timeout SECONDS] [--fail-fast] [--plan darwin|win32|linux]  Run native IPC source/package and no-IPC contracts\n  \
            build   Build the workspace\n  \
            build-examples  Build all example integrations and apps\n  \
+           build-node-addons [--release] [-- COMMAND [ARG...]]  Build Node addons and optionally run a command with their paths\n  \
            build-wasm  Build WASM playground module\n  \
            docs    Build the documentation site\n  \
            bench <target> [-- <extra>] [--save-baseline NAME | --baseline NAME]\n  \
@@ -196,6 +208,8 @@ fn usage() -> ExitCode {
            hotfix <commit> <oldest-tag> [--dry-run] [--support-commit <commit>]  Backport a commit and publish incremented hotfix branches\n  \
            publish-build --target <triple> [--profile release|debug] [--output <dir>] [--native-only|--python-only|--portable-only]  Build, stage, and optionally export one target's native artifacts and Python wheel\n  \
            sdk-stage [--target <triple|all>]  Stage already-built SDK and Go module artifacts without publishing\n  \
+           toolchain-stage --target <triple> --cli <built-cli> (--checker-package <native.tgz> | --acquire-checker) [--checker-dir <dir>]  Stage a frozen-checksum native toolchain without publishing\n  \
+           toolchain-stage --validate-release  Validate all six standalone toolchain archive/checksum pairs without executing target binaries\n  \
            publish-stage [--target <triple|all>] [--profile release] [--native-only|--pack-only] [--prebuilt-wasm]  Stage release artifacts into publish/\n  \
            build-windows-local [--target all|x64|arm64|<triple>]  Build and stage Windows MSVC artifacts locally with cargo-xwin\n  \
            license-headers [--fix]  Check (or fix) license headers in source files\n  \
@@ -621,17 +635,16 @@ fn bench_node_addon(save: Option<String>, compare: Option<String>) -> ExitCode {
     }
 
     eprintln!(
-        "  {} building microsoft-webui-node (release)",
+        "  {} building handler and compiler Node addons (release)",
         console::style("•").dim()
     );
-    if let Err(message) = run_command(
-        "cargo",
-        &["build", "--release", "-p", "microsoft-webui-node"],
-        None,
-    ) {
-        eprintln!("node-addon bench: release addon build failed: {message}");
-        return ExitCode::FAILURE;
-    }
+    let addons = match node_addons::build(true) {
+        Ok(addons) => addons,
+        Err(message) => {
+            eprintln!("node-addon bench: release addons build failed: {message}");
+            return ExitCode::FAILURE;
+        }
+    };
 
     eprintln!(
         "  {} building @microsoft/webui package",
@@ -642,31 +655,9 @@ fn bench_node_addon(save: Option<String>, compare: Option<String>) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let addon_file = if cfg!(target_os = "windows") {
-        "webui_node.dll"
-    } else if cfg!(target_os = "macos") {
-        "libwebui_node.dylib"
-    } else {
-        "libwebui_node.so"
-    };
-    let addon_path = match std::env::current_dir() {
-        Ok(root) => root.join("target").join("release").join(addon_file),
-        Err(error) => {
-            eprintln!("node-addon bench: failed to resolve workspace directory: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
-    if !addon_path.is_file() {
-        eprintln!(
-            "node-addon bench: release addon not found at {}",
-            addon_path.display()
-        );
-        return ExitCode::FAILURE;
-    }
-
     let mut cmd = build_command("pnpm", &["run", "bench"]);
+    addons.apply(&mut cmd);
     cmd.current_dir(&bench_dir)
-        .env("WEBUI_ADDON_PATH", &addon_path)
         .env_remove("WEBUI_BENCH_SAVE")
         .env_remove("WEBUI_BENCH_COMPARE")
         .env_remove("WEBUI_BENCH_QUICK");
@@ -830,7 +821,14 @@ impl Step {
                     "warnings",
                 ],
                 None,
-            )
+            )?;
+            let target_dir = node_addons::target_directory(&workspace_root()?)?;
+            node_addons::run_checked(
+                node_addons::variant_command("clippy", node_addons::Variant::Build, &target_dir)
+                    .args(["--", "-D", "warnings"]),
+                "WebUI compiler addon Clippy",
+            )?;
+            Ok(())
         },
     };
     const DENY: Self = Self {
@@ -859,8 +857,8 @@ impl Step {
                 &[
                     "--test",
                     "crates/webui-cli/tests/starter.test.mjs",
-                    "crates/webui-cli/tests/sdk.test.mjs",
                     "scripts/tag-release.test.mjs",
+                    "scripts/validate-node-packages.test.mjs",
                 ],
                 None,
             )?;

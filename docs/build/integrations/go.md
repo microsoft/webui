@@ -19,12 +19,15 @@ SDK matching `webui.Version`, your operating system, and architecture.
 go get github.com/microsoft/webui/go/v3
 ```
 
-Go module versions use the repository's `go/v<version>` tags, independently
-of the root `v<version>` tags. An unpublished version is not available from
-the public Go proxy until that module tag has been published.
+Tagged Go module versions use the repository's `go/v<version>` tags,
+independently of the root `v<version>` tags. A root release tag alone does not
+publish the module's semantic version. Ordinary public commit pseudo-versions
+are also legitimate Go module versions.
 
-Select the native SDK using `webui.Version`, not the Go module version.
-Stable versions match; native `3.1.2-hotfix.1` is published as Go
+Select the native SDK using `webui.Version`, not a Go pseudo-version or
+mapped hotfix version. This constant must match the exact compiler/native SDK
+release identity.
+Stable versions match; native `3.1.2-hotfix.1` maps to Go
 `v3.1.3-0.hotfix.1` so Go orders it above `v3.1.2` and below `v3.1.3`.
 
 Download the matching standalone `webui-sdk-<version>-<platform>.tar.gz` and
@@ -32,12 +35,29 @@ its `.sha256` file from the [release assets](https://github.com/microsoft/webui/
 Verify the archive against the published checksum before extracting it into
 an SDK directory. The extracted root contains `include/`, `lib/`,
 `sdk.json`, and license notices. npm is not required for this setup.
+Checksums establish integrity, not independent authenticity; use your approved
+release source.
 
 The native packages target Windows, macOS, and GNU/Linux on x64 and ARM64.
 Linux requires glibc; musl is not supported. Cross-compilation additionally
 requires the target's SDK and C toolchain.
 
-For macOS or Linux, supply the header and library search paths when building:
+With the matching native CLI installed, extract the SDK into `.webui/sdk` and
+run commands without configuring global compiler or loader paths:
+
+```bash
+webui sdk check
+webui sdk exec -- go build ./...
+webui sdk exec -- go test ./...
+webui sdk exec -- go run .
+```
+
+`WEBUI_SDK_DIR` can select an external extracted SDK instead. It is
+authoritative: invalid overrides fail without fallback. The SDK commands
+validate metadata and file integrity and do not require Node/npm or acquire
+SDKs automatically. See [SDK commands](/reference/cli/#webui-sdk).
+
+Alternatively, on macOS or Linux, supply the header and library search paths:
 
 ```bash
 export WEBUI_SDK_DIR=/absolute/path/to/sdk
@@ -150,14 +170,41 @@ JSON's escaped `\u0000` remains valid.
 ## Scaffold an application
 
 [`webui init`](/reference/cli/#webui-init) creates a `net/http` application
-that imports the official module at the compiler's matching release:
+that pins the official module for the compiler's native release identity.
+Confirm the source-module version and matching SDK are available through your
+approved sources. After generation, install the standalone SDK into
+`.webui/sdk`, or set `WEBUI_SDK_DIR` to its root before running app commands:
 
 ```bash
 webui init my-app --server go
+cd my-app
+webui sdk check
+webui app check
+webui app dev
 ```
 
-Install the standalone SDK into `.webui/sdk`, or set `WEBUI_SDK_DIR` to its
-root. The build downloads the pinned source module through your configured Go
-proxy before compiling; commit the generated `server/go.sum`. No local
-replacement or app-private binding is needed. Browser build tooling uses Node;
-the module and deployed Go renderer do not.
+Also install the matching
+[native toolchain](/start/installation#native-toolchain) for browser compilation
+and TypeScript checking. The default layout has root `go.mod`, host source and
+tests in `cmd/server/`, frontend sources in `web/`, and `webui.toml`. There is
+no `package.json` or JavaScript build orchestration.
+
+The build restores the pinned public source module through your configured Go
+proxy before compiling; commit the root `go.sum`. Use normal public module and
+checksum verification, without local `replace` directives or disabling
+checksums. Neither native frontend compilation nor the deployed Go renderer
+needs Node/npm.
+
+Use `webui app build`, then `webui app start` for production. Start verifies
+the recorded host and protocol without compilation or restoration. The host
+drains requests before closing its renderer. For direct Go commands, prepare
+the frontend first and supply SDK paths to the child:
+
+```bash
+webui app build --frontend-only
+webui sdk exec -- go test ./...
+webui sdk exec -- go run ./cmd/server
+```
+
+Direct Go commands consume the prepared frontend rather than rebuilding it.
+See [app commands](/reference/cli/#webui-app) for build/dev ownership and errors.

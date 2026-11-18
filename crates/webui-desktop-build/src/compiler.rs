@@ -288,5 +288,17 @@ fn normalized(contract: &model::Contract) -> Result<Vec<u8>, GenerateError> {
             }
         }
     }
+    let mut pending = vec![&mut value];
+    while let Some(value) = pending.pop() {
+        match value {
+            serde_json::Value::Object(object) => {
+                // Contract identities cannot depend on unified serde_json features.
+                object.sort_keys();
+                pending.extend(object.values_mut());
+            }
+            serde_json::Value::Array(values) => pending.extend(values),
+            _ => {}
+        }
+    }
     json(&value)
 }

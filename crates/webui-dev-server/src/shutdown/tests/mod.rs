@@ -1,15 +1,21 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+use super::notification::StopHandle;
 use super::*;
 use actix_web::{App, HttpResponse, HttpServer};
+use fixtures::{fixture_command, fixture_main, fixture_output};
 use std::fs;
+use std::io::Write;
 use std::net::TcpStream;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
+
+mod fixtures;
+mod stdin;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
@@ -19,6 +25,7 @@ const FIXTURE_OUTPUT: &str = "_WEBUI_SHUTDOWN_TEST_OUTPUT";
 #[test]
 fn no_policy_is_direct_and_large_timeout_is_rejected() -> TestResult {
     assert!(matches!(prepare(None)?, Mode::Direct));
+    assert!(matches!(prepare_with_stdin(None, true)?, Mode::Direct));
     assert!(matches!(
         prepare(NonZeroU64::new(u64::MAX)),
         Err(Error::InvalidPolicy)
@@ -42,7 +49,7 @@ fn spawn_failure_does_not_fall_back_to_direct_execution() {
 #[actix_web::test]
 async fn control_stops_the_http_server() -> TestResult {
     let builder = HttpServer::new(|| {
-        App::new().default_service(actix_web::web::to(|| async { HttpResponse::Ok() }))
+        App::new().default_service(actix_web::web::to(|| async { HttpResponse::Ok().finish() }))
     })
     .disable_signals()
     .workers(1)
@@ -107,49 +114,180 @@ fn second_request_forces_immediate_termination() -> TestResult {
 }
 
 #[test]
+fn coalesced_notifications_preserve_second_stop_and_source_loss() -> TestResult {
+    let (stop, requests) = stop_channel();
+    assert!(requests.notification.wake());
+    // The single notification slot is already full.
+    for _ in 0..128 {
+        assert!(stop.request());
+    }
+    assert_eq!(requests.count(), 2);
+    assert!(requests.wait(Some(Instant::now() + CONFIRMATION))?);
+    drop(stop);
+    assert!(requests.wait(Some(Instant::now() + CONFIRMATION))?);
+    assert!(requests.disconnected());
+    assert_eq!(requests.count(), 2);
+    Ok(())
+}
+
+#[test]
+fn exit_waiter_notifies_without_stop_and_retains_owned_group() -> TestResult {
+    let output = fixture_output()?;
+    let (_stop, requests) = stop_channel();
+    let mut command = fixture_command("exit", output.path())?;
+    let mut scope = platform::Scope::new()?;
+    scope.configure(&mut command);
+    let mut child = command.stdin(Stdio::piped()).spawn()?;
+    scope.attach(&child)?;
+    let mut control = child.stdin.take().ok_or("missing fixture control")?;
+    let mut waiter = super::task::Task::spawn(
+        "shutdown-test-exit",
+        requests.notification.clone(),
+        move || {
+            let result = platform::wait_for_exit(&mut child);
+            (child, result)
+        },
+    )?;
+    control.write_all(b"G")?;
+    // This asserts receipt of a real completion notification, not an idle
+    // polling constant or an elapsed-time performance threshold.
+    assert!(requests.wait(Some(Instant::now() + Duration::from_secs(10)))?);
+    let (mut child, result) = waiter.take_result()?.ok_or("missing exit notification")?;
+    result?;
+    assert_eq!(requests.count(), 0);
+    scope.terminate(Instant::now() + CONFIRMATION)?;
+    assert_eq!(child.try_wait()?.and_then(|status| status.code()), Some(37));
+    waiter.join_until(Instant::now() + CONFIRMATION)?;
+    Ok(())
+}
+
+#[test]
+fn startup_gate_prevents_descendants_before_release() -> TestResult {
+    let output = fixture_output()?;
+    let (_stop, requests) = stop_channel();
+    let mut worker = Worker::spawn(
+        fixture_command("hung", output.path())?,
+        requests.notification.clone(),
+    )?;
+    wait_for(&output.path().join("at-gate"))?;
+    assert!(!output.path().join("ready").exists());
+    assert!(!output.path().join("writes").exists());
+    worker.finish()?;
+    assert!(!output.path().join("writes").exists());
+    // Teardown cannot signal a group again after its leader has been reaped.
+    assert!(matches!(
+        worker.finish(),
+        Err(Error::Control(error)) if error.kind() == io::ErrorKind::InvalidInput
+    ));
+    Ok(())
+}
+
+#[test]
+fn normal_exit_notifies_and_kills_remaining_grandchildren() -> TestResult {
+    let mut running = Running::start("exit-with-writer", Duration::from_secs(30))?;
+    assert_eq!(running.finish()?, 37);
+    let before = fs::metadata(running.output.path().join("writes"))?.len();
+    thread::sleep(Duration::from_millis(100));
+    assert_eq!(
+        fs::metadata(running.output.path().join("writes"))?.len(),
+        before
+    );
+    Ok(())
+}
+
+#[test]
+fn stop_source_loss_still_joins_gracefully() -> TestResult {
+    let mut running = Running::start("graceful", Duration::from_secs(2))?;
+    let (replacement, _unused) = stop_channel();
+    drop(std::mem::replace(&mut running.stop, replacement));
+    assert_eq!(running.finish()?, 0);
+    assert_eq!(fs::read(running.output.path().join("complete"))?, b"done");
+    Ok(())
+}
+
+#[actix_web::test]
+async fn native_control_reports_stop_and_control_loss() -> TestResult {
+    let (sender, receiver) = watch::channel(ControlState::Running);
+    let mut control = Control(receiver);
+    sender.send(ControlState::Stop)?;
+    control.shutdown_requested().await?;
+    // Stop remains visible even if requested before the caller starts waiting.
+    control.shutdown_requested().await?;
+    let (sender, receiver) = watch::channel(ControlState::Running);
+    let mut control = Control(receiver);
+    drop(sender);
+    assert!(matches!(
+        control.shutdown_requested().await,
+        Err(Error::Control(error)) if error.kind() == io::ErrorKind::UnexpectedEof
+    ));
+    Ok(())
+}
+
+#[test]
+fn normal_consuming_caller_receives_all_final_output() -> TestResult {
+    let output = fixture_output()?;
+    let result = fixture_command("supervisor-verbose", output.path())?
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()?;
+    assert!(result.status.success());
+    assert_eq!(
+        result.stdout.iter().filter(|&&byte| byte == b'~').count(),
+        1024 * 1024
+    );
+    assert!(result
+        .stderr
+        .windows(b"final diagnostic".len())
+        .any(|window| window == b"final diagnostic"));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn blocked_relay_reports_failure_within_the_confirmation_bound() -> TestResult {
+    let output = fixture_output()?;
+    let mut child = fixture_command("supervisor-blocked", output.path())?
+        .stdout(Stdio::piped())
+        .spawn()?;
+    wait_for(&output.path().join("ready"))?;
+    let started = Instant::now();
+    fs::write(output.path().join("request-stop"), b"stop")?;
+    wait_until(|| Ok(child.try_wait()?.is_some()))?;
+    assert!(
+        child.wait()?.success(),
+        "{}",
+        fs::read_to_string(output.path().join("result"))?
+    );
+    assert!(started.elapsed() < CONFIRMATION + Duration::from_secs(1));
+    assert!(fs::read_to_string(output.path().join("result"))?.contains("did not finish"));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn broken_relay_wakes_idle_supervisor_and_terminates_worker() -> TestResult {
+    let output = fixture_output()?;
+    let mut child = fixture_command("supervisor-broken", output.path())?
+        .stdout(Stdio::piped())
+        .spawn()?;
+    wait_for(&output.path().join("ready"))?;
+    drop(child.stdout.take());
+    wait_until(|| Ok(child.try_wait()?.is_some()))?;
+    assert!(
+        child.wait()?.success(),
+        "{}",
+        fs::read_to_string(output.path().join("result"))?
+    );
+    let result = fs::read_to_string(output.path().join("result"))?;
+    assert!(result.contains("BrokenPipe"), "{result}");
+    Ok(())
+}
+
+#[test]
 #[ignore = "subprocess fixture"]
 fn fixture() {
     let result = fixture_main();
     std::process::exit(result.unwrap_or(91));
-}
-
-fn fixture_main() -> TestResult<i32> {
-    let output = std::env::var_os(FIXTURE_OUTPUT).ok_or("missing fixture output")?;
-    let output = Path::new(&output);
-    match std::env::var(FIXTURE_MODE)?.as_str() {
-        "writer" => {
-            let path = output.join("writes");
-            loop {
-                fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&path)?
-                    .write_all(b"x")?;
-                thread::sleep(Duration::from_millis(10));
-            }
-        }
-        mode => {
-            let mut gate = [0_u8; 1];
-            std::io::stdin().read_exact(&mut gate)?;
-            if gate != *b"G" {
-                return Ok(91);
-            }
-            if mode == "hung" {
-                fixture_command("writer", output)?.spawn()?;
-            }
-            println!("fixture ready");
-            fs::write(output.join("ready"), b"ready")?;
-            let mut stop = [0_u8; 1];
-            std::io::stdin().read_exact(&mut stop)?;
-            if mode == "graceful" && stop == *b"S" {
-                fs::write(output.join("complete"), b"done")?;
-                return Ok(JOINED_EXIT_CODE);
-            }
-            loop {
-                thread::park();
-            }
-        }
-    }
 }
 
 struct Running {
@@ -160,11 +298,7 @@ struct Running {
 
 impl Running {
     fn start(mode: &str, grace: Duration) -> TestResult<Self> {
-        let root = std::env::current_dir()?
-            .join("target")
-            .join("shutdown-tests");
-        fs::create_dir_all(&root)?;
-        let output = tempfile::tempdir_in(root)?;
+        let output = fixture_output()?;
         let command = fixture_command(mode, output.path())?;
         let (stop, requests) = stop_channel();
         let runner = thread::spawn(move || supervise(command, grace, requests));
@@ -194,23 +328,6 @@ impl Drop for Running {
             let _ = runner.join();
         }
     }
-}
-
-fn fixture_command(mode: &str, output: &Path) -> std::io::Result<Command> {
-    let mut command = Command::new(std::env::current_exe()?);
-    command.args([
-        "--exact",
-        "shutdown::tests::fixture",
-        "--ignored",
-        "--nocapture",
-        "--test-threads=1",
-    ]);
-    command
-        .env(FIXTURE_MODE, mode)
-        .env(FIXTURE_OUTPUT, output)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    Ok(command)
 }
 
 fn wait_for(path: &Path) -> std::io::Result<()> {

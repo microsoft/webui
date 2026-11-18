@@ -1,11 +1,11 @@
-# Shared by the C and C++ starters. The CLI emits this as server/native.cmake.
+# Shared by the C and C++ starters at the project root.
 if(DEFINED ENV{WEBUI_SDK_DIR})
   if("$ENV{WEBUI_SDK_DIR}" STREQUAL "")
     message(FATAL_ERROR "WEBUI_SDK_DIR must name a standalone SDK directory.")
   endif()
   set(WEBUI_SDK_DIR "$ENV{WEBUI_SDK_DIR}")
 elseif(NOT DEFINED WEBUI_SDK_DIR)
-  get_filename_component(WEBUI_SDK_DIR "${CMAKE_CURRENT_LIST_DIR}/../.webui/sdk" ABSOLUTE)
+  set(WEBUI_SDK_DIR "${CMAKE_CURRENT_LIST_DIR}/.webui/sdk")
 endif()
 get_filename_component(WEBUI_SDK_DIR "${WEBUI_SDK_DIR}" ABSOLUTE)
 if(NOT EXISTS "${WEBUI_SDK_DIR}/include/webui_ffi.h")

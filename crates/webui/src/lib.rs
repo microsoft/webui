@@ -20,6 +20,8 @@
 //! println!("Built {} fragments in {:?}", result.stats.fragment_count, result.stats.duration);
 //! ```
 
+#[cfg(feature = "browser-build")]
+pub mod browser_build;
 mod chunking;
 pub mod component_asset_output;
 mod component_assets;

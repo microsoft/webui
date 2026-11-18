@@ -53,6 +53,60 @@ Keep optional dependencies enabled so your manager can install the matching nati
 package. This API needs native-addon support; it is not a browser or
 JavaScript-only edge-runtime package.
 
+### Choose an entry point
+
+One npm package ships both native addons. Import runtime APIs (`Protocol`,
+streaming, and `inspect`) from `@microsoft/webui`. Import compiler APIs
+(`build`, `prepareBuild`, and `bundleClient`) from `@microsoft/webui/build.js`;
+the root does not export them.
+
+```typescript
+import { Protocol } from '@microsoft/webui';
+import { build, type BuildOptions } from '@microsoft/webui/build.js';
+```
+
+Each entry loads only its own native addon when its API is used. A server that
+loads prebuilt protocols does not load the compiler addon. Compiler types,
+including `BuildOptions`, `BuildResult`, `PreparedBuild`, `LazyPackFile`, and
+the `Client*` bundling/projection types, also come from `/build.js`; runtime
+types come from the root.
+
+For source builds or custom artifact locations, `WEBUI_ADDON_PATH` selects the
+runtime addon (`libwebui_node.dylib`, `libwebui_node.so`, or `webui_node.dll`).
+`WEBUI_BUILD_ADDON_PATH` independently selects the compiler variant. Source
+builds use the same library filename in a separate `target/node-build` root;
+packaged addons are named `webui.node` and `webui-build.node`.
+Loading errors are reported by the selected API.
+The `webui` CLI is installed from the same package as before.
+
+## Scaffold an application
+
+Node and Bun hosts use native frontend tooling:
+
+```bash
+webui init my-app --server node --no-interactive
+cd my-app
+npm install
+webui app check
+webui app dev
+```
+
+For Bun, select `--server bun` and restore with `bun install`. Native Bun
+defaults to Bun for runtime package restoration; native Node defaults to npm.
+`--package-manager` can override that choice.
+
+Install the matching [native toolchain](/start/installation#native-toolchain)
+separately. Browser bundling and TypeScript checking use native tools, not
+Node/esbuild build scripts. These hosts still require their server runtime,
+the native addon, a root runtime `package.json`, and `server/http.mjs`.
+Application templates and browser sources live in `web/`; `webui.toml`
+selects the host. There is no `scripts/` build orchestration.
+
+Use `webui app build` then `webui app start` for production. Start verifies the
+recorded host entry and protocol and does not restore packages or compile.
+Serve only `dist/public/` as static files. See
+[app commands](/reference/cli/#webui-app).
+
 ## Examples
 
 <webui-press-tabs>
@@ -115,8 +169,6 @@ Bun.serve({
 
 | API | Description |
 |----------|-------------|
-| `build(options)` | Build templates into a protocol. Returns `{ protocol, cssFiles, componentAssetFiles, lazyPackFiles, lazyScriptsModule?, metafile?, warnings, stats }` |
-| `prepareBuild(options)` | Compile once before client bundling; returns a single-use `PreparedBuild` |
 | `new Protocol(protocol, options?)` | Decode and index protocol bytes once and bind the selected plugin |
 | `protocol.render(state, options?)` | Render into a UTF-8 `Buffer` for direct HTTP writes |
 | `protocol.prepareState(state)` | Parse an immutable, process-local native state snapshot once |
@@ -127,6 +179,14 @@ Bun.serve({
 | `protocol.renderComponentTemplates(tags, inventory)` | Return on-demand template payloads |
 | `protocol.tokens()` | Return CSS token names in build order |
 | `inspect(protocol)` | Convert protocol to JSON for debugging |
+
+Compiler APIs from `@microsoft/webui/build.js`:
+
+| API | Description |
+|----------|-------------|
+| `build(options)` | Build templates into a protocol. Returns `{ protocol, cssFiles, componentAssetFiles, lazyPackFiles, lazyScriptsModule?, metafile?, warnings, stats }` |
+| `prepareBuild(options)` | Compile once before client bundling; returns a single-use `PreparedBuild` |
+| `bundleClient(options)` | Run native browser bundling and state projection asynchronously; returns final files, proof and input/output metadata |
 
 ### RenderOptions
 
@@ -148,24 +208,38 @@ When your client imports generated lazy or component modules and also produces
 a state-projection manifest, retain one compilation across client bundling:
 
 ```typescript
-import { prepareBuild } from '@microsoft/webui';
-import { esbuildProjection } from '@microsoft/webui/projection.js';
-import { build as bundle } from 'esbuild';
+import { prepareBuild, bundleClient } from '@microsoft/webui/build.js';
 import { writeFileSync } from 'node:fs';
 
 const prepared = prepareBuild({
   appDir: './src', plugin: 'webui', modulesOut: './.webui',
 });
 prepared.writeModules();
-const manifest = './dist/webui-projection.json';
-await bundle({
-  entryPoints: ['./src/index.ts'], outdir: './dist',
-  bundle: true, splitting: true, format: 'esm',
-  plugins: [esbuildProjection({ manifest })],
+const client = await bundleClient({
+  project: process.cwd(),
+  entries: { index: 'src/index.ts' },
+  outDir: 'dist',
 });
-const result = prepared.finish({ projectionManifests: [manifest] });
+const result = prepared.finish({ projectionManifests: [client.manifestPath] });
 writeFileSync('./dist/protocol.bin', result.protocol);
 ```
+
+`bundleClient()` performs bundling, source analysis and proof construction
+natively. It needs no JavaScript compiler peer. `project` must contain the
+physical inputs and output directory. `outDir` and `manifestPath` accept
+project-relative paths such as `./dist` and `./dist/proof.json`. CSS imports
+use import attributes (such as `with { type: "css" }`), not a `"css"` loader
+override. Set `write: false` to receive final `files` buffers without publishing
+them; a retained build still requires its proof's exact files on disk before
+finalization.
+
+The result's `warnings` contains typed `{ code, message }` advisories; build
+hosts should display them. Unexpected bundler warnings still fail the build.
+Set `parallelDynamicImports: true` to request concurrent imports of eligible
+dynamic targets and their additional static dependencies. Imports with
+retained options and chunks that may export `then` keep their normal loading
+semantics. This option may evaluate eligible shared dependencies independently.
+The returned metadata records the actual concurrent imports.
 
 Publish `result.cssFiles` and `result.lazyPackFiles` with the protocol as
 described below. `writeModules()` uses `modulesOut`, or `appDir` when omitted,
@@ -200,6 +274,8 @@ idle warming and path prefetch available. See [lazy integration](/learn/lazy).
 Publish the generated files like this:
 
 ```typescript
+import { build } from '@microsoft/webui/build.js';
+
 const result = build({ appDir: './src', plugin: 'webui', modulesOut: './.webui' });
 for (const pack of result.lazyPackFiles) {
   writeFileSync(join('dist', pack.path), pack.content);
@@ -328,6 +404,8 @@ allocation pressure. Ordinary per-request state should continue to use
 
 ### BuildOptions
 
+Import this type from `@microsoft/webui/build.js`.
+
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `appDir` | `string` | - | Path to app folder |
@@ -354,6 +432,8 @@ Light CSS uses ordinary selectors, and `:host`, `:host-context`, and
 `::slotted` fail with `unsupported-light-css`.
 
 ```js
+import { build } from '@microsoft/webui/build.js';
+
 const result = build({
   appDir: './src',
   plugin: 'webui',

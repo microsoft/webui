@@ -3,12 +3,13 @@
 
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { mkdir, readFile, readdir } from "node:fs/promises";
+import { mkdir, readFile, readdir, unlink, writeFile } from "node:fs/promises";
+import { get as httpGet } from "node:http";
 import { createServer } from "node:net";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { chromium, expect } from "@playwright/test";
-import { shutdown, spawnFixture } from "./starter-process.mjs";
+import { shutdown, spawnNativeFixture } from "./starter-process.mjs";
 
 const root = path.resolve(process.argv[2] ?? "");
 assert.ok(process.argv[2], "Pass an independently installed and built generated app directory.");
@@ -20,11 +21,20 @@ const port = reservation.address().port;
 await new Promise((resolve, reject) => reservation.close(error => error ? reject(error) : resolve()));
 const origin = `http://127.0.0.1:${port}`;
 let output = "";
-const server = spawnFixture(root, "scripts/app.mjs", ["start"], { PORT: String(port), HOST: "127.0.0.1" });
+const native = process.env.WEBUI_INIT_NATIVE_CLI;
+assert.ok(native, "WEBUI_INIT_NATIVE_CLI must point to the native WebUI CLI.");
+const environment = { PORT: String(port), HOST: "127.0.0.1",
+  PATH: process.env.WEBUI_INIT_APP_PATH ?? "" };
+const drainBytes = 12 * 1024 * 1024;
+const drainName = `acceptance-drain-${process.pid}.css`;
+const drainPath = path.join(root, "dist/public", drainName);
+await writeFile(drainPath, Buffer.alloc(drainBytes, 32), { flag: "wx" });
+const server = spawnNativeFixture(root, native, ['app', 'start'], environment);
 server.stdout.on("data", chunk => { output += chunk; });
 server.stderr.on("data", chunk => { output += chunk; });
 server.on("error", error => { output += error.message; });
 let browser;
+let report;
 try {
   let ready = false;
   for (let attempt = 0; attempt < 300; attempt += 1) {
@@ -123,7 +133,46 @@ try {
     javascriptBytes += Buffer.byteLength(source);
     assert.doesNotMatch(source, /\[WebUI\] Hydration mismatch/);
   }
-  console.log(JSON.stringify({ app: root, javascriptBytes, screenshots, http: "passed", browser: "passed" }));
+  await browser.close();
+  browser = undefined;
+  await assertActiveRequestDrains(server, `${origin}/assets/${drainName}`, drainBytes);
+  report = { app: root, javascriptBytes, screenshots, http: "passed", browser: "passed", draining: "passed" };
 } finally {
-  try { await browser?.close(); } finally { await shutdown(server); }
+  try { await browser?.close(); } finally {
+    try { await shutdown(server); } finally { await unlink(drainPath); }
+  }
+}
+console.log(JSON.stringify(report));
+
+async function assertActiveRequestDrains(server, url, expected) {
+  const response = await new Promise((resolve, reject) => {
+    httpGet(url, { agent: false }, resolve).once("error", reject);
+  });
+  let stopping;
+  try {
+    assert.equal(response.statusCode, 200);
+    if (response.headers["content-length"] !== undefined) {
+      assert.equal(Number(response.headers["content-length"]), expected);
+    }
+    response.pause();
+    await delay(100);
+    let received = 0;
+    const body = new Promise((resolve, reject) => {
+      response.on("data", chunk => { received += chunk.length; });
+      response.once("end", resolve);
+      response.once("error", reject);
+    });
+    response.pause();
+    stopping = shutdown(server);
+    const completed = Promise.all([body, stopping]);
+    await Promise.race([completed, delay(100)]);
+    assert.equal(server.exitCode, null, "shutdown must wait for the backpressured response");
+    response.resume();
+    await completed;
+    assert.equal(received, expected, "shutdown truncated an active response");
+    assert.equal(response.complete, true);
+  } finally {
+    response.destroy();
+    await stopping;
+  }
 }

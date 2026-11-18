@@ -15,17 +15,27 @@ every guide by default.
   `/learn/lazy` maps to `docs/learn/lazy.md`; resolve other relative links from
   their containing page. Add `.md` or use the directory's `index.md`, preserving
   any section fragment. Do not require an installed or generated package copy.
-- **Consuming application:** from the application's directory, locate its
-  installed reference with `node -p "require.resolve('@microsoft/webui/ai.md')"`.
+- **Native consuming application (`webui.toml`):** from the application's
+  directory run `webui reference --path` with its version-matched native CLI
+  (or use `--project <application-directory>`).
+  Read the returned core file and the topic guides in the `docs/` directory
+  beside it. Root-relative guide links resolve inside that `docs/` directory.
+  This path works offline without Node/npm. A missing or mismatched native
+  CLI/reference is an error, not permission to substitute a website or npm copy.
+- **Node-frontend consuming application:** from the application's directory,
+  locate its installed reference with
+  `node -p "require.resolve('@microsoft/webui/ai.md')"`.
   Read that file and follow its relative Markdown links to the `docs/` directory
   beside it. These files ship with `@microsoft/webui`, not
   `@microsoft/webui-framework`, and work offline. Node package resolution
   handles app-local and hoisted installations; do not assume a workspace-root
   `node_modules` contains the application's version.
 
-The package's documentation is built from the same release as its CLI. Keep
-WebUI packages at matching versions; if the installed framework and CLI versions
-disagree, report the mismatch instead of assuming either reference applies.
+Native reference data and package documentation belong to the same release as
+their CLI. Keep a native CLI aligned with the application's `webui.toml`;
+keep installed WebUI packages at matching versions. If the framework and CLI
+versions disagree, report the mismatch instead of assuming either reference
+applies.
 When a guide contains `<webui-press-tabs>`, its panels correspond to the tab
 labels in order. Interactive playgrounds and benchmark data are site-only;
 do not infer their contents from placeholder markup.

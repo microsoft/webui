@@ -6,7 +6,7 @@
  *
  * Each fixture directory may contain a `src/` subdirectory with real WebUI
  * template files (index.html, component HTML).  When present, this module
- * compiles the templates via `@microsoft/webui` build() and renders them
+ * compiles the templates via `@microsoft/webui/build.js` build() and renders them
  * into full SSR HTML — replacing the need for hand-crafted fixture.html
  * files and manual TemplateMeta construction.
  */
@@ -23,7 +23,8 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
-import { build, Protocol } from '@microsoft/webui';
+import { build } from '@microsoft/webui/build.js';
+import { Protocol } from '@microsoft/webui';
 
 export interface RenderedFixture {
   /** Fixture directory name (e.g. "counter"). */
@@ -119,13 +120,9 @@ function renderOne(
     const scriptPath = hasAuthoredEntry
       ? `/dist/${name}/element.js`
       : '/dist/static-host.js';
-    // Real WebUI apps load client islands as ES modules (`<script type="module">`),
-    // which are deferred until after the document is parsed. Fixtures can opt into
-    // that production-faithful timing with `"script": "module"` in webui.config.json;
-    // otherwise a classic (parser-blocking) script is injected for back-compat.
-    const scriptType = hasAuthoredEntry && fixtureConfig.script === 'module'
-      ? ' type="module"'
-      : '';
+    // Authored fixtures use native split ES modules, matching application timing.
+    // The standalone scriptless template host remains a classic IIFE.
+    const scriptType = hasAuthoredEntry ? ' type="module"' : '';
     const scriptTag = `<script${scriptType} src="${scriptPath}"></script>`;
     const inject = (source: string): string => {
       const bodyEnd = source.lastIndexOf('</body>');

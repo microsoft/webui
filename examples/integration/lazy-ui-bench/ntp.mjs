@@ -16,11 +16,11 @@
 //
 //   node examples/integration/lazy-ui-bench/ntp.mjs [--samples 20] [--warmups 1]
 //        [--configs eager-link,assets-link,assets-style,lazy-link,lazy-style] [--caches cold,warm]
-//        [--modes hover,click,prefetch] [--targets settings,context] [--parts open,memory,probes]
+//        [--modes hover,click,prefetch] [--targets settings,context] [--parts open,memory,probes,parallel]
 //        [--memory-samples 5] [--probe-samples 3] [--profile mobile|none] [--out target/lazy-ntp.json] [--keep]
 
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { cpus, platform, release } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -28,17 +28,17 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { STATE, UIS } from './ntp/app.mjs';
 import { buildFixture } from './ntp/build.mjs';
-import { PERF_INIT, memoryCycles, prerenderProbe, prime, priorityProbe, visit } from './ntp/measure.mjs';
+import { PERF_INIT, load, memoryCycles, prerenderProbe, prime, priorityProbe, visit } from './ntp/measure.mjs';
 import { backgroundImage, serve } from './ntp/serve.mjs';
 import { compare, stats, verdict } from './ntp/stats.mjs';
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+const root = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..'));
 const require = createRequire(join(root, 'packages', 'webui-test-support', 'package.json'));
-const { build: bundle, version: esbuildVersion } = require('esbuild');
 const { chromium } = require('@playwright/test');
 assert.ok(process.env.WEBUI_ADDON_PATH, 'Set WEBUI_ADDON_PATH to the freshly built release addon.');
-const { prepareBuild, Protocol } = await import(pathToFileURL(join(root, 'packages', 'webui', 'dist', 'index.js')).href);
-const { esbuildProjection } = await import(pathToFileURL(join(root, 'packages', 'webui', 'dist', 'projection', 'index.js')).href);
+assert.ok(process.env.WEBUI_BUILD_ADDON_PATH, 'Set WEBUI_BUILD_ADDON_PATH to the freshly built release compiler addon.');
+const { bundleClient, prepareBuild } = await import(pathToFileURL(join(root, 'packages', 'webui', 'dist', 'build.js')).href);
+const { Protocol } = await import(pathToFileURL(join(root, 'packages', 'webui', 'dist', 'index.js')).href);
 
 const args = {};
 for (let i = 2; i < process.argv.length; i++) {
@@ -91,7 +91,7 @@ const fixtures = new Map();
 try {
   for (const key of keys) {
     const fixture = await buildFixture({
-      key, scratch, root, prepareBuild, Protocol, bundle, esbuildProjection, probeTriggers: PROBE_TRIGGERS,
+      key, scratch, root, prepareBuild, Protocol, bundleClient, probeTriggers: PROBE_TRIGGERS,
     });
     for (const warning of fixture.warnings) console.warn(`[${key}] ${warning}`);
     fixtures.set(key, fixture);
@@ -112,26 +112,118 @@ const newContext = async () => {
 };
 const rotate = (values, by) => values.map((_, i) => values[(i + by) % values.length]);
 
+async function bounded(promise, message) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), 10_000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Causal proof, outside scored trials: deps must start while their target is held. */
+async function verifyParallelRequests(fixture) {
+  assert.ok(Array.isArray(fixture.parallelImports), `${fixture.key}: native parallel request plans are required`);
+  const proofs = [];
+  for (const group of fixture.parallelImports) {
+    if (!fixture.startupScripts.has(group.from)) continue;
+    const dependencies = group.dependencies.filter(path => !fixture.startupScripts.has(path));
+    if (dependencies.length === 0) continue;
+    const id = Object.keys(fixture.ui).find(id => fixture.ui[id].chunks.includes(group.target));
+    if (!id) continue;
+    const context = await newContext();
+    const page = await context.newPage();
+    const errors = [];
+    page.on('pageerror', error => errors.push(String(error)));
+    page.on('console', message => {
+      if (message.type() === 'error') errors.push(`${message.text()} (${message.location().url})`);
+    });
+    const held = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    const requested = Promise.withResolvers();
+    const pending = new Set(dependencies);
+    const starts = [];
+    let targetReleased = false;
+    try {
+      // The benchmark has no favicon asset; supply one rather than filtering
+      // browser diagnostics. This route exists only in the isolated proof.
+      await page.route(url => url.pathname === '/favicon.ico',
+        route => route.fulfill({ status: 204 }));
+      await load(page, `${server.origin}/${fixture.key}/`);
+      page.on('request', request => {
+        const path = new URL(request.url()).pathname.slice(`/${fixture.key}/`.length);
+        if (path === group.target || pending.has(path)) {
+          starts.push({ path, beforeTargetRelease: !targetReleased });
+        }
+        pending.delete(path);
+        if (pending.size === 0) requested.resolve();
+      });
+      await page.route(url => url.pathname === `/${fixture.key}/${group.target}`, async route => {
+        held.resolve();
+        await release.promise;
+        await route.continue();
+      });
+      const point = await page.evaluate(id => window.__bench.point(id), id);
+      assert.ok(point, `${fixture.key}: ${id} must have a real trigger`);
+      await page.evaluate(id => window.__bench.arm(id), id);
+      await page.mouse.click(point.x, point.y);
+      await bounded(Promise.all([held.promise, requested.promise]),
+        `${fixture.key}: ${group.target} did not start its static dependencies in parallel`);
+      assert.ok(starts.every(request => request.beforeTargetRelease));
+      targetReleased = true;
+      release.resolve();
+      const result = await bounded(page.evaluate(() => window.__bench.result()),
+        `${fixture.key}: ${id} did not become ready after its parallel chunks loaded`);
+      assert.ok(!('error' in result), result.error);
+      assert.deepEqual(errors, [], `${fixture.key}: parallel loading must not produce browser errors`);
+      proofs.push({ key: fixture.key, id, ...group, dependencies, starts, ready: true });
+    } finally {
+      release.resolve();
+      await page.unrouteAll({ behavior: 'wait' });
+      await context.close();
+    }
+  }
+  if (fixture.variant === 'assets') {
+    for (const id of ['settings', 'gallery']) {
+      assert.ok(proofs.some(proof => proof.id === id),
+        `${fixture.key}: ${id} must exercise its shared deferred chunk in the browser`);
+    }
+  }
+  return proofs;
+}
+
 const report = {
   environment: {
-    date: new Date().toISOString(), browser: browser.version(), node: process.version, esbuild: esbuildVersion,
+    date: new Date().toISOString(), browser: browser.version(), node: process.version, bundler: 'native-rolldown',
     os: `${platform()} ${release()}`, cpu: cpus()[0]?.model, profile: PROFILE_NAME, profileSettings: PROFILE ?? null,
     viewport: VIEWPORT, hoverDwellMs: DWELL_MS, settleMs: SETTLE_MS, samples: SAMPLES, warmups: WARMUPS,
     memorySamples: MEMORY_SAMPLES, probeSamples: PROBE_SAMPLES, configs: CONFIGS, caches: CACHES, modes: MODES,
     targets: TARGETS, imageBytes: image.length, addon: process.env.WEBUI_ADDON_PATH,
+    buildAddon: process.env.WEBUI_BUILD_ADDON_PATH,
   },
-  fixtures: {}, runs: [], startup: [], opens: [], memory: [], probes: [], acceptance: [],
+  fixtures: {}, runs: [], startup: [], opens: [], memory: [], probes: [], parallel: [], acceptance: [],
 };
 for (const [key, fixture] of fixtures) {
   report.fixtures[key] = {
     sizes: fixture.sizes, ui: fixture.ui, regions: fixture.regions, lazyScriptsModule: fixture.lazyScriptsModule,
+    parallelImports: fixture.parallelImports,
     packs: fixture.packs.map(({ region, owner, trigger, bytes, brotli, scripts, path }) => ({ region, owner, trigger, bytes, brotli, scripts, path })),
   };
 }
 
 let pageLoads = 0;
-const openStarted = Date.now();
 try {
+  const parallelStarted = Date.now();
+  if (PARTS.has('parallel')) {
+    for (const fixture of fixtures.values()) report.parallel.push(...await verifyParallelRequests(fixture));
+  }
+  const parallelProofMs = Date.now() - parallelStarted;
+  const openStarted = Date.now();
   if (PARTS.has('open')) {
     const combos = CONFIGS.flatMap(key => CACHES.map(cache => ({ key, cache })));
     for (let round = 0; round < SAMPLES + WARMUPS; round++) {
@@ -215,7 +307,7 @@ try {
   }
   report.environment.durations = {
     buildMs: built - started, openMs: openFinished - openStarted, memoryMs: memoryFinished - openFinished,
-    probesMs: Date.now() - memoryFinished, pageLoads,
+    probesMs: Date.now() - memoryFinished, parallelProofMs, pageLoads,
   };
 } finally {
   await browser.close();
@@ -291,6 +383,11 @@ const interval = c => c ? `${signed(c.diff)} [${c.low.toFixed(0)}, ${c.high.toFi
 const medianOf = values => stats(values)?.median;
 const accept = (check, numbers, pass) => report.acceptance.push({ check, numbers, pass });
 const notWorse = c => c !== undefined && verdict(c) !== 'higher';
+for (const proof of report.parallel) {
+  accept(`Native parallel chunk requests for ${proof.id}, ${proof.key}`,
+    `${proof.dependencies.length} dependencies started while the target response was held; UI ready`,
+    proof.ready && proof.starts.every(request => request.beforeTargetRelease));
+}
 for (const css of ['link', 'style']) {
   const lazy = `lazy-${css}`;
   const assets = `assets-${css}`;

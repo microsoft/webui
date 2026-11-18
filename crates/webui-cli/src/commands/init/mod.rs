@@ -2,13 +2,14 @@
 // Licensed under the MIT license.
 
 mod files;
+mod native;
 mod onboarding;
 
 use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Args, ValueEnum};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::utils::output::{self, OutputFormat};
 
@@ -22,15 +23,15 @@ pub(crate) struct InitArgs {
     #[arg(long, value_enum, default_value_t = Server::Rust)]
     pub(crate) server: Server,
 
-    /// Package manager for build tools, independent of the rendering host
-    #[arg(long, value_enum, default_value_t = PackageManager::Npm)]
-    pub(crate) package_manager: PackageManager,
+    /// Package manager for Node/Bun server runtime dependencies
+    #[arg(long, value_enum)]
+    pub(crate) package_manager: Option<PackageManager>,
 
-    /// Install generated package dependencies after creating files
+    /// Restore the selected host's dependencies after creating files
     #[arg(long)]
     pub(crate) install: bool,
 
-    /// Run the existing project-local WebUI reference skill installer
+    /// Install the version-matched offline WebUI reference skill loader
     #[arg(long)]
     pub(crate) ai_skill: bool,
 
@@ -39,7 +40,22 @@ pub(crate) struct InitArgs {
     pub(crate) no_interactive: bool,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum, Serialize)]
+impl InitArgs {
+    pub(super) fn manager(&self) -> PackageManager {
+        self.package_manager
+            .unwrap_or(if self.server == Server::Bun {
+                PackageManager::Bun
+            } else {
+                PackageManager::Npm
+            })
+    }
+
+    pub(super) fn uses_packages(&self) -> bool {
+        matches!(self.server, Server::Node | Server::Bun)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Server {
     #[default]
@@ -67,16 +83,12 @@ impl Server {
 
     fn prerequisites(self) -> &'static str {
         match self {
-            Self::Rust => "Node.js and Rust (Cargo)",
-            Self::Dotnet => "Node.js, .NET SDK, and an approved Microsoft.WebUI package source",
-            Self::C | Self::Cpp => {
-                "Node.js, CMake, a C/C++ toolchain, and the matching standalone WebUI native SDK"
-            }
-            Self::Node => "Node.js",
-            Self::Bun => "Node.js (build tools) and Bun (server)",
-            Self::Go => {
-                "Node.js, Go, a cgo C toolchain, and the matching standalone WebUI native SDK"
-            }
+            Self::Rust => "WebUI native tooling and Rust (Cargo)",
+            Self::Go => "WebUI native tooling, Go, a cgo C compiler, and the matching standalone native SDK",
+            Self::C | Self::Cpp => "WebUI native tooling, CMake, a C/C++ toolchain, and the matching standalone native SDK",
+            Self::Dotnet => "WebUI native tooling, .NET SDK, and an approved matching Microsoft.WebUI package source",
+            Self::Node => "WebUI native tooling and Node.js (server runtime)",
+            Self::Bun => "WebUI native tooling and Bun with Node-API support (server runtime)",
         }
     }
 }
@@ -112,6 +124,8 @@ pub(crate) enum InitError {
     Name(String),
     #[error("installation failed: {0}")]
     Install(String),
+    #[error("invalid initializer options: {0}")]
+    Options(String),
 }
 
 impl InitError {
@@ -121,6 +135,7 @@ impl InitError {
             Self::Conflict(_) => "init-directory-not-empty",
             Self::Name(_) => "init-invalid-name",
             Self::Install(_) => "init-install-failed",
+            Self::Options(_) => "init-invalid-options",
         }
     }
 
@@ -130,12 +145,13 @@ impl InitError {
             Self::Conflict(_) => "Choose a new or empty directory; existing files are never replaced.",
             Self::Name(_) => "Use ASCII letters, numbers, spaces, '_' or '-'; normalized names (lowercase with '-' separators) must start with a letter, contain at most 64 characters, and not be reserved (con, prn, aux, nul, com1-com9, lpt1-lpt9, node-modules).",
             Self::Install(_) => "The generated app is preserved. Resolve the reported error and rerun the printed command from its directory.",
+            Self::Options(_) => "Package-manager selection requires a Node/Bun server. Rust/Go/C/C++/.NET projects use their host toolchains and contain no package.json.",
         }
     }
 
     pub(crate) fn exit_code(&self) -> i32 {
         match self {
-            Self::Destination(_) | Self::Name(_) => 2,
+            Self::Destination(_) | Self::Name(_) | Self::Options(_) => 2,
             Self::Conflict(_) => 73,
             Self::Install(_) => 1,
         }
@@ -146,7 +162,7 @@ impl InitError {
 struct InitReport {
     destination: PathBuf,
     server: Server,
-    package_manager: PackageManager,
+    package_manager: Option<PackageManager>,
     files: Vec<String>,
     dependencies: &'static str,
     ai_skill: &'static str,
@@ -163,24 +179,32 @@ pub(crate) fn execute(args: &InitArgs) -> Result<()> {
 }
 
 fn run(args: &InitArgs) -> Result<()> {
+    if args.package_manager.is_some() && !args.uses_packages() {
+        return Err(InitError::Options(
+            "this native host has no JavaScript package dependencies".into(),
+        )
+        .into());
+    }
     let destination = files::destination(&args.path)?;
     let name = files::app_name(&destination)?;
     let generated = files::generate(&destination, &name, args)?;
-    let manager = args.package_manager.name();
+    let manager = args.manager().name();
+    let mut next_commands: Vec<_> = ["check", "dev", "build", "start"]
+        .iter()
+        .map(|action| format!("webui app {action}"))
+        .collect();
+    if args.uses_packages() {
+        next_commands.insert(0, format!("{manager} install"));
+    }
     let mut report = InitReport {
         destination,
         server: args.server,
-        package_manager: args.package_manager,
+        package_manager: args.uses_packages().then(|| args.manager()),
         files: generated,
         dependencies: "skipped",
         ai_skill: "skipped",
         prerequisites: args.server.prerequisites(),
-        next_commands: vec![
-            format!("{manager} install"),
-            format!("{manager} run dev"),
-            format!("{manager} run build"),
-            format!("{manager} run start"),
-        ],
+        next_commands,
     };
     output::header("WebUI Init");
     output::field("Directory", &report.destination.display());

@@ -8,12 +8,35 @@ use std::mem::{size_of, zeroed};
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::os::windows::process::CommandExt;
 use std::process::{Child, Command};
+use std::time::Instant;
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
     SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 use windows_sys::Win32::System::Threading::CREATE_NEW_PROCESS_GROUP;
+
+pub(super) fn wait_for_exit(child: &mut Child) -> io::Result<()> {
+    use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+    use windows_sys::Win32::System::Threading::{WaitForSingleObject, INFINITE};
+    // SAFETY: The waiter exclusively owns Child and its valid process handle.
+    if unsafe { WaitForSingleObject(child.as_raw_handle(), INFINITE) } == WAIT_OBJECT_0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+pub(super) fn interrupt_current_group() -> io::Result<()> {
+    use windows_sys::Win32::System::Console::{GenerateConsoleCtrlEvent, CTRL_BREAK_EVENT};
+    // SAFETY: The gated worker was created in its own console process group;
+    // the event is addressed only to its own process id and descendants.
+    if unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, std::process::id()) } == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
 
 pub(super) struct Scope(OwnedHandle);
 
@@ -60,7 +83,7 @@ impl Scope {
         Ok(())
     }
 
-    pub(super) fn terminate(&self, _child: &Child) -> io::Result<()> {
+    pub(super) fn terminate(&self, _deadline: Instant) -> io::Result<()> {
         // SAFETY: The job contains only the gated child and its descendants.
         if unsafe { TerminateJobObject(self.0.as_raw_handle(), 1) } == 0 {
             return Err(io::Error::last_os_error());

@@ -1,13 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { build, Protocol } from '@microsoft/webui';
-import { build as bundle } from 'esbuild';
-import { esbuildProjection } from '@microsoft/webui/projection.js';
+import { prepareBuild } from '@microsoft/webui/build.js';
+import { Protocol } from '@microsoft/webui';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { relative, resolve, sep } from 'node:path';
 import { brotliCompressSync, gzipSync } from 'node:zlib';
 import type { FixtureRequestContext } from './fixture-server.js';
+import { bundleFixtureClient, workspaceRoot } from './fixture-build.ts';
 
 /** Generated lazy graph with manual page switching and real partial route navigation. */
 export async function prepareLazyPages(
@@ -21,11 +21,10 @@ export async function prepareLazyPages(
     appDir: resolve(fixture, 'src'), plugin: 'webui', css: 'link' as const,
     modulesOut: generatedDir, assetBase: '/lazy-pages/', entry: 'page.html',
   };
-  const first = build(options);
+  const prepared = prepareBuild(options);
+  const first = { lazyScriptsModule: prepared.lazyScriptsModule };
   if (!first.lazyScriptsModule) throw new Error('Lazy pages fixture must generate its installer.');
-  for (const file of [first.lazyScriptsModule, first.lazyScriptsModule.declaration]) {
-    writeFileSync(resolve(generatedDir, file.fileName), file.content);
-  }
+  prepared.writeModules();
   const entryPoints: Record<string, string> = {};
   const applications = {
     application: resolve(fixture, 'application.ts'),
@@ -42,17 +41,17 @@ export async function prepareLazyPages(
   }
   const manifest = resolve(outDir, 'webui-projection.json');
   const publicPath = '/dist/lazy-pages/';
-  const output = await bundle({
-    entryPoints,
-    outdir: outDir, publicPath, entryNames: '[name]-[hash]', chunkNames: '[name]-[hash]',
-    bundle: true, splitting: true, format: 'esm', minify: true,
-    platform: 'browser', target: 'es2022', tsconfig,
-    define: { __WEBUI_DEV__: 'false' }, metafile: true,
-    plugins: [esbuildProjection({ manifest })],
+  const output = await bundleFixtureClient({
+    project: workspaceRoot,
+    entries: entryPoints,
+    outDir, publicPath, entryNames: '[name]-[hash].js', chunkNames: '[name]-[hash].js',
+    format: 'esm', minify: true, target: 'es2022', tsconfig,
+    defines: { __WEBUI_DEV__: 'false' },
+    manifestPath: manifest,
   });
-  const built = build({ ...options, projectionManifests: [manifest] });
-  const routed = build({ ...options, entry: 'routed.html', projectionManifests: [manifest] });
-  const independent = build({ ...options, entry: 'other-document.html' });
+  const built = prepared.finish({ projectionManifests: [manifest] });
+  const routed = prepareBuild({ ...options, entry: 'routed.html' }).finish({ projectionManifests: [manifest] });
+  const independent = prepareBuild({ ...options, entry: 'other-document.html' }).finish();
   if (built.lazyScriptsModule?.content !== first.lazyScriptsModule.content
     || routed.lazyScriptsModule?.content !== first.lazyScriptsModule.content) {
     throw new Error('Generated installer changed after projection.');
@@ -66,15 +65,15 @@ export async function prepareLazyPages(
   let application = '';
   let routeApplication = '';
   for (const [file, details] of Object.entries(output.metafile.outputs)) {
-    const url = publicPath + relative(outDir, resolve(file)).split(sep).join('/');
-    const bytes = readFileSync(resolve(file));
+    const url = publicPath + relative(outDir, resolve(workspaceRoot, file)).split(sep).join('/');
+    const bytes = readFileSync(resolve(workspaceRoot, file));
     outputs[url] = {
       bytes: details.bytes, gzip: gzipSync(bytes).length, brotli: brotliCompressSync(bytes).length,
-      inputs: Object.entries(details.inputs).filter(([, value]) => value.bytesInOutput > 0).map(([name]) => name.replaceAll('\\', '/')),
+      inputs: Object.keys(details.inputs).map(name => name.replaceAll('\\', '/')),
       imports: details.imports,
     };
-    if (details.entryPoint && resolve(details.entryPoint) === entryPoints.application) application = url;
-    if (details.entryPoint && resolve(details.entryPoint) === entryPoints.routed) routeApplication = url;
+    if (details.entryPoint && resolve(workspaceRoot, details.entryPoint) === entryPoints.application) application = url;
+    if (details.entryPoint && resolve(workspaceRoot, details.entryPoint) === entryPoints.routed) routeApplication = url;
   }
   if (!application || !routeApplication) throw new Error('Lazy pages fixture has no application output.');
   const state = {

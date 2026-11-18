@@ -6,3 +6,7 @@ server/build/
 server/bin/
 server/obj/
 .DS_Store
+/target/
+/bin/
+/obj/
+/build/

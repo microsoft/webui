@@ -1,11 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { build, Protocol } from '@microsoft/webui';
-import { build as bundle } from 'esbuild';
+import { build } from '@microsoft/webui/build.js';
+import { Protocol } from '@microsoft/webui';
 import { mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { FixtureRequestContext } from './fixture-server.js';
+import { bundleFixtureClient } from './fixture-build.ts';
 
 /** Exercise compiler-owned FAST links through SSR and the real resource consumer. */
 export async function prepareFastAssets(
@@ -13,11 +14,11 @@ export async function prepareFastAssets(
   outDir: string,
 ): Promise<(context: FixtureRequestContext) => boolean> {
   mkdirSync(outDir, { recursive: true });
-  await bundle({
-    entryPoints: [resolve(root, 'examples/app/todo-fast/tests/asset-base-entry.ts')],
-    outfile: resolve(outDir, 'application.js'),
-    bundle: true, format: 'esm', platform: 'browser', target: 'es2022',
-    nodePaths: [resolve(root, 'packages/webui-delivery/node_modules')],
+  await bundleFixtureClient({
+    project: root,
+    entries: { application: resolve(root, 'examples/app/todo-fast/tests/asset-base-entry.ts') },
+    outDir,
+    format: 'esm', target: 'es2022',
     tsconfig: resolve(root, 'tsconfig.json'),
   });
   const protocols = new Map<string, Protocol>();

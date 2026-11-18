@@ -319,6 +319,7 @@ stages:
           : "${BUILD_ARTIFACT_STAGING_DIRECTORY:?BUILD_ARTIFACT_STAGING_DIRECTORY is required}"
           : "${TARGET_TRIPLE:?TARGET_TRIPLE is required}"
           : "${ARTIFACT_NAME:?ARTIFACT_NAME is required}"
+          : "${RELEASE_VERSION:?RELEASE_VERSION is required}"
 
           sudo apt-get update -q
           sudo apt-get install -y -q protobuf-compiler binutils
@@ -336,18 +337,42 @@ stages:
             --profile release \
             --portable-only \
             --output "$BUILD_ARTIFACT_STAGING_DIRECTORY/$ARTIFACT_NAME"
-          for name in webui webui-press libwebui_node.so libwebui_ffi.so; do
-            required=$(readelf --version-info --wide "target/$TARGET_TRIPLE/release/$name" |
+          # Audit the staged files, which came from each invocation's exact
+          # Cargo artifact (the compiler has a separate node-build target root).
+          staged="$BUILD_ARTIFACT_STAGING_DIRECTORY/$ARTIFACT_NAME/packages"
+          if [[ "$TARGET_TRIPLE" == aarch64-unknown-linux-gnu ]]; then
+            platform=linux-arm64
+          else
+            platform=linux-x64
+          fi
+          for file in \
+            "$staged/webui-$platform/bin/webui" \
+            "$staged/webui-press-$platform/bin/webui-press" \
+            "$staged/webui-$platform/webui.node" \
+            "$staged/webui-$platform/webui-build.node" \
+            "$BUILD_ARTIFACT_STAGING_DIRECTORY/$ARTIFACT_NAME/dotnet/runtimes/$platform/native/libwebui_ffi.so"; do
+            required=$(readelf --version-info --wide "$file" |
               grep -oE 'GLIBC_[0-9.]+' | sort -Vu | tail -n 1)
             if [[ $(printf '%s\n' GLIBC_2.35 "$required" | sort -V | tail -n 1) != GLIBC_2.35 ]]; then
-              echo "$name requires $required; expected glibc 2.35 or older" >&2
+              echo "$file requires $required; expected glibc 2.35 or older" >&2
               exit 1
             fi
           done
+          # The CLI is already built for TARGET_TRIPLE; the producer and its
+          # HTTPS helper run on the runner, never by executing that target.
+          CARGO_HOME="$CARGO_CACHE_HOME" cargo +1.99.1 xtask toolchain-stage \
+            --target "$TARGET_TRIPLE" \
+            --cli "target/$TARGET_TRIPLE/release/webui" \
+            --acquire-checker
+          toolchain="publish/toolchains/webui-toolchain-${RELEASE_VERSION}-${TARGET_TRIPLE}.tar.gz"
+          toolchain_output="$BUILD_ARTIFACT_STAGING_DIRECTORY/$ARTIFACT_NAME/publish/toolchains"
+          mkdir -p "$toolchain_output"
+          cp "$toolchain" "$toolchain.sha256" "$toolchain_output/"
       env:
         ARTIFACT_NAME: $(artifactName)
         BUILD_ARTIFACT_STAGING_DIRECTORY: $(Build.ArtifactStagingDirectory)
         TARGET_TRIPLE: $(targetTriple)
+        RELEASE_VERSION: $(releaseVersion)
     - task: Bash@3
       displayName: Build Python wheel ($(targetTriple))
       inputs:
@@ -478,10 +503,20 @@ stages:
             --target "$TARGET_TRIPLE" \
             --profile release \
             --output "$BUILD_ARTIFACT_STAGING_DIRECTORY/$ARTIFACT_NAME"
+          : "${RELEASE_VERSION:?RELEASE_VERSION is required}"
+          CARGO_HOME="$CARGO_CACHE_HOME" cargo +1.99.1 xtask toolchain-stage \
+            --target "$TARGET_TRIPLE" \
+            --cli "target/$TARGET_TRIPLE/release/webui" \
+            --acquire-checker
+          toolchain="publish/toolchains/webui-toolchain-${RELEASE_VERSION}-${TARGET_TRIPLE}.tar.gz"
+          toolchain_output="$BUILD_ARTIFACT_STAGING_DIRECTORY/$ARTIFACT_NAME/publish/toolchains"
+          mkdir -p "$toolchain_output"
+          cp "$toolchain" "$toolchain.sha256" "$toolchain_output/"
       env:
         ARTIFACT_NAME: $(artifactName)
         BUILD_ARTIFACT_STAGING_DIRECTORY: $(Build.ArtifactStagingDirectory)
         TARGET_TRIPLE: $(targetTriple)
+        RELEASE_VERSION: $(releaseVersion)
     - task: PublishPipelineArtifact@1
       displayName: Upload $(targetTriple) artifact
       inputs:
@@ -550,6 +585,9 @@ stages:
           if (-not $env:ARTIFACT_NAME) {
               throw 'ARTIFACT_NAME is required.'
           }
+          if (-not $env:RELEASE_VERSION) {
+              throw 'RELEASE_VERSION is required.'
+          }
 
           if (-not (Get-Command protoc -ErrorAction SilentlyContinue)) {
               $version = '29.5'
@@ -576,11 +614,21 @@ stages:
               --target $env:TARGET_TRIPLE `
               --profile release `
               --output "$env:BUILD_ARTIFACT_STAGING_DIRECTORY\$env:ARTIFACT_NAME"
+          cargo +1.99.1 xtask toolchain-stage `
+              --target $env:TARGET_TRIPLE `
+              --cli "target\$env:TARGET_TRIPLE\release\webui.exe" `
+              --acquire-checker
+          $toolchainName = 'webui-toolchain-{0}-{1}.tar.gz' -f $env:RELEASE_VERSION, $env:TARGET_TRIPLE
+          $toolchain = Join-Path 'publish\toolchains' $toolchainName
+          $toolchainOutput = "$env:BUILD_ARTIFACT_STAGING_DIRECTORY\$env:ARTIFACT_NAME\publish\toolchains"
+          New-Item -ItemType Directory -Force -Path $toolchainOutput | Out-Null
+          Copy-Item -LiteralPath @($toolchain, "$toolchain.sha256") -Destination $toolchainOutput
       env:
         AGENT_TEMP_DIRECTORY: $(Agent.TempDirectory)
         ARTIFACT_NAME: $(artifactName)
         BUILD_ARTIFACT_STAGING_DIRECTORY: $(Build.ArtifactStagingDirectory)
         TARGET_TRIPLE: $(targetTriple)
+        RELEASE_VERSION: $(releaseVersion)
     - task: PublishPipelineArtifact@1
       displayName: Upload $(targetTriple) artifact
       inputs:
@@ -731,6 +779,8 @@ stages:
             --pack-only \
             --prebuilt-wasm \
             --profile release
+          node scripts/validate-node-packages.mjs \
+            publish/npm/microsoft-webui-{darwin,linux,win32}-{arm64,x64}-"$RELEASE_VERSION".tgz
           # Preserve the standards-compliant proxy tree as a downloadable
           # release asset as well as an unpacked Azure pipeline artifact.
           proxy_archive="webui-go-proxy-${RELEASE_VERSION}.tar.gz"
@@ -796,6 +846,11 @@ stages:
       inputs:
         targetPath: '$(Build.SourcesDirectory)/publish/sdk'
         artifactName: standalone_sdk_archives
+    - task: PublishPipelineArtifact@1
+      displayName: Upload standalone native toolchains and checksums
+      inputs:
+        targetPath: '$(Build.SourcesDirectory)/publish/toolchains'
+        artifactName: standalone_native_toolchains
     - task: PublishPipelineArtifact@1
       displayName: Upload Go module proxy
       inputs:

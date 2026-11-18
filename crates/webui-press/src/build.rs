@@ -490,7 +490,7 @@ pub fn build_docs_with_cache(
     }
 
     // Step 2b: Extract <script bundle> tags from page content BEFORE
-    // rendering. Page scripts become imports in the page's virtual esbuild
+    // rendering. Page scripts become imports in the page's generated browser
     // entry; the source HTML keeps plain, non-bundled scripts untouched.
     //
     // Also collect `scriptFile` entries from customPages config. These
@@ -645,7 +645,7 @@ pub fn build_docs_with_cache(
     // Start the one client bundle in parallel with per-page template parsing.
     // Each page blocks only when it reaches projection finalization.
     let node_modules = if root_bundle.is_some() || !page_bundles.is_empty() {
-        Some(resolve_node_modules(config_dir)?)
+        resolve_node_modules(config_dir)?
     } else {
         None
     };
@@ -659,7 +659,7 @@ pub fn build_docs_with_cache(
     let base_path_for_bundle = base_path.to_string();
     let dev_mode = cache.dev_mode;
     // Published before the projection completer wakes page builds. This keeps
-    // parsing overlapped with esbuild while making exact generated URLs
+    // parsing overlapped with native bundling while making exact generated URLs
     // available before each protocol is handed to the renderer.
     let generated_preloads = Arc::new(OnceLock::new());
     let generated_preloads_for_bundle = Arc::clone(&generated_preloads);
@@ -1038,6 +1038,7 @@ pub fn build_docs_with_cache(
     Ok(BuildStats {
         pages: pages.len(),
         protocol_bytes: total_bytes,
+        warnings: bundle_result.warnings,
     })
 }
 

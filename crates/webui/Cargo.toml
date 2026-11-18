@@ -17,6 +17,19 @@ name = "webui"
 
 [features]
 cli = ["microsoft-webui-parser/cli"]
+browser-build = [
+    "dep:microsoft-webui-projection",
+    "dep:rolldown",
+    "dep:rolldown_common",
+    "dep:rolldown_error",
+    "dep:either",
+    "dep:oxc",
+    "dep:string_wizard",
+    "dep:base64",
+    "dep:mime_guess",
+    "dep:anyhow",
+    "dep:tempfile",
+]
 
 [dependencies]
 microsoft-webui-parser = { path = "../webui-parser", version = "3.1.2" }
@@ -24,6 +37,7 @@ microsoft-webui-protocol = { path = "../webui-protocol", version = "3.1.2", feat
 microsoft-webui-handler = { path = "../webui-handler", version = "3.1.2", features = ["packs"] }
 microsoft-webui-discovery = { path = "../webui-discovery", version = "3.1.2" }
 microsoft-webui-tokens = { path = "../webui-tokens", version = "3.1.2" }
+microsoft-webui-projection = { path = "../webui-projection", version = "3.1.2", optional = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -36,6 +50,16 @@ crc32fast = { workspace = true }
 log = { workspace = true }
 rayon = { workspace = true }
 brotli = { workspace = true }
+rolldown = { workspace = true, optional = true }
+rolldown_common = { workspace = true, optional = true }
+rolldown_error = { workspace = true, optional = true }
+either = { workspace = true, optional = true }
+oxc = { workspace = true, features = ["transformer"], optional = true }
+string_wizard = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
+mime_guess = { workspace = true, optional = true }
+anyhow = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
@@ -49,6 +73,34 @@ futures-util = { workspace = true }
 libc = { workspace = true }
 microsoft-webui-handler = { path = "../webui-handler", version = "3.1.2" }
 microsoft-webui-protocol = { path = "../webui-protocol", version = "3.1.2", features = ["projection-manifest"] }
+
+[[test]]
+name = "browser_build"
+required-features = ["browser-build"]
+
+[[test]]
+name = "browser_build_generalized"
+required-features = ["browser-build"]
+
+[[test]]
+name = "browser_build_parallel"
+required-features = ["browser-build"]
+
+[[test]]
+name = "browser_build_policy"
+required-features = ["browser-build"]
+
+[[test]]
+name = "browser_build_publication"
+required-features = ["browser-build"]
+
+[[test]]
+name = "browser_build_publication_safety"
+required-features = ["browser-build"]
+
+[[test]]
+name = "browser_build_warnings"
+required-features = ["browser-build"]
 
 [target.'cfg(windows)'.dev-dependencies]
 windows-sys = { workspace = true }

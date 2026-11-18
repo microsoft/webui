@@ -24,8 +24,8 @@ separate Electron renderer package or a complete application backend.
 From a source checkout with workspace dependencies installed:
 
 ```bash
-# 1. Build the native addon
-cargo build -p microsoft-webui-node --release
+# 1. Build the runtime and compiler addons for the host and example build
+cargo xtask build-node-addons --release
 pnpm --filter @microsoft/webui build
 
 # 2. Build an example app

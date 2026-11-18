@@ -20,6 +20,7 @@ const cpuRates = [1, 4];
 assert.ok(Number.isSafeInteger(samples) && samples >= 3 && samples <= 100);
 assert.ok(Number.isFinite(latencyMs) && latencyMs >= 0 && latencyMs <= 1000);
 assert.ok(process.env.WEBUI_ADDON_PATH, 'Select the current release native addon.');
+assert.ok(process.env.WEBUI_BUILD_ADDON_PATH, 'Select the current release compiler addon.');
 
 async function click(page, point, phase) {
   await page.evaluate(name => window.uiProbe.arm(name), phase);

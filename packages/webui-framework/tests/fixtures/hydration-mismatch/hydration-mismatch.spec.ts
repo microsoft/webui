@@ -267,21 +267,43 @@ test.describe('hydration-mismatch (#379)', () => {
   });
 
   test('super.connectedCallback hydrates synchronously while the document is loading', async ({ page }) => {
-    const lifecycle = await page.evaluate(() => {
-      const el = document.querySelector('mismatch-after-super') as {
-        readyStateAtConnect?: string;
-        referencesReadyAfterSuper?: boolean;
-      } | null;
-      return {
-        readyStateAtConnect: el?.readyStateAtConnect,
-        referencesReadyAfterSuper: el?.referencesReadyAfterSuper,
-      };
+    const parser = Promise.withResolvers<void>();
+    await page.route('**/hydration-mismatch/parser-barrier.js', async route => {
+      await parser.promise;
+      await route.fulfill({ contentType: 'text/javascript', body: '' });
     });
-
-    expect(lifecycle).toEqual({
-      readyStateAtConnect: 'loading',
-      referencesReadyAfterSuper: true,
+    await page.route('**/hydration-mismatch/fixture.html', async route => {
+      const response = await route.fetch();
+      const html = await response.text();
+      const body = html.replace('type="module"', 'type="module" async').replace(
+        '</body>', '<script src="/hydration-mismatch/parser-barrier.js"></script></body>',
+      );
+      expect(body).toContain('type="module" async');
+      expect(body).toContain('src="/hydration-mismatch/parser-barrier.js"');
+      await route.fulfill({ response, body });
     });
+    try {
+      await page.goto('/hydration-mismatch/fixture.html', { waitUntil: 'commit' });
+      await page.waitForFunction(() =>
+        (document.querySelector('mismatch-after-super') as { $ready?: boolean } | null)?.$ready === true);
+      const lifecycle = await page.evaluate(() => {
+        const el = document.querySelector('mismatch-after-super') as {
+          readyStateAtConnect?: string;
+          referencesReadyAfterSuper?: boolean;
+        } | null;
+        return {
+          readyStateAtConnect: el?.readyStateAtConnect,
+          referencesReadyAfterSuper: el?.referencesReadyAfterSuper,
+        };
+      });
+      expect(lifecycle).toEqual({
+        readyStateAtConnect: 'loading',
+        referencesReadyAfterSuper: true,
+      });
+    } finally {
+      parser.resolve();
+      await page.waitForLoadState('load');
+    }
   });
 
   test('seeded pre-ready values match the server render and do not warn', async ({ page }) => {

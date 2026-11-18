@@ -8,7 +8,7 @@ use std::path::{Component, Path, PathBuf};
 use anyhow::{Context, Result};
 use include_dir::{include_dir, Dir};
 
-use super::{InitArgs, InitError, PackageManager};
+use super::{InitArgs, InitError, PackageManager, Server};
 
 static TEMPLATES: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/commands/init/templates");
 
@@ -111,9 +111,11 @@ pub(super) fn app_name(path: &Path) -> Result<String> {
 
 pub(super) fn generate(root: &Path, name: &str, args: &InitArgs) -> Result<Vec<String>> {
     let go_version = go_module_version(env!("CARGO_PKG_VERSION"))?;
-    let mut files = template_files(args.server.name())?;
-    files.push(("package.json".to_owned(), manifest(name, args)?));
-    if args.package_manager == PackageManager::Yarn {
+    let mut files = super::native::adapt(template_files(args.server)?, args)?;
+    if args.uses_packages() {
+        files.push(("package.json".to_owned(), manifest(name)?));
+    }
+    if args.uses_packages() && args.manager() == PackageManager::Yarn {
         files.push((
             ".yarnrc.yml".to_owned(),
             "nodeLinker: node-modules\n".to_owned(),
@@ -142,7 +144,8 @@ pub(super) fn generate(root: &Path, name: &str, args: &InitArgs) -> Result<Vec<S
             )
             .replace("__APP_NAME__", name)
             .replace("__SERVER__", args.server.name())
-            .replace("__PACKAGE_MANAGER__", args.package_manager.name());
+            .replace("__PACKAGE_MANAGER__", args.manager().name())
+            .replace("__APP_ROOT_DEFAULT__", ".");
         write_new(root, &relative, content.as_bytes()).with_context(|| {
             format!(
                 "scaffolding stopped after {} files in {}; existing files were preserved",
@@ -204,9 +207,13 @@ fn release_number(value: &str) -> Result<u64> {
         .context("WebUI release version number exceeds u64")
 }
 
-fn template_files(server: &str) -> Result<Vec<(String, String)>> {
+fn template_files(server: Server) -> Result<Vec<(String, String)>> {
     let mut files = Vec::new();
-    for prefix in ["common", server] {
+    let prefixes = ["common", server.name()];
+    for prefix in prefixes
+        .into_iter()
+        .chain(matches!(server, Server::Node | Server::Bun).then_some("runtime"))
+    {
         let directory = TEMPLATES
             .get_dir(prefix)
             .with_context(|| format!("embedded {prefix} starter templates are missing"))?;
@@ -216,9 +223,6 @@ fn template_files(server: &str) -> Result<Vec<(String, String)>> {
             for file in directory.files() {
                 let relative = file.path().strip_prefix(prefix)?;
                 let relative = relative.to_string_lossy().replace('\\', "/");
-                if relative == "scripts/sdk.mjs" && !matches!(server, "c" | "cpp" | "go") {
-                    continue;
-                }
                 let relative = relative.strip_suffix(".template").unwrap_or(&relative);
                 let text = file
                     .contents_utf8()
@@ -227,8 +231,8 @@ fn template_files(server: &str) -> Result<Vec<(String, String)>> {
             }
         }
     }
-    if server == "cpp" {
-        for relative in ["server/host.h", "server/native.cmake"] {
+    if server == Server::Cpp {
+        for relative in ["server/host.h", "server/shutdown.h", "server/native.cmake"] {
             let file = TEMPLATES
                 .get_file(format!("c/{relative}"))
                 .context("embedded shared C/C++ transport template is missing")?;
@@ -243,7 +247,7 @@ fn template_files(server: &str) -> Result<Vec<(String, String)>> {
     Ok(files)
 }
 
-fn write_new(root: &Path, relative: &str, bytes: &[u8]) -> Result<()> {
+pub(super) fn write_new(root: &Path, relative: &str, bytes: &[u8]) -> Result<()> {
     let path = root.join(relative);
     let parent = path.parent().context("starter file has no parent")?;
     let mut current = PathBuf::new();
@@ -271,43 +275,19 @@ fn write_new(root: &Path, relative: &str, bytes: &[u8]) -> Result<()> {
         .with_context(|| format!("failed to write {}", path.display()))
 }
 
-fn manifest(name: &str, args: &InitArgs) -> Result<String> {
+fn manifest(name: &str) -> Result<String> {
     use serde_json::{Map, Value};
     let mut manifest = Map::new();
     manifest.insert("name".into(), Value::from(name));
     manifest.insert("version".into(), Value::from("0.1.0"));
     manifest.insert("private".into(), Value::from(true));
     manifest.insert("type".into(), Value::from("module"));
-    let mut scripts = Map::new();
-    for action in ["dev", "build", "start", "check"] {
-        scripts.insert(
-            action.into(),
-            Value::from(format!("node scripts/app.mjs {action}")),
-        );
-    }
-    manifest.insert("scripts".into(), scripts.into());
     let mut dependencies = Map::new();
     dependencies.insert(
         "@microsoft/webui".into(),
         Value::from(env!("CARGO_PKG_VERSION")),
     );
-    dependencies.insert(
-        "@microsoft/webui-framework".into(),
-        Value::from(env!("CARGO_PKG_VERSION")),
-    );
     manifest.insert("dependencies".into(), dependencies.into());
-    let mut dev_dependencies = Map::new();
-    for (name, version) in [
-        ("esbuild", "0.28.2"),
-        ("typescript", "7.0.2"),
-        ("terser", "5.51.2"),
-    ] {
-        dev_dependencies.insert(name.into(), Value::from(version));
-    }
-    manifest.insert("devDependencies".into(), dev_dependencies.into());
-    let mut settings = Map::new();
-    settings.insert("server".into(), Value::from(args.server.name()));
-    manifest.insert("webui".into(), settings.into());
     Ok(serde_json::to_string_pretty(&manifest)? + "\n")
 }
 
@@ -328,9 +308,9 @@ mod tests {
             let template = include_str!("templates/go/server/go.mod")
                 .replace("__WEBUI_GO_VERSION__", &go_module_version(native)?);
             assert!(template.contains(&format!(" v{module}\n")));
-            let sdk = include_str!("templates/common/scripts/sdk.mjs")
-                .replace("__WEBUI_VERSION__", native);
-            assert!(sdk.contains(&format!("const version = '{native}';")));
+            let configuration =
+                include_str!("templates/native/README.md").replace("__WEBUI_VERSION__", native);
+            assert!(configuration.contains(&format!("webui-sdk-{native}-<platform>")));
         }
         for invalid in [
             "3.1.18446744073709551615-hotfix.1",

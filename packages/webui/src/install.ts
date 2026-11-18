@@ -11,15 +11,47 @@ const binDir = path.resolve(__dirname, "..", "bin");
 const npmBinDest = path.join(binDir, "webui");
 const nativeBinDest = path.join(binDir, process.platform === "win32" ? "webui.exe" : "webui");
 
+function identicalCli(source: string, destination: string): boolean {
+  if (!fs.existsSync(destination) ||
+      fs.statSync(source).size !== fs.statSync(destination).size) return false;
+  const sourceFd = fs.openSync(source, "r");
+  try {
+    const destinationFd = fs.openSync(destination, "r");
+    try {
+      // Keep concurrent postbuild comparisons bounded even for debug binaries.
+      const sourceBytes = Buffer.alloc(65536);
+      const destinationBytes = Buffer.alloc(65536);
+      for (;;) {
+        const sourceRead = fs.readSync(sourceFd, sourceBytes);
+        const destinationRead = fs.readSync(destinationFd, destinationBytes);
+        if (sourceRead !== destinationRead ||
+            !sourceBytes.subarray(0, sourceRead).equals(destinationBytes.subarray(0, destinationRead))) {
+          return false;
+        }
+        if (sourceRead === 0) return true;
+      }
+    } finally {
+      fs.closeSync(destinationFd);
+    }
+  } finally {
+    fs.closeSync(sourceFd);
+  }
+}
+
+function copyCli(source: string, destination: string): void {
+  // Parallel workspace builds rerun postbuild after the initial shared install.
+  // Do not overwrite an identical executable that another app may be running.
+  if (!identicalCli(source, destination)) fs.copyFileSync(source, destination);
+  fs.chmodSync(destination, 0o755);
+}
+
 try {
   const srcBin = resolve("bin");
   if (srcBin && fs.existsSync(srcBin)) {
     fs.mkdirSync(binDir, { recursive: true });
-    fs.copyFileSync(srcBin, npmBinDest);
-    fs.chmodSync(npmBinDest, 0o755);
+    copyCli(srcBin, npmBinDest);
     if (nativeBinDest !== npmBinDest) {
-      fs.copyFileSync(srcBin, nativeBinDest);
-      fs.chmodSync(nativeBinDest, 0o755);
+      copyCli(srcBin, nativeBinDest);
     }
     process.exit(0);
   }

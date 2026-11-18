@@ -4,7 +4,28 @@ Node.js native addon for the [WebUI](https://github.com/microsoft/webui) framewo
 
 ## Overview
 
-`microsoft-webui-node` compiles to a platform-specific `.node` addon that exposes WebUI's rendering API to Node.js hosts (e.g. Express, Fastify) without spawning a subprocess.
+`microsoft-webui-node` compiles twice into separate platform-specific `.node`
+addons without spawning a subprocess:
+
+| Cargo feature | Packaged addon | API |
+|---|---|---|
+| `handler` (default) | `webui.node` | `Protocol`, `StreamingSession`, `inspect` |
+| `build` | `webui-build.node` | `build`, `prepareBuild`, `PreparedBuild`, `bundleClient` |
+
+Exactly one feature must be selected. Compile the build variant in a separate
+target directory because both variants use the Cargo library name `webui_node`:
+
+```bash
+cargo build -p microsoft-webui-node --no-default-features --features handler
+cargo build -p microsoft-webui-node --no-default-features --features build --target-dir target/node-build
+```
+
+`@microsoft/webui` loads only the handler addon, without linking the template
+compiler or browser bundler. `@microsoft/webui/build.js` loads the build addon.
+The build variant uses `webui::browser_build` through the optional
+`microsoft-webui/browser-build` feature; semantic projection remains in
+`microsoft-webui-projection`. Protocol buffers are ordinary owned bytes shared
+between the addons, not addon-specific handles.
 
 ## Host-driven streaming
 

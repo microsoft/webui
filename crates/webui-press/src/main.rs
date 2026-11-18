@@ -162,12 +162,11 @@ fn load_config(
 /// crash) never leaves a half-written cache: the next run sees no `.complete`
 /// sentinel and re-extracts.
 ///
-/// The cache is placed on the volume that holds the build output (see
-/// [`scratch::scratch_base`]): the extracted tree contains TypeScript sources
-/// that become bundler inputs, and a bundle cannot span two volumes because
-/// projection manifest keys are relative to a single build root.
+/// The cache stays inside the consuming project (see
+/// [`scratch::browser_cache_base`]): the extracted tree contains TypeScript
+/// inputs that must remain within the native browser build's project boundary.
 fn extract_embedded_assets(build_dir: &Path, project_dir: &Path) -> Result<PathBuf> {
-    let base = scratch::scratch_base(build_dir, project_dir).map_err(|e| {
+    let base = scratch::browser_cache_base(build_dir, project_dir).map_err(|e| {
         anyhow::anyhow!(
             "Cannot prepare the Press cache directory for {}: {e}",
             build_dir.display()
@@ -273,7 +272,8 @@ fn run_build(config_path: &str, template_dir: Option<&str>, show: Option<ShowMod
     if let Some(show) = show {
         docs_config.show = show;
     }
-    let _stats = build::build_docs(&docs_config, &config_dir, &template)?;
+    let stats = build::build_docs(&docs_config, &config_dir, &template)?;
+    webui_dev_server::RebuildReporter::new().warnings(&stats.warning_messages());
     Ok(())
 }
 
@@ -364,22 +364,22 @@ mod tests {
 
     #[test]
     fn embedded_assets_extract_template_and_components() -> Result<()> {
-        // The system temp directory shares this test process's volume, so the
-        // resolved cache base is the shared one.
-        let build = std::env::temp_dir();
-        let project = std::env::temp_dir();
-        let template = extract_embedded_assets(&build, &project)?;
+        let fixture = tempfile::tempdir()?;
+        let project = fixture.path();
+        let build = project.join("dist");
+        let template = extract_embedded_assets(&build, project)?;
         let root = template
             .parent()
             .ok_or_else(|| anyhow::anyhow!("template has no parent"))?;
 
         assert!(template.join("index.html").is_file());
+        assert!(template.starts_with(project.join(scratch::PROJECT_SCRATCH_DIR)));
         assert!(root.join("components/code-block/code-block.html").is_file());
 
         // The published cache must satisfy the completeness contract, and a
         // second call must reuse the same content-addressed directory.
         assert!(is_complete_cache(root));
-        assert_eq!(extract_embedded_assets(&build, &project)?, template);
+        assert_eq!(extract_embedded_assets(&build, project)?, template);
         Ok(())
     }
 

@@ -30,7 +30,7 @@ type asset struct {
 
 var mimes = map[string]string{
 	".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
-	".json": "application/json", ".txt": "text/plain; charset=utf-8",
+	".json": "application/json", ".map": "application/json", ".txt": "text/plain; charset=utf-8",
 	".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg",
 	".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp",
 	".avif": "image/avif", ".ico": "image/x-icon", ".woff": "font/woff", ".woff2": "font/woff2",
@@ -152,11 +152,14 @@ func appHandler(r *webui.Renderer, assets map[string]asset) http.Handler {
 }
 
 func run(ctx context.Context) error {
-	// go run . runs in server/. The launcher supplies WEBUI_APP_ROOT so a built
-	// binary can instead be started from the app root without changing behavior.
+	if webui.Version != "__WEBUI_VERSION__" {
+		return fmt.Errorf("WebUI binding version %s does not match compiler/SDK __WEBUI_VERSION__; align the module and native tooling", webui.Version)
+	}
+	// The launcher supplies an explicit root; direct commands use the
+	// working directory documented for this project layout.
 	root := os.Getenv("WEBUI_APP_ROOT")
 	if root == "" {
-		root = ".."
+		root = "__APP_ROOT_DEFAULT__"
 	}
 	assets, err := snapshotAssets(filepath.Join(root, "dist", "public"))
 	if err != nil {
@@ -217,6 +220,21 @@ func serve(ctx context.Context, server *http.Server, listener net.Listener) erro
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	if os.Getenv("_WEBUI_APP_CONTROL") == "stdin-v1" {
+		controlled, cancel := context.WithCancel(ctx)
+		defer cancel()
+		ctx = controlled
+		go func() {
+			var command [1]byte
+			_, err := io.ReadFull(os.Stdin, command[:])
+			if err != nil {
+				log.Printf("WebUI supervisor disconnected: %v; shutting down", err)
+			} else if command[0] != 'S' {
+				log.Printf("Invalid WebUI supervisor command; shutting down")
+			}
+			cancel()
+		}()
+	}
 	err := run(ctx)
 	stop()
 	if err != nil {

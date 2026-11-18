@@ -1,11 +1,21 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { existsSync, readdirSync, rmSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, readdirSync, realpathSync, rmSync } from 'node:fs';
+import { extname, relative, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-import { build, type BuildOptions } from 'esbuild';
-import { esbuildProjection } from '@microsoft/webui/projection.js';
+import { bundleClient, type ClientBundle, type ClientBundleOptions } from '@microsoft/webui/build.js';
+
+/** Physical root shared by fixture sources, workspace packages, and outputs. */
+export const workspaceRoot = realpathSync(fileURLToPath(new URL('../../../', import.meta.url)));
+
+/** Keep native advisories visible in every browser-fixture build. */
+export async function bundleFixtureClient(options: ClientBundleOptions): Promise<ClientBundle> {
+  const built = await bundleClient(options);
+  for (const warning of built.warnings) console.warn(`[webui] ${warning.code}: ${warning.message}`);
+  return built;
+}
 
 export interface FixtureBuildOptions {
   fixturesRoot: string;
@@ -13,7 +23,7 @@ export interface FixtureBuildOptions {
   outDir: string;
   tsconfig: string;
   emptyMessage?: string;
-  extraBuilds?: BuildOptions[];
+  extraBuilds?: ClientBundleOptions[];
 }
 
 export function collectFixtureEntryPoints(
@@ -41,27 +51,29 @@ export async function buildFixtureEntries({
 
   rmSync(outDir, { recursive: true, force: true });
 
-  const projectionManifest = resolve(outDir, 'webui-projection.json');
-  await build({
-    entryPoints,
-    bundle: true,
-    format: 'iife',
-    outdir: outDir,
-    outbase: fixturesRoot,
-    platform: 'browser',
+  const entries = Object.fromEntries(entryPoints.map(entry => [
+    relative(fixturesRoot, entry).slice(0, -extname(entry).length).split(sep).join('/'),
+    entry,
+  ]));
+  const built = await bundleFixtureClient({
+    project: workspaceRoot,
+    entries,
+    format: 'esm',
+    outDir,
     target: 'es2022',
-    supported: { 'import-attributes': true },
     tsconfig,
-    logLevel: 'info',
-    metafile: true,
-    plugins: [esbuildProjection({ manifest: projectionManifest })],
+    development: true,
+    minify: false,
   });
 
   for (const extraBuild of extraBuilds) {
-    await build({
-      logLevel: 'info',
-      ...extraBuild,
-    });
+    const extraManifest = resolve(extraBuild.project,
+      extraBuild.manifestPath ?? resolve(extraBuild.project, extraBuild.outDir, 'webui-projection.json'));
+    if (existsSync(extraManifest)
+      && realpathSync.native(extraManifest) === realpathSync.native(built.manifestPath)) {
+      throw new Error('Fixture extra builds must set a distinct manifestPath to preserve the authored entry proof.');
+    }
+    await bundleFixtureClient(extraBuild);
   }
-  return projectionManifest;
+  return built.manifestPath;
 }

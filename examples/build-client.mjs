@@ -2,13 +2,16 @@
 // Licensed under the MIT license.
 
 /**
- * Run one application-owned esbuild invocation with WebUI projection enabled.
+ * Run the native browser builder for application-owned Node build scripts.
  */
 import { createRequire } from "node:module";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
-import { minifyClient } from "./minify-client.mjs";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+const workspaceRoot = realpathSync(fileURLToPath(new URL("../", import.meta.url)));
 
 let buildTools;
 
@@ -34,21 +37,19 @@ async function loadBuildTools() {
   const require = createRequire(
     pathToFileURL(path.join(process.cwd(), "package.json")),
   );
-  const esbuild = require(require.resolve("esbuild"));
-  const projectionEntry = resolveImportEntry(
-    require,
-    "@microsoft/webui",
-    "./projection.js",
+  const { bundleClient, prepareBuild } = await import(
+    resolveImportEntry(require, "@microsoft/webui", "./build.js")
   );
-  const { esbuildProjection } = await import(projectionEntry);
-  const { prepareBuild } = await import(resolveImportEntry(require, "@microsoft/webui", "."));
-  buildTools = { esbuild, esbuildProjection, prepareBuild };
+  const { resolve } = await import(
+    resolveImportEntry(require, "@microsoft/webui", "./platform.js")
+  );
+  buildTools = { bundleClient, prepareBuild, resolveBinary: () => resolve("bin") };
   return buildTools;
 }
 
 /** Compile templates once, bundle their generated inputs, then finalize projection. */
 export async function runWebUIBuild({
-  outdir = "dist",
+  outDir = "dist",
   metafilePath,
   clientOptions = {},
   ...options
@@ -64,19 +65,17 @@ export async function runWebUIBuild({
     metafile: Boolean(metafilePath),
   });
   prepared.writeModules();
-  const manifest = path.join(outdir, "webui-projection.json");
   const client = await runWebUIClientBuild({
-    outdir,
+    outDir,
     ...clientOptions,
-    projectionManifest: manifest,
   });
-  const result = prepared.finish({ projectionManifests: [manifest] });
-  mkdirSync(outdir, { recursive: true });
+  const result = prepared.finish({ projectionManifests: [client.manifestPath] });
+  mkdirSync(outDir, { recursive: true });
   for (let i = 0; i < result.cssFiles.length; i += 2) {
-    writeFileSync(path.join(outdir, result.cssFiles[i]), result.cssFiles[i + 1]);
+    writeFileSync(path.join(outDir, result.cssFiles[i]), result.cssFiles[i + 1]);
   }
   for (const pack of result.lazyPackFiles) {
-    const file = path.join(outdir, pack.path);
+    const file = path.join(outDir, pack.path);
     mkdirSync(path.dirname(file), { recursive: true });
     if (!existsSync(file) || readFileSync(file, "utf8") !== pack.content) {
       writeFileSync(file, pack.content);
@@ -84,7 +83,7 @@ export async function runWebUIBuild({
   }
   if (metafilePath) writeFileSync(metafilePath, result.metafile);
   for (const warning of result.warnings) console.warn(warning);
-  const protocol = path.join(outdir, "protocol.bin");
+  const protocol = path.join(outDir, "protocol.bin");
   const staged = `${protocol}.${process.pid}.tmp`;
   writeFileSync(staged, result.protocol);
   renameSync(staged, protocol);
@@ -92,45 +91,101 @@ export async function runWebUIBuild({
 }
 
 export async function runWebUIClientBuild(options = {}) {
-  const { esbuild, esbuildProjection } = await loadBuildTools();
+  const { bundleClient, resolveBinary } = await loadBuildTools();
   const watch = process.argv.includes("--watch");
-  const color = process.argv.includes("--color=true");
-  const { projectionManifest, plugins = [], ...esbuildOptions } = options;
-  const optimize = !watch && esbuildOptions.minify !== false;
   const buildOptions = {
-    entryPoints: ["src/index.ts"],
-    outdir: "dist",
-    bundle: true,
+    project: workspaceRoot,
+    entries: { index: path.resolve("src/index.ts") },
+    outDir: path.resolve("dist"),
     format: "esm",
-    splitting: true,
+    development: watch,
     minify: !watch,
-    sourcemap: watch,
-    ...esbuildOptions,
-    define: {
-      ...(!watch ? { __WEBUI_DEV__: "false" } : {}),
-      ...esbuildOptions.define,
-    },
-    color,
-    metafile: true,
-    plugins: [
-      ...(optimize ? [minifyClient()] : []),
-      ...plugins,
-      esbuildProjection(
-        projectionManifest
-          ? { manifest: projectionManifest }
-          : undefined,
-      ),
-    ],
+    sourcemap: watch ? "file" : "none",
+    ...options,
   };
-
+  buildOptions.outDir = path.resolve(buildOptions.outDir);
   if (watch) {
-    const context = await esbuild.context(buildOptions);
-    await context.watch();
-    return context;
+    return watchNativeClient(buildOptions, resolveBinary());
   }
-  const result = await esbuild.build(buildOptions);
-  if (optimize && esbuildOptions.write !== false) delete result.outputFiles;
+  const result = await bundleClient(buildOptions);
+  for (const warning of result.warnings) console.warn(`[webui] ${warning.code}: ${warning.message}`);
   return result;
+}
+
+/** Only process/data hosting lives here; Rust owns watching and rebuilding. */
+async function watchNativeClient(options, binary) {
+  if (!binary || !path.isAbsolute(binary)) {
+    throw new Error("A native WebUI binary is required; set WEBUI_BINARY_PATH to its absolute path.");
+  }
+  const { write, manifestPath, ...config } = options;
+  if (write === false) throw new Error("Native watch publishes assets; write:false is not supported.");
+  config.project = realpathSync(config.project);
+  config.outDir = path.relative(config.project, config.outDir);
+  const temporary = mkdtempSync(path.join(tmpdir(), "webui-client-watch-"));
+  const configPath = path.join(temporary, "bundle.json");
+  writeFileSync(configPath, JSON.stringify(config));
+  const args = ["bundle", "--config", configPath, "--watch", "--control-stdin"];
+  if (manifestPath) args.push("--manifest", path.resolve(config.project, manifestPath));
+  const child = spawn(binary, args, { stdio: ["pipe", "pipe", "pipe"] });
+  child.stdout.pipe(process.stdout, { end: false });
+  child.stderr.pipe(process.stderr, { end: false });
+  let stopping = false;
+  let started = false;
+  let disposed;
+  const spawned = new Promise((resolve, reject) => {
+    child.once("spawn", () => {
+      started = true;
+      resolve();
+    });
+    child.once("error", reject);
+  });
+  child.stdin.on("error", error => {
+    if (!stopping) console.error(error);
+  });
+  const exited = new Promise(resolve => {
+    child.once("close", (code, signal) => {
+      process.removeListener("SIGINT", interrupt);
+      process.removeListener("SIGTERM", terminate);
+      rmSync(temporary, { recursive: true, force: true });
+      if (!stopping && started) process.exitCode = code || 1;
+      resolve({ code, signal });
+    });
+  });
+  const dispose = () => {
+    if (disposed) return disposed;
+    stopping = true;
+    child.stdin.end();
+    disposed = (async () => {
+      const terminate = setTimeout(() => child.kill("SIGTERM"), 5_000);
+      const force = setTimeout(() => child.kill("SIGKILL"), 10_000);
+      terminate.unref();
+      force.unref();
+      try {
+        const status = await exited;
+        if (status.code !== 0 || status.signal) {
+          throw new Error(`Native client watcher did not stop cleanly (${status.signal ?? status.code}).`);
+        }
+      } finally {
+        clearTimeout(terminate);
+        clearTimeout(force);
+      }
+    })();
+    return disposed;
+  };
+  const stop = code => {
+    void dispose().catch(error => console.error(error)).finally(() => { process.exitCode = code; });
+  };
+  const interrupt = () => stop(130);
+  const terminate = () => stop(143);
+  process.once("SIGINT", interrupt);
+  process.once("SIGTERM", terminate);
+  try {
+    await spawned;
+  } catch (error) {
+    await dispose().catch(() => {});
+    throw error;
+  }
+  return { process: child, dispose };
 }
 
 const invokedPath = process.argv[1];
