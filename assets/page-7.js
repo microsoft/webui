@@ -1,1 +1,1 @@
-import"./chunk-2RG7NDLB.js";import{b as t}from"./chunk-K746UYUH.js";t();
+import{a as e}from"./docs-theme-toggle-BOihljJi.js";import"./docs-outline-BCnXU9Mo.js";e();

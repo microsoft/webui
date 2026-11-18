@@ -1,1 +1,1 @@
-if(window.location.hash){let o=window.location.hash.slice(1),n=o;try{n=decodeURIComponent(o)}catch(t){if(!(t instanceof URIError))throw t}document.getElementById(n)?.scrollIntoView()}
+if(window.location.hash){let e=window.location.hash.slice(1),t=e;try{t=decodeURIComponent(e)}catch(e){if(!(e instanceof URIError))throw e}document.getElementById(t)?.scrollIntoView()}
