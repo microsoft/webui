@@ -66,14 +66,19 @@ without relaxing the usual parent hydration barrier for unrelated roots.
 
 Each checkpoint carries the boundary-local state and the additive template,
 inventory, style, and route information required after earlier records.
-Already-published global metadata is not overwritten. A range payload may
-use `stateRef` pointing to the **exact preceding range record** plus a
-top-level `stateDelta`, instead of a full `state`, only when the prior
-projection is a proven subset under the same server-state revision. The
-browser resolves a new state object before activation; missing, forward,
-stale, or malformed references fail the stream. Updates are independent
-patches and never become the next range-state reference base. Boundary
-state is not published as global application state.
+Already-published global metadata is not overwritten. The range end comment
+must immediately precede the JSON script. Only Module CSS emits a batched
+import map for newly available, unrendered components, after the JSON and
+before the hydration sentinel. The style catalog still supplies definitions
+that future instances may need, even for components already rendered.
+
+A range payload may use `stateRef` pointing to the **exact preceding range
+record** plus a top-level `stateDelta`, instead of a full `state`, only when
+the prior projection is a proven subset under the same server-state revision.
+The browser resolves a new state object before activation; missing, forward,
+stale, or malformed references fail the stream. Updates are independent patches
+and never become the next range-state reference base. Boundary state is not
+published as global application state.
 
 At the structural `body_end`, after the response tail and any body
 injection, the handler writes exactly one markerless empty terminal
