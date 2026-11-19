@@ -337,8 +337,16 @@ test('Azure native target matrix stages real target CLIs and aggregates toolchai
     assert.ok(section.includes('$toolchain.sha256'), job);
   }
   const assembly = build.split('  - job: AssembleRelease\n')[1];
-  for (const target of ['linux-x64', 'linux-arm64', 'macos-arm64', 'macos-x64', 'windows-x64', 'windows-arm64']) {
-    assert.ok(assembly.includes(`artifactName: stage-${target}\n        targetPath: $(Build.SourcesDirectory)`), target);
+  for (const [artifact, job, leg] of [
+    ['linuxX64Artifact', 'BuildLinuxAssets', 'LinuxX64'],
+    ['linuxArm64Artifact', 'BuildLinuxAssets', 'LinuxArm64'],
+    ['macosArm64Artifact', 'BuildMacOSAssets', 'MacOSArm64'],
+    ['macosX64Artifact', 'BuildMacOSAssets', 'MacOSX64'],
+    ['windowsX64Artifact', 'BuildWindowsAssets', 'WindowsX64'],
+    ['windowsArm64Artifact', 'BuildWindowsAssets', 'WindowsArm64'],
+  ]) {
+    assert.ok(assembly.includes(`${artifact}: $[ dependencies.${job}.outputs['${leg}.stageArtifact.name'] ]`), artifact);
+    assert.ok(assembly.includes(`artifactName: $(${artifact})\n        targetPath: $(Build.SourcesDirectory)`), artifact);
   }
   assert.ok(assembly.indexOf('--pack-only') < assembly.indexOf('artifactName: standalone_native_toolchains'));
   assert.ok(assembly.includes("targetPath: '$(Build.SourcesDirectory)/publish/toolchains'"));

@@ -21,6 +21,8 @@ mod node_addons;
 mod node_tests;
 mod process;
 mod publish;
+#[cfg(test)]
+mod release_pipeline_tests;
 mod release_version;
 mod util;
 mod version;

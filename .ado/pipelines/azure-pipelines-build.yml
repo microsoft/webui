@@ -256,9 +256,8 @@ stages:
           CARGO_HOME="$CARGO_CACHE_HOME" cargo +1.99.1 xtask build-wasm
       env:
         CARGO_CACHE_HOME: $(CARGO_CACHE_HOME)
-    - task: PublishPipelineArtifact@1
-      displayName: Upload WASM release assets
-      inputs:
+    - template: templates/publish-stage-artifact.yml
+      parameters:
         targetPath: '$(Build.SourcesDirectory)/docs/.webui-press/public/wasm'
         artifactName: stage-wasm
 
@@ -297,13 +296,9 @@ stages:
           cargo-home | "$(Agent.OS)" | "$(targetTriple)"
           cargo-home | "$(Agent.OS)"
         path: $(CARGO_CACHE_HOME)
-    - task: Cache@2
-      displayName: Restore target cache
-      inputs:
-        key: 'cargo-target | "ubuntu-22.04-portable" | "$(targetTriple)" | Cargo.lock'
-        restoreKeys: |
-          cargo-target | "ubuntu-22.04-portable" | "$(targetTriple)"
-        path: $(Build.SourcesDirectory)/target
+    # The portable build plus manylinux image nearly fills the hosted disk.
+    # Keep downloaded Cargo sources cached, but do not restore old target trees
+    # or create a second full copy as a post-job cache archive.
     - task: Bash@3
       displayName: Build and stage $(targetTriple)
       inputs:
@@ -395,9 +390,8 @@ stages:
         MANYLINUX_CROSS_IMAGE: $(manylinuxCrossImage)
         SOURCE_DATE_EPOCH: $(sourceDateEpoch)
         TARGET_TRIPLE: $(targetTriple)
-    - task: PublishPipelineArtifact@1
-      displayName: Upload $(targetTriple) artifact
-      inputs:
+    - template: templates/publish-stage-artifact.yml
+      parameters:
         targetPath: '$(Build.ArtifactStagingDirectory)/$(artifactName)'
         artifactName: $(artifactName)
 
@@ -431,9 +425,8 @@ stages:
             --features microsoft-webui-desktop/cli
       env:
         TARGET_TRIPLE: $(targetTriple)
-    - task: PublishPipelineArtifact@1
-      displayName: Upload $(artifactName)
-      inputs:
+    - template: templates/publish-stage-artifact.yml
+      parameters:
         targetPath: '$(Build.SourcesDirectory)/target/$(targetTriple)/release/webui-desktop'
         artifactName: $(artifactName)
 
@@ -517,14 +510,16 @@ stages:
         BUILD_ARTIFACT_STAGING_DIRECTORY: $(Build.ArtifactStagingDirectory)
         TARGET_TRIPLE: $(targetTriple)
         RELEASE_VERSION: $(releaseVersion)
-    - task: PublishPipelineArtifact@1
-      displayName: Upload $(targetTriple) artifact
-      inputs:
+    - template: templates/publish-stage-artifact.yml
+      parameters:
         targetPath: '$(Build.ArtifactStagingDirectory)/$(artifactName)'
         artifactName: $(artifactName)
 
   - job: BuildWindowsAssets
     displayName: Build Windows release asset
+    variables:
+      # Cache@2 requires GNU tar on Windows; do not resolve the system bsdtar.
+      cacheTar: 'C:\Program Files\Git\usr\bin\tar.exe'
     strategy:
       matrix:
         WindowsX64:
@@ -548,6 +543,19 @@ stages:
       displayName: Use Python 3.11
       inputs:
         versionSpec: '3.11'
+    - pwsh: |
+        $ErrorActionPreference = 'Stop'
+        if (-not (Test-Path -LiteralPath $env:VSTS_TAR_EXECUTABLE -PathType Leaf)) {
+            throw "GNU tar is required for release caches. Install Git for Windows or update cacheTar."
+        }
+        $version = @(& $env:VSTS_TAR_EXECUTABLE --version)
+        if ($LASTEXITCODE -ne 0 -or $version[0] -notmatch 'GNU tar') {
+            throw "Release caches require a working GNU tar executable: $env:VSTS_TAR_EXECUTABLE"
+        }
+        $version
+      displayName: Verify GNU tar for release caches
+      env:
+        VSTS_TAR_EXECUTABLE: $(cacheTar)
     - task: Cache@2
       displayName: Restore Cargo cache
       inputs:
@@ -556,6 +564,8 @@ stages:
           cargo-home | "$(Agent.OS)" | "$(targetTriple)"
           cargo-home | "$(Agent.OS)"
         path: $(CARGO_CACHE_HOME)
+      env:
+        VSTS_TAR_EXECUTABLE: $(cacheTar)
     - task: Cache@2
       displayName: Restore target cache
       inputs:
@@ -563,6 +573,8 @@ stages:
         restoreKeys: |
           cargo-target | "$(Agent.OS)" | "$(targetTriple)"
         path: $(Build.SourcesDirectory)/target
+      env:
+        VSTS_TAR_EXECUTABLE: $(cacheTar)
     - task: PowerShell@2
       displayName: Build and stage $(targetTriple)
       inputs:
@@ -629,9 +641,8 @@ stages:
         BUILD_ARTIFACT_STAGING_DIRECTORY: $(Build.ArtifactStagingDirectory)
         TARGET_TRIPLE: $(targetTriple)
         RELEASE_VERSION: $(releaseVersion)
-    - task: PublishPipelineArtifact@1
-      displayName: Upload $(targetTriple) artifact
-      inputs:
+    - template: templates/publish-stage-artifact.yml
+      parameters:
         targetPath: '$(Build.ArtifactStagingDirectory)/$(artifactName)'
         artifactName: $(artifactName)
 
@@ -655,11 +666,56 @@ stages:
     - BuildLinuxDesktop
     - BuildMacOSAssets
     - BuildWindowsAssets
+    # A retried producer publishes a new immutable artifact. Select its exact
+    # output, including matrix leg, rather than mixing attempts or guessing the
+    # latest artifact by name. Unretried successful jobs retain their outputs.
+    variables:
+      wasmArtifact: $[ dependencies.BuildWasmAssets.outputs['stageArtifact.name'] ]
+      linuxX64Artifact: $[ dependencies.BuildLinuxAssets.outputs['LinuxX64.stageArtifact.name'] ]
+      linuxArm64Artifact: $[ dependencies.BuildLinuxAssets.outputs['LinuxArm64.stageArtifact.name'] ]
+      desktopLinuxX64Artifact: $[ dependencies.BuildLinuxDesktop.outputs['LinuxX64.stageArtifact.name'] ]
+      desktopLinuxArm64Artifact: $[ dependencies.BuildLinuxDesktop.outputs['LinuxArm64.stageArtifact.name'] ]
+      macosArm64Artifact: $[ dependencies.BuildMacOSAssets.outputs['MacOSArm64.stageArtifact.name'] ]
+      macosX64Artifact: $[ dependencies.BuildMacOSAssets.outputs['MacOSX64.stageArtifact.name'] ]
+      windowsX64Artifact: $[ dependencies.BuildWindowsAssets.outputs['WindowsX64.stageArtifact.name'] ]
+      windowsArm64Artifact: $[ dependencies.BuildWindowsAssets.outputs['WindowsArm64.stageArtifact.name'] ]
     pool:
       vmImage: ubuntu-latest
     steps:
     - checkout: self
       clean: true
+    - task: PythonScript@0
+      displayName: Validate staging artifact outputs
+      inputs:
+        scriptSource: inline
+        script: |
+          import json
+          import os
+
+          for prefix, name in json.loads(os.environ["STAGE_ARTIFACTS"]).items():
+              stem = prefix + "-attempt-"
+              attempt = name.removeprefix(stem)
+              if (not name.startswith(stem) or not attempt.isascii()
+                      or not attempt.isdecimal() or attempt.startswith("0")):
+                  raise SystemExit(
+                      f"Missing or invalid producer output for {prefix}: {name!r}. "
+                      "Rerun its producer job before assembling the release."
+                  )
+      env:
+        # An empty DownloadPipelineArtifact name downloads ALL artifacts.
+        # Reject missing outputs before any download can mix producer attempts.
+        STAGE_ARTIFACTS: |
+          {
+            "stage-wasm": "$(wasmArtifact)",
+            "stage-linux-x64": "$(linuxX64Artifact)",
+            "stage-linux-arm64": "$(linuxArm64Artifact)",
+            "stage-desktop-linux-x64": "$(desktopLinuxX64Artifact)",
+            "stage-desktop-linux-arm64": "$(desktopLinuxArm64Artifact)",
+            "stage-macos-arm64": "$(macosArm64Artifact)",
+            "stage-macos-x64": "$(macosX64Artifact)",
+            "stage-windows-x64": "$(windowsX64Artifact)",
+            "stage-windows-arm64": "$(windowsArm64Artifact)"
+          }
     - task: GoTool@0
       displayName: Use Go 1.25
       inputs:
@@ -689,55 +745,55 @@ stages:
       displayName: Download WASM release assets
       inputs:
         buildType: current
-        artifactName: stage-wasm
+        artifactName: $(wasmArtifact)
         targetPath: $(Build.SourcesDirectory)/docs/.webui-press/public/wasm
     - task: DownloadPipelineArtifact@2
       displayName: Download Linux x64 release asset
       inputs:
         buildType: current
-        artifactName: stage-linux-x64
+        artifactName: $(linuxX64Artifact)
         targetPath: $(Build.SourcesDirectory)
     - task: DownloadPipelineArtifact@2
       displayName: Download Linux arm64 release asset
       inputs:
         buildType: current
-        artifactName: stage-linux-arm64
+        artifactName: $(linuxArm64Artifact)
         targetPath: $(Build.SourcesDirectory)
     - task: DownloadPipelineArtifact@2
       displayName: Download Linux x64 desktop binary
       inputs:
         buildType: current
-        artifactName: stage-desktop-linux-x64
+        artifactName: $(desktopLinuxX64Artifact)
         targetPath: $(Build.SourcesDirectory)/packages/webui-desktop-linux-x64/bin
     - task: DownloadPipelineArtifact@2
       displayName: Download Linux arm64 desktop binary
       inputs:
         buildType: current
-        artifactName: stage-desktop-linux-arm64
+        artifactName: $(desktopLinuxArm64Artifact)
         targetPath: $(Build.SourcesDirectory)/packages/webui-desktop-linux-arm64/bin
     - task: DownloadPipelineArtifact@2
       displayName: Download macOS arm64 release asset
       inputs:
         buildType: current
-        artifactName: stage-macos-arm64
+        artifactName: $(macosArm64Artifact)
         targetPath: $(Build.SourcesDirectory)
     - task: DownloadPipelineArtifact@2
       displayName: Download macOS x64 release asset
       inputs:
         buildType: current
-        artifactName: stage-macos-x64
+        artifactName: $(macosX64Artifact)
         targetPath: $(Build.SourcesDirectory)
     - task: DownloadPipelineArtifact@2
       displayName: Download Windows x64 release asset
       inputs:
         buildType: current
-        artifactName: stage-windows-x64
+        artifactName: $(windowsX64Artifact)
         targetPath: $(Build.SourcesDirectory)
     - task: DownloadPipelineArtifact@2
       displayName: Download Windows arm64 release asset
       inputs:
         buildType: current
-        artifactName: stage-windows-arm64
+        artifactName: $(windowsArm64Artifact)
         targetPath: $(Build.SourcesDirectory)
     - task: UseNode@1
       displayName: Install Node.js 26
