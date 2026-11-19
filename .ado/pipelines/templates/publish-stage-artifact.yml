@@ -1,0 +1,20 @@
+# Intermediate artifacts are immutable per attempt. The assembly job consumes
+# stageArtifact.name from each successful producer, not a fixed artifact name.
+parameters:
+- name: artifactName
+  type: string
+- name: targetPath
+  type: string
+
+steps:
+- pwsh: |
+    Write-Host "##vso[task.setvariable variable=name;isOutput=true]$env:STAGE_ARTIFACT_NAME"
+  name: stageArtifact
+  displayName: Select attempt-specific staging artifact
+  env:
+    STAGE_ARTIFACT_NAME: ${{ parameters.artifactName }}-attempt-$(System.JobAttempt)
+- task: PublishPipelineArtifact@1
+  displayName: Upload ${{ parameters.artifactName }}
+  inputs:
+    targetPath: ${{ parameters.targetPath }}
+    artifactName: $(stageArtifact.name)
