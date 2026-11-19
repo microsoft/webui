@@ -546,6 +546,10 @@ stages:
         versionSpec: '3.11'
     - task: Cache@2
       displayName: Restore Cargo cache
+      # Cache@2 reuses this environment for the post-job save. Select the
+      # hosted GNU tar explicitly rather than relying on Windows search order.
+      env:
+        VSTS_TAR_EXECUTABLE: 'C:\Program Files\Git\usr\bin\tar.exe'
       inputs:
         key: 'cargo-home | "$(Agent.OS)" | "$(targetTriple)" | Cargo.lock'
         restoreKeys: |

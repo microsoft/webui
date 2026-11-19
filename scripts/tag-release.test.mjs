@@ -316,6 +316,19 @@ test('Azure optional distributions share the historical standalone handoff witho
   }
 });
 
+test('Azure Windows Cargo cache uses hosted GNU tar for post-job saves', () => {
+  const build = readFileSync(new URL('../.ado/pipelines/azure-pipelines-build.yml', import.meta.url), 'utf8');
+  const windows = build.split('  - job: BuildWindowsAssets\n')[1]?.split('\n  - job: ')[0];
+  const cargoCache = windows?.split('\n    - ').find(step =>
+    step.startsWith('task: Cache@2\n') && step.includes('        path: $(CARGO_CACHE_HOME)'),
+  );
+  assert.ok(cargoCache, 'Windows must still cache Cargo home');
+  assert.ok(
+    cargoCache.includes("      env:\n        VSTS_TAR_EXECUTABLE: 'C:\\Program Files\\Git\\usr\\bin\\tar.exe'"),
+    'the cache task itself must select GNU tar so the override reaches its post-job save',
+  );
+});
+
 test('Azure native target matrix stages real target CLIs and aggregates toolchains before pack-only upload', () => {
   const build = readFileSync(new URL('../.ado/pipelines/azure-pipelines-build.yml', import.meta.url), 'utf8');
   for (const [job, targets, executable] of [
