@@ -296,9 +296,13 @@ stages:
           cargo-home | "$(Agent.OS)" | "$(targetTriple)"
           cargo-home | "$(Agent.OS)"
         path: $(CARGO_CACHE_HOME)
-    # The portable build plus manylinux image nearly fills the hosted disk.
-    # Keep downloaded Cargo sources cached, but do not restore old target trees
-    # or create a second full copy as a post-job cache archive.
+    - task: Cache@2
+      displayName: Restore target cache
+      inputs:
+        key: 'cargo-target | "ubuntu-22.04-portable" | "$(targetTriple)" | Cargo.lock'
+        restoreKeys: |
+          cargo-target | "ubuntu-22.04-portable" | "$(targetTriple)"
+        path: $(Build.SourcesDirectory)/target
     - task: Bash@3
       displayName: Build and stage $(targetTriple)
       inputs:
@@ -517,9 +521,6 @@ stages:
 
   - job: BuildWindowsAssets
     displayName: Build Windows release asset
-    variables:
-      # Cache@2 requires GNU tar on Windows; do not resolve the system bsdtar.
-      cacheTar: 'C:\Program Files\Git\usr\bin\tar.exe'
     strategy:
       matrix:
         WindowsX64:
@@ -543,19 +544,6 @@ stages:
       displayName: Use Python 3.11
       inputs:
         versionSpec: '3.11'
-    - pwsh: |
-        $ErrorActionPreference = 'Stop'
-        if (-not (Test-Path -LiteralPath $env:VSTS_TAR_EXECUTABLE -PathType Leaf)) {
-            throw "GNU tar is required for release caches. Install Git for Windows or update cacheTar."
-        }
-        $version = @(& $env:VSTS_TAR_EXECUTABLE --version)
-        if ($LASTEXITCODE -ne 0 -or $version[0] -notmatch 'GNU tar') {
-            throw "Release caches require a working GNU tar executable: $env:VSTS_TAR_EXECUTABLE"
-        }
-        $version
-      displayName: Verify GNU tar for release caches
-      env:
-        VSTS_TAR_EXECUTABLE: $(cacheTar)
     - task: Cache@2
       displayName: Restore Cargo cache
       inputs:
@@ -564,8 +552,6 @@ stages:
           cargo-home | "$(Agent.OS)" | "$(targetTriple)"
           cargo-home | "$(Agent.OS)"
         path: $(CARGO_CACHE_HOME)
-      env:
-        VSTS_TAR_EXECUTABLE: $(cacheTar)
     - task: Cache@2
       displayName: Restore target cache
       inputs:
@@ -573,8 +559,6 @@ stages:
         restoreKeys: |
           cargo-target | "$(Agent.OS)" | "$(targetTriple)"
         path: $(Build.SourcesDirectory)/target
-      env:
-        VSTS_TAR_EXECUTABLE: $(cacheTar)
     - task: PowerShell@2
       displayName: Build and stage $(targetTriple)
       inputs:
