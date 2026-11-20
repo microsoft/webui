@@ -61,13 +61,16 @@ consumers keep their wire validation and pre-bootstrap publication behavior;
 they do not import a second DOM style engine.
 
 JSON partials, NDJSON partials, and on-demand component responses share one
-registration path. The framework registry installs serialized condition tables
-for the compiled templates being registered before normalizing their condition
-references. These tables are trusted compiler output, separate from request
-state. The registry uses the same private `webui` Trusted Types policy as lazy
-packs and preserves the document nonce. Delivery neither imports that policy
-nor receives trusted values from it. Without the registry bridge, standalone
-publication does not authorize raw strings under Trusted Types.
+registration path. Delivery decodes only the WebUI compiler's condition-table
+grammar for templates in the same response, before publishing resources.
+Although the wire format spells conditions as JavaScript functions for reuse
+with SSR, delivery never evaluates the text as JavaScript. It installs function
+values in the existing registry before template normalization. It does not use
+a script sink, the document nonce, or a Trusted Types policy for this step.
+Decoded functions keep their compiler source identity for cache comparison
+with SSR functions and later responses.
+Compiled template HTML is still trusted build output, not untrusted HTML.
+Static lazy packs are separate compiler artifacts and do not use this path.
 
 Within one inventory epoch, concurrently completing responses merge their
 availability bitsets instead of replacing one another's bits. Explicit template

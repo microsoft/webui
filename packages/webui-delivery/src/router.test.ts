@@ -462,34 +462,18 @@ describe('WebUIRouter', () => {
     });
   });
 
-  describe('template execution in fetchPartial', () => {
+  describe('template registration in fetchPartial', () => {
     test('split template registration stores data and condition closures', () => {
-      const origCreateElement = (globalThis as any).document.createElement;
-      const origHead = (globalThis as any).document.head;
       let registeredEvent = false;
       const onRegistered = () => {
         registeredEvent = true;
       };
       window.addEventListener('webui:templates-registered', onRegistered);
 
-      (globalThis as any).document.createElement = (tag: string) => ({
-        tagName: tag,
-        nonce: '',
-        textContent: '',
-      });
-      (globalThis as any).document.head = {
-        appendChild(el: Record<string, unknown>) {
-          // eslint-disable-next-line no-new-func
-          Function(el.textContent as string)();
-          return el;
-        },
-        removeChild() { return undefined; },
-      };
-
       try {
         registerTemplatesAndStyles({
           templates: { 'test-comp': { h: '<div>hello</div>', c: [[[0, ['ready']], 0, [[], 0]]] } },
-          templateFunctions: { 'test-comp': '[function(){return true}]' },
+          templateFunctions: { 'test-comp': '[function(v,s){return true}]' },
           componentStyles: emptyComponentStyles(),
         }, '', () => {});
 
@@ -500,12 +484,12 @@ describe('WebUIRouter', () => {
           '<div>hello</div>',
           'template HTML should match',
         );
-        assert.equal(typeof (globals().__webui as any).templateFns['test-comp'][0], 'function');
+        const conditions = globals().__webui?.templateFns?.['test-comp'];
+        assert.ok(Array.isArray(conditions));
+        assert.equal(conditions[0](), true);
         assert.equal(registeredEvent, true, 'template registration should notify optional runtimes');
       } finally {
         window.removeEventListener('webui:templates-registered', onRegistered);
-        (globalThis as any).document.createElement = origCreateElement;
-        (globalThis as any).document.head = origHead;
       }
     });
 
@@ -545,9 +529,8 @@ describe('WebUIRouter', () => {
     });
 
     test('registers component styles and closures before templates are announced', () => {
-      const origCreateElement = (globalThis as any).document.createElement;
-      const origHead = (globalThis as any).document.head;
       const origBridge = window.__webuiRegisterComponentStyles;
+      const origPrepare = window.__webuiPrepareTemplates;
       const order: string[] = [];
       const tag = 'ordered-component';
       let styleRegistrations = 0;
@@ -565,20 +548,12 @@ describe('WebUIRouter', () => {
         styleRegistrations++;
         order.push('styles');
       };
-      (globalThis as any).document.createElement = (elementTag: string) => ({
-        tagName: elementTag,
-        nonce: '',
-        textContent: '',
-      });
-
-      (globalThis as any).document.head = {
-        appendChild(el: Record<string, unknown>) {
-          order.push('closures');
-          // eslint-disable-next-line no-new-func
-          Function(el.textContent as string)();
-          return el;
-        },
-        removeChild() { return undefined; },
+      window.__webuiPrepareTemplates = templates => {
+        assert.ok(templates[tag]);
+        const closures = globals().__webui?.templateFns?.[tag];
+        assert.ok(Array.isArray(closures));
+        assert.equal(closures[0](), true);
+        order.push('closures');
       };
 
       try {
@@ -591,7 +566,7 @@ describe('WebUIRouter', () => {
             },
             closures: { [tag]: [tag] },
           },
-          templateFunctions: { [tag]: '[function(){return true}]' },
+          templateFunctions: { [tag]: '[function(v,s){return true}]' },
           templates: { [tag]: { h: '<p>ordered</p>' } },
         }, '', () => {});
 
@@ -605,8 +580,7 @@ describe('WebUIRouter', () => {
       } finally {
         window.removeEventListener('webui:templates-registered', onRegistered);
         window.__webuiRegisterComponentStyles = origBridge;
-        (globalThis as any).document.createElement = origCreateElement;
-        (globalThis as any).document.head = origHead;
+        window.__webuiPrepareTemplates = origPrepare;
         delete globals().__webui?.templates?.[tag];
       }
     });
@@ -710,7 +684,7 @@ describe('WebUIRouter', () => {
       }
     });
 
-    test('fetchPartial forwards componentStyles through the registration bridge and batches closure scripts', async () => {
+    test('fetchPartial forwards componentStyles and prepares both condition tables without a script', async () => {
       const origFetch = (globalThis as any).fetch;
       const origCreateElement = (globalThis as any).document.createElement;
       const origQuerySelector = (globalThis as any).document.querySelector;
@@ -718,8 +692,6 @@ describe('WebUIRouter', () => {
       const origBridge = window.__webuiRegisterComponentStyles;
 
       const order: string[] = [];
-      const templateScriptBodies: string[] = [];
-      const templateScriptNonces: string[] = [];
       let receivedComponentStyles: unknown;
 
       window.__webuiRegisterComponentStyles = (value: unknown) => {
@@ -746,8 +718,8 @@ describe('WebUIRouter', () => {
             beta: { h: '<div>b</div>', c: [[[0, ['ready']], 0, [[], 0]]] },
           },
           templateFunctions: {
-            alpha: '[function(){return true}]',
-            beta: '[function(){return false}]',
+            alpha: '[function(v,s){return true}]',
+            beta: '[function(v,s){return false}]',
           },
           path: '/',
           chain: [],
@@ -767,20 +739,8 @@ describe('WebUIRouter', () => {
       });
       (globalThis as any).document.querySelector = () => null;
       (globalThis as any).document.head = {
-        appendChild(el: Record<string, unknown>) {
-          // Import-map installation for Module resources is now the
-          // framework's responsibility (installed lazily per Document when
-          // a component mounts), so the router only appends the batched
-          // condition-closure script.
-          order.push('script');
-          templateScriptNonces.push(el.nonce as string);
-          templateScriptBodies.push(el.textContent as string);
-          // eslint-disable-next-line no-new-func
-          Function(el.textContent as string)();
-          return el;
-        },
-        removeChild() {
-          return undefined;
+        appendChild() {
+          assert.fail('Delivery must not insert a script to install conditions');
         },
       };
 
@@ -796,33 +756,11 @@ describe('WebUIRouter', () => {
         const result = await fetchPartial('/test');
 
         assert.ok(result, 'should return partial data');
-        // componentStyles registration (via the bridge) happens before the
-        // batched closure script executes.
-        assert.deepEqual(order, ['styles', 'script']);
-        // All condition closure arrays are batched into one script tag
-        assert.equal(
-          templateScriptBodies.length,
-          1,
-          'all JS condition closures should be batched into one script tag',
-        );
-        assert.ok(
-          templateScriptBodies[0].includes('f["alpha"]'),
-          'batch should include alpha closure table',
-        );
-        assert.ok(
-          templateScriptBodies[0].startsWith('(function(){'),
-          'closure registration should be wrapped to avoid global name collisions',
-        );
-        assert.ok(
-          templateScriptBodies[0].includes('f["beta"]'),
-          'batch should include beta closure table',
-        );
-        // CSP nonce preserved on the emitted closure batch script.
-        assert.deepEqual(
-          templateScriptNonces,
-          ['test-nonce'],
-          'batched closure script should carry the nonce',
-        );
+        assert.deepEqual(order, ['styles']);
+        const functions = globals().__webui?.templateFns;
+        assert.ok(Array.isArray(functions?.alpha) && Array.isArray(functions?.beta));
+        assert.equal(functions.alpha[0](), true);
+        assert.equal(functions.beta[0](), false);
         assert.equal(
           (receivedComponentStyles as { strategy?: string } | undefined)?.strategy,
           'module',

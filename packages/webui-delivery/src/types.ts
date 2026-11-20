@@ -27,11 +27,7 @@ declare global {
   interface Window {
     __webui?: WebUIRuntimeGlobal;
     __webuiRegisterComponentStyles?: (value: unknown) => Promise<void> | undefined;
-    __webuiPrepareTemplates?: (
-      templates: Record<string, unknown>,
-      conditions?: Readonly<Record<string, string>>,
-      nonce?: string,
-    ) => void;
+    __webuiPrepareTemplates?: (templates: Record<string, unknown>) => void;
     __webuiPrepareResources?: (
       ids: readonly string[],
       priority?: RequestPriority,

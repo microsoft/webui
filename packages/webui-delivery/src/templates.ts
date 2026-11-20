@@ -11,6 +11,7 @@
  */
 
 import type { ComponentStyleResource, ComponentStyles } from './types.js';
+import { readConditionTable, type Condition } from './condition-table.js';
 import { ResourceRequest, resourceHeaders } from './request.js';
 
 /** Shared event name understood by optional framework runtimes. */
@@ -30,15 +31,16 @@ export interface TemplateResourceResponse {
 }
 
 /**
- * Register templates + inject CSS from a server response.
+ * Register templates and component styles from a server response.
  * Shared by fetchPartial and fetchComponentTemplates.
  *
  * WebUI JSON template payloads are stored directly. FAST string templates are
- * materialized as DOM.
+ * materialized as DOM. The nonce argument is retained for API compatibility;
+ * native condition registration does not insert a script.
  */
 export function registerTemplatesAndStyles(
   data: TemplateResourceResponse,
-  nonce: string,
+  _nonce: string,
   updateInventory: InventoryReceiver,
 ): Promise<void> | undefined {
   if (data.buildId !== undefined) {
@@ -55,13 +57,15 @@ export function registerTemplatesAndStyles(
     ? validateComponentStyles(data.componentStyles)
     : undefined;
   validateTemplatePayload(data.templates);
+  const conditions = readConditions(data);
   const styleRegistration = componentStyles
     ? registerComponentStyleCatalog(componentStyles)
     : undefined;
 
-  const prepareTemplates = window.__webuiPrepareTemplates;
-  if (!prepareTemplates) {
-    installStandaloneConditions(data.templateFunctions, nonce);
+  if (conditions) {
+    const runtime: WebUIRuntimeGlobal & { templateFns?: Record<string, Condition[]> } =
+      window.__webui ??= {};
+    Object.assign(runtime.templateFns ??= {}, conditions);
   }
 
   let registeredTemplates: Record<string, unknown> | undefined;
@@ -93,9 +97,7 @@ export function registerTemplatesAndStyles(
       }
     }
     if (registeredTemplates) {
-      // The registry installs compiler conditions with its private policy before
-      // normalization. Delivery never receives a TrustedScript or the policy.
-      prepareTemplates?.(registeredTemplates, data.templateFunctions, nonce);
+      window.__webuiPrepareTemplates?.(registeredTemplates);
       for (const tag of Object.keys(registeredTemplates)) {
         const template = registeredTemplates[tag];
         w.__webui.templates[tag] = template;
@@ -120,25 +122,18 @@ export function registerTemplatesAndStyles(
   updateInventory(inventory ?? '', styles);
 }
 
-// Preserve pre-bootstrap and standalone publication without creating a policy.
-// The browser still rejects this path if Trusted Types is enforced.
-function installStandaloneConditions(
-  sources: TemplateResourceResponse['templateFunctions'],
-  nonce: string,
-): void {
-  if (!sources) return;
-  let closures = '';
-  for (const tag of Object.keys(sources)) {
-    const source = sources[tag];
-    if (source) closures += `f[${JSON.stringify(tag)}]=${source};`;
+function readConditions(
+  { templates, templateFunctions }: TemplateResourceResponse,
+): Record<string, Condition[]> | undefined {
+  if (!templates || !templateFunctions) return;
+  let tables: Record<string, Condition[]> | undefined;
+  for (const tag of Object.keys(templateFunctions)) {
+    if (tag === '__proto__' || !Object.hasOwn(templates, tag)) continue;
+    const template = templates[tag];
+    if (!template || typeof template !== 'object') continue;
+    (tables ??= {})[tag] = readConditionTable(templateFunctions[tag], tag);
   }
-  if (!closures) return;
-
-  const script = document.createElement('script');
-  if (nonce) script.nonce = nonce;
-  script.textContent = `(function(){var w=(window.__webui||(window.__webui={}));var f=w.templateFns||(w.templateFns={});${closures}})();`;
-  document.head.appendChild(script);
-  document.head.removeChild(script);
+  return tables;
 }
 
 /** Register initial bootstrap styles before announcing already-published templates. */

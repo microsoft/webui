@@ -19,6 +19,7 @@ interface TemplateCache {
 }
 
 const EMPTY_DEPENDENCIES: readonly TemplateRecord[] = [];
+const CONDITION_SOURCE = Symbol.for('webui.condition-source');
 const caches = new WeakMap<Window, TemplateCache>();
 
 function cacheForWindow(): TemplateCache {
@@ -257,8 +258,7 @@ function sameTemplate(first: TemplateMeta, second: TemplateMeta): boolean {
     const left = pending.pop();
     if (Object.is(left, right)) continue;
     if (typeof left === 'function' && typeof right === 'function') {
-      // Compiler conditions only close over their explicit resolver/scope inputs.
-      if (Function.prototype.toString.call(left) !== Function.prototype.toString.call(right)) return false;
+      if (conditionSource(left) !== conditionSource(right)) return false;
       continue;
     }
     if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
@@ -277,6 +277,12 @@ function sameTemplate(first: TemplateMeta, second: TemplateMeta): boolean {
     }
   }
   return true;
+}
+
+function conditionSource(fn: Function & { [CONDITION_SOURCE]?: string }): string {
+  // Delivery decodes expressions instead of executing their source. Compare
+  // the compiler's spelling rather than the implementation of the evaluator.
+  return fn[CONDITION_SOURCE] ?? Function.prototype.toString.call(fn);
 }
 
 /** Inspect dependency ownership without relying on garbage-collector timing. */

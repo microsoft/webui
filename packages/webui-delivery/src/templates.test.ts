@@ -22,6 +22,40 @@ import {
 } from './templates.js';
 import { navigationCache, type PartialResponse } from './cache.js';
 
+test('conditions are decoded only for accompanying templates, before publication or inventory', t => {
+  t.mock.method(document.head, 'appendChild', () => assert.fail('Condition registration must never insert scripts'));
+  const registeredTag = 'condition-table-test';
+  const unrelatedTag = 'unrelated-condition-table';
+  const runtime = (window.__webui ??= {}) as WebUIRuntimeGlobal & {
+    templates?: Record<string, unknown>;
+    templateFns?: Record<string, unknown>;
+  };
+  try {
+    assert.throws(() => registerTemplatesAndStyles({
+      templates: { [registeredTag]: { v: 3, h: '' } },
+      templateFunctions: { [registeredTag]: '[true]' },
+      inventory: '01',
+    }, 'document-nonce', () => assert.fail('Malformed conditions cannot advance inventory')),
+    /Invalid compiler condition table/);
+    assert.equal(runtime.templates?.[registeredTag], undefined);
+    assert.equal(runtime.templateFns?.[registeredTag], undefined);
+
+    registerTemplatesAndStyles({
+      templates: { [registeredTag]: { v: 3, h: '' } },
+      templateFunctions: {
+        [registeredTag]: '[function(v,s){return true}]',
+        [unrelatedTag]: '[true]',
+      },
+    }, 'document-nonce', () => {});
+    assert.ok(runtime.templates?.[registeredTag]);
+    assert.ok(Array.isArray(runtime.templateFns?.[registeredTag]));
+    assert.equal(runtime.templateFns?.[unrelatedTag], undefined);
+  } finally {
+    delete runtime.templates?.[registeredTag];
+    delete runtime.templateFns?.[registeredTag];
+  }
+});
+
 test('injected stylesheet links resolve against the runtime asset base', t => {
   const appended: { rel?: string; href?: string }[] = [];
   t.mock.method(document.head, 'appendChild', (link: { rel?: string; href?: string }) => {

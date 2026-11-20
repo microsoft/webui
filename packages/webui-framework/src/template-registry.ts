@@ -64,7 +64,7 @@ import type {
   TemplateMeta,
 } from './template-types.js';
 
-import { installCompilerConditions, registerTrustedTemplateBlock } from './trusted-types-policy.js';
+import { registerTrustedTemplateBlock } from './trusted-types-policy.js';
 import { noteTemplateRead, templateCacheHooks } from './template-cache-contract.js';
 
 const WEBUI_DATA_ID = 'webui-data';
@@ -184,18 +184,14 @@ export function installTemplateRegistry(): void {
       detail.waitUntil(Promise.reject(error));
     }
   });
-  window.__webuiPrepareTemplates = (values, conditions, nonce = '') => {
-    let closures = '';
+  window.__webuiPrepareTemplates = (values) => {
     for (const tag of Object.keys(values)) {
       const value = values[tag] as TemplateMeta | null | undefined;
       if (typeof value !== 'object' || typeof value?.h !== 'string') {
         throw new Error(`[WebUI] Invalid compiled template <${tag}>. Rebuild matching artifacts.`);
       }
-      const source = conditions?.[tag];
-      if (source && typeof source === 'string') closures += `[${JSON.stringify(tag)}]:${source},`;
     }
     const templates = values as Record<string, TemplateMeta>;
-    if (closures) installCompilerConditions(closures, nonce);
     prepareTemplateData(templates);
     templateCacheHooks?.accept(templates);
   };
@@ -233,11 +229,7 @@ declare global {
     /** Consolidated SSR metadata loaded from `#webui-data` or partial responses. */
     __webui?: WebUIRuntimeGlobal;
     __webuiRegisterComponentStyles?: (value: unknown) => Promise<void> | undefined;
-    __webuiPrepareTemplates?: (
-      templates: Record<string, unknown>,
-      conditions?: Readonly<Record<string, string>>,
-      nonce?: string,
-    ) => void;
+    __webuiPrepareTemplates?: (templates: Record<string, unknown>) => void;
     /**
      * Installed by the style runtime: prepare the stylesheets of component style
      * roots. `priority: 'low'` prepares them speculatively, once the window

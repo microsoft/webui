@@ -48,7 +48,7 @@ function getDocumentPolicy(view: BrowserWindow | null): BrowserPolicy | undefine
       createScript: authorize,
     });
   } catch (cause) {
-    throw new Error('[WebUI] Allow "webui" in CSP, share one framework module, and let it create the policy.', { cause });
+    throw new Error('[WebUI] Could not create Trusted Types policy. Allow "webui" in CSP and share one framework module.', { cause });
   }
   (documentPolicies ??= new WeakMap()).set(view, policy);
   return policy;

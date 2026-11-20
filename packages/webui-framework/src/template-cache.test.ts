@@ -86,6 +86,26 @@ test('repeated resource responses reuse canonical metadata', () => withCache(() 
   assert.equal(window.__webui!.templates!['x-card'], original);
 }));
 
+test('decoded delivery conditions match SSR conditions without hiding changed expressions', () => withCache(() => {
+  const compiled = function(v: (path: string, scope?: unknown) => unknown, s: unknown) {
+    return v('count', s) === 1;
+  };
+  const meta = (): TemplateMeta => ({ v: 3, h: '', c: [[[0, ['count']], 0, [0, 0]]] });
+  const original = meta();
+  registerTemplateData({ 'x-card': original }, { 'x-card': [compiled] });
+  collectTemplates();
+  const decoded = (v: (path: string, scope?: unknown) => unknown, s: unknown) => v('count', s) === 1;
+  const source = Symbol.for('webui.condition-source');
+  Object.defineProperty(decoded, source, { value: Function.prototype.toString.call(compiled) });
+  registerTemplateData({ 'x-card': meta() }, { 'x-card': [decoded] });
+  assert.equal(getTemplate('x-card'), original);
+
+  const changed = (v: (path: string, scope?: unknown) => unknown, s: unknown) => v('count', s) === 2;
+  Object.defineProperty(changed, source, { value: 'function(v,s){return v("count",s)==2}' });
+  assert.throws(() => registerTemplateData({ 'x-card': meta() }, { 'x-card': [changed] }),
+    /conflicts with a live compiled template/);
+}));
+
 test('conflicting batches fail before publishing any new template', () => withCache(() => {
   const original: TemplateMeta = { v: 3, h: '<p>Original</p>' };
   registerTemplateData({ 'x-card': original });

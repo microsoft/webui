@@ -364,7 +364,8 @@ changed route levels while preserving
 unchanged parents. It may fall back to document navigation when client-side
 mounting cannot complete. Partial responses can be complete JSON or an NDJSON
 pair that sends chain/templates first and state later; neither is the
-progressive HTML streaming protocol. A bounded record reader owns framing and
+progressive HTML streaming protocol. Delivery decodes compiled conditions
+without executing response text as JavaScript. A bounded record reader owns framing and
 body cancellation; the route adapter owns positional state and commit ordering.
 JSON-only navigation does not import that record reader. Cache tags, mutation invalidation,
 pending/error components, and speculative preloading are optional router
