@@ -145,9 +145,9 @@ without a component class. If browser behavior later changes those values,
 add the appropriate observable state and runtime.
 
 Text bindings are **path lookups**, not JavaScript expressions.
-<code v-pre>{{items.length}}</code> works;
-<code v-pre>{{items.map(...)}}</code>, <code v-pre>{{count + 1}}</code>, and
-<code v-pre>{{formatDate(date)}}</code> do not. Precompute formatted initial values on the
+`{{items.length}}` works;
+`{{items.map(...)}}`, `{{count + 1}}`, and
+`{{formatDate(date)}}` do not. Precompute formatted initial values on the
 server. Conditions allow comparisons and limited logical operators, not
 ternaries, function calls, arithmetic, grouping parentheses, or mixed `&&`
 and `||`. See the [directive reference](/learn/directives/).

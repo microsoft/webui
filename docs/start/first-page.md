@@ -49,7 +49,7 @@ hello-webui/
 ```
 
 The braces mark [text bindings](/learn/directives/signals).
-For example, <code v-pre>{{name}}</code> takes the `name` value from your data.
+For example, `{{name}}` takes the `name` value from your data.
 WebUI escapes text values before writing them into the HTML.
 
 ## Creating the state

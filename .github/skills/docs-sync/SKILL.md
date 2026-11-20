@@ -96,11 +96,11 @@ refreshes the generated reference; ordinary builds do not write it.
 cd docs && pnpm build
 ```
 
-This catches broken links, VitePress syntax errors (unescaped `{{` outside code blocks), and missing pages. Run it when docs are changed.
+This validates the WebUI Press build. Run it when docs are changed.
 
 ## Style rules for docs
 
 - No emdashes (` - `). Use hyphens (` - `).
-- Escape `{{` outside fenced code blocks with `<code v-pre>{{expr}}</code>`.
+- Use Markdown inline code spans (e.g. `{{expr}}`) for literal bindings outside fenced code blocks. WebUI Press escapes their braces and emits styled code elements; Vue's v-pre directive has no effect.
 - Use correct CLI flag names (check `crates/webui-cli/src/commands/`).
 - Verify SSR markers match source code (`crates/webui-handler/src/plugin/webui.rs`).
