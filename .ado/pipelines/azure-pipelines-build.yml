@@ -546,6 +546,8 @@ stages:
         versionSpec: '3.11'
     - task: Cache@2
       displayName: Restore Cargo cache
+      # A failed post-job cache save must not block release assembly.
+      continueOnError: true
       # Cache@2 reuses this environment for the post-job save. Select the
       # hosted GNU tar explicitly rather than relying on Windows search order.
       env:
