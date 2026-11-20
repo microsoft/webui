@@ -75,7 +75,10 @@ configuration read. This is invalidation coverage, not proof of containment
 for external inherited configuration. Exact outputs, manifests, locks and
 publication staging are ignored without resetting source baselines or dropping
 pending events. Explicit `--watch-ignore` paths declare additional exclusions;
-native recursive subscription cost scales with the project tree.
+native recursive subscription cost scales with the project tree. A build with
+byte-identical proof and outputs does not republish files. Existing outputs
+are checked against the new bytes rather than trusting the previous proof to
+describe their current contents.
 
 The CLI's Rust-only build script stages canonical framework TypeScript source,
 not a second renderer or prebuilt JavaScript frontend. Original package export

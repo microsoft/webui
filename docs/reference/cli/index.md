@@ -271,7 +271,8 @@ configuration is not promised watch coverage. Emitted files, the selected manife
 and publication staging are excluded. Use repeatable `--watch-ignore <PATH>`
 for additional generated subtrees such as `target` or `.git`; paths are relative
 to `project`. Recursive registration cost depends on the project tree.
-The watcher preserves the last published output after a failed rebuild.
+The watcher preserves the last published output after a failed rebuild and
+does not touch the files when a rebuild produces the same output and proof.
 Interrupt to stop it. A supervising program can explicitly enable `--control-stdin` and
 send one `S` byte or close stdin for a graceful stop. Node/npm is not required.
 

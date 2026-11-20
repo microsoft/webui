@@ -43,6 +43,36 @@ async fn explicit_writer_publishes_exact_bytes_and_returns_the_written_proof() -
 }
 
 #[tokio::test]
+async fn identical_generations_preserve_outputs_but_stale_bytes_are_repaired() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path();
+    fs::write(root.join("index.ts"), "export const message = 'hello';")?;
+    let result = build(options(root)).await?;
+    let manifest = Path::new("dist/projection.json");
+    let output = Path::new("dist/index.js");
+    result.write_outputs(manifest)?;
+    let old_time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
+    for path in [output, manifest] {
+        fs::File::options()
+            .write(true)
+            .open(root.join(path))?
+            .set_times(fs::FileTimes::new().set_modified(old_time))?;
+    }
+
+    result.write_outputs(manifest)?;
+    for path in [output, manifest] {
+        assert_eq!(fs::metadata(root.join(path))?.modified()?, old_time);
+    }
+
+    let expected = &result.files[output];
+    fs::write(root.join(output), vec![b' '; expected.len()])?;
+    result.write_outputs(manifest)?;
+    assert_eq!(&fs::read(root.join(output))?, expected);
+    assert_ne!(fs::metadata(root.join(manifest))?.modified()?, old_time);
+    Ok(())
+}
+
+#[tokio::test]
 async fn publication_rejects_collisions_and_inputs_before_writing_any_output() -> TestResult {
     let temp = tempfile::tempdir()?;
     let root = temp.path().canonicalize()?;
@@ -139,8 +169,9 @@ async fn actual_ts_loader_grammar_survives_nonstandard_extensions() -> TestResul
         .insert("index".into(), "counter.custom".into());
     config.loaders.insert(".custom".into(), Loader::Ts);
     let result = build(config).await?;
-    let id = root.join("counter.custom").to_string_lossy().into_owned();
-    assert_eq!(result.graph.modules[&id].syntax, Some(ScriptSyntax::Ts));
+    let id = result.graph.entries.first().ok_or("missing entry module")?;
+    assert_eq!(Path::new(id).canonicalize()?, root.join("counter.custom"));
+    assert_eq!(result.graph.modules[id].syntax, Some(ScriptSyntax::Ts));
     let proof = result.projection_manifest(Path::new("dist/projection.json"))?;
     assert_eq!(proof.components["custom-counter"].hydration_keys, ["count"]);
     Ok(())
