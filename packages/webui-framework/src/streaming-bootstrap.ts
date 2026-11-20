@@ -3,14 +3,18 @@
 
 import { registerTemplateData } from './template-registry.js';
 import { registerComponentStyles } from './element/style-catalog.js';
+import { MAX_MARKER_SCAN_NODES, nextWithinRoot } from './streaming-dom.js';
+import type { HydrationRange } from './streaming-dom.js';
 import type {
   BoundaryBootstrap,
   SpanCompletionPayload,
+  StreamedComponentStyles,
 } from './streaming-protocol.js';
 
 /** Register template data and merge response-scoped checkpoint metadata. */
 export function applyBoundaryBootstrap(
   bootstrap: BoundaryBootstrap | SpanCompletionPayload,
+  range?: HydrationRange,
 ): void {
   const buildId = bootstrap.buildId;
   const expected = window.__webui?.buildId;
@@ -20,7 +24,11 @@ export function applyBoundaryBootstrap(
   )) {
     throw new Error('[WebUI] Resources use a different document build. Reload the document.');
   }
-  registerComponentStyles(bootstrap.componentStyles);
+  const styles = bootstrap.componentStyles;
+  if (styles?.strategy === 'style' && styles.resources) {
+    resolveInlineStyles(styles.resources, range);
+  }
+  registerComponentStyles(styles);
   if (bootstrap.templates) registerTemplateData(bootstrap.templates);
 
   const runtime = window.__webui ??= {};
@@ -48,6 +56,43 @@ export function applyBoundaryBootstrap(
     }
     runtime[key] = bootstrap[key];
   }
+}
+
+// Read each promised source only once, before template registration can
+// activate arbitrary roots. Stop at the last source or the range end.
+function resolveInlineStyles(
+  resources: StreamedComponentStyles['resources'],
+  range: HydrationRange | undefined,
+): void {
+  let missing = 0;
+  for (const id of Object.keys(resources)) {
+    const resource = resources[id];
+    if (resource?.kind === 'style' && resource.css === null) missing++;
+  }
+  if (!missing) return;
+
+  const root = range?.start?.parentNode;
+  const end = range?.end;
+  if (root && end) {
+    let node: Node | null | undefined = range.start?.nextSibling;
+    for (let visited = 0; node && node !== end && visited < MAX_MARKER_SCAN_NODES; visited++) {
+      if (node.nodeName === 'STYLE') {
+        const source = node as HTMLStyleElement;
+        if (source.hasAttribute('data-ws-style')) {
+          const resource = resources[source.getAttribute('data-webui-resource') ?? ''];
+          if (resource?.kind === 'style' && resource.css === null) {
+            const css = source.textContent;
+            if (css) {
+              resource.css = css;
+              if (--missing === 0) return;
+            }
+          }
+        }
+      }
+      node = nextWithinRoot(node, root);
+    }
+  }
+  throw new Error('[WebUI] Missing inline component stylesheet in streaming checkpoint.');
 }
 
 /**

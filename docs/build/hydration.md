@@ -367,8 +367,9 @@ correctness guarantee are unchanged.
 
 Use the host streaming API rather than constructing or modifying generated
 records. Malformed, truncated, out-of-order, or over-budget streams fail closed,
-log an error, and do not emit `webui:hydration-complete`. Keep compiler,
-handler, and browser assets from compatible versions.
+log an error, and do not emit `webui:hydration-complete`. Rebuild and deploy
+the compiled artifacts, handler, and browser assets together. Mixed-version
+streaming deployments are not supported.
 
 ### CSP and delivery
 

@@ -2,7 +2,14 @@
 // Licensed under the MIT license.
 
 import type { TemplateMeta } from './template.js';
-import type { ComponentStyles } from './element/styles.js';
+import type { ComponentStyleResource, ComponentStyles } from './element/style-catalog.js';
+
+type StreamedStyleResource = Exclude<ComponentStyleResource, { kind: 'style' }>
+  | { kind: 'style'; css: string | null; members?: string[] };
+
+export type StreamedComponentStyles = Omit<ComponentStyles, 'resources'> & {
+  resources: Record<string, StreamedStyleResource>;
+};
 
 /** Boundary-local data carried by one streamed hydration checkpoint. */
 export interface BoundaryBootstrap {
@@ -28,7 +35,7 @@ export interface BoundaryBootstrap {
   chain?: unknown[];
   css?: string[];
   styles?: string[];
-  componentStyles: ComponentStyles;
+  componentStyles: StreamedComponentStyles;
   [key: string]: unknown;
 }
 
@@ -71,6 +78,7 @@ export interface SpanCompletionPayload {
   chain?: unknown[];
   css?: string[];
   styles?: string[];
+  componentStyles?: ComponentStyles;
   [key: string]: unknown;
 }
 

@@ -3,6 +3,7 @@
 
 //! Request-local state shared by the continuation VM and wire serializer.
 
+use std::collections::{HashMap, HashSet};
 use webui_protocol::WebUIProtocol;
 
 use super::root::PendingStreamingRoot;
@@ -71,6 +72,10 @@ pub(crate) struct StreamingRenderState<'data> {
     /// can arrive transitively through an earlier root's closure before its own
     /// template or closure is emitted.
     pub(super) style_resource_inventory: Vec<u8>,
+    pub(super) style_source_scope: bool,
+    // Borrowed from this resume's installed ShadowRoot styles. A boundary
+    // resumes and commits in one call, so the set never crosses a host step.
+    pub(super) inline_style_sources: Option<HashSet<&'data str>>,
     /// Unique component indexes rendered since the previous checkpoint, in
     /// render order. Storing the startup-built index rather than the tag string
     /// keeps capture allocation-free, lets every consumer skip the
@@ -121,6 +126,7 @@ pub(crate) struct StreamingProgress {
     pub(super) inventory_hex: String,
     pub(super) template_inventory: Vec<u8>,
     pub(super) style_resource_inventory: Vec<u8>,
+    pub(super) style_source_scope: bool,
     pub(super) checkpoint_tags: Vec<u32>,
     pub(super) checkpoint_walk_roots: Vec<(u32, Option<Box<str>>)>,
     pub(super) checkpoint_seen: Vec<u8>,
@@ -155,6 +161,7 @@ impl StreamingProgress {
             inventory_hex: String::with_capacity(inventory_bytes * 2),
             template_inventory: vec![0; inventory_bytes],
             style_resource_inventory: vec![0; style_inventory_bytes],
+            style_source_scope: true,
             checkpoint_tags: Vec::new(),
             checkpoint_walk_roots: Vec::new(),
             checkpoint_seen: vec![0; inventory_bytes],
@@ -199,6 +206,8 @@ impl<'data> StreamingRenderState<'data> {
             inventory_hex: progress.inventory_hex,
             template_inventory: progress.template_inventory,
             style_resource_inventory: progress.style_resource_inventory,
+            style_source_scope: progress.style_source_scope,
+            inline_style_sources: None,
             checkpoint_tags: progress.checkpoint_tags,
             checkpoint_walk_roots: progress.checkpoint_walk_roots,
             checkpoint_seen: progress.checkpoint_seen,
@@ -230,6 +239,7 @@ impl<'data> StreamingRenderState<'data> {
             inventory_hex: self.inventory_hex,
             template_inventory: self.template_inventory,
             style_resource_inventory: self.style_resource_inventory,
+            style_source_scope: self.style_source_scope,
             checkpoint_tags: self.checkpoint_tags,
             checkpoint_walk_roots: self.checkpoint_walk_roots,
             checkpoint_seen: self.checkpoint_seen,
@@ -248,6 +258,29 @@ impl<'data> StreamingRenderState<'data> {
             &mut self.checkpoint_needs_expansion,
             &mut capture.needs_expansion,
         );
+    }
+
+    #[inline]
+    pub(crate) fn record_inline_style_source(
+        &mut self,
+        resource: &'data str,
+        resource_index: &HashMap<String, u32>,
+    ) -> bool {
+        if self.active_boundary.is_none() || !self.style_source_scope {
+            return false;
+        }
+        // A definition already delivered by an earlier record won't be in
+        // this delta. The first record has no such definitions to check.
+        if self.bootstrap_sent
+            && resource_index.get(resource).is_some_and(|&index| {
+                route_handler::has_component(&self.style_resource_inventory, index)
+            })
+        {
+            return false;
+        }
+        self.inline_style_sources
+            .get_or_insert_with(HashSet::new)
+            .insert(resource)
     }
 }
 

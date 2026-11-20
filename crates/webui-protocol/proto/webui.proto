@@ -304,6 +304,10 @@ message WebUIFragmentRaw {
 // Reference to a reusable component fragment.
 message WebUIFragmentComponent {
   string fragment_id = 1;
+  // The compiler placed this host in ordinary HTML where its declarative
+  // ShadowRoot can be read by a streaming checkpoint, if its ancestors also
+  // have that guarantee.
+  bool streaming_style_source = 2;
 }
 
 // Loop directive iterating over a collection.
