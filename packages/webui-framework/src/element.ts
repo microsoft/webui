@@ -118,6 +118,7 @@ function warnMissingLazyHydrationEntry(tag: string, policy: 1 | 2): void {
  * `$emit`. HTML-only components never reach this class.
  */
 export class WebUIElement extends TemplateElement {
+  private static readonly $interactiveFinalizer = WebUIElement.prototype.$finalize;
   private $lazyHydrationMode: LazyHydrationMode | undefined;
   // Only LIVE dispatches directly. Pending/flushing effects retain their
   // original old values, and disconnect clears LIVE without discarding them.
@@ -378,6 +379,10 @@ export class WebUIElement extends TemplateElement {
       this.$wireEvents(instance, meta, elements);
     }
     if (meta.rf) wireRefs(this as Record<string, unknown>, instance, meta, elements);
+  }
+
+  protected override $usesDefaultFinalizer(): boolean {
+    return this.$finalize === WebUIElement.$interactiveFinalizer;
   }
 
   private $wireEvents(

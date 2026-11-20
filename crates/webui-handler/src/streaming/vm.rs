@@ -592,8 +592,10 @@ impl ContinuationVm {
                     let target = context
                         .render_fragments
                         .list(frame.render_slot)
-                        .and_then(|prepared| prepared.target(index));
+                        .map(|prepared| prepared.component_target(index))
+                        .unwrap_or(crate::ComponentRenderTarget::UNRESOLVED);
                     if target
+                        .fragment()
                         .and_then(|target| context.render_fragments.list(target))
                         .is_some_and(|list| !list.contains_boundary)
                     {

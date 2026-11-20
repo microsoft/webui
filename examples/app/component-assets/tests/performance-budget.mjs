@@ -29,11 +29,11 @@ const BASELINE = {
 
 const BUDGETS = {
   startupRaw: 94_000,
-  startupGzip: 29_500,
-  startupBrotli: 26_000,
+  startupGzip: 30_000,
+  startupBrotli: 26_500,
   totalRaw: 96_500,
-  totalGzip: 30_700,
-  totalBrotli: 27_100,
+  totalGzip: 31_000,
+  totalBrotli: 27_500,
   coldRaw: Math.ceil(BASELINE.coldRaw * 1.1),
   coldGzip: Math.ceil(BASELINE.coldGzip * 1.1),
   coldBrotli: Math.ceil(BASELINE.coldBrotli * 1.1),

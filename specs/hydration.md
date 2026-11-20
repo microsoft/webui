@@ -280,6 +280,13 @@ every node in the range, including static text beside its elements, so later
 moves and removals take the whole range. An empty conditional range stays
 empty and keeps its start marker as the anchor.
 
+Ordinary component views keep their DOM in the render root without duplicating
+its child list. Fresh, binding-free Shadow DOM views with built-in wiring
+need no per-instance binding record. Styles and authored lifecycle callbacks
+still run in the same order. Movable blocks keep their own node snapshots,
+and client mounts with template-owned stylesheet links track their staged
+nodes across the load gate so reconnecting does not lose ownership.
+
 ### Marker removal is deferred
 
 `<!--/wc-->`, `<!--/wr-->`, and `<!--wi-->` must remain in the DOM for the **entire** hydration pass, because the walk uses marker pairs to skip block content. Removing a closing marker mid-pass corrupts later resolution calls. The framework collects them into a `staleMarkers` array and deletes them after `$finalize` (events + refs).
@@ -355,7 +362,7 @@ roots clear a ref only if it still points at their own node.
 The same metadata serves both paths:
 
 - **SSR hydration** numbers the live SSR DOM in the same pre-order the compiler numbered the template, skipping structural block ranges.
-- **Client-created creation** clones `h` into a detached staging root, upgrades custom elements, numbers it with a plain pre-order walk, and applies initial bindings before the staged nodes are appended to the connected DOM. Structural blocks retain their insertion container's native parsing context, including SVG, MathML and their HTML integration points. Staging preserves that context for nested blocks whose final parent is not connected yet.
+- **Client-created creation** clones `h` into a detached staging root, upgrades custom elements, numbers it with a plain pre-order walk, and applies initial bindings before the staged nodes are appended to the connected DOM. Flat HTML component templates and blocks can use the cloned fragment itself as their staging root. Structural blocks retain their insertion container's native parsing context, including SVG, MathML and their HTML integration points. Staging preserves that context for nested blocks whose final parent is not connected yet.
 
 `l` is `[rootShape, ...elementShapes]`. Each pre-order shape encodes
 twice its direct static element-child count, plus an ownership bit. The bit
@@ -487,7 +494,10 @@ The same pass captures conditional end markers and repeat item/end boundaries
 in document order. Block hydration consumes those temporary records instead
 of scanning the same range again; the records do not survive hydration.
 Sections without static elements or structural/raw markers only index their
-root and do not traverse siblings.
+root and do not traverse siblings. For a single wrapper with only leaf
+children and no structural or raw bindings, a straight child walk can
+produce the same table without a stack. Comments and SSR style resources
+encountered before a required element fall back to the general walk.
 The compiler emits `c` / `r` in source order and the server renders in source
 order, so the two line up by index - which is what makes each block's anchor
 unambiguous.
@@ -729,13 +739,16 @@ Compiler-ordered closures install resources once per Document or ShadowRoot.
 Partial navigation, progressive streaming, and component assets share the same
 required `componentStyles` catalog. Module resources carry their CSS directly;
 the catalog installs each specifier's import map once per owning Document
-before importing it, then reuses the cached parsed sheet for every target.
+before importing it, then shares that load and parsed sheet across targets
+in the same Document. A failed load is not cached for later calls.
 Once bootstrap state is released with the style bridge installed, the
 Document-owned validated catalog remains available for future mounts and the
 serialized bootstrap catalog is discarded. Resource-only consumers without
 that bridge retain their fallback catalog.
 
 Client Shadow roots share Link resources per owning Document and resolved URL.
+The sharing lookup uses the same effective asset base as native link
+installation, so a change to the base cannot reuse a sheet from the old URL.
 The first newly attached root to mount a stylesheet keeps its native link and
 records whether that load is authorized: unredirected, not served by a service
 worker, and successful. The next root promotes the authorized CSSOM of a loaded
