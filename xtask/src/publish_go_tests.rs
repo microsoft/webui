@@ -19,7 +19,7 @@ fn fixture(root: &Path) {
 }
 
 #[test]
-fn caller_owned_proxy_does_not_modify_shared_release_outputs_or_source() {
+fn requires_go_caller_owned_proxy_does_not_modify_shared_release_outputs_or_source() {
     let root = tempfile::tempdir().expect("workspace");
     let output = tempfile::Builder::new()
         .prefix("isolated Go proxy ")
@@ -49,7 +49,7 @@ fn caller_owned_proxy_does_not_modify_shared_release_outputs_or_source() {
 }
 
 #[test]
-fn proxy_downloads_and_imports_from_external_app_without_workspace_or_node() {
+fn requires_go_proxy_downloads_and_imports_from_external_app_without_workspace_or_node() {
     let root = tempfile::Builder::new()
         .prefix("Go proxy with spaces ")
         .tempdir()
@@ -121,7 +121,7 @@ fn proxy_downloads_and_imports_from_external_app_without_workspace_or_node() {
 }
 
 #[test]
-fn go_mvs_keeps_hotfixes_above_base_and_below_next_stable() {
+fn requires_go_mvs_keeps_hotfixes_above_base_and_below_next_stable() {
     let root = tempfile::tempdir().expect("MVS workspace");
     fixture(root.path());
     let merged = root.path().join("proxy");
@@ -252,7 +252,7 @@ fn go_mvs_keeps_hotfixes_above_base_and_below_next_stable() {
 }
 
 #[test]
-fn rejects_module_path_major_version_and_generated_native_payloads() {
+fn requires_go_rejects_module_path_major_version_and_generated_native_payloads() {
     let root = tempfile::tempdir().expect("root");
     fixture(root.path());
     assert!(stage(root.path(), "4.0.0")

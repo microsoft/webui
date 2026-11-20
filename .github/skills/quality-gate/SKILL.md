@@ -17,6 +17,11 @@ This runs, in order: `license-headers -> fmt -> clippy -> deny -> test -> build`
 
 Missing Rust tools (`clippy`, `rustfmt`, `cargo-deny`, `wasm-pack`, `wasm32-unknown-unknown` target) are auto-installed on first run.
 
+The gate warns and skips tests that require the Go executable only when it
+is absent from `PATH`. Prefix Rust tests that execute Go with `requires_go_`
+so the gate can filter them. An installed but failing Go toolchain still
+fails the gate, and `cargo xtask test-go` always requires Go.
+
 ## Fast iteration
 
 When iterating locally, use targeted crate checks for faster feedback:
