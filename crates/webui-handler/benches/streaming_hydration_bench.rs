@@ -9,7 +9,8 @@
 //! [`WebUIHandler::render_streaming`] for equivalent SSR page markup. The
 //! streaming cases use explicit, in-order boundary signals; setup validates
 //! their envelope count and boundary-driven flush count before Criterion times
-//! the render loop.
+//! the render loop. The inline-CSS cases also print whole-response fingerprints
+//! so each render mode can be compared byte-for-byte across revisions.
 //!
 //! Browser CPU and heap are intentionally out of scope here. The Playwright
 //! harness in `examples/integration/streaming-browser-bench` owns browser-side
@@ -27,6 +28,9 @@ use webui_handler::{
 use webui_parser::plugin::webui::WebUIParserPlugin;
 use webui_parser::{ComponentRegistration, CssStrategy, HtmlParser};
 use webui_protocol::{ComponentData, InitialStateStrategy, StateProjectionMode, WebUIProtocol};
+
+#[path = "streaming_hydration/inline_css.rs"]
+mod inline_css;
 
 const BOUNDARY_COUNTS: &[usize] = &[1, 3, 10, 100];
 const LARGE_STATE_BOUNDARIES: &[usize] = &[1, 8];
@@ -839,5 +843,9 @@ fn large_state(rows: usize) -> Value {
     })
 }
 
-criterion_group!(benches, bench_streaming_hydration);
+criterion_group!(
+    benches,
+    bench_streaming_hydration,
+    inline_css::bench_inline_css
+);
 criterion_main!(benches);

@@ -11,8 +11,10 @@ use webui_handler::{
     BoundaryInstanceId, BoundaryKey, BoundaryMode, FlushWriter, HandlerError, Protocol,
     RenderOptions, ResponseWriter, SessionOptions, StreamingSession, WebUIHandler,
 };
-use webui_parser::{ComponentRegistration, HtmlParser};
-use webui_protocol::{ComponentData, InitialStateStrategy, StateProjectionMode, WebUIProtocol};
+use webui_parser::{ComponentRegistration, HtmlParser, ParserOptions};
+use webui_protocol::{
+    ComponentData, CssStrategy, InitialStateStrategy, StateProjectionMode, WebUIProtocol,
+};
 use webui_test_utils::test_json;
 
 fn parsed_protocol(entry: &str, components: &[(&str, &str)]) -> Arc<Protocol> {
@@ -414,6 +416,94 @@ fn multiple_boundaries_alternate_descriptor_commit_and_advance() {
         .unwrap()
         .contains("<footer>tail</footer>"));
     assert!(session.is_done());
+}
+
+#[test]
+fn inline_style_sources_require_reachable_placement_and_unpublished_styles() {
+    let mut parser = HtmlParser::with_options(ParserOptions {
+        css_strategy: webui_parser::CssStrategy::Style,
+        ..Default::default()
+    });
+    const CSS: &str = "p{color:rebeccapurple}";
+    const ESCAPED_CSS: &str = r#"p::before{content:"</STYLE>"}"#;
+    let components = [
+        ("hidden-wrap", "<hidden-leaf></hidden-leaf>", CSS),
+        ("hidden-leaf", "<p>Hidden</p>", CSS),
+        ("live-card", "<p>Shown</p>", CSS),
+        ("escaped-card", "<p>Escaped</p>", ESCAPED_CSS),
+    ];
+    for (tag, template, css) in components {
+        parser
+            .component_registry_mut()
+            .register_component(ComponentRegistration::new(tag, template, Some(css), true))
+            .unwrap();
+    }
+    let entry = document(concat!(
+        r#"<boundary name="first"><template id="sample"><hidden-wrap></hidden-wrap></template>"#,
+        "<live-card></live-card><live-card></live-card><escaped-card></escaped-card></boundary>",
+        r#"<boundary name="second"><live-card></live-card></boundary>"#,
+    ));
+    parser.parse("index.html", &entry).unwrap();
+    let mut protocol = WebUIProtocol::new(parser.into_fragment_records());
+    protocol.set_css_strategy(CssStrategy::Style);
+    for (tag, _, css) in components {
+        protocol.components.insert(
+            tag.to_string(),
+            ComponentData {
+                css: css.to_string(),
+                uses_shadow_dom: true,
+                ..Default::default()
+            },
+        );
+    }
+    protocol.populate_style_closures(&["index.html"]);
+    protocol.build_id = "inline-style-inventory-test".into();
+
+    let mut session = new_session(Arc::new(Protocol::new(protocol)), "/");
+    let state = test_json!({});
+    let first = session.start(&state).unwrap().boundary.unwrap();
+    let first = session
+        .resume(first.instance_id, &state, BoundaryMode::Final)
+        .unwrap();
+    let html = String::from_utf8(first.bytes).unwrap();
+    let live_style = r#"<style data-webui-resource="live-card" data-webui-strategy="style""#;
+    assert_eq!(html.matches(live_style).count(), 2);
+    assert!(html
+        .split_once(live_style)
+        .unwrap()
+        .1
+        .starts_with(" data-ws-style>"));
+    assert_eq!(html.matches(" data-ws-style").count(), 1, "{html}");
+    assert!(html.contains(r"<\/STYLE>"));
+
+    let checkpoint_payload = |html: &str| {
+        let (_, payload) = html.split_once(" data-webui-boundary>").unwrap();
+        let (json, _) = payload.split_once("</script>").unwrap();
+        let mut record: serde_json::Value = serde_json::from_str(json).unwrap();
+        record[3].take()
+    };
+    let payload = checkpoint_payload(&html);
+    assert_eq!(payload["styleInventory"], "0f");
+    let styles = &payload["componentStyles"]["resources"];
+    assert_eq!(
+        styles["live-card"],
+        test_json!({ "kind": "style", "css": null })
+    );
+    assert_eq!(styles["hidden-wrap"]["css"], CSS);
+    assert_eq!(styles["hidden-leaf"]["css"], CSS);
+    assert_eq!(styles["escaped-card"]["css"], ESCAPED_CSS);
+
+    let second = session.advance().unwrap().boundary.unwrap();
+    let second = session
+        .resume(second.instance_id, &state, BoundaryMode::Final)
+        .unwrap();
+    let html = String::from_utf8(second.bytes).unwrap();
+    assert!(html.contains(live_style));
+    assert!(!html.contains(" data-ws-style"));
+    assert!(checkpoint_payload(&html)["componentStyles"]["resources"]
+        .get("live-card")
+        .is_none());
+    assert!(session.advance().unwrap().done);
 }
 
 #[test]

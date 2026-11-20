@@ -3,6 +3,7 @@
 
 import { strict as assert } from 'node:assert';
 import { beforeEach, describe, test } from 'node:test';
+import { MAX_MARKER_SCAN_NODES } from './streaming-dom.js';
 import { resumeStreamingRoot } from './streaming-mode.js';
 
 /**
@@ -767,6 +768,43 @@ function assertScaffoldCleaned(b: BuiltBoundary): void {
     assert.equal(r.parentNode, b.root, 'SSR root retained');
   }
 }
+
+describe('streaming inline styles', () => {
+  for (const exhausted of [false, true]) {
+    test(`reports ${exhausted ? 'the inline stylesheet scan budget' : 'the unresolved inline stylesheet IDs'}`, async () => {
+      __resetStreamingCoordinatorForTests();
+      const { messages, restore } = captureErrors();
+      try {
+        // A single sibling lets range discovery succeed even when the
+        // subsequent walk through its descendants runs out of budget.
+        const children = exhausted
+          ? Array.from({ length: MAX_MARKER_SCAN_NODES }, () => comment(''))
+          : [];
+        const boundary = buildBoundary(0, 0, [element('div', { children })], {
+          styleInventory: '03',
+          componentStyles: {
+            version: 1,
+            strategy: 'style',
+            resources: {
+              'first-card': { kind: 'style', css: null },
+              'second-card': { kind: 'style', css: null },
+            },
+            closures: {},
+          },
+        });
+        enqueue(boundary.sentinel);
+        await flush();
+        assertLogged(messages, exhausted
+          ? `Inline component stylesheet scan exceeded ${MAX_MARKER_SCAN_NODES} nodes`
+          : 'Missing inline component stylesheet in streaming checkpoint: first-card, second-card');
+        assert.equal(webuiGlobal().styleInventory, undefined);
+        assertScaffoldCleaned(boundary);
+      } finally {
+        restore();
+      }
+    });
+  }
+});
 
 // ── Tests ────────────────────────────────────────────────────────────
 
