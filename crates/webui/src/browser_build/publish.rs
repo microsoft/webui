@@ -3,7 +3,7 @@
 
 use std::collections::BTreeSet;
 use std::fs;
-use std::io::Write;
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use webui_protocol::projection_manifest::ProjectionManifest;
@@ -95,9 +95,17 @@ pub(super) fn write(
         }
         check_destination(bundle.project(), &relative)?;
     }
-    let old =
-        protect_existing_manifest(bundle.project(), &bundle.project().join(&relative_manifest))?;
-    protect_existing_outputs(bundle, old.as_ref())?;
+    let old = protect_existing_manifest(
+        bundle.project(),
+        &bundle.project().join(&relative_manifest),
+        &json,
+    )?;
+    protect_existing_outputs(bundle, old.as_ref().map(|(proof, _)| proof))?;
+    // A native watcher can receive metadata-only events for config files.
+    // Recheck the build without republishing a byte-identical generation.
+    if old.is_some_and(|(_, matches)| matches) && outputs_match(bundle)? {
+        return Ok(manifest);
+    }
     for (path, bytes) in &bundle.files {
         write_file(bundle.project(), path, bytes)?;
     }
@@ -122,7 +130,8 @@ fn destination_key(path: &Path) -> String {
 fn protect_existing_manifest(
     project: &Path,
     path: &Path,
-) -> Result<Option<ProjectionManifest>, ClientBuildError> {
+    expected: &[u8],
+) -> Result<Option<(ProjectionManifest, bool)>, ClientBuildError> {
     match fs::symlink_metadata(path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(source) => return Err(io_error(path, source)),
@@ -150,7 +159,39 @@ fn protect_existing_manifest(
             "previous native proof belongs to another project".into(),
         ));
     }
-    Ok(Some(old))
+    Ok(Some((old, bytes == expected)))
+}
+
+fn outputs_match(bundle: &ClientBuild) -> Result<bool, ClientBuildError> {
+    let mut buffer = [0; 8192];
+    for (relative, bytes) in &bundle.files {
+        let path = bundle.project().join(relative);
+        if !file_matches(&path, bytes, &mut buffer).map_err(|source| io_error(&path, source))? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn file_matches(path: &Path, bytes: &[u8], buffer: &mut [u8]) -> io::Result<bool> {
+    let mut file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    if file.metadata()?.len() != bytes.len() as u64 {
+        return Ok(false);
+    }
+    for chunk in bytes.chunks(buffer.len()) {
+        let read = &mut buffer[..chunk.len()];
+        match file.read_exact(read) {
+            Ok(()) if read == chunk => {}
+            Ok(()) => return Ok(false),
+            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(false),
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(file.read(&mut buffer[..1])? == 0)
 }
 
 fn protect_existing_outputs(

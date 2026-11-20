@@ -87,8 +87,20 @@ async fn dependency_original_typescript_uses_native_legacy_decorator_lowering() 
         "./node_modules/component-library/index.ts".into(),
     );
     let result = build(config).await?;
-    let id = package.join("index.ts").to_string_lossy().into_owned();
-    assert_eq!(result.graph.modules[&id].source.as_deref(), Some(source));
+    let entry = result.graph.entries.first().ok_or("missing entry module")?;
+    let edge = result.graph.modules[entry]
+        .imports
+        .first()
+        .ok_or("missing library import")?;
+    assert_eq!(edge.specifier, "aliased-library");
+    assert_eq!(
+        Path::new(&edge.resolved).canonicalize()?,
+        package.join("index.ts")
+    );
+    assert_eq!(
+        result.graph.modules[&edge.resolved].source.as_deref(),
+        Some(source)
+    );
     let code = String::from_utf8_lossy(&result.files[Path::new("dist/index.js")]);
     let allocator = oxc::allocator::Allocator::default();
     let parsed = oxc::parser::Parser::new(&allocator, &code, oxc::span::SourceType::mjs()).parse();

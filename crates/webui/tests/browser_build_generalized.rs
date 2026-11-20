@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
-use webui::browser_build::{build, ClientBuildOptions, Format, Loader, SourceMap};
+use webui::browser_build::{build, ClientBuild, ClientBuildOptions, Format, Loader, SourceMap};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -16,6 +16,16 @@ fn options(root: &Path) -> ClientBuildOptions {
         out_dir: "dist".into(),
         ..Default::default()
     }
+}
+
+// Physical inputs have portable source names but use resolver IDs as graph keys.
+fn input_id<'a>(build: &'a ClientBuild, source: &str) -> Result<&'a str, &'static str> {
+    build
+        .metadata
+        .inputs
+        .iter()
+        .find_map(|(id, input)| (input.source == source).then_some(id.as_str()))
+        .ok_or("missing captured input")
 }
 
 #[test]
@@ -73,20 +83,14 @@ async fn nested_multi_entry_closures_use_emitted_paths_not_the_entry_directory()
     let manifest = result.projection_manifest(Path::new("dist/projection.json"))?;
     assert_eq!(result.entries.len(), 2);
     assert_eq!(result.project(), root.canonicalize()?);
-    for entry in &result.entries {
-        let details = result
-            .metadata
-            .outputs
-            .get(entry.to_str().ok_or("UTF-8")?)
-            .ok_or("metadata")?;
-        assert!(details
-            .entry_point
-            .as_ref()
-            .is_some_and(|id| id.starts_with('/')));
-        let closure = manifest
-            .entry_closures
-            .get(entry.to_str().ok_or("UTF-8")?)
-            .ok_or("closure")?;
+    for key in ["dist/assets/page-1.js", "dist/deep/other/page-2.js"] {
+        let entry = Path::new(key);
+        assert!(result.entries.contains(entry));
+        let details = result.metadata.outputs.get(key).ok_or("metadata")?;
+        let entry_point = details.entry_point.as_ref().ok_or("entry point")?;
+        assert!(Path::new(entry_point).is_absolute());
+        assert!(result.graph.entries.contains(entry_point));
+        let closure = manifest.entry_closures.get(key).ok_or("closure")?;
         assert!(!closure.is_empty(), "{closure:?}");
         for path in closure {
             assert!(result.files.contains_key(Path::new(path)));
@@ -132,20 +136,17 @@ async fn native_virtual_alias_text_and_css_attributes_capture_authored_bytes() -
         .entries
         .insert("assets/page-1".into(), "index.mts".into());
     let result = build(config).await?;
-    let opaque = root.join("opaque.ts").to_string_lossy().into_owned();
-    let markup_id = root.join("template.html").to_string_lossy().into_owned();
+    let opaque = input_id(&result, "opaque.ts")?;
+    let markup_id = input_id(&result, "template.html")?;
     let markup_source = "<h1>café 😀</h1>";
-    assert_eq!(
-        result.metadata.inputs[&markup_id].bytes,
-        markup_source.len()
-    );
+    assert_eq!(result.metadata.inputs[markup_id].bytes, markup_source.len());
     assert_ne!(
-        result.metadata.inputs[&markup_id].bytes,
+        result.metadata.inputs[markup_id].bytes,
         markup_source.encode_utf16().count()
     );
-    assert!(result.graph.modules[&opaque].opaque);
+    assert!(result.graph.modules[opaque].opaque);
     assert_eq!(
-        result.metadata.inputs[&opaque].bytes,
+        result.metadata.inputs[opaque].bytes,
         fs::read(root.join("opaque.ts"))?.len()
     );
     let virtual_module = result
@@ -169,7 +170,7 @@ async fn native_virtual_alias_text_and_css_attributes_capture_authored_bytes() -
     assert!(String::from_utf8_lossy(code).contains("CSSStyleSheet"));
     let report = webui_projection::analyze_with_report(&result.graph);
     assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
-    assert!(!report.parsed_modules.contains(&opaque));
+    assert!(!report.parsed_modules.iter().any(|id| id == opaque));
     result.projection_manifest(Path::new("dist/projection.json"))?;
     Ok(())
 }
@@ -193,10 +194,10 @@ async fn opaque_binary_assets_are_bounded_and_proven_without_utf8_coercion() -> 
     .into();
     config.public_path = Some("https://cdn.example.test/static".into());
     let result = build(config).await?;
-    let source = root.join("pixel.bin").to_string_lossy().into_owned();
-    assert!(result.graph.modules[&source].opaque);
-    assert!(result.graph.modules[&source].source.is_none());
-    assert_eq!(result.metadata.inputs[&source].bytes, bytes.len());
+    let source = input_id(&result, "pixel.bin")?;
+    assert!(result.graph.modules[source].opaque);
+    assert!(result.graph.modules[source].source.is_none());
+    assert_eq!(result.metadata.inputs[source].bytes, bytes.len());
     assert!(result.files.values().any(|value| value == &bytes));
     let code = String::from_utf8_lossy(&result.files[Path::new("dist/assets/page-1.js")]);
     assert!(code.contains("https://cdn.example.test/static/"), "{code}");
@@ -210,7 +211,7 @@ async fn opaque_binary_assets_are_bounded_and_proven_without_utf8_coercion() -> 
     fs::remove_file(root.join("inline.dat"))?;
     let after = result.projection_manifest(Path::new("dist/projection.json"))?;
     assert_eq!(before.build_id, after.build_id);
-    assert_eq!(before.inputs["pixel.bin"], result.input_hashes[&source]);
+    assert_eq!(before.inputs["pixel.bin"], result.input_hashes[source]);
     Ok(())
 }
 
@@ -241,8 +242,8 @@ async fn native_package_resolution_has_authoritative_identity_without_a_framewor
     );
     config.tsconfig = Some("tsconfig.json".into());
     let result = build(config).await?;
-    let source = root.join("index.ts").to_string_lossy().into_owned();
-    let edge = result.graph.modules[&source]
+    let source = input_id(&result, "index.ts")?;
+    let edge = result.graph.modules[source]
         .imports
         .first()
         .ok_or("package edge")?;
@@ -368,16 +369,11 @@ async fn proof_ordering_is_case_sensitive_utf8_and_source_mutation_is_rejected()
     );
     assert!(manifest.inputs.keys().all(|id| !id.contains('\\')));
     assert!(result.files[Path::new("dist/assets/page-1.js")].is_ascii());
-    let module_id = temp
-        .path()
-        .canonicalize()?
-        .join("index.ts")
-        .to_string_lossy()
-        .into_owned();
+    let module_id = result.graph.entries.first().ok_or("entry ID")?;
     result
         .graph
         .modules
-        .get_mut(&module_id)
+        .get_mut(module_id)
         .ok_or("entry")?
         .source = Some("modified".into());
     assert!(result
