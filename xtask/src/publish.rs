@@ -2052,6 +2052,28 @@ fn count_files_with_extension(dir: &Path, ext: &str) -> u32 {
     count
 }
 
+fn validate_rust_release_artifacts(root: &Path, version: &str) -> Result<(), String> {
+    let publishable = discover_publishable_crates(root)?;
+    let expected = u32::try_from(publishable.len())
+        .map_err(|error| format!("publishable crate count exceeds supported range: {error}"))?;
+    let output = root.join("publish/crates");
+    validate_artifact_count(
+        count_files_with_extension(&output, "crate"),
+        expected,
+        "crate packages",
+    )?;
+    for name in publishable {
+        let artifact = output.join(format!("{name}-{version}.crate"));
+        if !artifact.is_file() {
+            return Err(format!(
+                "missing Rust crate artifact {}",
+                artifact.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn validate_release_artifact_counts(root: &Path, version: &str) -> Result<(), String> {
     let publish = root.join("publish");
     let python_version = ReleaseVersion::parse(version)
@@ -2074,11 +2096,7 @@ fn validate_release_artifact_counts(root: &Path, version: &str) -> Result<(), St
             ));
         }
     }
-    validate_artifact_count(
-        count_files_with_extension(&publish.join("crates"), "crate"),
-        19,
-        "crate packages",
-    )?;
+    validate_rust_release_artifacts(root, version)?;
     validate_artifact_count(
         count_files_with_extension(&publish.join("nuget"), "nupkg"),
         8,
@@ -3140,7 +3158,6 @@ mod tests {
         let publish = root.path().join("publish");
         for (directory, extension, count) in [
             ("npm", "tgz", 17),
-            ("crates", "crate", 19),
             ("nuget", "nupkg", 8),
             ("nuget", "snupkg", 2),
             ("standalone", "bin", 20),
@@ -3152,6 +3169,7 @@ mod tests {
                     .expect("artifact fixture should be written");
             }
         }
+        write_crate_release_fixtures(root.path(), "3.1.2-hotfix.4");
         write_desktop_npm_fixtures(&publish.join("npm"), "3.1.2-hotfix.4");
         write_python_release_fixtures(&publish.join("python"), "3.1.2.post4");
         write_binding_release_fixtures(root.path(), "3.1.2-hotfix.4");
@@ -3318,14 +3336,15 @@ mod tests {
         }
         write_numbered_files(root.path().join("publish/npm"), 17, "tgz");
         write_desktop_npm_fixtures(&root.path().join("publish/npm"), "3.1.2");
-        write_numbered_files(root.path().join("publish/crates"), 19, "crate");
+        write_crate_release_fixtures(root.path(), "3.1.2");
         write_numbered_files(root.path().join("publish/nuget"), 8, "nupkg");
         write_numbered_files(root.path().join("publish/nuget"), 2, "snupkg");
         write_numbered_files(root.path().join("publish/standalone"), 20, "asset");
         write_python_release_fixtures(&root.path().join("publish/python"), "3.1.2");
         write_binding_release_fixtures(root.path(), "3.1.2");
 
-        assert!(validate_release_artifact_counts(root.path(), "3.1.2").is_ok());
+        validate_release_artifact_counts(root.path(), "3.1.2")
+            .expect("current publishable crate inventory should pass release validation");
         fs::remove_file(
             root.path()
                 .join("publish/go/github.com/microsoft/webui/go/v3/@v/v3.1.2.zip"),
@@ -3353,7 +3372,7 @@ mod tests {
         }
         write_numbered_files(root.path().join("publish/npm"), 16, "tgz");
         write_desktop_npm_fixtures(&root.path().join("publish/npm"), "1.2.3");
-        write_numbered_files(root.path().join("publish/crates"), 19, "crate");
+        write_crate_release_fixtures(root.path(), "1.2.3");
         write_numbered_files(root.path().join("publish/nuget"), 8, "nupkg");
         write_numbered_files(root.path().join("publish/nuget"), 2, "snupkg");
         write_numbered_files(root.path().join("publish/standalone"), 20, "asset");
@@ -3383,6 +3402,46 @@ mod tests {
         let error = validate_release_artifact_counts(root.path(), "1.2.3")
             .expect_err("missing target must fail even when npm count matches");
         assert!(error.contains("webui-desktop-linux-x64"), "{error}");
+    }
+
+    #[test]
+    fn validate_rust_release_artifacts_rejects_stale_version_with_matching_count() {
+        let root = tempfile::TempDir::new().expect("root");
+        write_crate_release_fixtures(root.path(), "3.2.0");
+        fs::rename(
+            root.path()
+                .join("publish/crates/microsoft-webui-3.2.0.crate"),
+            root.path()
+                .join("publish/crates/microsoft-webui-3.1.2.crate"),
+        )
+        .expect("replace current crate with stale version");
+
+        let error = validate_rust_release_artifacts(root.path(), "3.2.0")
+            .expect_err("matching count cannot hide a missing current-version crate");
+        assert!(
+            error.contains("missing Rust crate artifact")
+                && error.contains("microsoft-webui-3.2.0.crate"),
+            "{error}"
+        );
+    }
+
+    fn write_crate_release_fixtures(root: &Path, version: &str) {
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        for entry in fs::read_dir(workspace.join("crates")).expect("workspace crates") {
+            let entry = entry.expect("crate entry");
+            let manifest = entry.path().join("Cargo.toml");
+            if manifest.is_file() {
+                let directory = root.join("crates").join(entry.file_name());
+                fs::create_dir_all(&directory).expect("crate fixture directory");
+                fs::copy(manifest, directory.join("Cargo.toml")).expect("crate manifest fixture");
+            }
+        }
+        let output = root.join("publish/crates");
+        fs::create_dir_all(&output).expect("crate artifact directory");
+        for name in discover_publishable_crates(root).expect("publishable crate inventory") {
+            fs::write(output.join(format!("{name}-{version}.crate")), "crate")
+                .expect("crate artifact fixture");
+        }
     }
 
     fn write_desktop_npm_fixtures(directory: &Path, version: &str) {

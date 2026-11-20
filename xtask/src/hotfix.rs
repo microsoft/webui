@@ -710,6 +710,7 @@ mod tests {
                     .contains("npmDistTag: $[ stageDependencies.SignArtifacts.SignNuGet.outputs")
                 && stage.contains("NPM_CONFIG_TAG: $(npmDistTag)")
                 && stage.contains("addChangeLog: $(releaseAddChangelog)")
+                && stage.contains("changeLogType: commitBased")
         }));
     }
 
