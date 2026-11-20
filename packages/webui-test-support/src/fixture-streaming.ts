@@ -107,12 +107,13 @@ export async function prepareStreamingFixture({
   const earlyApplicationScript =
     `<script type="module" async src="${attribute(application)}"></script>`;
   const protocols = new Map<string, Protocol>();
-  for (const entry of ['page.html', 'static.html']) {
+  for (const entry of ['page.html', 'static.html', 'bundled.html']) {
     const compiled = buildProtocol({
       appDir: resolve(fixturePath, 'src'),
       entry,
       plugin: 'webui',
       css: 'style',
+      cssBundle: entry === 'bundled.html',
       projectionManifests: [projectionPath],
     });
     if (!compiled.protocol?.length) {
@@ -142,7 +143,8 @@ export async function prepareStreamingFixture({
     }
     if (url.pathname !== '/streaming-bootstrap/fixture.html') return false;
     const staticOnly = url.searchParams.has('static');
-    const entry = staticOnly ? 'static.html' : 'page.html';
+    const entry = staticOnly ? 'static.html' :
+      url.searchParams.has('bundled') ? 'bundled.html' : 'page.html';
     const protocol = protocols.get(entry);
     if (!protocol) throw new Error(`Streaming fixture has no protocol for ${entry}.`);
     const early = url.searchParams.has('early');

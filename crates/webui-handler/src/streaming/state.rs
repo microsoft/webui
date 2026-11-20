@@ -6,7 +6,7 @@
 use std::collections::{HashMap, HashSet};
 use webui_protocol::WebUIProtocol;
 
-use super::root::PendingStreamingRoot;
+use super::root::{ComponentHostOrigin, PendingStreamingRoot};
 use super::streaming_boundary_error;
 use crate::{route_handler, HandlerError, Result, WebUIProcessContext};
 
@@ -43,6 +43,7 @@ impl RecordCapture {
 
 pub(crate) struct StreamingRenderState<'data> {
     pub(super) component_reachability: &'data route_handler::ComponentReachabilityIndex,
+    pub(crate) check_root_openings: bool,
     pub(super) head_marker_emitted: bool,
     pub(super) active_boundary: Option<u32>,
     pub(super) current_span: Option<u32>,
@@ -72,7 +73,7 @@ pub(crate) struct StreamingRenderState<'data> {
     /// can arrive transitively through an earlier root's closure before its own
     /// template or closure is emitted.
     pub(super) style_resource_inventory: Vec<u8>,
-    pub(super) style_source_scope: bool,
+    style_source_scope: bool,
     // Borrowed from this resume's installed ShadowRoot styles. A boundary
     // resumes and commits in one call, so the set never crosses a host step.
     pub(super) inline_style_sources: Option<HashSet<&'data str>>,
@@ -107,6 +108,7 @@ pub(super) struct StateUpdatePlan {
 
 /// Owned state retained between calls by borrowed and host-owned sessions.
 pub(crate) struct StreamingProgress {
+    check_root_openings: bool,
     pub(super) head_marker_emitted: bool,
     pub(super) active_boundary: Option<u32>,
     pub(super) current_span: Option<u32>,
@@ -126,7 +128,7 @@ pub(crate) struct StreamingProgress {
     pub(super) inventory_hex: String,
     pub(super) template_inventory: Vec<u8>,
     pub(super) style_resource_inventory: Vec<u8>,
-    pub(super) style_source_scope: bool,
+    style_source_scope: bool,
     pub(super) checkpoint_tags: Vec<u32>,
     pub(super) checkpoint_walk_roots: Vec<(u32, Option<Box<str>>)>,
     pub(super) checkpoint_seen: Vec<u8>,
@@ -138,10 +140,15 @@ pub(crate) struct StreamingProgress {
 
 impl StreamingProgress {
     /// Allocate request-local bitsets for indexed components and style resources.
-    pub(crate) fn new(component_count: usize, style_resource_count: usize) -> Self {
+    pub(crate) fn new(
+        component_count: usize,
+        style_resource_count: usize,
+        check_root_openings: bool,
+    ) -> Self {
         let inventory_bytes = component_count.div_ceil(8);
         let style_inventory_bytes = style_resource_count.div_ceil(8);
         Self {
+            check_root_openings,
             head_marker_emitted: false,
             active_boundary: None,
             current_span: None,
@@ -180,6 +187,7 @@ impl<'data> StreamingRenderState<'data> {
     ) -> Self {
         Self {
             component_reachability,
+            check_root_openings: progress.check_root_openings,
             pending_root: None,
             // Borrowed template/CSS scratch starts empty: only a record that
             // delivers first-time component metadata ever fills it, so a
@@ -220,6 +228,7 @@ impl<'data> StreamingRenderState<'data> {
 
     pub(crate) fn into_progress(self) -> StreamingProgress {
         StreamingProgress {
+            check_root_openings: self.check_root_openings,
             head_marker_emitted: self.head_marker_emitted,
             active_boundary: self.active_boundary,
             current_span: self.current_span,
@@ -258,6 +267,29 @@ impl<'data> StreamingRenderState<'data> {
             &mut self.checkpoint_needs_expansion,
             &mut capture.needs_expansion,
         );
+    }
+
+    #[inline]
+    #[must_use]
+    pub(crate) fn enter_style_source_scope(&mut self, origin: ComponentHostOrigin) -> bool {
+        let previous = self.style_source_scope;
+        self.style_source_scope &= origin.allows_inline_style_sources();
+        previous
+    }
+
+    #[inline]
+    #[must_use]
+    pub(crate) fn suppress_active_inline_style_sources(&mut self) -> bool {
+        if self.style_source_scope && self.active_boundary.is_some() {
+            self.style_source_scope = false;
+            return true;
+        }
+        false
+    }
+
+    #[inline]
+    pub(crate) fn restore_style_source_scope(&mut self, previous: bool) {
+        self.style_source_scope = previous;
     }
 
     #[inline]

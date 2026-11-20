@@ -81,6 +81,9 @@ pub struct Protocol {
     route_index: CompiledRouteIndex,
     boundary_declarations: OnceLock<HashMap<u32, BoundaryDeclaration>>,
     continuation_state_plans: OnceLock<Box<[OnceLock<PreparedContinuationStatePlan>]>>,
+    // Validate static opening placement once, only when this artifact streams.
+    // A suspect artifact still checks each opening at its original render step.
+    misplaced_streaming_root_openings: OnceLock<bool>,
     template_metadata_cache: RwLock<HashMap<String, Value>>,
 }
 
@@ -199,6 +202,7 @@ impl Protocol {
             route_index,
             boundary_declarations: OnceLock::new(),
             continuation_state_plans: OnceLock::new(),
+            misplaced_streaming_root_openings: OnceLock::new(),
             template_metadata_cache: RwLock::new(HashMap::new()),
         }
     }
@@ -215,6 +219,12 @@ impl Protocol {
 
     pub(crate) fn css_strategy(&self) -> webui_protocol::CssStrategy {
         self.css_strategy
+    }
+
+    pub(crate) fn check_streaming_root_openings(&self) -> bool {
+        *self
+            .misplaced_streaming_root_openings
+            .get_or_init(|| crate::streaming::has_misplaced_streaming_root_openings(&self.protocol))
     }
 
     /// Render plan built once when this protocol was loaded.
@@ -676,6 +686,15 @@ struct BorrowedStyleClosure<'a> {
 }
 
 impl<'a> BorrowedComponentStyleDelta<'a> {
+    fn empty(strategy: webui_protocol::CssStrategy) -> Self {
+        Self {
+            strategy,
+            resources: Vec::new(),
+            closures: Vec::new(),
+            ordered: Vec::new(),
+        }
+    }
+
     pub(crate) fn resource_names(&self) -> impl Iterator<Item = &str> {
         self.resources.iter().map(|resource| resource.name)
     }
@@ -859,12 +878,7 @@ pub(crate) fn collect_borrowed_component_style_delta<'a>(
                 "component style closure metadata is required by this protocol".to_string(),
             ));
         }
-        return Ok(BorrowedComponentStyleDelta {
-            strategy: protocol.css_strategy(),
-            resources: Vec::new(),
-            closures: Vec::new(),
-            ordered: Vec::new(),
-        });
+        return Ok(BorrowedComponentStyleDelta::empty(protocol.css_strategy()));
     }
 
     let mut seen_roots = HashSet::new();
@@ -873,6 +887,9 @@ pub(crate) fn collect_borrowed_component_style_delta<'a>(
         .filter(|root| !protocol.client_fragments.contains_key(*root))
         .filter(|root| seen_roots.insert(*root))
         .collect();
+    if roots.is_empty() {
+        return Ok(BorrowedComponentStyleDelta::empty(protocol.css_strategy()));
+    }
     let client_inventory = StyleInventoryView {
         bits: style_inventory,
         index: style_resource_index,
@@ -1109,7 +1126,11 @@ fn covered_components<'a>(
     roots: &[&str],
     inventory: Option<StyleInventoryView<'_>>,
 ) -> HashSet<&'a str> {
-    let mut covered = HashSet::with_capacity(protocol.components.len());
+    // Coverage comes only from bundled resources, not the component catalog.
+    let mut covered = HashSet::new();
+    if roots.is_empty() || protocol.style_chunks.is_empty() {
+        return covered;
+    }
     for root in roots {
         let Some(closure) = protocol.style_closures.get(*root) else {
             continue;

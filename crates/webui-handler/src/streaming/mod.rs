@@ -25,8 +25,8 @@ pub(crate) use inventory::{record_checkpoint_tag, streaming_template_already_sen
 pub use owned::{BufferSink, SessionOptions, StreamStep, StreamingSession};
 pub(crate) use root::{
     consume_streaming_component_root, ensure_no_pending_streaming_root,
-    prepare_generated_streaming_root, validate_pending_streaming_root,
-    validate_streaming_root_opening, ComponentHostOrigin,
+    has_misplaced_streaming_root_openings, prepare_generated_streaming_root,
+    validate_pending_streaming_root, validate_streaming_root_opening, ComponentHostOrigin,
 };
 pub use session::{
     BoundaryDescriptor, BoundaryInstanceId, BoundaryKey, BoundaryMode, SpanInstanceId,

@@ -420,6 +420,7 @@ impl SessionCore {
             streaming: Some(StreamingProgress::new(
                 protocol.component_index().len(),
                 protocol.style_resource_index().len(),
+                protocol.check_streaming_root_openings(),
             )),
             json_scratch: Vec::new(),
             scope_pool: Vec::new(),

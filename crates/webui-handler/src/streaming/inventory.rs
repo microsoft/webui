@@ -302,7 +302,7 @@ mod tests {
             Vec::new(),
         ));
         let mut streaming = StreamingRenderState::from_progress(
-            super::super::state::StreamingProgress::new(2, 2),
+            super::super::state::StreamingProgress::new(2, 2, false),
             protocol.component_reachability(),
         );
         streaming.head_marker_emitted = true;
@@ -397,7 +397,7 @@ mod tests {
         );
 
         let mut streaming = StreamingRenderState::from_progress(
-            super::super::state::StreamingProgress::new(component_index.len(), 0),
+            super::super::state::StreamingProgress::new(component_index.len(), 0, false),
             protocol.component_reachability(),
         );
         let state = serde_json::Value::Object(serde_json::Map::new());

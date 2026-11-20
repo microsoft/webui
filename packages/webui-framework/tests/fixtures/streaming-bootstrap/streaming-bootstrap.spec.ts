@@ -103,7 +103,9 @@ for (const trustedTypes of [false, true]) {
       expect(order.filter((name) => name === 'test-stream-counter:Last')).toHaveLength(1);
       await page.locator('test-stream-parent button').click();
       await expect(page.locator('test-stream-parent button')).toHaveText('Nested: 2');
-      await expect(page.locator('[data-ws], script[data-webui-boundary], webui-hydrate')).toHaveCount(0);
+      await expect(page.locator(
+        '[data-ws], [data-ws-style], script[data-webui-boundary], webui-hydrate',
+      )).toHaveCount(0);
       expect(await page.evaluate(() => window.__webui?.state)).toBeUndefined();
 
       // Remove both SSR copies before mounting; a later mount cannot read either.
@@ -128,6 +130,61 @@ for (const trustedTypes of [false, true]) {
   });
 }
 
+test('reuses bundled inline CSS after removing its streamed source hosts', async ({ page, request }) => {
+  const assets: StreamingFixtureAssets = await (await request.get('/streaming-bootstrap/assets')).json();
+  const gate = Promise.withResolvers<void>();
+  await page.route(`**${assets.coordinator.src}`, async route => {
+    await gate.promise;
+    await route.continue();
+  });
+  const id = randomUUID();
+  try {
+    await page.goto(`/streaming-bootstrap/fixture.html?id=${id}&bundled=1`, { waitUntil: 'commit' });
+    const ssrHosts = page.locator('test-stream-bundle');
+    // Read the native checkpoint and its source before the coordinator consumes them.
+    await page.locator('webui-hydrate').waitFor({ state: 'attached' });
+    const source = ssrHosts.locator('style[data-ws-style]');
+    const resourceId = await source.getAttribute('data-webui-resource');
+    if (!resourceId) throw new Error('The streamed stylesheet is missing its resource key.');
+    const record = await page.locator('script[data-webui-boundary]').textContent();
+    const [, , , { componentStyles }] =
+      JSON.parse(record ?? '') as [number, number, number, BoundaryBootstrap];
+    expect(componentStyles.resources[resourceId]).toEqual({
+      kind: 'style',
+      css: null,
+      members: ['test-stream-bundle-base', 'test-stream-bundle-override'],
+    });
+    expect(componentStyles.closures['test-stream-bundle']).toEqual([resourceId]);
+    // The base background survives, and the later equal-specificity color wins.
+    await expect(ssrHosts.locator('.bundle-probe')).toHaveCSS('background-color', 'rgb(232, 244, 255)');
+    await expect(ssrHosts.locator('.bundle-probe')).toHaveCSS('color', 'rgb(20, 66, 114)');
+
+    gate.resolve();
+    await page.waitForFunction(() => performance.getEntriesByName('webui:boundary:0').length === 1);
+    await request.post(`/streaming-bootstrap/release?id=${id}`);
+    await page.waitForFunction(() => window.__streamingCompletions === 1);
+    const sheets = page.locator(`style[data-webui-resource=${JSON.stringify(resourceId)}]`);
+    await expect(ssrHosts).toHaveCount(2);
+    await expect(ssrHosts.locator(sheets)).toHaveCount(2);
+    await ssrHosts.evaluateAll(hosts => hosts.forEach(host => host.remove()));
+    await expect(ssrHosts).toHaveCount(0);
+    await expect(sheets).toHaveCount(0);
+
+    await page.evaluate(() => {
+      const host = document.createElement('test-stream-bundle');
+      host.id = 'client-bundle';
+      document.body.appendChild(host);
+    });
+    const mounted = page.locator('#client-bundle');
+    await expect(mounted.locator(sheets)).toHaveCount(1);
+    await expect(mounted.locator('.bundle-probe')).toHaveCSS('background-color', 'rgb(232, 244, 255)');
+    await expect(mounted.locator('.bundle-probe')).toHaveCSS('color', 'rgb(20, 66, 114)');
+  } finally {
+    gate.resolve();
+    await request.post(`/streaming-bootstrap/release?id=${id}`);
+  }
+});
+
 test('does not publish inventory or activate a checkpoint with a missing inline stylesheet', async ({
   page, request,
 }) => {
@@ -148,7 +205,8 @@ test('does not publish inventory or activate a checkpoint with a missing inline 
     await expect(source).toHaveCount(1);
     await source.evaluate(node => node.removeAttribute('data-ws-style'));
     gate.resolve();
-    await expect.poll(() => errors.some(error => error.includes('Missing inline component stylesheet'))).toBe(true);
+    await expect.poll(() => errors.find(error => error.includes('Missing inline component stylesheet')))
+      .toMatch(/: test-stream-counter\.$/);
     await request.post(`/streaming-bootstrap/release?id=${id}`);
     await page.waitForLoadState('load');
     expect(await page.evaluate(() => ({

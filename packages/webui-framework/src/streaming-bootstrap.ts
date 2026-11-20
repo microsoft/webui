@@ -65,7 +65,8 @@ function resolveInlineStyles(
   range: HydrationRange | undefined,
 ): void {
   let missing = 0;
-  for (const id of Object.keys(resources)) {
+  const ids = Object.keys(resources);
+  for (const id of ids) {
     const resource = resources[id];
     if (resource?.kind === 'style' && resource.css === null) missing++;
   }
@@ -84,6 +85,7 @@ function resolveInlineStyles(
             const css = source.textContent;
             if (css) {
               resource.css = css;
+              source.removeAttribute('data-ws-style');
               if (--missing === 0) return;
             }
           }
@@ -91,8 +93,15 @@ function resolveInlineStyles(
       }
       node = nextWithinRoot(node, root);
     }
+    if (node && node !== end) {
+      throw new Error(`[WebUI] Inline component stylesheet scan exceeded ${MAX_MARKER_SCAN_NODES} nodes in streaming checkpoint`);
+    }
   }
-  throw new Error('[WebUI] Missing inline component stylesheet in streaming checkpoint.');
+  const unresolved = ids.filter(id => {
+    const resource = resources[id];
+    return resource?.kind === 'style' && resource.css === null;
+  });
+  throw new Error(`[WebUI] Missing inline component stylesheet in streaming checkpoint: ${unresolved.join(', ')}`);
 }
 
 /**

@@ -3339,6 +3339,10 @@ impl HtmlParser {
             named_definition: named_id.is_some(),
             previous_for_depth,
         });
+        if named_id.is_some() {
+            // A reference can render this body in a different HTML placement.
+            self.enter_opaque_style_source_scope(ops);
+        }
         ops.push(ParseOp::Parse {
             range: element.inner(),
             depth: depth + 1,
@@ -10413,6 +10417,56 @@ mod tests {
             })
             .collect();
         assert_eq!(placements, [false, false, false, true]);
+    }
+
+    #[test]
+    fn streaming_style_sources_exclude_reused_repeat_bodies() {
+        let mut parser = HtmlParser::with_options(ParserOptions {
+            css_strategy: CssStrategy::Style,
+            ..Default::default()
+        });
+        parser
+            .component_registry_mut()
+            .register_component(ComponentRegistration::new(
+                "test-card",
+                "<p>Card</p>",
+                None,
+                false,
+            ))
+            .unwrap();
+        parser
+            .parse(
+                "index.html",
+                concat!(
+                    r#"<body><boundary name="cards">"#,
+                    r#"<for id="cards" each="item in empty"><test-card></test-card></for>"#,
+                    r#"<template id="sample"><for id="cards" each="item in populated" /></template>"#,
+                    "<test-card></test-card></boundary></body>",
+                ),
+            )
+            .unwrap();
+        let records = parser.into_fragment_records();
+        let entry = &records["index.html"].fragments;
+        let loop_ids: Vec<_> = entry
+            .iter()
+            .filter_map(|fragment| match fragment.fragment.as_ref() {
+                Some(Fragment::ForLoop(repeat)) => Some(repeat.fragment_id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(loop_ids.len(), 2);
+        assert_eq!(loop_ids[0], loop_ids[1]);
+        let is_source = |fragments: &[WebUIFragment]| {
+            fragments
+                .iter()
+                .find_map(|fragment| match fragment.fragment.as_ref() {
+                    Some(Fragment::Component(component)) => Some(component.streaming_style_source),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        assert!(!is_source(&records[loop_ids[0]].fragments));
+        assert!(is_source(entry));
     }
 
     #[test]
