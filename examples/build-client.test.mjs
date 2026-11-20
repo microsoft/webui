@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
-import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, realpath, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { test } from 'node:test';
@@ -160,7 +160,8 @@ test('native production output binds final optimized bytes and retained modules'
   assert.ok(hashes.includes(hashContent(code)), 'projection must bind the minified bytes');
   const metadata = outputMetadata(result, root);
   assert.equal(metadata.bytes, Buffer.byteLength(code));
-  assert.ok(Object.keys(metadata.inputs).some(file => file.endsWith('/src/index.js')));
+  const inputs = await Promise.all(Object.keys(metadata.inputs).filter(path.isAbsolute).map(file => realpath(file)));
+  assert.ok(inputs.includes(await realpath(path.join(root, 'src/index.js'))));
   for (const contribution of Object.values(metadata.inputs)) {
     assert.equal(typeof contribution.renderedBytesBeforeMinify, 'number');
     assert.equal('bytesInOutput' in contribution, false);
@@ -484,8 +485,10 @@ test('native split entries preserve shared code, lazy imports and CSS import att
     outDir: path.join(root, 'dist'),
   });
   const outputs = Object.values(result.metafile.outputs);
-  assert.ok(outputs.some(output => output.entryPoint?.endsWith('/src/index.js')));
-  assert.ok(outputs.some(output => output.entryPoint?.endsWith('/src/island.js')));
+  const entryPoints = await Promise.all(outputs.flatMap(output =>
+    output.entryPoint ? [realpath(output.entryPoint)] : []));
+  assert.ok(entryPoints.includes(await realpath(path.join(root, 'src/index.js'))));
+  assert.ok(entryPoints.includes(await realpath(path.join(root, 'src/island.js'))));
   assert.ok(outputs.some(output => output.imports.some(edge =>
     edge.kind === 'dynamic-import' && !edge.external)));
   assert.ok(outputs.some(output => output.imports.some(edge =>

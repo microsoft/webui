@@ -51,21 +51,28 @@ async fn retains_original_typescript_and_exact_resolutions_without_publishing() 
         !root.join(".webui").exists(),
         "assets must remain uncommitted until proof finalization"
     );
-    let entry = root.join("index.ts").to_string_lossy().replace('\\', "/");
+    // Resolver IDs omit Windows verbatim prefixes. Check the physical identity
+    // separately, then use the reported ID for exact graph and output lookups.
+    assert_eq!(result.graph.entries.len(), 1);
+    let entry = result.graph.entries.first().ok_or("missing entry module")?;
+    assert_eq!(Path::new(entry).canonicalize()?, root.join("index.ts"));
     let module = result
         .graph
         .modules
-        .get(&entry)
+        .get(entry)
         .ok_or("missing original module")?;
     assert_eq!(module.source.as_deref(), Some(source));
     let import = module.imports.first().ok_or("missing import")?;
     assert_eq!(import.specifier, "@microsoft/webui-framework");
-    assert!(import.resolved.ends_with("/framework/index.js"));
+    assert_eq!(
+        Path::new(&import.resolved).canonicalize()?,
+        root.join("framework").join("index.js")
+    );
     assert!(!import.external);
     assert!(result
         .membership
         .values()
-        .any(|inputs| inputs.contains(&entry)));
+        .any(|inputs| inputs.contains(entry)));
     let code = result
         .files
         .get(Path::new(".webui/stage/index.js"))

@@ -368,6 +368,11 @@ mod tests {
         let root = tempfile::tempdir()?;
         std::fs::write(root.path().join("Cargo.toml"), "[workspace]\n[package]\nname='target-root-fixture'\nversion='0.0.0'\n[lib]\npath='lib.rs'\n")?;
         std::fs::write(root.path().join("lib.rs"), "")?;
+        // Compare physical directories: Cargo and std can spell the same
+        // Windows path differently, with or without a verbatim prefix.
+        for dir in ["custom target", "absolute target", "configured target"] {
+            std::fs::create_dir(root.path().join(dir))?;
+        }
         for requested in [
             PathBuf::from("custom target"),
             root.path().join("absolute target"),
@@ -377,12 +382,13 @@ mod tests {
                 "target root fixture",
             )?;
             let metadata: serde_json::Value = serde_json::from_slice(&output.stdout)?;
-            let expected = if requested.is_absolute() {
-                requested
-            } else {
-                root.path().canonicalize()?.join(requested)
-            };
-            assert_eq!(metadata["target_directory"].as_str(), expected.to_str());
+            let reported = metadata["target_directory"]
+                .as_str()
+                .ok_or("missing target directory")?;
+            assert_eq!(
+                Path::new(reported).canonicalize()?,
+                root.path().join(requested).canonicalize()?
+            );
         }
         std::fs::create_dir(root.path().join(".cargo"))?;
         std::fs::write(
@@ -394,12 +400,12 @@ mod tests {
             "configured target root fixture",
         )?;
         let metadata: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+        let reported = metadata["target_directory"]
+            .as_str()
+            .ok_or("missing configured target directory")?;
         assert_eq!(
-            metadata["target_directory"].as_str(),
-            root.path()
-                .canonicalize()?
-                .join("configured target")
-                .to_str()
+            Path::new(reported).canonicalize()?,
+            root.path().join("configured target").canonicalize()?
         );
         Ok(())
     }
