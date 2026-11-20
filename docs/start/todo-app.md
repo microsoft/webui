@@ -198,7 +198,7 @@ The script URL points to the bundle created in
   boundary. Enter and the Add button use the same handler.
 - `w-ref="{addInput}"` needs braces. The ref is used only to restore focus;
   `@input` updates `draft`, and the `value` binding keeps the input in sync.
-- <code v-pre>key="{{item.id}}"</code> preserves each repeated component's identity. `id` alone
+- `key="{{item.id}}"` preserves each repeated component's identity. `id` alone
   is not a repeat key.
 - Child components receive item values through attributes; their templates
   do not inherit the parent's `item` variable.

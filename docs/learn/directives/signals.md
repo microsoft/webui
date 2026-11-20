@@ -7,7 +7,7 @@ description: "Read state through dotted paths, escape text by default, and reser
 
 # Text Bindings
 
-Insert state with <code v-pre>{{path}}</code>. Use triple braces only for
+Insert state with `{{path}}`. Use triple braces only for
 trusted HTML. These bindings read values; they do not evaluate arbitrary
 JavaScript, call functions, or perform arithmetic.
 

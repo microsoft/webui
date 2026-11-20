@@ -83,7 +83,7 @@ For native or custom HTML boolean attributes, bind presence with `?`:
 Use actual JSON booleans, not strings.
 
 ARIA attributes are different: they often need a literal `"true"` or `"false"`
-value. For example, use <code v-pre>aria-pressed="{{isActive}}"</code>, not
+value. For example, use `aria-pressed="{{isActive}}"`, not
 `?aria-pressed`.
 
 ## Observable Truthiness in `<if>` Conditions
