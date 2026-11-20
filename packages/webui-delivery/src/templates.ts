@@ -59,39 +59,12 @@ export function registerTemplatesAndStyles(
     ? registerComponentStyleCatalog(componentStyles)
     : undefined;
 
-  let executableTemplateBody = '';
+  const prepareTemplates = window.__webuiPrepareTemplates;
+  if (!prepareTemplates) {
+    installStandaloneConditions(data.templateFunctions, nonce);
+  }
+
   let registeredTemplates: Record<string, unknown> | undefined;
-  // 1. Template closures: execute only the component-local condition arrays.
-  //    TRUST BOUNDARY: closure scripts come from the same-origin server
-  //    that compiled the protocol. The CSP nonce gates script execution.
-  //    If the server endpoint is compromised, this is an XSS vector —
-  //    same risk as the existing fetchPartial pipeline.
-  if (data.templateFunctions) {
-    const tags = Object.keys(data.templateFunctions);
-    if (tags.length > 0) {
-      executableTemplateBody += 'var w=(window.__webui||(window.__webui={}));var f=w.templateFns||(w.templateFns={});';
-    }
-    for (let i = 0; i < tags.length; i++) {
-      const tag = tags[i];
-      const functions = data.templateFunctions[tag];
-      if (!functions) continue;
-      executableTemplateBody += 'f[';
-      executableTemplateBody += JSON.stringify(tag);
-      executableTemplateBody += ']=';
-      executableTemplateBody += functions;
-      executableTemplateBody += ';';
-    }
-  }
-
-  if (executableTemplateBody) {
-    const script = document.createElement('script');
-    if (nonce) script.nonce = nonce;
-    script.textContent = `(function(){${executableTemplateBody}})();`;
-    document.head.appendChild(script);
-    document.head.removeChild(script);
-  }
-
-  // 2. Template metadata is published only after resources and closures.
   if (data.templates) {
     const w = window as unknown as { __webui?: { templates?: Record<string, unknown>; [key: string]: unknown } };
     if (!w.__webui) w.__webui = {};
@@ -120,7 +93,9 @@ export function registerTemplatesAndStyles(
       }
     }
     if (registeredTemplates) {
-      window.__webuiPrepareTemplates?.(registeredTemplates);
+      // The registry installs compiler conditions with its private policy before
+      // normalization. Delivery never receives a TrustedScript or the policy.
+      prepareTemplates?.(registeredTemplates, data.templateFunctions, nonce);
       for (const tag of Object.keys(registeredTemplates)) {
         const template = registeredTemplates[tag];
         w.__webui.templates[tag] = template;
@@ -143,6 +118,27 @@ export function registerTemplatesAndStyles(
   if (!inventory && !styles) return complete;
   if (complete) return complete.then(() => updateInventory(inventory ?? '', styles));
   updateInventory(inventory ?? '', styles);
+}
+
+// Preserve pre-bootstrap and standalone publication without creating a policy.
+// The browser still rejects this path if Trusted Types is enforced.
+function installStandaloneConditions(
+  sources: TemplateResourceResponse['templateFunctions'],
+  nonce: string,
+): void {
+  if (!sources) return;
+  let closures = '';
+  for (const tag of Object.keys(sources)) {
+    const source = sources[tag];
+    if (source) closures += `f[${JSON.stringify(tag)}]=${source};`;
+  }
+  if (!closures) return;
+
+  const script = document.createElement('script');
+  if (nonce) script.nonce = nonce;
+  script.textContent = `(function(){var w=(window.__webui||(window.__webui={}));var f=w.templateFns||(w.templateFns={});${closures}})();`;
+  document.head.appendChild(script);
+  document.head.removeChild(script);
 }
 
 /** Register initial bootstrap styles before announcing already-published templates. */

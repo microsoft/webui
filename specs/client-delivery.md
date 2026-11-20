@@ -60,6 +60,15 @@ registration bridge once normal bootstrap is active. Renderer-independent
 consumers keep their wire validation and pre-bootstrap publication behavior;
 they do not import a second DOM style engine.
 
+JSON partials, NDJSON partials, and on-demand component responses share one
+registration path. The framework registry installs serialized condition tables
+for the compiled templates being registered before normalizing their condition
+references. These tables are trusted compiler output, separate from request
+state. The registry uses the same private `webui` Trusted Types policy as lazy
+packs and preserves the document nonce. Delivery neither imports that policy
+nor receives trusted values from it. Without the registry bridge, standalone
+publication does not authorize raw strings under Trusted Types.
+
 Within one inventory epoch, concurrently completing responses merge their
 availability bitsets instead of replacing one another's bits. Explicit template
 collection resets inventory and advances a document-local epoch. A request

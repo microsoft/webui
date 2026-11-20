@@ -64,7 +64,7 @@ import type {
   TemplateMeta,
 } from './template-types.js';
 
-import { registerTrustedTemplateBlock } from './trusted-types-policy.js';
+import { installCompilerConditions, registerTrustedTemplateBlock } from './trusted-types-policy.js';
 import { noteTemplateRead, templateCacheHooks } from './template-cache-contract.js';
 
 const WEBUI_DATA_ID = 'webui-data';
@@ -75,15 +75,7 @@ const NO_CONDITION_FNS: CompiledConditionFn[] = [];
 let webuiDataLoaded = false;
 
 type RuntimeTemplateFns = Record<string, CompiledConditionFn[]>
-  & Record<symbol, number | undefined>;
-
-function runtimeTemplateFnCount(registry: RuntimeTemplateFns): number {
-  const count = registry[TEMPLATE_FN_COUNT];
-  if (typeof count === 'number') return count;
-  const initialized = Object.keys(registry).length;
-  registry[TEMPLATE_FN_COUNT] = initialized;
-  return initialized;
-}
+  & { [TEMPLATE_FN_COUNT]?: number };
 
 interface PendingTemplateDefinition {
   readonly ctor: Function;
@@ -192,14 +184,18 @@ export function installTemplateRegistry(): void {
       detail.waitUntil(Promise.reject(error));
     }
   });
-  window.__webuiPrepareTemplates = (values: Record<string, unknown>): void => {
+  window.__webuiPrepareTemplates = (values, conditions, nonce = '') => {
+    let closures = '';
     for (const tag of Object.keys(values)) {
-      const value = values[tag];
-      if (!value || typeof value !== 'object' || !('h' in value) || typeof value.h !== 'string') {
+      const value = values[tag] as TemplateMeta | null | undefined;
+      if (typeof value !== 'object' || typeof value?.h !== 'string') {
         throw new Error(`[WebUI] Invalid compiled template <${tag}>. Rebuild matching artifacts.`);
       }
+      const source = conditions?.[tag];
+      if (source && typeof source === 'string') closures += `[${JSON.stringify(tag)}]:${source},`;
     }
     const templates = values as Record<string, TemplateMeta>;
+    if (closures) installCompilerConditions(closures, nonce);
     prepareTemplateData(templates);
     templateCacheHooks?.accept(templates);
   };
@@ -237,7 +233,11 @@ declare global {
     /** Consolidated SSR metadata loaded from `#webui-data` or partial responses. */
     __webui?: WebUIRuntimeGlobal;
     __webuiRegisterComponentStyles?: (value: unknown) => Promise<void> | undefined;
-    __webuiPrepareTemplates?: (templates: Record<string, unknown>) => void;
+    __webuiPrepareTemplates?: (
+      templates: Record<string, unknown>,
+      conditions?: Readonly<Record<string, string>>,
+      nonce?: string,
+    ) => void;
     /**
      * Installed by the style runtime: prepare the stylesheets of component style
      * roots. `priority: 'low'` prepares them speculatively, once the window
@@ -365,12 +365,7 @@ export function hasPendingTemplateDefinition(tagName: string): boolean {
 function loadWebUIDataBlock(): void {
   if (webuiDataLoaded || window.__webui?.state !== undefined || typeof document === 'undefined') return;
   const el = document.getElementById(WEBUI_DATA_ID);
-  if (!el) {
-    webuiDataLoaded = true;
-    return;
-  }
-
-  const text = el.textContent;
+  const text = el?.textContent;
   let componentStyles: ComponentStyles | undefined;
   if (text) {
     const templateFns = window.__webui?.templateFns;
@@ -388,7 +383,7 @@ function loadWebUIDataBlock(): void {
     window.__webui = parsed;
     componentStyles = parsed.componentStyles;
   }
-  el.remove();
+  el?.remove();
   webuiDataLoaded = true;
   if (componentStyles !== undefined) registerComponentStyles(componentStyles);
 }
@@ -402,12 +397,11 @@ function loadWebUIDataBlock(): void {
  */
 export function releaseSSRBootstrapState(): void {
   const runtime = window.__webui;
-  if (runtime?.state !== undefined) {
-    delete runtime.state;
-  }
+  if (!runtime) return;
+  delete runtime.state;
   // The installed style bridge owns validated, detached definitions for later
   // mounts and navigation. The one-shot wire catalog is not a second registry.
-  if (runtime && window.__webuiRegisterComponentStyles) {
+  if (window.__webuiRegisterComponentStyles) {
     delete runtime.componentStyles;
   }
 }
@@ -435,25 +429,17 @@ function normalizeTemplate(
   if (meta.v !== 3) {
     throw new Error(`[WebUI] Unsupported template metadata version for <${name}>. Rebuild matching artifacts.`);
   }
-  const runtimeFns = window.__webui?.templateFns as
-    | RuntimeTemplateFns
-    | undefined;
+  const runtime = window.__webui;
+  const runtimeFns: RuntimeTemplateFns | undefined = runtime?.templateFns;
   const fns = suppliedFns ?? runtimeFns?.[name] ?? NO_CONDITION_FNS;
   normalizeTemplateConditions(name, meta, fns);
   normalizedTemplates.add(meta);
-  if (suppliedFns === undefined && runtimeFns?.[name] === fns) {
-    let remaining = runtimeTemplateFnCount(runtimeFns);
+  if (runtime && suppliedFns === undefined && runtimeFns?.[name] === fns) {
+    let remaining = (runtimeFns[TEMPLATE_FN_COUNT] ?? Object.keys(runtimeFns).length) - 1;
     delete runtimeFns[name];
-    remaining--;
-    runtimeFns[TEMPLATE_FN_COUNT] = remaining;
-    if (remaining === 0 && window.__webui) {
-      const liveCount = Object.keys(runtimeFns).length;
-      if (liveCount === 0) {
-        delete window.__webui.templateFns;
-      } else {
-        runtimeFns[TEMPLATE_FN_COUNT] = liveCount;
-      }
-    }
+    if (remaining === 0) remaining = Object.keys(runtimeFns).length;
+    if (remaining) runtimeFns[TEMPLATE_FN_COUNT] = remaining;
+    else delete runtime.templateFns;
   }
 }
 

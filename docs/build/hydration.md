@@ -422,11 +422,15 @@ If CSP restricts policy names, it must allow `webui`, even when sink enforcement
 not enabled. Let WebUI create that policy and share one framework module across
 bundles to avoid duplicate-policy rejection. Policy creation errors are reported,
 not bypassed with strings. Browsers without Trusted Types keep normal rendering.
-Client-side router partial navigation is not yet supported with enforced Trusted Types.
+With `startRuntime()`, native WebUI routes support JSON and NDJSON partial
+navigation under enforcement, including compiled conditions on routes that
+were not part of the initial render. Use matching framework and delivery
+versions and keep the document's nonce-based CSP in force.
 
-**This policy is not an HTML sanitizer.** Treat compiled template metadata and
-component asset modules as executable application code; never populate them from
-user HTML or request state. `registerTemplateData` is a trusted compiler-output
+**This policy is not an HTML sanitizer.** Treat compiled template resources and
+component asset modules as executable application code. Serve them from trusted
+endpoints and never populate them from user HTML or request state.
+`registerTemplateData` is a trusted compiler-output
 registration API, and registered HTML must remain immutable. Keep untrusted data
 in normal escaped bindings.
 

@@ -135,9 +135,9 @@ Prefer a built-in HTML element or modern CSS feature over a hand-built one.
 templates and generated CSS import maps. No setup call or special import order is
 needed. To enforce Trusted Types, use `require-trusted-types-for 'script'; trusted-types webui`
 alongside the normal nonce CSP. Share one framework module across bundles; do not
-pre-create its policy. Raw triple-brace state HTML, FAST strings and arbitrary
-scripts/URLs are not promoted. Client-side router partial navigation is not yet
-supported under enforcement. See
+pre-create its policy. With `startRuntime()`, native WebUI routes support both
+JSON and NDJSON partial navigation under enforcement. Raw triple-brace state
+HTML, FAST strings, and arbitrary scripts/URLs are not promoted. See
 [Trusted Types](/build/hydration#trusted-types).
 
 ```text

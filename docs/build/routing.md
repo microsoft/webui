@@ -851,6 +851,12 @@ app.get('/users/:id', (req, res) => {
 
 ## Security
 
+Native WebUI routes support JSON and NDJSON partial navigation with
+[Trusted Types enforced](/build/hydration#trusted-types). Start the framework
+runtime and pass the document nonce to the renderer as usual. Serve compiled
+template resources only from trusted endpoints; do not generate them from
+request state.
+
 Route parameters (`:id`, `:name`, etc.) are extracted from URLs and injected into component state. They are automatically HTML-escaped when rendered with double braces (`{{param}}`), but **not** when rendered with triple braces (`{{{param}}}`).
 
 > ⚠️ Never use triple braces (`{{{...}}}`) to render route parameters. An attacker could craft a URL like `/users/<script>alert(1)</script>` to inject arbitrary HTML.
