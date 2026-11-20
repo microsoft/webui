@@ -10,6 +10,9 @@ complete streamed ranges adopt their SSR DOM. Streaming HTML is opt-in;
 normal rendering and JSON/NDJSON navigation do not acquire its records
 or retained state.
 
+Deploy matching compiler output, handler, and browser assets together. The
+stream has one wire contract, with no version negotiation or legacy fallback.
+
 ## One host-driven session
 
 The compiler places declarations in entry or component records. Only a
@@ -79,8 +82,8 @@ ordered bundle rather than a single component. Once a record delivers that
 definition, later SSR copies keep their CSS but do not carry the source marker.
 Only static ShadowRoot installations in compiler-proven HTML placements
 qualify. Styles from outside the current range, styles the browser cannot be
-guaranteed to see, and text
-changed by HTML escaping or normalization retain their full definitions.
+guaranteed to see, and text changed by HTML escaping or normalization retain
+their full definitions.
 Before template registration, activation, or inventory publication, the
 coordinator resolves these promises with one bounded range-local walk. Missing
 sources fail the stream. The catalog retains only the CSS text and metadata,

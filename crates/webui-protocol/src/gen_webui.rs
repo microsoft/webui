@@ -357,7 +357,7 @@ pub struct WebUiFragmentComponent {
     pub fragment_id: ::prost::alloc::string::String,
     /// The compiler placed this host in ordinary HTML where its declarative
     /// ShadowRoot can be read by a streaming checkpoint, if its ancestors also
-    /// have that guarantee. Unmarked (including older artifacts) uses full CSS.
+    /// have that guarantee.
     #[prost(bool, tag = "2")]
     pub streaming_style_source: bool,
 }

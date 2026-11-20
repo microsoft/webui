@@ -306,7 +306,7 @@ message WebUIFragmentComponent {
   string fragment_id = 1;
   // The compiler placed this host in ordinary HTML where its declarative
   // ShadowRoot can be read by a streaming checkpoint, if its ancestors also
-  // have that guarantee. Unmarked (including older artifacts) uses full CSS.
+  // have that guarantee.
   bool streaming_style_source = 2;
 }
 
