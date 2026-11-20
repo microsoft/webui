@@ -845,13 +845,21 @@ impl Step {
     const TEST: Self = Self {
         name: "test",
         run: || {
-            run_command_quiet(
-                "cargo",
-                &["test", "--workspace", "--features", DESKTOP_DEV_FEATURES],
-                None,
-            )?;
+            let go_available = go_tests::available()?;
+            let mut args = vec!["test", "--workspace", "--features", DESKTOP_DEV_FEATURES];
+            if !go_available {
+                eprintln!(
+                    "    {} Skipping Go-dependent tests: Go is not on PATH. Install Go 1.25+ and a cgo C compiler to run them.",
+                    console::style("warning:").yellow(),
+                );
+                // Rust tests that launch the Go toolchain share this prefix.
+                args.extend(["--", "--skip", "requires_go_"]);
+            }
+            run_command_quiet("cargo", &args, None)?;
             node_tests::run()?;
-            go_tests::run()?;
+            if go_available {
+                go_tests::run_suite()?;
+            }
             run_command_quiet(
                 "node",
                 &[

@@ -2,16 +2,34 @@
 // Licensed under the MIT license.
 
 use crate::cargo_artifacts::{self, Kind};
-use crate::util::{build_command, run_command_quiet};
+use crate::util::build_command;
 use std::ffi::OsString;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
 
+pub(crate) fn available() -> Result<bool, String> {
+    match Command::new("go").arg("version").output() {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!("Cannot run go version: {error}")),
+        Ok(output) if !output.status.success() => Err(format!(
+            "go version failed ({}):\n{}{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        )),
+        Ok(_) => Ok(true),
+    }
+}
+
 pub(crate) fn run() -> Result<(), String> {
-    run_command_quiet("go", &["version"], None).map_err(|error| {
-        format!("Go binding tests require Go 1.25+ and a cgo C compiler:\n{error}")
-    })?;
+    if !available()? {
+        return Err("Go binding tests require Go 1.25+ on PATH and a cgo C compiler".into());
+    }
+    run_suite()
+}
+
+pub(crate) fn run_suite() -> Result<(), String> {
     check_formatting()?;
     let output = build_command(
         "cargo",
@@ -333,6 +351,35 @@ fn prepend_flag(variable: &str, prefix: &str, path: &Path) -> Result<OsString, S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_go_skips_gate_checks_but_not_explicit_checks() -> Result<(), String> {
+        const CHILD: &str = "WEBUI_TEST_MISSING_GO";
+        if std::env::var_os(CHILD).is_none() {
+            let empty = tempfile::tempdir().map_err(|error| error.to_string())?;
+            let output = Command::new(std::env::current_exe().map_err(|error| error.to_string())?)
+                .args([
+                    "--exact",
+                    "go_tests::tests::missing_go_skips_gate_checks_but_not_explicit_checks",
+                    "--nocapture",
+                ])
+                .current_dir(empty.path())
+                .env(CHILD, "1")
+                .env("PATH", empty.path())
+                .output()
+                .map_err(|error| error.to_string())?;
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return Ok(());
+        }
+        assert!(!available()?);
+        assert!(run().is_err(), "explicit Go checks must still require Go");
+        Ok(())
+    }
 
     #[test]
     fn file_proxy_urls_preserve_spaces_and_windows_paths() -> Result<(), String> {

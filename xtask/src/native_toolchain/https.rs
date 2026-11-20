@@ -56,7 +56,7 @@ mod tests {
     }
 
     #[test]
-    fn go_https_transport_guards() -> Result<(), String> {
+    fn requires_go_https_transport_guards() -> Result<(), String> {
         let temporary = tempfile::tempdir().map_err(|e| e.to_string())?;
         let source = temporary.path().join("download.go");
         let tests = temporary.path().join("download_test.go");

@@ -4,7 +4,8 @@
 use super::*;
 
 #[test]
-fn all_six_target_contracts_validate_without_executing_payloads() -> Result<(), String> {
+fn requires_go_all_six_target_contracts_validate_without_executing_payloads() -> Result<(), String>
+{
     // Synthetic headers/payloads prove portable inventory validation only.
     // They are deliberately not executable programs or source-provenance proof.
     let temp = tempfile::tempdir().map_err(|e| e.to_string())?;
@@ -60,7 +61,7 @@ fn release_directory_symlinks_are_rejected() -> Result<(), String> {
 }
 
 #[test]
-fn portable_archive_streaming_guards() -> Result<(), String> {
+fn requires_go_portable_archive_streaming_guards() -> Result<(), String> {
     let temp = tempfile::tempdir().map_err(|e| e.to_string())?;
     let source = temp.path().join("validate.go");
     let tests = temp.path().join("validate_test.go");
@@ -79,7 +80,7 @@ fn portable_archive_streaming_guards() -> Result<(), String> {
 }
 
 #[test]
-fn genuine_archive_is_validated_without_target_execution() -> Result<(), String> {
+fn requires_go_genuine_archive_is_validated_without_target_execution() -> Result<(), String> {
     let Some(archive) = std::env::var_os("WEBUI_TEST_TOOLCHAIN_ARCHIVE") else {
         eprintln!("genuine release archive test not exercised: set WEBUI_TEST_TOOLCHAIN_ARCHIVE");
         return Ok(());
