@@ -2584,11 +2584,18 @@ impl WebUIHandler {
         let Some(selected) = fragments.get(range.clone()) else {
             return Err(invalid_fragment_range_error(&range, fragments.len()));
         };
+        let is_streaming = context.streaming.is_some();
+        let check_streaming_openings = context
+            .streaming
+            .as_ref()
+            .is_some_and(|streaming| streaming.check_root_openings);
         for (offset, item) in selected.iter().enumerate() {
             let index = range.start + offset;
-            if context.streaming.is_some() {
+            if is_streaming {
                 validate_pending_streaming_root(item, context)?;
-                validate_streaming_root_opening(&fragments[..index], item)?;
+                if check_streaming_openings {
+                    validate_streaming_root_opening(&fragments[..index], item)?;
+                }
             }
             // The prepared target is only read by fragments that descend, so it
             // is resolved per-arm. Hoisting it here would charge every raw text
@@ -2921,13 +2928,12 @@ impl WebUIHandler {
                     context
                         .writer
                         .write(&crate::html_encode::encode_safe(name))?;
-                    context.writer.write("\" data-webui-strategy=\"")?;
                     context
                         .writer
                         .write(if strategy == webui_protocol::CssStrategy::Module {
-                            "module"
+                            "\" data-webui-strategy=\"module"
                         } else {
-                            "style"
+                            "\" data-webui-strategy=\"style"
                         })?;
                     let needs_escape = context.style_resources_requiring_escape.contains(name);
                     if strategy == webui_protocol::CssStrategy::Style
@@ -3263,8 +3269,32 @@ impl WebUIHandler {
             // Capture only after root parity succeeds, so malformed protocols
             // cannot contribute unmarked hosts to a checkpoint.
             record_checkpoint_tag(context, fragment_id);
-        }
 
+            // This renderer never starts a boundary. Only an opaque host
+            // inside an active Style boundary can change source eligibility.
+            if !origin.allows_inline_style_sources()
+                && context.css_strategy == webui_protocol::CssStrategy::Style
+                && context
+                    .streaming
+                    .as_deref_mut()
+                    .is_some_and(|streaming| streaming.suppress_active_inline_style_sources())
+            {
+                let result = self.render_component_body(fragment_id, target, context);
+                if let Some(streaming) = context.streaming.as_deref_mut() {
+                    streaming.restore_style_source_scope(true);
+                }
+                return result;
+            }
+        }
+        self.render_component_body(fragment_id, target, context)
+    }
+
+    fn render_component_body(
+        &self,
+        fragment_id: &str,
+        target: Option<usize>,
+        context: &mut WebUIProcessContext,
+    ) -> Result<()> {
         // Emit the component's CSS module importmap into its light DOM and track
         // the component as rendered on first encounter only. `rendered_components`
         // is a set, so gating the `insert` (and its `String` clone) behind the
@@ -3307,16 +3337,7 @@ impl WebUIHandler {
             p.push_scope();
         }
 
-        let saved_style_source_scope = context
-            .streaming
-            .as_deref_mut()
-            .map(|streaming| streaming.enter_style_source_scope(origin));
         let render_result = self.process_fragment_target(target, fragment_id, context);
-        if let (Some(streaming), Some(saved)) =
-            (context.streaming.as_deref_mut(), saved_style_source_scope)
-        {
-            streaming.restore_style_source_scope(saved);
-        }
         context.visible_loop_scope = saved_loop_scope;
 
         if owns_css_tree {
@@ -16433,6 +16454,31 @@ mod tests {
         assert_streaming_root_error(
             &detached_from_opening,
             "comp-a",
+            "unclosed component opening-tag close",
+        );
+    }
+
+    #[test]
+    fn misplaced_root_opening_is_rejected_inside_a_boundary_free_component() {
+        let protocol = streaming_root_validation_protocol(
+            vec![
+                WebUIFragment::raw("<comp-a"),
+                structural_fragment("streaming_root:comp-a"),
+                WebUIFragment::raw(">"),
+                WebUIFragment::component("comp-a"),
+            ],
+            completed_streaming_tail(),
+        );
+        let mut document = protocol.protocol().clone();
+        document.fragments.get_mut("comp-a").unwrap().fragments = vec![
+            WebUIFragment::raw("not a host opening"),
+            structural_fragment("streaming_root:comp-b"),
+            WebUIFragment::raw(">"),
+            WebUIFragment::component("comp-b"),
+        ];
+        assert_streaming_root_error(
+            &Protocol::new(document),
+            "comp-b",
             "unclosed component opening-tag close",
         );
     }

@@ -527,6 +527,7 @@ impl ContinuationVm {
             handler,
             protocol,
         } = runtime;
+        let check_streaming_openings = streaming_state(context)?.check_root_openings;
         loop {
             let index = frame.index;
             let Some(fragment) = list.fragments.get(index) else {
@@ -537,7 +538,9 @@ impl ContinuationVm {
                 return Ok(None);
             };
             super::validate_pending_streaming_root(fragment, context)?;
-            super::validate_streaming_root_opening(&list.fragments[..index], fragment)?;
+            if check_streaming_openings {
+                super::validate_streaming_root_opening(&list.fragments[..index], fragment)?;
+            }
             frame.index = index + 1;
 
             match fragment.fragment.as_ref() {

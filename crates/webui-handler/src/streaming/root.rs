@@ -9,7 +9,9 @@
 //! stream *before* the browser can upgrade the custom element. Ordinary
 //! rendering ignores the signal byte-for-byte.
 
-use webui_protocol::{web_ui_fragment::Fragment, WebUIFragment};
+use webui_protocol::{
+    web_ui_fragment::Fragment, WebUIFragment, WebUIFragmentSignal, WebUIProtocol,
+};
 
 use super::error::{
     generated_streaming_root_error, mismatched_streaming_root_error,
@@ -52,6 +54,14 @@ pub(super) struct PendingStreamingRoot<'data> {
 pub(crate) enum ComponentHostOrigin {
     ParserProduced { style_source: bool },
     HandlerGenerated,
+}
+
+impl ComponentHostOrigin {
+    #[inline]
+    #[must_use]
+    pub(crate) fn allows_inline_style_sources(self) -> bool {
+        matches!(self, Self::ParserProduced { style_source: true })
+    }
 }
 
 #[inline]
@@ -132,27 +142,19 @@ fn contains_unquoted_tag_close(bytes: &[u8]) -> bool {
     false
 }
 
-#[inline]
-pub(crate) fn validate_streaming_root_opening(
+fn misplaced_streaming_root_opening<'data>(
     preceding: &[WebUIFragment],
-    fragment: &WebUIFragment,
-) -> Result<()> {
-    let Some(Fragment::Signal(signal)) = fragment.fragment.as_ref() else {
-        return Ok(());
-    };
-    let Some(tag) =
-        structural_signal_value(signal).and_then(|value| value.strip_prefix(STREAMING_ROOT_PREFIX))
-    else {
-        return Ok(());
-    };
+    signal: &'data WebUIFragmentSignal,
+) -> Option<&'data str> {
+    let tag = structural_signal_value(signal)?.strip_prefix(STREAMING_ROOT_PREFIX)?;
     if tag.is_empty() {
-        return Ok(());
+        return None;
     }
 
     for candidate in preceding.iter().rev() {
         match candidate.fragment.as_ref() {
             Some(Fragment::Attribute(_) | Fragment::Plugin(_)) => {}
-            Some(Fragment::Raw(raw)) if raw_has_unclosed_opening_tag(&raw.value) => return Ok(()),
+            Some(Fragment::Raw(raw)) if raw_has_unclosed_opening_tag(&raw.value) => return None,
             Some(Fragment::Raw(raw))
                 if raw
                     .value
@@ -162,10 +164,36 @@ pub(crate) fn validate_streaming_root_opening(
             _ => break,
         }
     }
-    Err(misplaced_streaming_root_error(
-        tag,
-        "the compiler-owned signal at an unclosed component opening-tag close",
-    ))
+    Some(tag)
+}
+
+pub(crate) fn has_misplaced_streaming_root_openings(protocol: &WebUIProtocol) -> bool {
+    protocol.fragments.values().any(|list| {
+        list.fragments.iter().enumerate().any(|(index, fragment)| {
+            if let Some(Fragment::Signal(signal)) = fragment.fragment.as_ref() {
+                return misplaced_streaming_root_opening(&list.fragments[..index], signal)
+                    .is_some();
+            }
+            false
+        })
+    })
+}
+
+#[cold]
+#[inline(never)]
+pub(crate) fn validate_streaming_root_opening(
+    preceding: &[WebUIFragment],
+    fragment: &WebUIFragment,
+) -> Result<()> {
+    if let Some(Fragment::Signal(signal)) = fragment.fragment.as_ref() {
+        if let Some(tag) = misplaced_streaming_root_opening(preceding, signal) {
+            return Err(misplaced_streaming_root_error(
+                tag,
+                "the compiler-owned signal at an unclosed component opening-tag close",
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Assert that no component root is mid-flight.

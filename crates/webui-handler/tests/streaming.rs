@@ -457,7 +457,7 @@ fn inline_style_sources_require_reachable_placement_and_unpublished_styles() {
         );
     }
     protocol.populate_style_closures(&["index.html"]);
-    protocol.assign_build_id().unwrap();
+    protocol.build_id = "inline-style-inventory-test".into();
 
     let mut session = new_session(Arc::new(Protocol::new(protocol)), "/");
     let state = test_json!({});
