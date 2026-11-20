@@ -377,7 +377,7 @@ extends:
               releaseNotesInline: ''
               addChangeLog: $(releaseAddChangelog)
               changeLogCompareToRelease: lastFullRelease
-              changeLogType: issueBased
+              changeLogType: commitBased
               assets: |
                 $(Build.SourcesDirectory)/publish_artifacts_npm/*
                 $(Build.ArtifactStagingDirectory)/publish_artifacts_nuget/*
