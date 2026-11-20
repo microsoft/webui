@@ -189,6 +189,7 @@ impl WebUiFragment {
             fragment: Some(web_ui_fragment::Fragment::Component(
                 WebUiFragmentComponent {
                     fragment_id: fragment_id.into(),
+                    streaming_style_source: false,
                 },
             )),
         }

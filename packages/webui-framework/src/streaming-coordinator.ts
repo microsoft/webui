@@ -465,7 +465,7 @@ function hydrateCheckpoint(
     const host = spanHostFor(enclosing);
     if (host) bypass = { id: String(enclosing), host };
   }
-  applyBoundaryBootstrap(bootstrap);
+  applyBoundaryBootstrap(bootstrap, range);
   if (range.start && range.end) {
     const boundary: UpdatableBoundary | undefined = updatable
       ? newUpdatableBoundary()

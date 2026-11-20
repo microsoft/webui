@@ -2927,8 +2927,21 @@ impl WebUIHandler {
                         } else {
                             "style"
                         })?;
-                    context.writer.write("\">")?;
-                    if context.style_resources_requiring_escape.contains(name) {
+                    let needs_escape = context.style_resources_requiring_escape.contains(name);
+                    if strategy == webui_protocol::CssStrategy::Style
+                        && install == StyleClosureInstall::Static
+                        && !is_document_tree
+                        && !needs_escape
+                        && context
+                            .streaming
+                            .as_deref_mut()
+                            .is_some_and(|streaming| streaming.record_inline_style_source(name))
+                    {
+                        context.writer.write("\" data-ws-style>")?;
+                    } else {
+                        context.writer.write("\">")?;
+                    }
+                    if needs_escape {
                         crate::html_encode::write_style_text(context.writer, resource)?;
                     } else {
                         context.writer.write(resource)?;

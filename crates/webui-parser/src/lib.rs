@@ -754,6 +754,7 @@ enum ParseOp<'a> {
     /// Restore the enclosing component/raw/inert context after its child range
     /// has been parsed.
     RestoreBoundaryParentScope(Option<&'static str>),
+    RestoreStyleSourceScope,
     CompleteFor {
         parent: ParseContext,
         item: String,
@@ -886,6 +887,7 @@ pub struct HtmlParser {
     /// A generated sentinel in any of these contexts is either text or lives
     /// in an inert fragment, so it cannot commit a streaming boundary.
     boundary_parent_scope: Option<&'static str>,
+    opaque_style_source_scope: bool,
 
     /// `src` of every authored `<script type="module">` outside any
     /// `<boundary>`, in document order, from the current top-level parse.
@@ -1595,6 +1597,7 @@ impl HtmlParser {
             route_depth: 0,
             foster_context_depth: 0,
             boundary_parent_scope: None,
+            opaque_style_source_scope: false,
             module_entry_srcs: Vec::new(),
         }
     }
@@ -2509,6 +2512,7 @@ impl HtmlParser {
         let previous_route_depth = std::mem::replace(&mut self.route_depth, 0);
         let previous_foster_depth = std::mem::replace(&mut self.foster_context_depth, 0);
         let previous_parent_scope = self.boundary_parent_scope.take();
+        let previous_style_scope = std::mem::take(&mut self.opaque_style_source_scope);
         let previous_named_for_loops = std::mem::take(&mut self.named_for_loops);
         let owner_index = self.loop_owner_indices.len() + 1;
         self.loop_owner_indices
@@ -2532,6 +2536,7 @@ impl HtmlParser {
         self.route_depth = previous_route_depth;
         self.foster_context_depth = previous_foster_depth;
         self.boundary_parent_scope = previous_parent_scope;
+        self.opaque_style_source_scope = previous_style_scope;
         self.named_for_loops = previous_named_for_loops;
         self.in_progress_fragments.remove(&fragment_key);
         self.current_fragment_id = previous_fragment_id;
@@ -2868,6 +2873,7 @@ impl HtmlParser {
                 ParseOp::RestoreBoundaryParentScope(previous) => {
                     self.boundary_parent_scope = previous;
                 }
+                ParseOp::RestoreStyleSourceScope => self.opaque_style_source_scope = false,
                 ParseOp::CompleteFor {
                     parent,
                     item,
@@ -2954,7 +2960,8 @@ impl HtmlParser {
         }
 
         self.add_raw_fragment(">");
-        if element.name().eq_ignore_ascii_case("template")
+        let is_template = element.name().eq_ignore_ascii_case("template");
+        let shadow_style_hook = is_template
             && element
                 .attrs()
                 .find(|attr| attr.name.eq_ignore_ascii_case("shadowrootmode"))
@@ -2963,8 +2970,8 @@ impl HtmlParser {
             && self
                 .component_dom_analyses
                 .get(&self.current_fragment_id)
-                .is_some_and(|analysis| analysis.uses_shadow_dom)
-        {
+                .is_some_and(|analysis| analysis.uses_shadow_dom);
+        if shadow_style_hook {
             // This compiler-owned no-DOM hook lets the server install the
             // complete tree-local style closure before hydratable children.
             // It is a protocol fragment rather than an HTML marker, so client
@@ -2981,6 +2988,14 @@ impl HtmlParser {
             }
             self.enter_foster_context(element.name(), ops);
             self.enter_boundary_parent_scope(element, ops);
+            if self.options.css_strategy == CssStrategy::Style
+                && ((is_template && !(shadow_style_hook && depth == 0))
+                    || element.name().eq_ignore_ascii_case("svg")
+                    || element.name().eq_ignore_ascii_case("math")
+                    || element.name().eq_ignore_ascii_case("select"))
+            {
+                self.enter_opaque_style_source_scope(ops);
+            }
             ops.push(ParseOp::Parse {
                 range: element.inner(),
                 depth: depth + 1,
@@ -3521,6 +3536,13 @@ impl HtmlParser {
         self.boundary_parent_scope = Some("component host content");
     }
 
+    fn enter_opaque_style_source_scope(&mut self, ops: &mut Vec<ParseOp<'_>>) {
+        if self.options.css_strategy == CssStrategy::Style && !self.opaque_style_source_scope {
+            ops.push(ParseOp::RestoreStyleSourceScope);
+            self.opaque_style_source_scope = true;
+        }
+    }
+
     /// Enter a `<boundary name="…">` directive.
     ///
     /// `<boundary>` is a reserved, compile-time-only directive (see
@@ -3992,7 +4014,19 @@ impl HtmlParser {
             self.parse(element.name(), &built.ssr)?;
         }
 
-        fragments.push(WebUIFragment::component(element.name().to_string()));
+        let mut component = WebUIFragment::component(element.name());
+        if self.options.css_strategy == CssStrategy::Style
+            && !self.opaque_style_source_scope
+            && self.foster_context_depth == 0
+            && !is_html_text_only_scope(self.boundary_parent_scope)
+        {
+            if let Some(web_ui_fragment::Fragment::Component(component)) =
+                component.fragment.as_mut()
+            {
+                component.streaming_style_source = true;
+            }
+        }
+        fragments.push(component);
 
         if element.self_closing() {
             fragments.push(structural_signal(format!(
@@ -4002,6 +4036,7 @@ impl HtmlParser {
         } else {
             ops.push(ParseOp::EndComponent(element.name()));
             self.enter_component_content_scope(ops);
+            self.enter_opaque_style_source_scope(ops);
             ops.push(ParseOp::Parse {
                 range: element.inner(),
                 depth: depth + 1,
@@ -10337,6 +10372,47 @@ mod tests {
                 ),
             )
             .expect("a boundary after a closed table must be accepted");
+    }
+
+    #[test]
+    fn streaming_style_sources_exclude_opaque_html_placements() {
+        let mut parser = HtmlParser::with_options(ParserOptions {
+            css_strategy: CssStrategy::Style,
+            ..Default::default()
+        });
+        parser
+            .component_registry_mut()
+            .register_component(ComponentRegistration {
+                tag_name: "test-card",
+                html_content: "<p>Card</p>",
+                css_content: None,
+                is_client_owned: false,
+                script_path: None,
+            })
+            .unwrap();
+        parser
+            .parse(
+                "index.html",
+                concat!(
+                    "<body><boundary name=\"cards\">",
+                    "<template id=\"sample\"><div><test-card></test-card></div></template>",
+                    "<svg><foreignObject><test-card></test-card></foreignObject></svg>",
+                    "<select><test-card></test-card></select>",
+                    "<div><test-card></test-card></div>",
+                    "</boundary></body>",
+                ),
+            )
+            .unwrap();
+        let records = parser.into_fragment_records();
+        let placements: Vec<_> = records["index.html"]
+            .fragments
+            .iter()
+            .filter_map(|fragment| match fragment.fragment.as_ref() {
+                Some(Fragment::Component(component)) => Some(component.streaming_style_source),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(placements, [false, false, false, true]);
     }
 
     #[test]

@@ -246,6 +246,7 @@ struct ComponentEndFrame {
     saved_local_vars: crate::ScopeMap,
     component_slot: u32,
     owns_css_tree: bool,
+    saved_style_source_scope: bool,
 }
 
 struct FragmentFrame {
@@ -817,10 +818,14 @@ impl ContinuationVm {
         if let Some(plugin) = context.plugin.as_mut() {
             plugin.push_scope();
         }
+        let streaming = streaming_state(context)?;
+        let saved_style_source_scope = streaming.style_source_scope;
+        streaming.style_source_scope &= component.streaming_style_source;
         self.push(Frame::ComponentEnd(ComponentEndFrame {
             saved_local_vars,
             component_slot: slot,
             owns_css_tree,
+            saved_style_source_scope,
         }))?;
         self.push(Frame::EnterFragment(slot))?;
         Ok(())
@@ -840,6 +845,7 @@ impl ContinuationVm {
         context.component_attrs.clear();
         context.component_borrowed_attrs.clear();
         context.collecting_component_attrs = false;
+        streaming_state(context)?.style_source_scope = frame.saved_style_source_scope;
         if frame.owns_css_tree {
             let component = protocol
                 .fragment_id(frame.component_slot)
@@ -1256,6 +1262,7 @@ impl ContinuationVm {
         }
         let component = WebUIFragmentComponent {
             fragment_id: tag.to_string(),
+            streaming_style_source: false,
         };
         if spanning {
             self.start_span(&tag, context)?;

@@ -355,6 +355,11 @@ pub struct WebUiFragmentRaw {
 pub struct WebUiFragmentComponent {
     #[prost(string, tag = "1")]
     pub fragment_id: ::prost::alloc::string::String,
+    /// The compiler placed this host in ordinary HTML where its declarative
+    /// ShadowRoot can be read by a streaming checkpoint, if its ancestors also
+    /// have that guarantee. Unmarked (including older artifacts) uses full CSS.
+    #[prost(bool, tag = "2")]
+    pub streaming_style_source: bool,
 }
 /// Loop directive iterating over a collection.
 #[derive(serde::Serialize, serde::Deserialize)]

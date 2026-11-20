@@ -120,7 +120,7 @@ export async function prepareStreamingFixture({
     }
     protocols.set(entry, new Protocol(compiled.protocol, { plugin: 'webui' }));
   }
-  const state = { count: 0, label: 'Ready' };
+  const state = { count: 0, label: 'Ready', showBadge: false };
   const pending = new Map<string, () => void>();
   const staticProtocol = protocols.get('static.html');
   if (!staticProtocol) throw new Error('Streaming fixture has no static component protocol.');
