@@ -57,7 +57,7 @@ Prerequisites:
 
 - Rust toolchain pinned in [`rust-toolchain.toml`](rust-toolchain.toml), with `clippy` and `rustfmt`
 - Node.js 22+ with pnpm
-- Go 1.25+ with `gofmt` and a cgo-compatible C compiler for Go race tests
+- Go 1.25+ with `gofmt` and a cgo-compatible C compiler for Go-dependent tests
 - `tar` for native SDK archive tests
 - Git and Bash for release-tag tests (Git for Windows supplies Bash on Windows)
 - Python 3 for release artifact selection tests
@@ -78,6 +78,10 @@ Common commands:
 | `cargo xtask dev <app>` | Run an example app in development mode |
 | `cargo xtask bench <target>` | Run benchmarks |
 | `cargo xtask build-windows-local` | Manually build and stage Windows MSVC artifacts on macOS |
+
+`cargo xtask check` and `cargo xtask test` warn and skip tests that require the
+Go executable when it is absent from `PATH`. If Go is present, failures remain
+fatal. `cargo xtask test-go` always requires Go.
 
 ### Manual Windows builds on macOS
 

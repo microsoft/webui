@@ -2515,7 +2515,7 @@ mod tests {
     }
 
     #[test]
-    fn go_file_proxy_supports_list_delimiters_in_directory_names() {
+    fn requires_go_file_proxy_supports_list_delimiters_in_directory_names() {
         let root = tempfile::tempdir_in(".").expect("proxy workspace");
         let root = root.path().canonicalize().expect("absolute workspace");
         let names = if cfg!(windows) {
@@ -3153,7 +3153,7 @@ mod tests {
     }
 
     #[test]
-    fn release_artifact_validation_maps_hotfix_to_python_post_release() {
+    fn requires_go_release_artifact_validation_maps_hotfix_to_python_post_release() {
         let root = tempfile::TempDir::new().expect("root should be created");
         let publish = root.path().join("publish");
         for (directory, extension, count) in [
@@ -3328,7 +3328,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_release_artifact_counts_accepts_expected_layout() {
+    fn requires_go_validate_release_artifact_counts_accepts_expected_layout() {
         let root = tempfile::TempDir::new().expect("root should be created");
         for directory in ["npm", "crates", "nuget", "standalone", "python"] {
             fs::create_dir_all(root.path().join("publish").join(directory))
