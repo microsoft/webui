@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
 import type { StreamingFixtureAssets } from '@microsoft/webui-test-support/fixture-streaming';
 import type { TemplateMeta } from '../../../src/template-types.js';
+import type { BoundaryBootstrap } from '../../../src/streaming-protocol.js';
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
@@ -34,10 +35,14 @@ for (const trustedTypes of [false, true]) {
     });
     const id = randomUUID();
     try {
-      await page.goto(`/streaming-bootstrap/fixture.html?id=${id}${trustedTypes ? '&trusted=1' : ''}`, { waitUntil: 'commit' });
+      const response = await page.goto(
+        `/streaming-bootstrap/fixture.html?id=${id}${trustedTypes ? '&trusted=1' : ''}`,
+        { waitUntil: 'commit' },
+      );
       await page.waitForFunction(() => performance.getEntriesByName('webui:boundary:0:update').length === 1);
       await expect(page.locator('h1')).toHaveText('Server-rendered before application startup');
       await expect(page.locator('test-stream-parent button')).toHaveText('Nested: 0');
+      await expect(page.locator('test-stream-parent button')).toHaveCSS('color', 'rgb(17, 34, 51)');
       expect(await page.evaluate(() => ({
         loading: document.readyState === 'loading',
         application: window.__streamingApplicationStarted,
@@ -65,6 +70,27 @@ for (const trustedTypes of [false, true]) {
       await request.post(`/streaming-bootstrap/release?id=${id}`);
       await page.waitForFunction(() => performance.getEntriesByName('webui:streaming:terminal').length === 1);
       expect(await page.evaluate(() => window.__streamingCompletions)).toBe(0);
+      expect(response).not.toBeNull();
+      const html = await response!.text();
+      const records = [...html.matchAll(/<script [^>]*data-webui-boundary[^>]*>([\s\S]*?)<\/script>/g)]
+        .map(match => JSON.parse(match[1]) as [number, number, number, BoundaryBootstrap]);
+      const earlyStyles = records.find(([, kind]) => kind === 1)?.[3].componentStyles.resources;
+      const lateStyles = records.find(([, kind]) => kind === 0)?.[3].componentStyles.resources;
+      expect(earlyStyles?.['test-stream-counter']).toEqual({ kind: 'style', css: null });
+      expect(earlyStyles?.['test-stream-parent']).toEqual({
+        kind: 'style', css: expect.stringContaining('</STYLE>'),
+      });
+      expect(earlyStyles?.['test-stream-badge']).toEqual({
+        kind: 'style', css: expect.stringContaining('#654'),
+      });
+      expect(lateStyles?.['test-stream-counter']).toBeUndefined();
+      expect(lateStyles?.['test-stream-static']).toEqual({ kind: 'style', css: null });
+      const counterStyles = [...html.matchAll(/<style\b[^>]* data-webui-resource="test-stream-counter"[^>]*>/g)]
+        .map(([opening]) => opening);
+      expect(counterStyles).toHaveLength(2);
+      expect(counterStyles[0]).toContain(' data-ws-style');
+      expect(counterStyles[1]).not.toContain(' data-ws-style');
+      await expect(page.locator('test-stream-static p')).toHaveCSS('color', 'rgb(68, 85, 102)');
       appGate.resolve();
       await page.waitForFunction(() => window.__streamingCompletions === 1);
 
@@ -80,13 +106,20 @@ for (const trustedTypes of [false, true]) {
       await expect(page.locator('[data-ws], script[data-webui-boundary], webui-hydrate')).toHaveCount(0);
       expect(await page.evaluate(() => window.__webui?.state)).toBeUndefined();
 
-      // A fresh mount needs the catalog the early bootstrap already registered.
+      // Remove both SSR copies before mounting; a later mount cannot read either.
       await page.evaluate(() => {
+        const parent = document.querySelector('test-stream-parent') as HTMLElement & {
+          setState(state: Record<string, unknown>): void;
+        };
+        parent.shadowRoot?.querySelector('test-stream-counter')?.remove();
+        document.querySelector('test-stream-counter')?.remove();
+        parent.setState({ showBadge: true });
         const counter = document.createElement('test-stream-counter');
         counter.id = 'client-mount';
         document.body.appendChild(counter);
       });
       await expect(page.locator('#client-mount button')).toHaveCSS('color', 'rgb(17, 34, 51)');
+      await expect(page.locator('test-stream-badge b')).toHaveCSS('color', 'rgb(102, 85, 68)');
       expect(await page.evaluate(() => window.__streamingCompletions)).toBe(1);
     } finally {
       appGate.resolve();
@@ -94,6 +127,40 @@ for (const trustedTypes of [false, true]) {
     }
   });
 }
+
+test('does not publish inventory or activate a checkpoint with a missing inline stylesheet', async ({
+  page, request,
+}) => {
+  const assets: StreamingFixtureAssets = await (await request.get('/streaming-bootstrap/assets')).json();
+  const gate = Promise.withResolvers<void>();
+  const errors: string[] = [];
+  page.on('console', message => {
+    if (message.type() === 'error') errors.push(message.text());
+  });
+  await page.route(`**${assets.coordinator.src}`, async route => {
+    await gate.promise;
+    await route.continue();
+  });
+  const id = randomUUID();
+  try {
+    await page.goto(`/streaming-bootstrap/fixture.html?id=${id}`, { waitUntil: 'commit' });
+    const source = page.locator('test-stream-counter style[data-ws-style]');
+    await expect(source).toHaveCount(1);
+    await source.evaluate(node => node.removeAttribute('data-ws-style'));
+    gate.resolve();
+    await expect.poll(() => errors.some(error => error.includes('Missing inline component stylesheet'))).toBe(true);
+    await request.post(`/streaming-bootstrap/release?id=${id}`);
+    await page.waitForLoadState('load');
+    expect(await page.evaluate(() => ({
+      completions: window.__streamingCompletions,
+      commits: performance.getEntriesByName('webui:boundary:0').length,
+      styleInventory: window.__webui?.styleInventory,
+    }))).toEqual({ completions: 0, commits: 0, styleInventory: undefined });
+  } finally {
+    gate.resolve();
+    await request.post(`/streaming-bootstrap/release?id=${id}`);
+  }
+});
 
 test('keeps definitions deferred when the application arrives before the coordinator', async ({
   page, request,

@@ -5,6 +5,7 @@ import { observable, WebUIElement } from '@microsoft/webui-framework';
 
 export class TestStreamParent extends WebUIElement {
   @observable count = 0;
+  @observable showBadge = false;
   hydratedCalls = 0;
 
   hydratedCallback(): void {

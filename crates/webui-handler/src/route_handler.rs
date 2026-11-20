@@ -665,7 +665,7 @@ pub(crate) struct BorrowedComponentStyleDelta<'a> {
 
 struct BorrowedStyleResource<'a> {
     name: &'a str,
-    resource: &'a str,
+    resource: Option<&'a str>,
     members: Option<&'a [String]>,
 }
 
@@ -683,6 +683,21 @@ impl<'a> BorrowedComponentStyleDelta<'a> {
     /// Whether the delta carries no style resources or closures.
     pub(crate) fn is_empty(&self) -> bool {
         self.resources.is_empty() && self.closures.is_empty()
+    }
+
+    pub(crate) fn refer_to_inline_sources(&mut self, sources: &HashSet<&str>) {
+        if self.strategy != CssStrategy::Style {
+            return;
+        }
+        for resource in &mut self.resources {
+            if let Some(css) = resource.resource {
+                // HTML preprocesses CR and replaces NUL in raw text. Also
+                // keep the original catalog text for such a stylesheet.
+                if sources.contains(resource.name) && memchr2(b'\r', 0, css.as_bytes()).is_none() {
+                    resource.resource = None;
+                }
+            }
+        }
     }
 
     /// The `href` of every link resource the delta registers, in the order
@@ -705,7 +720,9 @@ impl<'a> BorrowedComponentStyleDelta<'a> {
                     continue;
                 };
                 if !std::mem::replace(&mut listed[index], true) {
-                    hrefs.push(self.resources[index].resource);
+                    if let Some(href) = self.resources[index].resource {
+                        hrefs.push(href);
+                    }
                 }
             }
         }
@@ -781,21 +798,21 @@ impl Serialize for BorrowedStyleResourceValue<'_> {
         let mut resource = serializer.serialize_map(Some(field_count))?;
         match self.strategy {
             webui_protocol::CssStrategy::Link => {
-                resource.serialize_entry("href", self.resource.resource)?;
+                resource.serialize_entry("href", &self.resource.resource)?;
                 resource.serialize_entry("kind", "link")?;
                 if let Some(members) = self.resource.members {
                     resource.serialize_entry("members", members)?;
                 }
             }
             webui_protocol::CssStrategy::Style => {
-                resource.serialize_entry("css", self.resource.resource)?;
+                resource.serialize_entry("css", &self.resource.resource)?;
                 resource.serialize_entry("kind", "style")?;
                 if let Some(members) = self.resource.members {
                     resource.serialize_entry("members", members)?;
                 }
             }
             webui_protocol::CssStrategy::Module => {
-                resource.serialize_entry("css", self.resource.resource)?;
+                resource.serialize_entry("css", &self.resource.resource)?;
                 resource.serialize_entry("kind", "module")?;
                 if let Some(members) = self.resource.members {
                     resource.serialize_entry("members", members)?;
@@ -922,7 +939,7 @@ pub(crate) fn collect_borrowed_component_style_delta<'a>(
             if !client_has_it && serialized_resources.insert(name) {
                 resources.push(BorrowedStyleResource {
                     name,
-                    resource,
+                    resource: Some(resource),
                     members: members.filter(|members| members.len() > 1),
                 });
             }
@@ -5806,6 +5823,51 @@ mod tests {
             serde_json::to_string(&from_style_inventory).unwrap(),
             "the borrowed streaming serializer must preserve the canonical style payload bytes"
         );
+
+        let mut streamed = collect_borrowed_component_style_delta(
+            &protocol,
+            ["index.html", "a-card", "b-card"],
+            &[],
+            &style_index,
+            &chunk_index,
+        )
+        .unwrap();
+        let inventory = borrowed_style_inventory(&streamed, &style_index).unwrap();
+        streamed.refer_to_inline_sources(&HashSet::from(["_chunk-a-card-2"]));
+        let payload = serde_json::to_value(&streamed).unwrap();
+        assert_eq!(
+            payload["resources"],
+            serde_json::json!({
+                "_chunk-a-card-2": { "kind": "style", "css": null, "members": ["a-card", "b-card"] }
+            })
+        );
+        assert_eq!(payload["closures"], initial["closures"]);
+        assert_eq!(
+            borrowed_style_inventory(&streamed, &style_index).unwrap(),
+            inventory
+        );
+    }
+
+    #[test]
+    fn streamed_style_sources_keep_full_text_when_html_normalizes_it() {
+        for css in [
+            "/* windows\r\nnewline */.card{color:red}",
+            ".card{content:'\0'}",
+        ] {
+            let mut delta = BorrowedComponentStyleDelta {
+                strategy: CssStrategy::Style,
+                resources: vec![BorrowedStyleResource {
+                    name: "test-card",
+                    resource: Some(css),
+                    members: None,
+                }],
+                closures: Vec::new(),
+                ordered: Vec::new(),
+            };
+            delta.refer_to_inline_sources(&HashSet::from(["test-card"]));
+            let payload = serde_json::to_value(delta).unwrap();
+            assert_eq!(payload["resources"]["test-card"]["css"], css);
+        }
     }
 
     #[test]

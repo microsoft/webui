@@ -288,7 +288,7 @@ impl WebUIHandler {
         let style_roots = entry_style_root
             .into_iter()
             .chain(new_template_tags.iter().copied());
-        let component_styles = {
+        let mut component_styles = {
             let style_inventory = context.streaming.as_ref().map_or(&[][..], |streaming| {
                 streaming.style_resource_inventory.as_slice()
             });
@@ -300,6 +300,11 @@ impl WebUIHandler {
                 &context.style_chunk_index,
             )?
         };
+        if matches!(record, RangeRecord::Boundary { .. }) {
+            if let Some(sources) = streaming_state(context)?.inline_style_sources.take() {
+                component_styles.refer_to_inline_sources(&sources);
+            }
+        }
         for resource in component_styles.resource_names() {
             let Some(&index) = context.style_resource_index.get(resource) else {
                 continue;
