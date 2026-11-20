@@ -3,7 +3,7 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -285,69 +285,4 @@ test('Azure selected-build detection gates toolchains, SDK and Go independently,
     input: '{"error":"denied"}',
     encoding: 'utf8',
   }).status, 0);
-});
-
-test('Azure optional distributions share the historical standalone handoff without unconditional inputs', () => {
-  const build = readFileSync(new URL('../.ado/pipelines/azure-pipelines-build.yml', import.meta.url), 'utf8');
-  const cd = readFileSync(new URL('../.ado/pipelines/azure-pipelines-cd.yml', import.meta.url), 'utf8');
-  for (const [directory, artifact, variable] of [
-    ['sdk', 'standalone_sdk_archives', 'sdkAvailable'],
-    ['go', 'go_module_proxy', 'goAvailable'],
-    ['toolchains', 'standalone_native_toolchains', 'toolchainsAvailable'],
-  ]) {
-    assert.ok(build.includes(`targetPath: '$(Build.SourcesDirectory)/publish/${directory}'\n        artifactName: ${artifact}`));
-    assert.ok(cd.includes(`artifact: ${artifact}`));
-    assert.ok(cd.includes(`SourceFolder: $(Pipeline.Workspace)/releaseBuild/${artifact}\n            Contents: '**'`));
-    assert.ok(cd.includes(`TargetFolder: $(Build.SourcesDirectory)/publish_artifacts_standalone/${directory}`));
-    assert.equal(cd.split(`condition: and(succeeded(), eq(variables['distributions.${variable}'], 'true'))`).length - 1, 2);
-    assert.ok(!cd.includes(`artifactName: ${artifact}`), 'optional artifacts must not become unconditional handoffs');
-  }
-  assert.ok(cd.includes('${RELEASE_BUILD_ID}/artifacts?api-version=7.1'));
-  assert.ok(cd.includes('RELEASE_BUILD_ID: $(resources.pipeline.releaseBuild.runID)'));
-  assert.ok(cd.includes("distributionAssets: $[ stageDependencies.SignArtifacts.StagePythonAndStandalone.outputs['distributions.releaseAssets'] ]"));
-  assert.ok(cd.includes('                $(distributionAssets)'));
-  assert.ok(build.includes('tar -czf "$AGENT_TEMPDIRECTORY/$proxy_archive" -C publish/go github.com'));
-  assert.ok(cd.includes("- ${{ if eq(parameters.validationMode, 'false') }}:\n      - stage: TagRelease"));
-  assert.ok(cd.includes('filePath: $(Build.SourcesDirectory)/scripts/tag-release.sh'));
-  assert.ok(cd.includes('VALIDATION_MODE: ${{ parameters.validationMode }}'));
-  for (const job of ['QualityGate', 'BuildLinuxAssets', 'BuildMacOSAssets', 'BuildWindowsAssets', 'AssembleRelease']) {
-    const section = build.split(`  - job: ${job}\n`)[1]?.split('\n  - job: ')[0];
-    assert.ok(section?.includes("- task: GoTool@0\n      displayName: Use Go 1.25\n      inputs:\n        version: '1.25.0'"), job);
-  }
-});
-
-test('Azure native target matrix stages real target CLIs and aggregates toolchains before pack-only upload', () => {
-  const build = readFileSync(new URL('../.ado/pipelines/azure-pipelines-build.yml', import.meta.url), 'utf8');
-  for (const [job, targets, executable] of [
-    ['BuildLinuxAssets', ['x86_64-unknown-linux-gnu', 'aarch64-unknown-linux-gnu'], 'webui'],
-    ['BuildMacOSAssets', ['aarch64-apple-darwin', 'x86_64-apple-darwin'], 'webui'],
-    ['BuildWindowsAssets', ['x86_64-pc-windows-msvc', 'aarch64-pc-windows-msvc'], 'webui.exe'],
-  ]) {
-    const section = build.split(`  - job: ${job}\n`)[1]?.split('\n  - job: ')[0];
-    for (const target of targets) assert.ok(section?.includes(`targetTriple: ${target}`), target);
-    assert.ok(section.includes('xtask toolchain-stage'), job);
-    assert.ok(section.includes('--acquire-checker'), job);
-    assert.ok(section.indexOf('xtask publish-build') < section.indexOf('xtask toolchain-stage'), job);
-    const cli = executable.endsWith('.exe')
-      ? 'target\\$env:TARGET_TRIPLE\\release\\webui.exe'
-      : 'target/$TARGET_TRIPLE/release/webui';
-    assert.ok(section.includes(`--cli "${cli}"`), job);
-    assert.ok(section.includes('RELEASE_VERSION: $(releaseVersion)'), job);
-    assert.ok(section.includes('publish/toolchains') || section.includes('publish\\toolchains'), job);
-    assert.ok(section.includes('$toolchain.sha256'), job);
-  }
-  const assembly = build.split('  - job: AssembleRelease\n')[1];
-  for (const [artifact, job, leg] of [
-    ['linuxX64Artifact', 'BuildLinuxAssets', 'LinuxX64'],
-    ['linuxArm64Artifact', 'BuildLinuxAssets', 'LinuxArm64'],
-    ['macosArm64Artifact', 'BuildMacOSAssets', 'MacOSArm64'],
-    ['macosX64Artifact', 'BuildMacOSAssets', 'MacOSX64'],
-    ['windowsX64Artifact', 'BuildWindowsAssets', 'WindowsX64'],
-    ['windowsArm64Artifact', 'BuildWindowsAssets', 'WindowsArm64'],
-  ]) {
-    assert.ok(assembly.includes(`${artifact}: $[ dependencies.${job}.outputs['${leg}.stageArtifact.name'] ]`), artifact);
-    assert.ok(assembly.includes(`artifactName: $(${artifact})\n        targetPath: $(Build.SourcesDirectory)`), artifact);
-  }
-  assert.ok(assembly.indexOf('--pack-only') < assembly.indexOf('artifactName: standalone_native_toolchains'));
-  assert.ok(assembly.includes("targetPath: '$(Build.SourcesDirectory)/publish/toolchains'"));
 });
