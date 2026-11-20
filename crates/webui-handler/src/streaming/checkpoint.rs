@@ -16,6 +16,7 @@ use crate::{
     HydrationKeySelection, Result, StateSelection, WebUIHandler, WebUIProcessContext,
     WebUiBootstrap, WebUiBootstrapState,
 };
+use webui_protocol::CssStrategy;
 
 pub(super) const RECORD_KIND_FINAL_CHECKPOINT: usize = 0;
 pub(super) const RECORD_KIND_UPDATABLE_CHECKPOINT: usize = 1;
@@ -158,24 +159,6 @@ impl WebUIHandler {
             }
         }
 
-        // Rendered components emitted module importmaps inline before their
-        // declarative shadow roots. Emit the same metadata here only for
-        // reachable-but-unrendered descendants.
-        if context.css_strategy == webui_protocol::CssStrategy::Module {
-            for &name in &new_template_tags {
-                if !context.rendered_components.contains(name) {
-                    if let Some(css) = context
-                        .protocol
-                        .components
-                        .get(name)
-                        .map(|component| component.css.as_str())
-                        .filter(|css| !css.is_empty())
-                    {
-                        self.emit_css_module_importmap(name, css, context)?;
-                    }
-                }
-            }
-        }
         let template_payloads = context.plugin.as_ref().and_then(|plugin| {
             plugin.collect_template_payloads_slice(context.protocol, &new_template_tags)
         });
@@ -273,32 +256,29 @@ impl WebUIHandler {
         };
         css_hrefs.clear();
         style_specs.clear();
-        let css_strategy = context.css_strategy;
-        let is_link = css_strategy == webui_protocol::CssStrategy::Link;
-        let is_module = css_strategy == webui_protocol::CssStrategy::Module;
-        for &name in &new_template_tags {
-            if let Some(component) = context.protocol.components.get(name) {
-                if is_link && !component.css_href.is_empty() {
-                    css_hrefs.push(component.css_href.as_str());
-                }
-                if is_module && !component.css.is_empty() {
-                    style_specs.push(name);
-                }
-            }
-        }
         let mut deferred_css_modules = Vec::new();
-        for &name in &new_template_tags {
-            if context.rendered_components.contains(name) {
-                continue;
-            }
-            if let Some(css) = context
-                .protocol
-                .components
-                .get(name)
-                .map(|component| component.css.as_str())
-                .filter(|css| !css.is_empty())
-            {
-                deferred_css_modules.push((name, css));
+        match context.css_strategy {
+            CssStrategy::Style => {}
+            CssStrategy::Link => css_hrefs.extend(new_template_tags.iter().filter_map(|&name| {
+                let href = context.protocol.components.get(name)?.css_href.as_str();
+                (!href.is_empty()).then_some(href)
+            })),
+            CssStrategy::Module => {
+                for &name in &new_template_tags {
+                    let Some(component) = context
+                        .protocol
+                        .components
+                        .get(name)
+                        .filter(|component| !component.css.is_empty())
+                    else {
+                        continue;
+                    };
+                    style_specs.push(name);
+                    // Rendered components already emitted their own import maps.
+                    if !context.rendered_components.contains(name) {
+                        deferred_css_modules.push((name, component.css.as_str()));
+                    }
+                }
             }
         }
 
@@ -405,6 +385,8 @@ impl WebUIHandler {
         )?;
         context.writer.write("]</script>")?;
 
+        // The range's end comment must be the JSON script's previous sibling.
+        // Batch deferred imports after the record within the sentinel's lookback.
         if let Some(importmap) =
             crate::css_module::build_importmap_tag_batch(&deferred_css_modules, context.nonce)
         {

@@ -16994,8 +16994,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn streaming_checkpoint_carries_reachable_unrendered_metadata_without_inventory() {
+    fn render_checkpoints_with_deferred_style(
+        strategy: webui_protocol::CssStrategy,
+    ) -> FlushTestWriter {
         let entry = vec![
             WebUIFragment::raw("<html><head>"),
             structural_fragment("head_start"),
@@ -17053,7 +17054,7 @@ mod tests {
             ),
         ]);
         let mut document = WebUIProtocol::new(fragments);
-        document.set_css_strategy(webui_protocol::CssStrategy::Module);
+        document.set_css_strategy(strategy);
         document.initial_state_strategy = InitialStateStrategy::Components as i32;
         document.components.insert(
             "comp-a".to_string(),
@@ -17089,10 +17090,16 @@ mod tests {
                     "hidden_count": 7,
                     "unrelated": "private",
                 }),
-                &RenderOptions::new("index.html", "/"),
+                &RenderOptions::new("index.html", "/").with_nonce("css-nonce"),
                 &mut writer,
             )
             .unwrap();
+        writer
+    }
+
+    #[test]
+    fn streaming_checkpoint_carries_reachable_unrendered_metadata_without_inventory() {
+        let writer = render_checkpoints_with_deferred_style(webui_protocol::CssStrategy::Module);
 
         let boundary = |index: usize| -> &str {
             &writer.output[writer.flushes[index]..writer.flushes[index + 1]]
@@ -17105,9 +17112,18 @@ mod tests {
         assert!(first.contains(r#""show_hidden":false"#), "first: {first}");
         assert!(first.contains(r#""hidden_count":7"#), "first: {first}");
         assert!(first.contains(r#""inventory":"01""#), "first: {first}");
+        let (_, record) = first
+            .split_once(
+                r#"<!--/wb:0--><script type="application/json" data-webui-boundary nonce="css-nonce">"#,
+            )
+            .unwrap_or_else(|| panic!("boundary end marker must be next to its JSON: {first}"));
+        let (_, after_record) = record.split_once("</script>").unwrap();
         assert!(
-            first.contains(r#"<script type="importmap""#),
-            "first: {first}"
+            after_record.starts_with(concat!(
+                r#"<script type="importmap" nonce="css-nonce">"#,
+                r#"{"imports":{"comp-hidden":"data:text/css,.hidden{display:block}"}}</script>"#,
+            )),
+            "deferred module import must follow the record: {after_record}"
         );
         assert!(
             !first.contains("unrelated"),
@@ -17125,14 +17141,27 @@ mod tests {
         assert!(second.contains(r#""hidden_count":7"#), "second: {second}");
         assert!(second.contains(r#""inventory":"02""#), "second: {second}");
         assert_eq!(
-            writer
-                .output
-                .matches(r#"<script type="importmap">"#)
-                .count(),
+            writer.output.matches(r#"<script type="importmap""#).count(),
             1,
             "import-map output: {}",
             writer.output
         );
+    }
+
+    #[test]
+    fn streaming_checkpoint_style_catalog_keeps_deferred_css_without_an_import_map() {
+        let writer = render_checkpoints_with_deferred_style(webui_protocol::CssStrategy::Style);
+        let first = &writer.output[writer.flushes[0]..writer.flushes[1]];
+        let (_, payload) = first
+            .split_once(r#"<script type="application/json" data-webui-boundary nonce="css-nonce">"#)
+            .unwrap();
+        let (payload, _) = payload.split_once("</script>").unwrap();
+        let record: Value = serde_json::from_str(payload).unwrap();
+        assert_eq!(
+            record[3]["componentStyles"]["resources"]["comp-hidden"],
+            test_json!({ "kind": "style", "css": ".hidden{display:block}" })
+        );
+        assert!(!writer.output.contains(r#"<script type="importmap""#));
     }
 
     #[test]
