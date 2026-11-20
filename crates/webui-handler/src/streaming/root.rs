@@ -47,10 +47,10 @@ pub(super) struct PendingStreamingRoot<'data> {
 
 /// Which side produced a component host: the parser (from authored markup) or
 /// the handler itself (a generated route host). Only parser-produced hosts
-/// carry a `streaming_root:` signal.
+/// carry a `streaming_root:` signal or a stylesheet placement proof.
 #[derive(Clone, Copy)]
 pub(crate) enum ComponentHostOrigin {
-    ParserProduced,
+    ParserProduced { style_source: bool },
     HandlerGenerated,
 }
 
@@ -248,7 +248,7 @@ pub(crate) fn consume_streaming_component_root(
 ) -> Result<()> {
     let streaming = streaming_state(context)?;
     match origin {
-        ComponentHostOrigin::ParserProduced => {
+        ComponentHostOrigin::ParserProduced { .. } => {
             let Some(pending) = streaming.pending_root.take() else {
                 return Err(missing_streaming_root_error(tag));
             };

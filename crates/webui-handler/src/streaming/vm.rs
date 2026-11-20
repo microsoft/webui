@@ -583,6 +583,9 @@ impl ContinuationVm {
                     }));
                 }
                 Some(Fragment::Component(component)) => {
+                    let origin = ComponentHostOrigin::ParserProduced {
+                        style_source: component.streaming_style_source,
+                    };
                     let target = context
                         .render_fragments
                         .list(frame.render_slot)
@@ -595,19 +598,14 @@ impl ContinuationVm {
                             handler.process_component(
                                 &component.fragment_id,
                                 target,
-                                ComponentHostOrigin::ParserProduced,
+                                origin,
                                 context,
                             )
                         })?;
                         continue;
                     }
                     self.push(Frame::Fragment(frame))?;
-                    self.begin_component(
-                        component,
-                        ComponentHostOrigin::ParserProduced,
-                        (handler, protocol),
-                        context,
-                    )?;
+                    self.begin_component(component, origin, (handler, protocol), context)?;
                     return Ok(None);
                 }
                 Some(Fragment::IfCond(if_cond)) => {
@@ -818,9 +816,7 @@ impl ContinuationVm {
         if let Some(plugin) = context.plugin.as_mut() {
             plugin.push_scope();
         }
-        let streaming = streaming_state(context)?;
-        let saved_style_source_scope = streaming.style_source_scope;
-        streaming.style_source_scope &= component.streaming_style_source;
+        let saved_style_source_scope = streaming_state(context)?.enter_style_source_scope(origin);
         self.push(Frame::ComponentEnd(ComponentEndFrame {
             saved_local_vars,
             component_slot: slot,
@@ -845,7 +841,7 @@ impl ContinuationVm {
         context.component_attrs.clear();
         context.component_borrowed_attrs.clear();
         context.collecting_component_attrs = false;
-        streaming_state(context)?.style_source_scope = frame.saved_style_source_scope;
+        streaming_state(context)?.restore_style_source_scope(frame.saved_style_source_scope);
         if frame.owns_css_tree {
             let component = protocol
                 .fragment_id(frame.component_slot)

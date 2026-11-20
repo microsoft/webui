@@ -2601,7 +2601,9 @@ impl WebUIHandler {
                     self.process_component(
                         &component.fragment_id,
                         fragment_list.target(index),
-                        ComponentHostOrigin::ParserProduced,
+                        ComponentHostOrigin::ParserProduced {
+                            style_source: component.streaming_style_source,
+                        },
                         context,
                     )?;
                 }
@@ -3305,7 +3307,16 @@ impl WebUIHandler {
             p.push_scope();
         }
 
+        let saved_style_source_scope = context
+            .streaming
+            .as_deref_mut()
+            .map(|streaming| streaming.enter_style_source_scope(origin));
         let render_result = self.process_fragment_target(target, fragment_id, context);
+        if let (Some(streaming), Some(saved)) =
+            (context.streaming.as_deref_mut(), saved_style_source_scope)
+        {
+            streaming.restore_style_source_scope(saved);
+        }
         context.visible_loop_scope = saved_loop_scope;
 
         if owns_css_tree {

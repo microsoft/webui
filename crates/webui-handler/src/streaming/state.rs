@@ -6,7 +6,7 @@
 use std::collections::{HashMap, HashSet};
 use webui_protocol::WebUIProtocol;
 
-use super::root::PendingStreamingRoot;
+use super::root::{ComponentHostOrigin, PendingStreamingRoot};
 use super::streaming_boundary_error;
 use crate::{route_handler, HandlerError, Result, WebUIProcessContext};
 
@@ -72,7 +72,7 @@ pub(crate) struct StreamingRenderState<'data> {
     /// can arrive transitively through an earlier root's closure before its own
     /// template or closure is emitted.
     pub(super) style_resource_inventory: Vec<u8>,
-    pub(super) style_source_scope: bool,
+    style_source_scope: bool,
     // Borrowed from this resume's installed ShadowRoot styles. A boundary
     // resumes and commits in one call, so the set never crosses a host step.
     pub(super) inline_style_sources: Option<HashSet<&'data str>>,
@@ -126,7 +126,7 @@ pub(crate) struct StreamingProgress {
     pub(super) inventory_hex: String,
     pub(super) template_inventory: Vec<u8>,
     pub(super) style_resource_inventory: Vec<u8>,
-    pub(super) style_source_scope: bool,
+    style_source_scope: bool,
     pub(super) checkpoint_tags: Vec<u32>,
     pub(super) checkpoint_walk_roots: Vec<(u32, Option<Box<str>>)>,
     pub(super) checkpoint_seen: Vec<u8>,
@@ -258,6 +258,22 @@ impl<'data> StreamingRenderState<'data> {
             &mut self.checkpoint_needs_expansion,
             &mut capture.needs_expansion,
         );
+    }
+
+    #[inline]
+    #[must_use]
+    pub(crate) fn enter_style_source_scope(&mut self, origin: ComponentHostOrigin) -> bool {
+        let previous = self.style_source_scope;
+        self.style_source_scope &= matches!(
+            origin,
+            ComponentHostOrigin::ParserProduced { style_source: true }
+        );
+        previous
+    }
+
+    #[inline]
+    pub(crate) fn restore_style_source_scope(&mut self, previous: bool) {
+        self.style_source_scope = previous;
     }
 
     #[inline]
