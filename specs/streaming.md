@@ -75,9 +75,11 @@ future instances, including components already rendered.
 An inline (`Style` strategy) boundary may send `css: null` for a resource whose
 compiler-owned `<style data-ws-style>` was written in the same range. The
 style's `data-webui-resource` is the exact catalog key, which can identify an
-ordered bundle rather than a single component. Only static ShadowRoot
-installations in compiler-proven HTML placements qualify. Styles from outside
-the current range, styles the browser cannot be guaranteed to see, and text
+ordered bundle rather than a single component. Once a record delivers that
+definition, later SSR copies keep their CSS but do not carry the source marker.
+Only static ShadowRoot installations in compiler-proven HTML placements
+qualify. Styles from outside the current range, styles the browser cannot be
+guaranteed to see, and text
 changed by HTML escaping or normalization retain their full definitions.
 Before template registration, activation, or inventory publication, the
 coordinator resolves these promises with one bounded range-local walk. Missing

@@ -3,7 +3,7 @@
 
 //! Request-local state shared by the continuation VM and wire serializer.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use webui_protocol::WebUIProtocol;
 
 use super::root::PendingStreamingRoot;
@@ -261,13 +261,26 @@ impl<'data> StreamingRenderState<'data> {
     }
 
     #[inline]
-    pub(crate) fn record_inline_style_source(&mut self, resource: &'data str) -> bool {
-        self.active_boundary.is_some()
-            && self.style_source_scope
-            && self
-                .inline_style_sources
-                .get_or_insert_with(HashSet::new)
-                .insert(resource)
+    pub(crate) fn record_inline_style_source(
+        &mut self,
+        resource: &'data str,
+        resource_index: &HashMap<String, u32>,
+    ) -> bool {
+        if self.active_boundary.is_none() || !self.style_source_scope {
+            return false;
+        }
+        // A definition already delivered by an earlier record won't be in
+        // this delta. The first record has no such definitions to check.
+        if self.bootstrap_sent
+            && resource_index.get(resource).is_some_and(|&index| {
+                route_handler::has_component(&self.style_resource_inventory, index)
+            })
+        {
+            return false;
+        }
+        self.inline_style_sources
+            .get_or_insert_with(HashSet::new)
+            .insert(resource)
     }
 }
 

@@ -2932,10 +2932,9 @@ impl WebUIHandler {
                         && install == StyleClosureInstall::Static
                         && !is_document_tree
                         && !needs_escape
-                        && context
-                            .streaming
-                            .as_deref_mut()
-                            .is_some_and(|streaming| streaming.record_inline_style_source(name))
+                        && context.streaming.as_deref_mut().is_some_and(|streaming| {
+                            streaming.record_inline_style_source(name, context.style_resource_index)
+                        })
                     {
                         context.writer.write("\" data-ws-style>")?;
                     } else {

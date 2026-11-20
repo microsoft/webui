@@ -85,6 +85,11 @@ for (const trustedTypes of [false, true]) {
       });
       expect(lateStyles?.['test-stream-counter']).toBeUndefined();
       expect(lateStyles?.['test-stream-static']).toEqual({ kind: 'style', css: null });
+      const counterStyles = [...html.matchAll(/<style\b[^>]* data-webui-resource="test-stream-counter"[^>]*>/g)]
+        .map(([opening]) => opening);
+      expect(counterStyles).toHaveLength(2);
+      expect(counterStyles[0]).toContain(' data-ws-style');
+      expect(counterStyles[1]).not.toContain(' data-ws-style');
       await expect(page.locator('test-stream-static p')).toHaveCSS('color', 'rgb(68, 85, 102)');
       appGate.resolve();
       await page.waitForFunction(() => window.__streamingCompletions === 1);
