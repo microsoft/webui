@@ -3,7 +3,7 @@
 
 import { FLUSH_UPDATES } from '../../../src/render-scheduler.js';
 import { expect, test } from '@playwright/test';
-import type { TestRuntimeEffects } from './element.js';
+import type { TestRuntimeEffects, TestRuntimeStaticShadow } from './element.js';
 
 test('hydratedCallback runs once for ordinary SSR, client mount, and reconnect', async ({ page }) => {
   await page.goto('/client-runtime/ordinary.html');
@@ -26,6 +26,44 @@ test('hydratedCallback runs once for ordinary SSR, client mount, and reconnect',
   });
 
   expect(calls).toEqual({ ssr: 1, client: 1 });
+});
+
+test('binding-free Shadow mounts preserve stylesheet visibility, effects, and custom wiring', async ({ page }) => {
+  await page.goto('/client-runtime/ordinary.html');
+  const result = await page.evaluate(async () => {
+    const first = document.createElement('test-runtime-static-shadow') as TestRuntimeStaticShadow;
+    const second = document.createElement('test-runtime-static-shadow') as TestRuntimeStaticShadow;
+    const custom = document.createElement('test-runtime-custom-finalizer');
+    document.body.append(first, second, custom);
+    await Promise.all([first.$whenRendered(), second.$whenRendered()]);
+
+    const content = first.shadowRoot!.querySelector('span')!;
+    const sheet = first.shadowRoot!.querySelector('style');
+    first.remove();
+    await Promise.resolve();
+    document.body.appendChild(first);
+    await first.$whenRendered();
+    return {
+      styleDuringReflection: first.styleDuringReflection,
+      contentDuringReflection: first.reflectedContent === undefined ? 'not yet attached' : first.reflectedContent,
+      hydrated: content.hasAttribute('data-hydrated'),
+      callbacks: [first.hydratedCalls, second.hydratedCalls],
+      retainedOnReconnect: first.shadowRoot!.querySelector('span') === content &&
+        first.shadowRoot!.querySelector('style') === sheet,
+      distinctViews: second.shadowRoot!.querySelector('span') !== content &&
+        second.shadowRoot!.querySelector('style') !== sheet,
+      customFinalizerRan: custom.shadowRoot!.querySelector('span')!.hasAttribute('data-finalized'),
+    };
+  });
+  expect(result).toEqual({
+    styleDuringReflection: 'span{color:red}',
+    contentDuringReflection: 'not yet attached',
+    hydrated: true,
+    callbacks: [1, 1],
+    retainedOnReconnect: true,
+    distinctViews: true,
+    customFinalizerRan: true,
+  });
 });
 
 test('observable callbacks reconcile the final initial value and run live synchronously', async ({ page }) => {

@@ -86,6 +86,7 @@ export interface TemplateInstance {
   scope?: ScopeFrame;
   parent?: TemplateInstance;
   container: (ParentNode & Node) | null;
+  /** Movable block range or nodes tracked during a stylesheet-gated mount. */
   nodes: Node[];
   texts: TextBinding[];
   attrs: AttrBinding[];

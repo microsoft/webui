@@ -28,7 +28,7 @@ pub use render_capacity::RenderCapacityHints;
 #[doc(hidden)]
 pub use response_writer::{
     append_attribute_to_bytes, append_attribute_to_string, append_boolean_attribute_to_bytes,
-    append_boolean_attribute_to_string,
+    append_boolean_attribute_to_string, append_component_style_link_to_string,
 };
 pub use route_handler::Protocol;
 
@@ -46,7 +46,7 @@ pub use html_encode::encode_safe;
 use plugin::BootstrapExtensionContext;
 use plugin::HandlerPlugin;
 use plugin::WebUiTemplatePayload;
-use route_handler::ComponentReachabilityIndex;
+use route_handler::{ComponentReachabilityIndex, PreparedShadowStyle};
 use route_matcher::CompiledRouteIndex;
 use serde::ser::SerializeMap;
 use serde::Serialize;
@@ -243,6 +243,24 @@ pub trait ResponseWriter {
     fn write_boolean_attribute(&mut self, name: &str) -> Result<()> {
         self.write(" ")?;
         self.write(name)
+    }
+
+    /// Write a compiler-owned stylesheet link with its selected base, if any.
+    #[doc(hidden)]
+    fn write_component_style_link(
+        &mut self,
+        base: Option<&str>,
+        href: &str,
+        resource: &str,
+    ) -> Result<()> {
+        self.write("<link rel=\"stylesheet\" href=\"")?;
+        if let Some(base) = base {
+            self.write_escaped(base)?;
+        }
+        self.write_escaped(href)?;
+        self.write("\" data-webui-resource=\"")?;
+        self.write(&encode_safe(resource))?;
+        self.write("\" data-webui-strategy=\"link\">")
     }
 
     /// Finalize the output
@@ -567,8 +585,29 @@ enum StyleClosureInstall {
 
 pub(crate) struct ShadowStyleRoot {
     component_index: u32,
+    prepared_style_slot: u16,
     static_closure_emitted: bool,
     routed_resources: Vec<u32>,
+}
+
+const NO_PREPARED_SHADOW_STYLE: u16 = u16::MAX;
+
+impl ShadowStyleRoot {
+    fn new(component_index: u32, prepared_style_slot: u16) -> Self {
+        Self {
+            component_index,
+            prepared_style_slot,
+            static_closure_emitted: false,
+            routed_resources: Vec::new(),
+        }
+    }
+}
+
+fn prepared_shadow_style_slot(styles: &[PreparedShadowStyle], index: u32) -> Option<u16> {
+    let slot = styles
+        .binary_search_by_key(&index, |style| style.component_index)
+        .ok()?;
+    u16::try_from(slot).ok()
 }
 
 struct LoopBinding<'protocol, 'state> {
@@ -751,6 +790,16 @@ impl<'protocol> RenderFragmentList<'protocol> {
         (target != NO_RENDER_SLOT).then_some(target as usize)
     }
 
+    fn component_target(self, index: usize) -> ComponentRenderTarget {
+        let Some(prepared) = self.metadata.get(index) else {
+            return ComponentRenderTarget::UNRESOLVED;
+        };
+        ComponentRenderTarget {
+            fragment_slot: prepared.target,
+            shadow_style_slot: u16::try_from(prepared.detail).unwrap_or(NO_PREPARED_SHADOW_STYLE),
+        }
+    }
+
     /// Canonical camelCase component prop name prepared for an attribute fragment.
     fn component_attr_name(self, index: usize) -> Option<&'protocol str> {
         let prepared = self.metadata.get(index)?;
@@ -758,8 +807,7 @@ impl<'protocol> RenderFragmentList<'protocol> {
             return None;
         }
         let start = prepared.attr_start as usize;
-        self.attr_names
-            .get(start..start + prepared.attr_len as usize)
+        self.attr_names.get(start..start + prepared.detail as usize)
     }
 }
 
@@ -767,6 +815,23 @@ impl<'protocol> RenderFragmentList<'protocol> {
 const NO_RENDER_SLOT: u32 = u32::MAX;
 /// Sentinel for "this fragment is not an attribute fragment".
 const NO_ATTR_NAME: u32 = u32::MAX;
+
+#[derive(Clone, Copy)]
+struct ComponentRenderTarget {
+    fragment_slot: u32,
+    shadow_style_slot: u16,
+}
+
+impl ComponentRenderTarget {
+    const UNRESOLVED: Self = Self {
+        fragment_slot: NO_RENDER_SLOT,
+        shadow_style_slot: NO_PREPARED_SHADOW_STYLE,
+    };
+
+    fn fragment(self) -> Option<usize> {
+        (self.fragment_slot != NO_RENDER_SLOT).then_some(self.fragment_slot as usize)
+    }
+}
 
 /// Per-fragment values hoisted out of the render loop at protocol load time.
 ///
@@ -780,7 +845,8 @@ struct RenderFragmentMetadata {
     target: u32,
     /// Offset into the index's shared attribute-name arena, or [`NO_ATTR_NAME`].
     attr_start: u32,
-    attr_len: u32,
+    /// Attribute name length or, for a component, its prepared Shadow style slot.
+    detail: u32,
 }
 
 /// Build-time render plan for every fragment list in a protocol.
@@ -825,6 +891,8 @@ impl RenderFragmentIndex {
         protocol: &WebUIProtocol,
         ids: &[Arc<str>],
         slots: &HashMap<Arc<str>, u32>,
+        component_index: &HashMap<String, u32>,
+        prepared_shadow_styles: &[PreparedShadowStyle],
     ) -> Self {
         let total_fragments = protocol
             .fragments
@@ -854,7 +922,7 @@ impl RenderFragmentIndex {
                 let target = fragment_target_id(fragment)
                     .and_then(|target| slots.get(target).copied())
                     .unwrap_or(NO_RENDER_SLOT);
-                let (attr_start, attr_len) = match inner {
+                let (attr_start, detail) = match inner {
                     // `attr_skip` attributes are never collected into component
                     // props, so preparing a name for them would be pure load-time
                     // cost for something no render ever reads.
@@ -867,12 +935,25 @@ impl RenderFragmentIndex {
                         let len = (attr_names.len() - before) as u32;
                         (start, len)
                     }
+                    Some(Fragment::Component(component)) => {
+                        let slot = if prepared_shadow_styles.is_empty() {
+                            NO_PREPARED_SHADOW_STYLE
+                        } else {
+                            component_index
+                                .get(&component.fragment_id)
+                                .and_then(|&index| {
+                                    prepared_shadow_style_slot(prepared_shadow_styles, index)
+                                })
+                                .unwrap_or(NO_PREPARED_SHADOW_STYLE)
+                        };
+                        (NO_ATTR_NAME, u32::from(slot))
+                    }
                     _ => (NO_ATTR_NAME, 0),
                 };
                 metadata.push(RenderFragmentMetadata {
                     target,
                     attr_start,
-                    attr_len,
+                    detail,
                 });
             }
             if has_routes {
@@ -1093,6 +1174,8 @@ pub(crate) struct WebUIProcessContext<'protocol, 'state, 'output> {
     /// Computed once when [`Protocol`] loads so repeated component instances can
     /// write ordinary CSS without rescanning identical bytes on every request.
     pub(crate) style_resources_requiring_escape: &'protocol HashSet<String>,
+    /// Prepared markup for static Shadow style hooks.
+    pub(crate) prepared_shadow_styles: &'protocol [PreparedShadowStyle],
     /// Component tag → covering bundle chunk, built once per render.
     ///
     /// Empty (and allocation-free) for unbundled builds. Every style delivery
@@ -2607,7 +2690,7 @@ impl WebUIHandler {
                 Some(Fragment::Component(component)) => {
                     self.process_component(
                         &component.fragment_id,
-                        fragment_list.target(index),
+                        fragment_list.component_target(index),
                         ComponentHostOrigin::ParserProduced {
                             style_source: component.streaming_style_source,
                         },
@@ -2746,7 +2829,12 @@ impl WebUIHandler {
                 prepare_generated_streaming_root(comp, context)?;
                 context.writer.write(">")?;
 
-                self.process_component(comp, None, ComponentHostOrigin::HandlerGenerated, context)?;
+                self.process_component(
+                    comp,
+                    ComponentRenderTarget::UNRESOLVED,
+                    ComponentHostOrigin::HandlerGenerated,
+                    context,
+                )?;
 
                 context.writer.write("</")?;
                 context.writer.write(comp)?;
@@ -2907,13 +2995,11 @@ impl WebUIHandler {
 
             match strategy {
                 webui_protocol::CssStrategy::Link => {
-                    context.writer.write("<link rel=\"stylesheet\" href=\"")?;
-                    write_asset_href(context.writer, asset_base, resource)?;
-                    context.writer.write("\" data-webui-resource=\"")?;
-                    context
-                        .writer
-                        .write(&crate::html_encode::encode_safe(name))?;
-                    context.writer.write("\" data-webui-strategy=\"link\">")?;
+                    context.writer.write_component_style_link(
+                        asset_base.filter(|_| is_base_relative(resource)),
+                        resource,
+                        name,
+                    )?;
                 }
                 strategy => {
                     context.writer.write("<style")?;
@@ -3115,6 +3201,31 @@ impl WebUIHandler {
         root: &str,
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
+        if !context.prepared_shadow_styles.is_empty()
+            && match context.css_strategy {
+                webui_protocol::CssStrategy::Link => context.state_inject.asset_base.is_none(),
+                webui_protocol::CssStrategy::Style => {
+                    context.nonce.is_none() && context.streaming.is_none()
+                }
+                webui_protocol::CssStrategy::Module => false,
+            }
+        {
+            if let Some(active) = context.shadow_style_roots.last_mut() {
+                if let Some(style) = context
+                    .prepared_shadow_styles
+                    .get(usize::from(active.prepared_style_slot))
+                {
+                    // This is the prepared style for the active CSS tree, not
+                    // necessarily for the fragment containing this signal.
+                    if root == style.tag.as_ref() {
+                        context.writer.write(&style.html)?;
+                        active.static_closure_emitted = true;
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
         let Some(root_index) = context.component_index.get(root).copied() else {
             return Err(HandlerError::Invariant(format!(
                 "Shadow style hook `{root}` references an unknown component"
@@ -3235,7 +3346,7 @@ impl WebUIHandler {
 
                 self.process_component(
                     &route_frag.fragment_id,
-                    None,
+                    ComponentRenderTarget::UNRESOLVED,
                     ComponentHostOrigin::HandlerGenerated,
                     context,
                 )?;
@@ -3260,7 +3371,7 @@ impl WebUIHandler {
     fn process_component(
         &self,
         fragment_id: &str,
-        target: Option<usize>,
+        target: ComponentRenderTarget,
         origin: ComponentHostOrigin,
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
@@ -3292,7 +3403,7 @@ impl WebUIHandler {
     fn render_component_body(
         &self,
         fragment_id: &str,
-        target: Option<usize>,
+        target: ComponentRenderTarget,
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
         // Emit the component's CSS module importmap into its light DOM and track
@@ -3305,10 +3416,21 @@ impl WebUIHandler {
             context.rendered_components.insert(fragment_id.to_string());
         }
 
-        let owns_css_tree = Self::component_owns_css_tree(fragment_id, context.protocol);
-        if owns_css_tree {
+        let owns_css_tree = if let Some(style) = context
+            .prepared_shadow_styles
+            .get(usize::from(target.shadow_style_slot))
+        {
+            context.shadow_style_roots.push(ShadowStyleRoot::new(
+                style.component_index,
+                target.shadow_style_slot,
+            ));
+            true
+        } else if Self::component_owns_css_tree(fragment_id, context.protocol) {
             Self::push_shadow_style_root(fragment_id, context)?;
-        }
+            true
+        } else {
+            false
+        };
 
         // Save parent scope. `mem::take` leaves an alloc-free empty map behind.
         let saved_local_vars = std::mem::take(&mut context.local_vars);
@@ -3337,7 +3459,7 @@ impl WebUIHandler {
             p.push_scope();
         }
 
-        let render_result = self.process_fragment_target(target, fragment_id, context);
+        let render_result = self.process_fragment_target(target.fragment(), fragment_id, context);
         context.visible_loop_scope = saved_loop_scope;
 
         if owns_css_tree {
@@ -3377,25 +3499,32 @@ impl WebUIHandler {
         component: &str,
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
-        if !context.protocol.style_closures.contains_key(component) {
+        let styles = context.prepared_shadow_styles;
+        let mut root_index = None;
+        if !styles.is_empty() {
+            root_index = context.component_index.get(component).copied();
+        }
+        let prepared_style_slot = root_index
+            .and_then(|index| prepared_shadow_style_slot(styles, index))
+            .unwrap_or(NO_PREPARED_SHADOW_STYLE);
+        // A prepared tag already proves that this root has a valid closure.
+        if prepared_style_slot == NO_PREPARED_SHADOW_STYLE
+            && !context.protocol.style_closures.contains_key(component)
+        {
             return Err(HandlerError::Invariant(format!(
                 "component style closure metadata is missing Shadow root `{component}`"
             )));
         }
-        let root_index = context
-            .component_index
-            .get(component)
-            .copied()
+        let root_index = root_index
+            .or_else(|| context.component_index.get(component).copied())
             .ok_or_else(|| {
                 HandlerError::Invariant(format!(
                     "Shadow component `{component}` is missing its protocol index"
                 ))
             })?;
-        context.shadow_style_roots.push(ShadowStyleRoot {
-            component_index: root_index,
-            static_closure_emitted: false,
-            routed_resources: Vec::new(),
-        });
+        context
+            .shadow_style_roots
+            .push(ShadowStyleRoot::new(root_index, prepared_style_slot));
         Ok(())
     }
 
@@ -4407,6 +4536,7 @@ impl WebUIHandler {
             component_index: protocol.component_index(),
             style_resource_index: protocol.style_resource_index(),
             style_resources_requiring_escape: protocol.style_resources_requiring_escape(),
+            prepared_shadow_styles: protocol.prepared_shadow_styles(),
             style_chunk_index: protocol.protocol().style_chunk_index(),
             css_strategy: protocol.css_strategy(),
             body_end_emitted: false,
@@ -14586,6 +14716,123 @@ mod tests {
         // Payload paths stay base-relative: the base appears exactly once.
         assert_eq!(data.matches("cdn.example.com").count(), 1, "{data}");
         assert!(data.contains(r#""light-nav.css""#), "{data}");
+    }
+
+    #[test]
+    fn prepared_shadow_link_matches_uncached_output_and_keeps_request_bases_isolated() -> Result<()>
+    {
+        let default_base = "https://cdn.example.com/a&b/";
+        let protocol = Protocol::new(asset_base_protocol(default_base));
+        assert_eq!(protocol.prepared_shadow_styles().len(), 1);
+        let handler =
+            WebUIHandler::with_plugin(|| Box::new(plugin::webui::WebUIHydrationPlugin::new()));
+        let render = |state: &Value| -> Result<String> {
+            let mut writer = TestWriter::new();
+            handler.render(
+                &protocol,
+                state,
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )?;
+            Ok(writer.get_content())
+        };
+        let prepared = render(&test_json!({}))?;
+        let uncached = render(&test_json!({ "$webui": { "assetBase": default_base } }))?;
+        assert_eq!(prepared, uncached);
+
+        let override_base = "/other/";
+        let overridden = render(&test_json!({ "$webui": { "assetBase": override_base } }))?;
+        assert!(overridden.contains(&format!(
+            r#"<template shadowrootmode="open"><link rel="stylesheet" href="{}shadow-card-1a2b3c4d.css" data-webui-resource="shadow-card""#,
+            encode_safe(override_base)
+        )));
+        assert!(!overridden.contains("cdn.example.com"), "{overridden}");
+        assert_eq!(prepared, render(&test_json!({}))?);
+        Ok(())
+    }
+
+    #[test]
+    fn prepared_shadow_link_preserves_invalid_style_chunk_failure() {
+        let mut document = asset_base_protocol("");
+        document
+            .style_closures
+            .get_mut("shadow-card")
+            .expect("shadow-card closure")
+            .style_chunks
+            .push(0);
+        let protocol = Protocol::new(document);
+        let mut writer = TestWriter::new();
+        let result = WebUIHandler::new().render(
+            &protocol,
+            &test_json!({}),
+            &RenderOptions::new("shadow-card", "/"),
+            &mut writer,
+        );
+        assert!(matches!(result, Err(HandlerError::Invariant(_))));
+        assert!(!writer.get_content().contains("data-webui-resource"));
+    }
+
+    #[test]
+    fn prepared_shadow_link_preserves_active_root_validation() -> Result<()> {
+        let mut document = asset_base_protocol("");
+        let index = document
+            .fragments
+            .get_mut("index.html")
+            .ok_or_else(|| HandlerError::MissingFragment("index.html".to_string()))?;
+        // A conditional enters the fragment without opening its component
+        // CSS tree. The fragment's own style hook is otherwise valid.
+        index.fragments = vec![WebUIFragment::if_cond(
+            webui_protocol::ConditionExpr::identifier("show"),
+            "shadow-card",
+        )];
+        let protocol = Protocol::new(document);
+        assert_eq!(protocol.prepared_shadow_styles().len(), 1);
+        let mut writer = TestWriter::new();
+        let result = WebUIHandler::new().render(
+            &protocol,
+            &test_json!({"show": true}),
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        );
+        assert!(matches!(result, Err(HandlerError::Invariant(reason))
+            if reason.contains("does not match the active component root")));
+        assert!(!writer.get_content().contains(concat!(
+            "<template shadowrootmode=\"open\">",
+            "<link rel=\"stylesheet\"",
+        )));
+        Ok(())
+    }
+
+    #[test]
+    fn prepared_shadow_style_preserves_per_response_nonce() -> Result<()> {
+        let mut document = asset_base_protocol("");
+        document.set_css_strategy(webui_protocol::CssStrategy::Style);
+        document
+            .components
+            .get_mut("shadow-card")
+            .expect("shadow-card component")
+            .css = "p{color:red}".to_string();
+        document.populate_style_closures(&["index.html"]);
+        let protocol = Protocol::new(document);
+        let handler = WebUIHandler::new();
+        let render = |nonce| -> Result<String> {
+            let mut options = RenderOptions::new("index.html", "/");
+            if let Some(nonce) = nonce {
+                options = options.with_nonce(nonce);
+            }
+            let mut writer = TestWriter::new();
+            handler.render(&protocol, &test_json!({}), &options, &mut writer)?;
+            Ok(writer.get_content())
+        };
+        let markup = concat!(
+            r#" data-webui-resource="shadow-card" data-webui-strategy="style">"#,
+            "p{color:red}</style>",
+        );
+        let first = render(None)?;
+        assert!(first.contains(&format!("<style{markup}")));
+        assert!(render(Some("a&b"))?.contains(&format!("<style nonce=\"a&amp;b\"{markup}")));
+        assert_eq!(first, render(None)?);
+        Ok(())
     }
 
     /// Module preload hints name the static imports of the application's own

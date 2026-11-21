@@ -302,15 +302,20 @@ const FLAT_BINDINGS: PathBindings = {
   repeats: EMPTY_ARR,
 };
 
+// Unlike a movable or style-gated view, a mounted static root owns no record.
+const STATIC_CLIENT_VIEW: TemplateInstance = Object.freeze({
+  ...FLAT_BINDINGS, container: null, nodes: EMPTY_ARR,
+});
+
 function bindingArray<T>(entries?: readonly unknown[]): T[] {
   return entries?.length ? new Array<T>(entries.length) : EMPTY_ARR;
 }
 
 function createTemplateInstance(
-  root: Node, meta: TemplateBlockMeta, nodes: Node[], scope?: ScopeFrame,
+  root: Node, meta: TemplateBlockMeta, scope?: ScopeFrame,
 ): TemplateInstance {
   const instance: TemplateInstance = {
-    scope, container: root as ParentNode & Node, nodes,
+    scope, container: root as ParentNode & Node, nodes: EMPTY_ARR,
     texts: bindingArray(meta.tx),
     attrs: bindingArray(meta.a),
     conds: bindingArray(meta.c),
@@ -378,9 +383,12 @@ function childNodesArray(parent: Node): Node[] {
 /** Snapshot the siblings strictly between two block range boundaries. */
 function rangeNodesArray(start: Node, end: Node | null): Node[] {
   const first = start.nextSibling;
-  if (first?.nextSibling === end) return [first];
-  const result: Node[] = [];
-  for (let node = first; node && node !== end; node = node.nextSibling) result.push(node);
+  if (!first || first === end) return [];
+  const second = first.nextSibling;
+  if (second === end) return [first];
+  if (second?.nextSibling === end) return [first, second];
+  const result: Node[] = [first];
+  for (let node = second; node && node !== end; node = node.nextSibling) result.push(node);
   return result;
 }
 
@@ -462,6 +470,8 @@ const HYDRATION_NOTIFIED = 2;
  * reachable runtime.
  */
 export class TemplateElement extends HTMLElement {
+  private static readonly $defaultFinalizer = TemplateElement.prototype.$finalize;
+  private static readonly $defaultUpdater = TemplateElement.prototype.$updateInstance;
   private static readonly $ancestorReleaseQueue: TemplateElement[] = [];
   private static $ancestorReleaseIndex = 0;
   private static $ancestorReleaseActive = false;
@@ -744,21 +754,21 @@ export class TemplateElement extends HTMLElement {
     reconnecting: boolean,
   ): void {
     // Auto-detect shadow vs light DOM
-    const hasShadow = !!this.shadowRoot;
-    const wantShadow = hasShadow || !!meta.sd;
+    const shadow = this.shadowRoot;
+    const wantShadow = !!shadow || !!meta.sd;
     const resetClientShadow = this.$resetClientShadow;
     this.$resetClientShadow = false;
     const remountStructuralTemplate = reconnecting &&
       ((meta.c?.length ?? 0) !== 0 || (meta.r?.length ?? 0) !== 0);
 
-    let root: Node;
+    let root: ShadowRoot | HTMLElement;
     let isSSR: boolean;
-    let clientRoot: HTMLElement | null = null;
+    let clientRoot: Element | DocumentFragment | null = null;
     let freshShadow = false;
 
     if (remountStructuralTemplate) {
       const renderRoot = wantShadow
-        ? this.shadowRoot ?? this.attachShadow({ mode: 'open' })
+        ? shadow ?? this.attachShadow({ mode: 'open' })
         : this;
       const retainedStyles: Element[] = [];
       let child = renderRoot.firstElementChild;
@@ -769,11 +779,11 @@ export class TemplateElement extends HTMLElement {
       renderRoot.replaceChildren(...retainedStyles);
       root = renderRoot;
       isSSR = false;
-    } else if (hasShadow && !resetClientShadow) {
+    } else if (shadow && !resetClientShadow) {
       // Shadow DOM SSR — declarative shadow root already has content
-      root = this.shadowRoot!;
+      root = shadow;
       isSSR = true;
-    } else if (this.childNodes.length > 0 && !meta.sd) {
+    } else if (!meta.sd && this.firstChild) {
       // SSR light-DOM — element already has server-rendered children.
       // Only treat as SSR when the template does NOT explicitly declare
       // shadow DOM (meta.sd).  When meta.sd is set, existing children
@@ -784,8 +794,8 @@ export class TemplateElement extends HTMLElement {
       // Shadow DOM client-created (or SPA partial with slot content).
       // Existing children are slot content — they stay in light DOM
       // and project through the template's <slot>.
-      freshShadow = this.shadowRoot === null;
-      const renderRoot = this.shadowRoot ?? this.attachShadow({ mode: 'open' });
+      freshShadow = shadow === null;
+      const renderRoot = shadow ?? this.attachShadow({ mode: 'open' });
       if (resetClientShadow) renderRoot.replaceChildren();
       root = renderRoot;
       isSSR = false;
@@ -797,7 +807,7 @@ export class TemplateElement extends HTMLElement {
 
     // Styles are required even when a compiler-owned SSR host remains dormant.
     // Install them after root selection but before the hydration deferral.
-    this.$installStyles(meta, freshShadow);
+    this.$installStyles(meta, freshShadow, root);
 
     if (isSSR && !forceSSR && !reconnecting) {
       const ancestor = this.$nearestHydrationBarrier();
@@ -843,8 +853,12 @@ export class TemplateElement extends HTMLElement {
         this.$root = this.$hydrate(root, meta);
 
       } else {
-        clientRoot = this.$createStagingRoot(meta);
-        this.$root = this.$wire(clientRoot, meta);
+        clientRoot = createStagingRoot(this.ownerDocument, meta);
+        this.$root = freshShadow && !meta.tx && !meta.a && !meta.c && !meta.r &&
+            !meta.eg && !meta.re && !meta.rf && !meta.f &&
+            this.$usesDefaultFinalizer() && this.$updateInstance === TemplateElement.$defaultUpdater
+          ? STATIC_CLIENT_VIEW
+          : this.$wire(clientRoot, meta);
       }
 
       this.$meta = meta;
@@ -874,7 +888,7 @@ export class TemplateElement extends HTMLElement {
       // to avoid the path-index build — it will be lazy-built
       // on the first reactive change instead.
       if (!isSSR && clientRoot) {
-        deferredHydrationFinish = this.$mountClientTemplate(meta, root as ParentNode & Node, clientRoot, this.$root);
+        deferredHydrationFinish = this.$mountClientTemplate(meta, root, clientRoot, this.$root);
       }
       if (!deferredHydrationFinish) this.$finishHydration();
     } finally {
@@ -885,33 +899,35 @@ export class TemplateElement extends HTMLElement {
   private $mountClientTemplate(
     meta: TemplateMeta,
     root: ParentNode & Node,
-    stagingRoot: HTMLElement,
+    stagingRoot: Element | DocumentFragment,
     instance: TemplateInstance,
   ): boolean {
-    this.$updateInstance(instance);
+    if (instance !== STATIC_CLIENT_VIEW) this.$updateInstance(instance);
     const structural = instance.repeats.length !== 0 || instance.conds.length !== 0;
-    if (structural) instance.nodes = childNodesArray(stagingRoot);
-    const deferred = componentStyleRuntime?.hasTemplateLinks(meta) &&
-      this.$deferClientTemplate(meta, root, stagingRoot, instance);
-    if (deferred) {
-      this.$deferredClientMount = true;
-      queueRenderWork(this, MOUNT_WORK);
-      this.$ready = false;
-      return true;
+    if (componentStyleRuntime?.hasTemplateLinks(meta)) {
+      if (instance === STATIC_CLIENT_VIEW) {
+        instance = this.$root = createTemplateInstance(stagingRoot, meta);
+      }
+      instance.nodes = childNodesArray(stagingRoot);
+      if (this.$deferClientTemplate(meta, root, stagingRoot, instance)) {
+        this.$deferredClientMount = true;
+        queueRenderWork(this, MOUNT_WORK);
+        this.$ready = false;
+        return true;
+      }
     }
     if (structural) replaceInstanceContainer(instance, stagingRoot, root);
-    this.$appendStagedChildren(root, stagingRoot);
-    instance.container = root;
+    appendStagedChildren(root, stagingRoot, this);
+    if (instance !== STATIC_CLIENT_VIEW) instance.container = root;
     return false;
   }
 
   private $deferClientTemplate(
     meta: TemplateMeta,
     root: ParentNode & Node,
-    stagingRoot: HTMLElement,
+    stagingRoot: Element | DocumentFragment,
     instance: TemplateInstance,
   ): boolean {
-    const structural = instance.repeats.length !== 0 || instance.conds.length !== 0;
     return componentStyleRuntime!.installTemplateLinks(
       this, meta, this.shadowRoot, stagingRoot, instance.attrs,
       {
@@ -933,7 +949,9 @@ export class TemplateElement extends HTMLElement {
         beforeAppend: () => {
           if (this.$root !== instance || !this.$hydrated) return;
           this.$updateInstance(instance);
-          if (structural) instance.nodes = childNodesArray(stagingRoot);
+          if (instance.repeats.length !== 0 || instance.conds.length !== 0) {
+            instance.nodes = childNodesArray(stagingRoot);
+          }
         },
         afterAppend: () => {
           if (this.$root !== instance || !this.$hydrated) return;
@@ -948,18 +966,28 @@ export class TemplateElement extends HTMLElement {
     );
   }
 
-  private $installStyles(meta: TemplateMeta, freshShadow = false): void {
-    const styles = requireComponentStyleRuntime(this.localName, meta, this.ownerDocument);
+  private $installStyles(
+    meta: TemplateMeta,
+    freshShadow = false,
+    root?: ShadowRoot | HTMLElement,
+  ): void {
+    const tag = this.localName;
+    const owner = this.ownerDocument;
+    const styles = requireComponentStyleRuntime(tag, meta, owner);
     if (!styles) return;
-    const wantShadow = !!this.shadowRoot || !!meta.sd;
-    const containingRoot = this.getRootNode();
-    const styleTarget = wantShadow
-      ? this.shadowRoot!
-      : containingRoot.nodeType === 11 && 'host' in containingRoot
+    // Streamed static hosts call this without going through mount selection.
+    const shadow = root === undefined ? this.shadowRoot
+      : root.nodeType === 11 && 'host' in root ? root : null;
+    let styleTarget: Document | ShadowRoot;
+    if (shadow || (root === undefined && meta.sd)) {
+      styleTarget = shadow!;
+    } else {
+      const containingRoot = this.getRootNode();
+      styleTarget = containingRoot.nodeType === 11 && 'host' in containingRoot
         ? containingRoot as ShadowRoot
-        : this.ownerDocument;
-    styles.claimSsr(this, styleTarget);
-    const installation = styles.install(this.localName, styleTarget, this, freshShadow, meta);
+        : owner;
+    }
+    const installation = styles.install(tag, styleTarget, this, freshShadow, meta);
     if (installation) {
       void installation.catch((error) => {
         console.error(error);
@@ -999,7 +1027,7 @@ export class TemplateElement extends HTMLElement {
       if (this.$deferredWrites) this.$deferredWrites = undefined;
       return;
     }
-    this.$disposeInstance(this.$root, false, true);
+    if (this.$root !== STATIC_CLIENT_VIEW) this.$disposeInstance(this.$root, false, true);
     this.$root = null;
     this.$pathIndex = undefined;
     this.$wildcardBindings = undefined;
@@ -1553,6 +1581,7 @@ export class TemplateElement extends HTMLElement {
     }
 
     if (path) {
+      if (this.$root === STATIC_CLIENT_VIEW) return;
       if (this.$pathBindings(path) || this.$wildcardBindings) {
         // Batch path-specific updates via microtask coalescing.
         this.$markDirty(path);
@@ -1722,7 +1751,7 @@ export class TemplateElement extends HTMLElement {
       if (!index) return;
       const ctx: MismatchContext = {
         resolver: this.$conditionResolver(),
-        resolveParts: (parts, scope) => this.$resolveParts(parts, scope),
+        resolveParts: (parts, scope) => resolveParts(this, parts, scope),
         resolveValue: (path, scope) => this.$resolveValue(path, scope),
       };
       const tag = this.tagName.toLowerCase();
@@ -1736,39 +1765,13 @@ export class TemplateElement extends HTMLElement {
   // Compiled paths are childNode indices in meta.h parsed by the browser.
   // For client-created components the DOM matches meta.h exactly.
 
-  // ── Template parsing ──────────────────────────────────────────
-
-  private $stageTemplate(wrapper: Element, meta: TemplateBlockMeta): void {
-    wrapper.appendChild(cloneTemplateContent(meta, this.ownerDocument, wrapper));
-    customElements.upgrade(wrapper);
-  }
-
-  private $createStagingRoot(meta: TemplateBlockMeta): HTMLElement {
-    const wrapper = this.ownerDocument.createElement('div');
-    this.$stageTemplate(wrapper, meta);
-    return wrapper;
-  }
-
-  private $appendStagedChildren(root: Node, stagingRoot: Node): void {
-    const first = stagingRoot.firstChild;
-    if (!first) return;
-    if (!first.nextSibling) {
-      root.appendChild(first);
-      return;
-    }
-    const fragment = this.ownerDocument.createDocumentFragment();
-    while (stagingRoot.firstChild) {
-      fragment.appendChild(stagingRoot.firstChild);
-    }
-    root.appendChild(fragment);
-  }
   // ═══════════════════════════════════════════════════════════════
   //  Client-created wiring — exact childNode index resolution
   // ═══════════════════════════════════════════════════════════════
 
   private $wire(root: Node, meta: TemplateBlockMeta, scope?: ScopeFrame): TemplateInstance {
     const ownerDocument = this.ownerDocument;
-    const instance = createTemplateInstance(root, meta, EMPTY_ARR, scope);
+    const instance = createTemplateInstance(root, meta, scope);
 
     // Resolve every static insertion reference before inserting dynamic nodes.
     // Any insertion shifts childNodes and invalidates later compiled offsets.
@@ -1796,7 +1799,12 @@ export class TemplateElement extends HTMLElement {
         let node: Node;
         let end: Comment | undefined;
         if (raw) {
-          const binding = this.$createRawText(rawIndex++, parts, instance);
+          const index = rawIndex++;
+          const binding = makeRawText(
+            ownerDocument.createComment(rawMarker(index)),
+            ownerDocument.createComment(rawMarker(index, true)),
+            parts, instance,
+          );
           instance.texts[textCount++] = binding;
           node = binding.node;
           end = binding.rawEnd;
@@ -1828,16 +1836,7 @@ export class TemplateElement extends HTMLElement {
     this.$finalize(instance, meta, elements);
     insertPendingSlots(pendingSlots, pendingSlotCount);
 
-    instance.nodes = childNodesArray(root);
     return instance;
-  }
-
-  private $createRawText(index: number, parts: CompiledAttrPart[], owner: TemplateInstance): TextBinding {
-    return makeRawText(
-      this.ownerDocument.createComment(rawMarker(index)),
-      this.ownerDocument.createComment(rawMarker(index, true)),
-      parts, owner,
-    );
   }
 
   private $wireStructuralSlots(
@@ -1932,9 +1931,7 @@ export class TemplateElement extends HTMLElement {
   ): TemplateInstance {
     const ownerDocument = this.ownerDocument;
     // A block range snapshots its nodes once its own markers are gone.
-    const instance = createTemplateInstance(
-      ssrRoot, meta, rangeStart ? EMPTY_ARR as unknown as Node[] : childNodesArray(ssrRoot), scope,
-    );
+    const instance = createTemplateInstance(ssrRoot, meta, scope);
 
     // Collect SSR markers for deferred removal.  Closing markers
     // (<!--/wc-->, <!--/wr-->) and item markers (<!--wi-->) must stay in
@@ -2052,8 +2049,6 @@ export class TemplateElement extends HTMLElement {
     if (rangeStart) {
       // The parent still holds this range's boundary markers.
       instance.nodes = rangeNodesArray(rangeStart, rangeEnd);
-    } else {
-      compactNodeArray(instance);
     }
 
     return instance;
@@ -2064,8 +2059,8 @@ export class TemplateElement extends HTMLElement {
   ): TextBinding {
     const scope = owner.scope;
     const binding = makeRawText(range[0], range[1], parts, owner);
-    if ((!scope || scopeIsKnown(scope)) && this.$bindingStateIsKnown(binding)) {
-      binding.rawValue = this.$resolveParts(parts, scope);
+    if ((!scope || scopeIsKnown(scope)) && bindingStateIsKnown(this, binding)) {
+      binding.rawValue = resolveParts(this, parts, scope);
     }
     return binding;
   }
@@ -2226,7 +2221,7 @@ export class TemplateElement extends HTMLElement {
         if (
           primeSSRComplexProperties &&
           binding.kind === ATTR_KIND_COMPLEX &&
-          this.$bindingStateIsKnown(binding)
+          bindingStateIsKnown(this, binding)
         ) {
           const element = binding.element;
           const value = this.$resolveValue(binding.path!, binding.scope);
@@ -2247,6 +2242,11 @@ export class TemplateElement extends HTMLElement {
     _meta: TemplateBlockMeta,
     _elements: readonly (Node | undefined)[],
   ): void {}
+
+  /** Whether binding-free client templates can omit wiring for this host. */
+  protected $usesDefaultFinalizer(): boolean {
+    return this.$finalize === TemplateElement.$defaultFinalizer;
+  }
 
 
   // ═══════════════════════════════════════════════════════════════
@@ -2334,50 +2334,11 @@ export class TemplateElement extends HTMLElement {
     // Fast path: with no client-absent SSR scopes (every authored component and
     // every fully-hydrated host) the walk is unnecessary, so skip it per binding.
     const gated = this.$hasUnknownScopes;
-    updateBindings(this, bindings.texts, this.$patchText, requireKnownState ? this.$bindingStateIsKnown : undefined, gated);
-    updateBindings(this, bindings.attrs, this.$patchAttr, requireKnownState ? this.$bindingStateIsKnown : undefined, gated);
-    updateBindings(this, bindings.conds, this.$toggleCond, requireKnownState ? this.$condStateIsKnown : undefined, gated);
-    updateBindings(this, bindings.repeats, updateRepeat, requireKnownState ? this.$repeatStateIsKnown : undefined, gated);
-  }
-
-  private $condStateIsKnown(binding: CondBinding): boolean {
-    return this.$pathsAreKnown(binding.condition[1], binding.scope);
-  }
-
-  private $repeatStateIsKnown(binding: RepeatBinding): boolean {
-    return this.$hasStateRoot(binding.collection, binding.scope);
-  }
-
-  private $bindingStateIsKnown(binding: {
-    path?: string; parts?: CompiledAttrPart[]; condition?: CompiledCondition; scope?: ScopeFrame;
-  }): boolean {
-    if (binding.path && !this.$hasStateRoot(binding.path, binding.scope)) return false;
-    if (binding.parts && !this.$pathsAreKnown(binding.parts, binding.scope, true)) return false;
-    return !binding.condition
-      || this.$pathsAreKnown(binding.condition[1], binding.scope);
-  }
-
-  private $pathsAreKnown(paths: CompiledAttrPart[], scope?: ScopeFrame, parts = false): boolean {
-    for (const path of paths) {
-      if (typeof path === 'string') {
-        if (!parts && !this.$hasStateRoot(path, scope)) return false;
-      } else if (!this.$hasStateRoot(path[0], scope)) return false;
-    }
-    return true;
-  }
-  private $patchText(b: TextBinding): void {
-    let val: string;
-    if (b.parts) {
-      val = this.$resolveParts(b.parts, b.scope);
-    } else if (b.path) {
-      const raw = this.$resolveValue(b.path, b.scope);
-      val = raw == null ? '' : String(raw);
-    } else {
-      return;
-    }
-    if (b.raw && b.rawEnd) {
-      patchRawText(b, val, b.rawEnd);
-    } else if (b.node.data !== val) b.node.data = val;
+    const known = requireKnownState ? bindingStateIsKnown : undefined;
+    updateBindings(this, bindings.texts, patchText, known, gated);
+    updateBindings(this, bindings.attrs, this.$patchAttr, known, gated);
+    updateBindings(this, bindings.conds, this.$toggleCond, requireKnownState ? condStateIsKnown : undefined, gated);
+    updateBindings(this, bindings.repeats, updateRepeat, requireKnownState ? repeatStateIsKnown : undefined, gated);
   }
 
   private $patchAttr(b: AttrBinding): void {
@@ -2404,7 +2365,7 @@ export class TemplateElement extends HTMLElement {
         break;
       }
       case ATTR_KIND_TEMPLATE: {
-        const v = this.$resolveParts(b.parts!, b.scope);
+        const v = resolveParts(this, b.parts!, b.scope);
         if (el.getAttribute(name) !== v) {
           blockUnupgradedAttribute(el);
           el.setAttribute(name, v);
@@ -2518,17 +2479,6 @@ export class TemplateElement extends HTMLElement {
         && Object.hasOwn(this.$templateState, root));
   }
 
-  private $resolveParts(parts: CompiledAttrPart[], scope?: ScopeFrame): string {
-    let result = '';
-    for (let i = 0; i < parts.length; i++) {
-      const p = parts[i];
-      if (typeof p === 'string') { result += p; continue; }
-      const v = this.$resolveValue(p[0], scope);
-      result += v == null ? '' : String(v);
-    }
-    return result;
-  }
-
   // ── Block instance management ─────────────────────────────────
 
   $block(blockIndex: TemplateBlockReference, fragment?: TemplateMeta): TemplateBlockMeta | undefined {
@@ -2550,13 +2500,12 @@ export class TemplateElement extends HTMLElement {
     }
     if (!bm) return null;
     const context = container.nodeType === 1 ? container as Element : undefined;
-    const wrapper = createTemplateContainer(this.ownerDocument, context);
-    this.$stageTemplate(wrapper, bm);
-    const inst = this.$wire(wrapper, bm, scope);
+    const staging = createStagingRoot(this.ownerDocument, bm, context);
+    const inst = this.$wire(staging, bm, scope);
     this.$updateInstance(inst);
+    inst.nodes = childNodesArray(staging);
     if (inst.repeats.length !== 0 || inst.conds.length !== 0) {
-      inst.nodes = childNodesArray(wrapper);
-      replaceInstanceContainer(inst, wrapper, container);
+      replaceInstanceContainer(inst, staging, container);
     } else {
       inst.container = container;
     }
@@ -2576,23 +2525,10 @@ export class TemplateElement extends HTMLElement {
       }
       if (instance.cleanups || instance.listeners) disposeInstanceEffects(instance, removeNodes);
       if (removeNodes) {
-        this.$removeInstanceNodes(instance);
+        removeInstanceNodes(instance.nodes);
       }
       if (instance.conds.length || instance.repeats.length) collectDisposedChildren(instance, stack);
       clearInstance(instance);
-    }
-  }
-
-  private $removeInstanceNodes(instance: TemplateInstance): void {
-    const nodes = instance.nodes;
-    for (let i = 0; i < nodes.length; i++) {
-      const node = nodes[i];
-      const previous = renderWork?.remove(node);
-      try {
-        node.parentNode?.removeChild(node);
-      } finally {
-        renderWork?.restoreRemoval(previous);
-      }
     }
   }
 
@@ -2616,6 +2552,53 @@ export class TemplateElement extends HTMLElement {
     if (nodes[0] === ref) return nodes[nodes.length - 1];
     for (let i = 0; i < nodes.length; i++) container.insertBefore(nodes[i], ref);
     return nodes[nodes.length - 1];
+  }
+}
+
+function createStagingRoot(
+  owner: Document,
+  meta: TemplateBlockMeta,
+  context?: Element,
+): Element | DocumentFragment {
+  let staging: Element | DocumentFragment;
+  if ((!context || context instanceof HTMLElement) && !meta.c && !meta.r) {
+    staging = cloneTemplateContent(meta, owner);
+  } else {
+    const wrapper = createTemplateContainer(owner, context);
+    wrapper.appendChild(cloneTemplateContent(meta, owner, wrapper));
+    staging = wrapper;
+  }
+  customElements.upgrade(staging);
+  return staging;
+}
+
+function appendStagedChildren(root: Node, stagingRoot: Node, host: TemplateElement): void {
+  const first = stagingRoot.firstChild;
+  if (!first) return;
+  if (stagingRoot.nodeType === 11) {
+    root.appendChild(stagingRoot);
+    return;
+  }
+  if (!first.nextSibling) {
+    root.appendChild(first);
+    return;
+  }
+  const fragment = host.ownerDocument.createDocumentFragment();
+  while (stagingRoot.firstChild) {
+    fragment.appendChild(stagingRoot.firstChild);
+  }
+  root.appendChild(fragment);
+}
+
+function removeInstanceNodes(nodes: readonly Node[]): void {
+  for (let i = 0; i < nodes.length; i++) {
+    const node = nodes[i];
+    const previous = renderWork?.remove(node);
+    try {
+      node.parentNode?.removeChild(node);
+    } finally {
+      renderWork?.restoreRemoval(previous);
+    }
   }
 }
 
@@ -2722,13 +2705,13 @@ function updateBindings<T extends { scope?: ScopeFrame }>(
   host: TemplateElement,
   bindings: readonly T[],
   update: (this: TemplateElement, binding: T) => void,
-  known: ((this: TemplateElement, binding: T) => boolean) | undefined,
+  known: ((host: TemplateElement, binding: T) => boolean) | undefined,
   gated: boolean,
 ): void {
   for (let i = 0; i < bindings.length; i++) {
     const binding = bindings[i];
     if ((!gated || !binding.scope || scopeIsKnown(binding.scope)) &&
-        (!known || known.call(host, binding))) {
+        (!known || known(host, binding))) {
       update.call(host, binding);
     }
   }
@@ -2736,6 +2719,62 @@ function updateBindings<T extends { scope?: ScopeFrame }>(
 
 function updateRepeat(this: TemplateElement, binding: RepeatBinding): void {
   syncRepeat(this, binding);
+}
+
+function condStateIsKnown(host: TemplateElement, binding: CondBinding): boolean {
+  return pathsAreKnown(host, binding.condition[1], binding.scope);
+}
+
+function repeatStateIsKnown(host: TemplateElement, binding: RepeatBinding): boolean {
+  return host.$hasStateRoot(binding.collection, binding.scope);
+}
+
+function bindingStateIsKnown(host: TemplateElement, binding: {
+  path?: string; parts?: CompiledAttrPart[]; condition?: CompiledCondition; scope?: ScopeFrame;
+}): boolean {
+  if (binding.path && !host.$hasStateRoot(binding.path, binding.scope)) return false;
+  if (binding.parts && !pathsAreKnown(host, binding.parts, binding.scope, true)) return false;
+  return !binding.condition || pathsAreKnown(host, binding.condition[1], binding.scope);
+}
+
+function pathsAreKnown(
+  host: TemplateElement,
+  paths: CompiledAttrPart[],
+  scope?: ScopeFrame,
+  parts = false,
+): boolean {
+  for (const path of paths) {
+    if (typeof path === 'string') {
+      if (!parts && !host.$hasStateRoot(path, scope)) return false;
+    } else if (!host.$hasStateRoot(path[0], scope)) return false;
+  }
+  return true;
+}
+
+function resolveParts(host: TemplateElement, parts: CompiledAttrPart[], scope?: ScopeFrame): string {
+  let result = '';
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i];
+    if (typeof p === 'string') { result += p; continue; }
+    const v = host.$resolveValue(p[0], scope);
+    result += v == null ? '' : String(v);
+  }
+  return result;
+}
+
+function patchText(this: TemplateElement, b: TextBinding): void {
+  let val: string;
+  if (b.parts) {
+    val = resolveParts(this, b.parts, b.scope);
+  } else if (b.path) {
+    const raw = this.$resolveValue(b.path, b.scope);
+    val = raw == null ? '' : String(raw);
+  } else {
+    return;
+  }
+  if (b.raw && b.rawEnd) {
+    patchRawText(b, val, b.rawEnd);
+  } else if (b.node.data !== val) b.node.data = val;
 }
 
 function patchRawText(binding: TextBinding, value: string, end: Comment): void {

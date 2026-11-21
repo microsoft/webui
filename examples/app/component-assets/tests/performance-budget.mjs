@@ -28,13 +28,13 @@ const BASELINE = {
 };
 
 const BUDGETS = {
-  startupRaw: 94_000,
-  // Include one-time validation of delivered condition plans.
-  startupGzip: 29_600,
-  startupBrotli: 26_250,
-  totalRaw: 96_500,
-  totalGzip: 30_700,
-  totalBrotli: 27_100,
+  // Include the one-time condition-plan validator in the startup graph.
+  startupRaw: 94_500,
+  startupGzip: 30_000,
+  startupBrotli: 26_650,
+  totalRaw: 96_650,
+  totalGzip: 31_100,
+  totalBrotli: 27_500,
   coldRaw: Math.ceil(BASELINE.coldRaw * 1.1),
   coldGzip: Math.ceil(BASELINE.coldGzip * 1.1),
   coldBrotli: Math.ceil(BASELINE.coldBrotli * 1.1),

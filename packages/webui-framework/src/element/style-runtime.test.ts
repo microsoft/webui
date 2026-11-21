@@ -55,7 +55,6 @@ test('template-owned links also require the stylesheet runtime', () => {
 
 test('one installed runtime is shared without allocating per-component adapters', () => {
   const runtime: ComponentStyleRuntime = {
-    claimSsr: () => {},
     install: () => undefined,
     prepareTemplate: () => undefined,
     hasTemplateLinks: () => false,

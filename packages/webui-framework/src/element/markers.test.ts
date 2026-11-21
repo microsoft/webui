@@ -575,6 +575,23 @@ describe('buildSSRIndex', () => {
     assert.deepEqual(index, { elements: [root], conds: [], repeats: [], raws: [] });
   });
 
+  test('pairs flat repeated wrappers without crossing an outlet or the next row', () => {
+    const template = el('ROOT', el('LI', el('SPAN'), el('SPAN')));
+    const label = el('SPAN');
+    const value = el('SPAN');
+    const first = el('LI', label, txt(), value);
+    const nextItem = cmt('wi');
+    const root = el('ROOT', first, nextItem, el('LI', el('SPAN'), el('SPAN')));
+    assert.deepEqual(build(template, root, false, first, nextItem).elements, [root, first, label, value]);
+
+    const tail = el('SPAN');
+    const item = el('LI', cmt('wo'), el('ROUTED-ITEM'), cmt('/wo'), tail);
+    const routed = el('ROOT', item);
+    const fallback = build(template, routed, false);
+    assert.equal(fallback.elements[2], undefined);
+    assert.equal(fallback.elements[3], tail);
+  });
+
   test('skips a compiler-emitted style fallback the template never contained', () => {
     // Inline-CSS components render a `<style data-webui-resource>` into the
     // render root that `meta.h` has no counterpart for. Counting it shifts

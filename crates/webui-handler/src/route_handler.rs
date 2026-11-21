@@ -75,6 +75,7 @@ pub struct Protocol {
     component_index: HashMap<String, u32>,
     style_resource_index: HashMap<String, u32>,
     style_resources_requiring_escape: HashSet<String>,
+    prepared_shadow_styles: Box<[PreparedShadowStyle]>,
     component_reachability: OnceLock<ComponentReachabilityIndex>,
     fragment_ids: Vec<Arc<str>>,
     fragment_slots: HashMap<Arc<str>, u32>,
@@ -165,6 +166,18 @@ impl Protocol {
         let component_index = build_component_index(&protocol);
         let style_resource_index = build_style_resource_index(&protocol);
         let style_resources_requiring_escape = build_style_escape_resources(&protocol);
+        let prepared_shadow_styles = if style_metadata_error.is_none()
+            && matches!(css_strategy, CssStrategy::Link | CssStrategy::Style)
+            && protocol.style_chunks.is_empty()
+        {
+            prepare_shadow_styles(
+                &protocol,
+                &component_index,
+                &style_resources_requiring_escape,
+            )
+        } else {
+            Box::default()
+        };
         let route_index = CompiledRouteIndex::new(&protocol);
         let mut fragment_ids: Vec<Arc<str>> = protocol
             .fragments
@@ -181,8 +194,13 @@ impl Protocol {
         // Render slots reuse the continuation slot numbering, so the prepared
         // index shares the interned IDs instead of duplicating every string, and
         // resolves targets through the slot map instead of re-searching by name.
-        let render_fragments =
-            crate::RenderFragmentIndex::new(&protocol, &fragment_ids, &fragment_slots);
+        let render_fragments = crate::RenderFragmentIndex::new(
+            &protocol,
+            &fragment_ids,
+            &fragment_slots,
+            &component_index,
+            &prepared_shadow_styles,
+        );
         let lazy_index = crate::lazy::LazyIndex::new(&protocol, &fragment_ids, &fragment_slots);
         Self {
             protocol,
@@ -196,6 +214,7 @@ impl Protocol {
             component_index,
             style_resource_index,
             style_resources_requiring_escape,
+            prepared_shadow_styles,
             component_reachability: OnceLock::new(),
             fragment_ids,
             fragment_slots,
@@ -267,6 +286,10 @@ impl Protocol {
 
     pub(crate) fn style_resources_requiring_escape(&self) -> &HashSet<String> {
         &self.style_resources_requiring_escape
+    }
+
+    pub(crate) fn prepared_shadow_styles(&self) -> &[PreparedShadowStyle] {
+        &self.prepared_shadow_styles
     }
 
     pub(crate) fn component_reachability(&self) -> &ComponentReachabilityIndex {
@@ -1312,6 +1335,88 @@ fn build_style_escape_resources(protocol: &WebUIProtocol) -> HashSet<String> {
         }
     }
     resources
+}
+
+/// Maximum total string bytes retained for prepared Shadow style tags per protocol.
+const PREPARED_SHADOW_STYLE_LIMIT: usize = 64 * 1024;
+
+/// Static markup for a single unbundled Shadow stylesheet.
+pub(crate) struct PreparedShadowStyle {
+    pub(crate) component_index: u32,
+    pub(crate) tag: Box<str>,
+    pub(crate) html: Box<str>,
+}
+
+/// Prepare the tag for roots that own their entire unbundled closure.
+fn prepare_shadow_styles(
+    protocol: &WebUIProtocol,
+    component_index: &HashMap<String, u32>,
+    style_resources_requiring_escape: &HashSet<String>,
+) -> Box<[PreparedShadowStyle]> {
+    let strategy = protocol.css_strategy();
+    let mut budget = PREPARED_SHADOW_STYLE_LIMIT;
+    let mut prepared = Vec::new();
+    for (tag, component) in &protocol.components {
+        let Some(&index) = component_index.get(tag) else {
+            continue;
+        };
+        if !component.uses_shadow_dom {
+            continue;
+        }
+        let Some(closure) = protocol.style_closures.get(tag) else {
+            continue;
+        };
+        let [owner] = closure.component_tags.as_slice() else {
+            continue;
+        };
+        // Even when the bundle table is empty, the normal renderer must
+        // reject an explicit chunk reference rather than emit the owner link.
+        if !closure.style_chunks.is_empty() || owner != tag {
+            continue;
+        }
+        let (resource, base) = match strategy {
+            CssStrategy::Link if !component.css_href.is_empty() => {
+                let href = component.css_href.as_str();
+                let base = (!protocol.asset_base.is_empty() && crate::is_base_relative(href))
+                    .then_some(protocol.asset_base.as_str());
+                (href, base)
+            }
+            CssStrategy::Style
+                if !component.css.is_empty() && !style_resources_requiring_escape.contains(tag) =>
+            {
+                (component.css.as_str(), None)
+            }
+            _ => continue,
+        };
+        let estimate = 80 + tag.len() + resource.len() + base.map_or(0, str::len);
+        let Some(html_budget) = budget.checked_sub(tag.len()) else {
+            return Box::default();
+        };
+        if estimate > html_budget {
+            return Box::default();
+        }
+        let mut html = String::with_capacity(estimate);
+        if strategy == CssStrategy::Link {
+            crate::append_component_style_link_to_string(&mut html, base, resource, tag);
+        } else {
+            html.push_str("<style data-webui-resource=\"");
+            crate::append_escaped_to_string(&mut html, tag);
+            html.push_str("\" data-webui-strategy=\"style\">");
+            html.push_str(resource);
+            html.push_str("</style>");
+        }
+        let Some(remaining) = html_budget.checked_sub(html.len()) else {
+            return Box::default();
+        };
+        budget = remaining;
+        prepared.push(PreparedShadowStyle {
+            component_index: index,
+            tag: Box::from(tag.as_str()),
+            html: html.into_boxed_str(),
+        });
+    }
+    prepared.sort_unstable_by_key(|style| style.component_index);
+    prepared.into_boxed_slice()
 }
 
 /// Startup-built direct component dependency graph used by streaming

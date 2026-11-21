@@ -428,6 +428,7 @@ mod tests {
             component_index,
             style_resource_index: protocol.style_resource_index(),
             style_resources_requiring_escape: protocol.style_resources_requiring_escape(),
+            prepared_shadow_styles: protocol.prepared_shadow_styles(),
             style_chunk_index: protocol.protocol().style_chunk_index(),
             css_strategy: protocol.css_strategy(),
             head_inject: None,

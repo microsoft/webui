@@ -6,10 +6,9 @@ import type { TemplateMeta } from '../template-types.js';
 import { hasComponentStyleWork } from './style-catalog.js';
 
 export interface ComponentStyleRuntime {
-  readonly claimSsr: typeof import('./styles.js').claimSsrComponentStyles;
   /**
-   * Install a mounting component's style closure into `target`. `freshShadow`
-   * is true when the host attached that shadow root in this mount.
+   * Claim SSR styles and install a mounting component's closure into `target`.
+   * `freshShadow` is true when the host attached that shadow root in this mount.
    */
   readonly install: (
     tag: string,

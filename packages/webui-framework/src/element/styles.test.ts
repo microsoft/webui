@@ -5,7 +5,6 @@ import { strict as assert } from 'node:assert';
 import { describe, test } from 'node:test';
 import { sameComponentStyleResource } from './style-catalog.js';
 import {
-  claimSsrComponentStyles,
   COMPONENT_LINKS_EAGER,
   COMPONENT_ROOT_FRESH,
   installComponentStyles,
@@ -160,12 +159,10 @@ describe('component style resources', () => {
     registerComponentStyles({
       version: 1, strategy: 'style', resources: {}, closures: { empty: [] },
     }, document);
-    claimSsrComponentStyles(source, document);
     assert.equal(installMountedComponentStyles('empty', document, source, 0), undefined);
     assert.equal(scans, 0);
 
     registerComponentStyles(styles({ root: ['first'] }), document);
-    claimSsrComponentStyles(source, document);
     await installMountedComponentStyles('root', document, source, 0);
     assert.equal(scans, 1, 'a skipped empty catalog must not suppress later SSR claiming');
     const children = (document.head as unknown as FakeParent).children;
@@ -179,7 +176,6 @@ describe('component style resources', () => {
     registerComponentStyles({
       version: 1, strategy: 'style', resources: {}, closures: { root: ['missing'] },
     }, document);
-    claimSsrComponentStyles(source, document);
     assert.throws(
       () => installMountedComponentStyles('root', document, source, 0),
       /Missing component style resource "missing"/,
@@ -203,7 +199,6 @@ describe('component style resources', () => {
     setCssModuleLoaderForTests(() => Promise.resolve({ default: sheet }));
     try {
       const source = new FakeElement() as unknown as HTMLElement;
-      claimSsrComponentStyles(source, root);
       await installMountedComponentStyles('empty', root, source, 0);
       assert.deepEqual(root.adoptedStyleSheets, [sheet]);
       assert.equal(parent.querySelectorAll().length, 0);
@@ -353,13 +348,13 @@ describe('component style resources', () => {
     const marker = new FakeElement('style');
     marker.setAttribute('data-webui-resource', 'first');
     marker.setAttribute('data-webui-strategy', 'style');
-    claimSsrComponentStyles({
+    const host = {
       parentElement: {
         localName: 'webui-route',
         children: [marker],
       },
-    } as unknown as Element, root);
-    await installComponentStyles('lateRoute', root);
+    } as unknown as HTMLElement;
+    await installMountedComponentStyles('lateRoute', root, host, 0);
 
     assert.equal(
       (root as unknown as FakeParent).children.length,
@@ -483,6 +478,45 @@ describe('component style resources', () => {
 
     assert.equal((firstRoot as unknown as FakeParent).children.length, 1);
     assert.equal((secondRoot as unknown as FakeParent).children.length, 1);
+  });
+
+  test('installs a fresh inline closure without resolving insertion markers', () => {
+    const document = fakeDocument('document-nonce');
+    const root = fakeShadow(document);
+    const parent = root as unknown as FakeParent;
+    const host = new FakeElement() as unknown as HTMLElement;
+    let anchorChecks = 0;
+    let ssrScans = 0;
+    const scan = parent.querySelectorAll.bind(parent);
+    parent.querySelectorAll = () => { ssrScans++; return scan(); };
+    Object.defineProperties(parent, {
+      firstChild: { get: () => parent.children[0] ?? null },
+      childElementCount: { get: () => { anchorChecks++; return parent.children.length; } },
+    });
+    registerComponentStyles(styles({ root: ['first'], descendant: ['first'] }), document);
+
+    assert.equal(installMountedComponentStyles('root', root, host, COMPONENT_ROOT_FRESH), undefined);
+    assert.equal(anchorChecks, 0);
+    assert.equal(ssrScans, 0);
+    assert.equal(installMountedComponentStyles('descendant', root, host, 0), undefined);
+    assert.equal(parent.children.length, 1, 'a later closure must reuse the installed resource');
+    assert.equal(parent.children[0].nonce, 'document-nonce');
+    assert.equal(parent.children[0].textContent, '.first{}');
+  });
+
+  test('claims preexisting markers even when mount says its ShadowRoot is fresh', () => {
+    const document = fakeDocument();
+    const root = fakeShadow(document);
+    const parent = root as unknown as FakeParent;
+    const host = new FakeElement() as unknown as HTMLElement;
+    const marker = new FakeElement('style');
+    marker.setAttribute('data-webui-resource', 'first');
+    parent.appendChild(marker);
+    Object.defineProperty(parent, 'firstChild', { get: () => marker });
+    registerComponentStyles(styles({ root: ['first'] }), document);
+
+    assert.equal(installMountedComponentStyles('root', root, host, COMPONENT_ROOT_FRESH), undefined);
+    assert.deepEqual(parent.children, [marker]);
   });
 
   test('applies the owning Document nonce to Document and ShadowRoot styles', async () => {
@@ -779,7 +813,7 @@ describe('component style resources', () => {
     assert.equal(installComponentStyles('component', root), undefined);
   });
 
-  test('installs one import map per Module specifier per Document', async () => {
+  test('shares one Module load and import map across roots in a Document', async () => {
     const document = fakeDocument();
     const firstRoot = fakeShadow(document);
     const secondRoot = fakeShadow(document);
@@ -792,11 +826,27 @@ describe('component style resources', () => {
       },
       closures: { first: ['first'], second: ['second'] },
     }, document);
-    setCssModuleLoaderForTests(() => Promise.resolve({ default: {} as CSSStyleSheet }));
+    const sheet = {} as CSSStyleSheet;
+    let loads = 0;
+    setCssModuleLoaderForTests(() => {
+      loads++;
+      return Promise.resolve({ default: sheet });
+    });
 
-    await installComponentStyles('first', firstRoot);
-    await installComponentStyles('second', secondRoot);
-    setCssModuleLoaderForTests();
+    try {
+      await Promise.all([
+        installComponentStyles('first', firstRoot),
+        installComponentStyles('second', secondRoot),
+      ]);
+      const laterRoot = fakeShadow(document);
+      await installComponentStyles('second', laterRoot);
+      assert.equal(loads, 1);
+      for (const root of [firstRoot, secondRoot, laterRoot]) {
+        assert.deepEqual(root.adoptedStyleSheets, [sheet]);
+      }
+    } finally {
+      setCssModuleLoaderForTests();
+    }
 
     const importMaps = (document.head as unknown as FakeParent).children.filter(
       (child) => (child as unknown as { type: string }).type === 'importmap',
@@ -886,6 +936,7 @@ describe('shared component link sheets', () => {
     rel = '';
     type = '';
     disabled = false;
+    relListReads = 0;
     parent?: FakeParent;
     private resolvedHref = '';
     private readonly attributes = new Map<string, string>();
@@ -903,6 +954,7 @@ describe('shared component link sheets', () => {
     }
 
     get relList(): { contains(token: string): boolean } {
+      this.relListReads++;
       return { contains: token => this.rel.split(' ').includes(token) };
     }
 
@@ -1140,6 +1192,28 @@ describe('shared component link sheets', () => {
     }, { ...AUTHORIZED_LOAD, redirectEnd: 2, redirectStart: 1 });
   });
 
+  test('a fresh root keeps its loaded native Link without checking promotion again', () => {
+    withBrowserGlobals(() => {
+      const document = linkDocument();
+      const first = fakeShadow(document);
+      const fresh = fakeShadow(document);
+      Object.defineProperty(fresh, 'firstChild', { get: () => null });
+      registerComponentStyles(linkStyles(), document);
+      const host = {} as HTMLElement;
+
+      installComponentStyles('card', first, host);
+      installMountedComponentStyles('card', fresh, host, COMPONENT_ROOT_FRESH);
+      const [link] = links(fresh);
+      assert.equal(timingLookups, 1);
+      assert.equal(link.relListReads, 0, 'a loaded native-only link needs no load check');
+      assert.equal(link.disabled, false);
+      assert.equal(link.getAttribute('data-webui-resource'), 'card');
+      assert.deepEqual(fresh.adoptedStyleSheets, []);
+      assert.equal(installComponentStyles('card', fresh, host), undefined);
+      assert.equal(links(fresh).length, 1);
+    }, { ...AUTHORIZED_LOAD, redirectEnd: 2, redirectStart: 1 });
+  });
+
   test('re-resolves catalog hrefs when the Document base URL changes', () => {
     withBrowserGlobals(() => {
       const document = linkDocument();
@@ -1173,6 +1247,34 @@ describe('shared component link sheets', () => {
       installComponentStyles('card', first, host);
       assert.equal(links(first).length, 1);
       assert.deepEqual(first.adoptedStyleSheets, []);
+    });
+  });
+
+  test('matches promotion to the effective asset base of a new native link', () => {
+    withBrowserGlobals(() => {
+      const owner = linkDocument();
+      const runtime = { assetBase: BASE };
+      Object.defineProperty(owner, 'defaultView', { value: { __webui: runtime } });
+      registerComponentStyles(linkStyles('card.css'), owner);
+      const host = {} as HTMLElement;
+      const mount = () => {
+        const root = fakeShadow(owner);
+        installComponentStyles('card', root, host);
+        return root;
+      };
+
+      mount();
+      const original = mount().adoptedStyleSheets[0];
+      assert.ok(original);
+
+      runtime.assetBase = 'https://example.test/other-assets/';
+      const moved = mount();
+      assert.equal(links(moved)[0]?.href, `${runtime.assetBase}card.css`);
+      assert.deepEqual(moved.adoptedStyleSheets, []);
+      const shared = mount();
+      assert.equal(links(shared).length, 0);
+      assert.equal(shared.adoptedStyleSheets.length, 1);
+      assert.notEqual(shared.adoptedStyleSheets[0], original);
     });
   });
 });

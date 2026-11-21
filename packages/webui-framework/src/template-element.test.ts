@@ -20,6 +20,7 @@ Object.defineProperty(globalThis, 'HTMLElement', {
     set localName(value: string) { this.tagName = value.toUpperCase(); }
     isConnected = false;
     childNodes: unknown[] = [];
+    get firstChild(): unknown { return this.childNodes[0] ?? null; }
     children: unknown[] = [];
     shadowRoot = null;
     ownerDocument = document;

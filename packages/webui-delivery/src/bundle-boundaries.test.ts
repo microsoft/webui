@@ -170,7 +170,7 @@ test('normal bootstrap includes styling once and keeps optional coordinators sep
     'template-cache.js', 'streaming-coordinator.js', 'lazy-hydration-coordinator.js',
   ]);
   assert.ok(core.initialBytes <= 89_000, `default startup: ${core.initialBytes} bytes`);
-  assert.ok(core.initialGzip <= 29_000, `default startup gzip: ${core.initialGzip} bytes`);
+  assert.ok(core.initialGzip <= 29_500, `default startup gzip: ${core.initialGzip} bytes`);
   assert.ok(Math.abs(core.initialBytes - styled.initialBytes) <= 128,
     'the compatibility import must not bundle another style implementation');
   for (const [input, copies] of core.inputCopies) {

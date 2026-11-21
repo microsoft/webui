@@ -39,7 +39,26 @@ pub fn append_boolean_attribute_to_bytes(output: &mut Vec<u8>, name: &str) {
     output.extend_from_slice(name.as_bytes());
 }
 
-/// Generate optimized attribute methods for a string-backed `ResponseWriter`.
+/// Append a compiler-owned style link with an already-selected asset prefix.
+#[doc(hidden)]
+#[inline]
+pub fn append_component_style_link_to_string(
+    output: &mut String,
+    base: Option<&str>,
+    href: &str,
+    resource: &str,
+) {
+    output.push_str("<link rel=\"stylesheet\" href=\"");
+    if let Some(base) = base {
+        crate::append_escaped_to_string(output, base);
+    }
+    crate::append_escaped_to_string(output, href);
+    output.push_str("\" data-webui-resource=\"");
+    crate::append_escaped_to_string(output, resource);
+    output.push_str("\" data-webui-strategy=\"link\">");
+}
+
+/// Generate optimized HTML emission methods for a string-backed `ResponseWriter`.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! string_response_writer_methods {
@@ -72,10 +91,20 @@ macro_rules! string_response_writer_methods {
             self.$field.push_str(name);
             Ok(())
         }
+
+        fn write_component_style_link(
+            &mut self,
+            base: Option<&str>,
+            href: &str,
+            resource: &str,
+        ) -> $crate::Result<()> {
+            $crate::append_component_style_link_to_string(&mut self.$field, base, href, resource);
+            Ok(())
+        }
     };
 }
 
-/// Generate optimized attribute methods for a byte-backed `ResponseWriter`.
+/// Generate optimized HTML emission methods for a byte-backed `ResponseWriter`.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! bytes_response_writer_methods {
@@ -106,6 +135,24 @@ macro_rules! bytes_response_writer_methods {
         fn write_boolean_attribute(&mut self, name: &str) -> $crate::Result<()> {
             self.$field.push(b' ');
             self.$field.extend_from_slice(name.as_bytes());
+            Ok(())
+        }
+
+        fn write_component_style_link(
+            &mut self,
+            base: Option<&str>,
+            href: &str,
+            resource: &str,
+        ) -> $crate::Result<()> {
+            let output = &mut self.$field;
+            output.extend_from_slice(b"<link rel=\"stylesheet\" href=\"");
+            if let Some(base) = base {
+                $crate::append_escaped_to_bytes(output, base);
+            }
+            $crate::append_escaped_to_bytes(output, href);
+            output.extend_from_slice(b"\" data-webui-resource=\"");
+            $crate::append_escaped_to_bytes(output, resource);
+            output.extend_from_slice(b"\" data-webui-strategy=\"link\">");
             Ok(())
         }
     };
@@ -217,6 +264,32 @@ mod tests {
     }
 
     #[test]
+    fn buffered_component_style_links_match_default_emission() -> Result<()> {
+        let mut default = DefaultWriter(String::new());
+        let mut text = StringWriter::with_capacity(256);
+        let mut bytes = BytesWriter::with_capacity(256);
+        for (base, href, resource) in [
+            (None, "/card.css", "card"),
+            (Some("/static/"), "card.css", "chunk&\""),
+            (Some("https://cdn.example/é/"), "カード.css?v=1&x=2", "card"),
+        ] {
+            for writer in [
+                &mut default as &mut dyn ResponseWriter,
+                &mut text,
+                &mut bytes,
+            ] {
+                writer.write_component_style_link(base, href, resource)?;
+            }
+        }
+        assert_eq!(text.output, default.0);
+        assert_eq!(bytes.output, default.0.as_bytes());
+        assert!(default.0.contains(
+            "href=\"&#x2F;static&#x2F;card.css\" data-webui-resource=\"chunk&amp;&quot;\""
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn default_escaped_methods_preserve_writer_errors() {
         struct Disconnected;
         impl ResponseWriter for Disconnected {
@@ -235,6 +308,10 @@ mod tests {
         ));
         assert!(matches!(
             Disconnected.write_escaped_attribute("title", "untrusted <text>"),
+            Err(HandlerError::ClientDisconnected)
+        ));
+        assert!(matches!(
+            Disconnected.write_component_style_link(Some("/static/"), "card.css", "card"),
             Err(HandlerError::ClientDisconnected)
         ));
     }

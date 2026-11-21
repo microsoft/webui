@@ -3,7 +3,10 @@
 
 import {
   adoptPromotedComponentLinks,
+  COMPONENT_ROOT_FRESH,
   installComponentLinkStyles,
+  isNativeOnlyComponentLink,
+  isSettledNativeComponentLink,
 } from './link-styles.js';
 import { setImportMapContent } from '../trusted-types-policy.js';
 import { resolveAsset } from '../asset-base.js';
@@ -37,9 +40,9 @@ type CompactIds = string | Set<string> | undefined;
 /**
  * Style bookkeeping for one Document or ShadowRoot.
  *
- * Most targets are client Shadow roots that install one closure with one
- * resource, so IDs stay plain strings until a second one arrives, and the
- * record costs a single WeakMap entry per target.
+ * The expanded record is used for targets that do more than install a single
+ * resource under its own ID. Its ID collections remain strings until a second
+ * distinct ID is added.
  */
 interface TargetStyleState {
   /** Closure root IDs fully installed in this tree. */
@@ -50,7 +53,6 @@ interface TargetStyleState {
   markers: ResourceMarkerCache | undefined;
   /** SSR Module markers by resource ID, in document order. */
   moduleElements: Map<string, Element> | undefined;
-  moduleIds: string[] | undefined;
 }
 
 /**
@@ -101,14 +103,10 @@ interface ResourceMarkerCache {
 /**
  * Module adoption bookkeeping for one CSS tree.
  *
- * `order` is the closure request order, so a descendant closure whose network
- * load resolves first cannot adopt ahead of the caller that reserved earlier.
+ * Insertion order is the closure request order. An undefined value reserves
+ * the slot before its sheet loads, even across overlapping closures.
  */
-interface ModuleAdoptionState {
-  readonly order: string[];
-  readonly reserved: Set<string>;
-  readonly sheets: Map<string, CSSStyleSheet>;
-}
+type ModuleAdoptionState = Map<string, CSSStyleSheet | undefined>;
 
 type StyleTarget = Document | ShadowRoot;
 type CssModule = { default: CSSStyleSheet };
@@ -120,8 +118,9 @@ interface WebUIStyleGlobal {
   [key: string]: unknown;
 }
 
-const targetStates = new WeakMap<StyleTarget, TargetStyleState>();
-const pending = new WeakMap<StyleTarget, Map<string, Promise<CSSStyleSheet>>>();
+// A string represents one resource installed by a closure with the same ID.
+const targetStates = new WeakMap<StyleTarget, TargetStyleState | string>();
+const moduleLoadsByDocument = new WeakMap<Document, Map<string, Promise<CSSStyleSheet>>>();
 const moduleAdoption = new WeakMap<StyleTarget, ModuleAdoptionState>();
 const moduleImportsInstalled = new WeakMap<Document, Set<string>>();
 const moduleImportsSeeded = new WeakSet<Document>();
@@ -173,17 +172,23 @@ function addCompactId(ids: CompactIds, id: string): string | Set<string> {
 }
 
 /** Return a target's bookkeeping, claiming its SSR markers on first use. */
-function targetStyleState(target: StyleTarget, catalog: DocumentCatalog): TargetStyleState {
-  let state = targetStates.get(target);
-  if (state) return state;
-  state = {
-    completed: undefined,
-    installed: undefined,
+function targetStyleState(
+  target: StyleTarget,
+  catalog: DocumentCatalog,
+  freshShadow = false,
+): TargetStyleState {
+  const existing = targetStates.get(target);
+  if (existing !== undefined && typeof existing !== 'string') return existing;
+  const state: TargetStyleState = {
+    completed: existing,
+    installed: existing,
     markers: undefined,
     moduleElements: undefined,
-    moduleIds: undefined,
   };
   targetStates.set(target, state);
+  if (existing !== undefined) return state;
+  // A freshly attached, empty root cannot have parser-emitted style markers.
+  if (freshShadow && !isDocument(target) && target.firstChild === null) return state;
   const candidates = target.querySelectorAll?.(
     'link[data-webui-resource],style[data-webui-resource]',
   );
@@ -230,18 +235,8 @@ function scanSsrMarkerElements(
       markResourceInstalled(state, id, resource);
       continue;
     }
-    let moduleElements = state.moduleElements;
-    let moduleIds = state.moduleIds;
-    if (!moduleElements || !moduleIds) {
-      moduleElements = new Map();
-      moduleIds = [];
-      state.moduleElements = moduleElements;
-      state.moduleIds = moduleIds;
-    }
-    if (!moduleElements.has(id)) {
-      moduleElements.set(id, candidate);
-      moduleIds.push(id);
-    }
+    const moduleElements = state.moduleElements ??= new Map();
+    if (!moduleElements.has(id)) moduleElements.set(id, candidate);
   }
 }
 
@@ -253,14 +248,18 @@ function scanSsrMarkerElements(
  * arrive later, so their generated `<webui-route>` parent is rescanned when
  * that route host activates.
  */
-export function claimSsrComponentStyles(source: Element, target: StyleTarget): void {
-  const catalog = catalogFor(owningDocument(target));
-  if (catalog.resources.size === 0) return;
-  const state = targetStyleState(target, catalog);
+function claimSsrComponentStyles(
+  source: Element,
+  target: StyleTarget,
+  catalog: DocumentCatalog,
+  freshShadow: boolean,
+): TargetStyleState {
+  const state = targetStyleState(target, catalog, freshShadow);
   const route = source.parentElement;
   if (route?.localName === 'webui-route') {
     scanSsrMarkerElements(route.children, catalog, state);
   }
+  return state;
 }
 
 function markerScope(target: StyleTarget): Element | ShadowRoot {
@@ -315,6 +314,22 @@ function noteMarkerInserted(state: TargetStyleState, id: string, element: Elemen
   if (!cached.markers.has(id)) cached.markers.set(id, element);
 }
 
+function appendLinkResource(
+  owner: Document,
+  parent: ParentNode,
+  id: string,
+  href: string,
+  before: Element | null,
+): HTMLLinkElement {
+  const link = owner.createElement('link');
+  link.rel = 'stylesheet';
+  link.href = href;
+  link.setAttribute('data-webui-resource', id);
+  link.setAttribute('data-webui-strategy', 'link');
+  parent.insertBefore(link, before);
+  return link;
+}
+
 function appendResource(
   target: StyleTarget,
   id: string,
@@ -324,13 +339,7 @@ function appendResource(
   const document = owningDocument(target);
   const parent: ParentNode = isDocument(target) ? target.head : target;
   if (resource.kind === 'link') {
-    const link = document.createElement('link');
-    link.rel = 'stylesheet';
-    link.href = resolveAsset(resource.href, document);
-    link.setAttribute('data-webui-resource', id);
-    link.setAttribute('data-webui-strategy', 'link');
-    parent.insertBefore(link, before ?? null);
-    return link;
+    return appendLinkResource(document, parent, id, resolveAsset(resource.href, document, resource), before ?? null);
   }
   if (resource.kind === 'style') {
     const style = document.createElement('style');
@@ -383,26 +392,25 @@ function installModuleImportMap(
 
 function loadModule(
   target: StyleTarget,
-  id: string,
   resource: { specifier: string; css: string },
 ): Promise<CSSStyleSheet> {
-  let targetPending = pending.get(target);
-  if (!targetPending) {
-    targetPending = new Map();
-    pending.set(target, targetPending);
+  const owner = owningDocument(target);
+  const { specifier, css } = resource;
+  let loads = moduleLoadsByDocument.get(owner);
+  if (!loads) {
+    loads = new Map();
+    moduleLoadsByDocument.set(owner, loads);
   }
-  const existing = targetPending.get(id);
+  const existing = loads.get(specifier);
   if (existing) return existing;
 
-  installModuleImportMap(target, resource.specifier, resource.css);
+  installModuleImportMap(target, specifier, css);
 
-  const loads = targetPending;
-  const promise = loadCssModule(resource.specifier)
+  const promise = loadCssModule(specifier)
     .then((module: CssModule) => module.default);
-  loads.set(id, promise);
-  // Keep successful loads for another caller to adopt; only failures retry.
+  loads.set(specifier, promise);
   void promise.catch(() => {
-    if (loads.get(id) === promise) loads.delete(id);
+    if (loads.get(specifier) === promise) loads.delete(specifier);
   });
   return promise;
 }
@@ -545,7 +553,7 @@ function adoptPromotedLinkClosure(
     if (!resource || resource.kind === 'module') continue;
     if (resource.kind !== 'link') return false;
     (ids ??= []).push(id);
-    (hrefs ??= []).push(resource.href);
+    (hrefs ??= []).push(resolveAsset(resource.href, target.ownerDocument, resource));
     // Mirror installElementRange: a bundle's members count as installed for
     // the rest of this closure.
     const members = resource.members;
@@ -564,7 +572,7 @@ function adoptPromotedLinkClosure(
 function moduleAdoptionState(target: StyleTarget): ModuleAdoptionState {
   let state = moduleAdoption.get(target);
   if (!state) {
-    state = { order: [], reserved: new Set(), sheets: new Map() };
+    state = new Map();
     moduleAdoption.set(target, state);
   }
   return state;
@@ -573,9 +581,7 @@ function moduleAdoptionState(target: StyleTarget): ModuleAdoptionState {
 /** Reserve a stored-order slot before the module load starts. */
 function reserveModuleSlot(target: StyleTarget, id: string): void {
   const state = moduleAdoptionState(target);
-  if (state.reserved.has(id)) return;
-  state.reserved.add(id);
-  state.order.push(id);
+  if (!state.has(id)) state.set(id, undefined);
 }
 
 /**
@@ -588,17 +594,13 @@ function reserveModuleSlot(target: StyleTarget, id: string): void {
  */
 function applyModuleOrder(target: StyleTarget, state: ModuleAdoptionState): void {
   const adopted = target.adoptedStyleSheets;
-  const owned = new Set(state.sheets.values());
+  const owned = new Set(state.values());
   const next: CSSStyleSheet[] = [];
   for (let i = 0; i < adopted.length; i++) {
     if (!owned.has(adopted[i])) next.push(adopted[i]);
   }
-  const seen = new Set<CSSStyleSheet>();
-  for (let i = 0; i < state.order.length; i++) {
-    const sheet = state.sheets.get(state.order[i]);
-    if (!sheet || seen.has(sheet)) continue;
-    seen.add(sheet);
-    next.push(sheet);
+  for (const sheet of owned) {
+    if (sheet) next.push(sheet);
   }
   if (next.length === adopted.length) {
     let same = true;
@@ -622,22 +624,15 @@ function commitModules(
   const state = moduleAdoptionState(target);
   const catalog = catalogFor(owningDocument(target));
   for (let i = 0; i < sheets.length; i++) {
-    const id = ids[i];
-    if (!state.reserved.has(id)) {
-      state.reserved.add(id);
-      state.order.push(id);
-    }
-    state.sheets.set(id, sheets[i]);
+    state.set(ids[i], sheets[i]);
   }
   applyModuleOrder(target, state);
-  const targetPending = pending.get(target);
   const markers = styleState.moduleElements;
   for (let i = 0; i < sheets.length; i++) {
     const id = ids[i];
     const resource = catalog.resources.get(id);
     if (resource) markResourceInstalled(styleState, id, resource);
     else styleState.installed = addCompactId(styleState.installed, id);
-    targetPending?.delete(id);
     // Drop the element reference with the node so an adopted fallback does not
     // stay reachable for the lifetime of the CSS tree.
     const marker = markers?.get(id);
@@ -646,7 +641,7 @@ function commitModules(
       markers?.delete(id);
     }
   }
-  if (targetPending?.size === 0) pending.delete(target);
+  if (markers?.size === 0) styleState.moduleElements = undefined;
 }
 
 async function finishModuleLoads(
@@ -702,10 +697,8 @@ export function installComponentStyles(
 }
 
 /**
- * Install a mounting component's closure with what its host knows about the
- * target: `flags` combines {@link COMPONENT_LINKS_EAGER} and
- * {@link COMPONENT_ROOT_FRESH}. Otherwise identical to
- * {@link installComponentStyles}.
+ * Claim SSR styles and install a mounting component's closure. `flags` combines
+ * {@link COMPONENT_LINKS_EAGER} and {@link COMPONENT_ROOT_FRESH}.
  */
 export function installMountedComponentStyles(
   rootId: string,
@@ -713,11 +706,46 @@ export function installMountedComponentStyles(
   host: HTMLElement,
   flags: number,
 ): Promise<void> | undefined {
-  const catalog = catalogFor(owningDocument(target));
-  const closure = catalog.closures.get(rootId);
-  // An empty own closure can still need SSR Module resources from its CSS tree.
-  if (!closure || (closure.length === 0 && catalog.resources.size === 0)) return undefined;
-  return installStyles(rootId, target, host, flags);
+  return installStyles(rootId, target, host, flags, true);
+}
+
+/** Install the only resource in a fresh ShadowRoot, avoiding a record when possible. */
+function tryInstallFreshStyle(
+  rootId: string,
+  id: string,
+  target: ShadowRoot,
+  host: HTMLElement,
+  resource: ComponentStyleResource,
+  flags: number,
+): boolean {
+  let unsettledLink: HTMLLinkElement | undefined;
+  if (resource.kind === 'style') {
+    appendResource(target, id, resource);
+  } else if (resource.kind === 'link' && !resource.members) {
+    const owner = target.ownerDocument;
+    const href = resolveAsset(resource.href, owner, resource);
+    if (!isNativeOnlyComponentLink(owner, href)) return false;
+    const link = appendLinkResource(owner, target, id, href, null);
+    if (!isSettledNativeComponentLink(link, href)) unsettledLink = link;
+  } else {
+    return false;
+  }
+  if (rootId === id && !resource.members && !unsettledLink) {
+    targetStates.set(target, rootId);
+  } else {
+    const state: TargetStyleState = {
+      completed: undefined,
+      installed: undefined,
+      markers: undefined,
+      moduleElements: undefined,
+    };
+    markResourceInstalled(state, id, resource);
+    // The guard can call author code. Publish the installed resource first.
+    targetStates.set(target, state);
+    if (unsettledLink) installComponentLinkStyles(host, target, [unsettledLink], flags);
+    markClosureComplete(state, rootId);
+  }
+  return true;
 }
 
 function installStyles(
@@ -725,11 +753,26 @@ function installStyles(
   target: StyleTarget,
   host: HTMLElement | undefined,
   flags: number,
+  mounting = false,
 ): Promise<void> | undefined {
   const catalog = catalogFor(owningDocument(target));
   const closure = catalog.closures.get(rootId);
-  if (!closure) return undefined;
-  const state = targetStyleState(target, catalog);
+  if (mounting && host && (flags & COMPONENT_ROOT_FRESH) !== 0 &&
+      closure?.length === 1 && !isDocument(target) &&
+      target.firstChild === null && host.parentElement?.localName !== 'webui-route' &&
+      !targetStates.has(target)) {
+    const id = closure[0];
+    const resource = catalog.resources.get(id);
+    if (resource && tryInstallFreshStyle(rootId, id, target, host, resource, flags)) {
+      return undefined;
+    }
+  }
+  const claimed = mounting && host && catalog.resources.size !== 0
+    ? claimSsrComponentStyles(host, target, catalog, (flags & COMPONENT_ROOT_FRESH) !== 0)
+    : undefined;
+  // An empty own closure can still need SSR Module resources from its CSS tree.
+  if (!closure || (mounting && closure.length === 0 && catalog.resources.size === 0)) return undefined;
+  const state = claimed ?? targetStyleState(target, catalog);
   if (hasCompactId(state.completed, rootId)) return undefined;
 
   let hasElementWork = false;
@@ -741,15 +784,18 @@ function installStyles(
     if (!resource) {
       throw new Error(`[WebUI] Missing component style resource "${id}" for closure "${rootId}".`);
     }
-    if (resource.kind === 'module') hasClosureModuleWork = true;
-    else hasElementWork = true;
+    if (resource.kind === 'module') {
+      hasClosureModuleWork = true;
+    } else {
+      hasElementWork = true;
+    }
   }
 
   let hasSsrModuleWork = false;
-  const ssrModuleIds = state.moduleIds;
-  if (ssrModuleIds) {
-    for (let i = 0; i < ssrModuleIds.length; i++) {
-      if (!hasCompactId(state.installed, ssrModuleIds[i])) {
+  const ssrModules = state.moduleElements;
+  if (ssrModules) {
+    for (const id of ssrModules.keys()) {
+      if (!hasCompactId(state.installed, id)) {
         hasSsrModuleWork = true;
         break;
       }
@@ -797,12 +843,11 @@ function installStyles(
     }
     reserveModuleSlot(target, id);
     moduleIds.push(id);
-    moduleLoads.push(loadModule(target, id, resource));
+    moduleLoads.push(loadModule(target, resource));
     queuedModules.add(id);
   };
-  if (ssrModuleIds) {
-    for (let i = 0; i < ssrModuleIds.length; i++) {
-      const id = ssrModuleIds[i];
+  if (ssrModules) {
+    for (const id of ssrModules.keys()) {
       if (hasCompactId(state.installed, id)) continue;
       const resource = catalog.resources.get(id);
       if (!resource || resource.kind !== 'module') continue;
