@@ -1,1 +1,1 @@
-import{a as e}from"./docs-theme-toggle-BOihljJi.js";import"./code-block-Bd9HP6W-.js";e();
+import{a as e}from"./docs-theme-toggle-CpUb3Mxh.js";import"./code-block-CpwwfXEF.js";e();
