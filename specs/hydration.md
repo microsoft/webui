@@ -451,11 +451,11 @@ expression or creating closures.
 
 Identifier operands use server truthiness for collections. The compiler and SSR
 classify predicate operands the same way. Numeric literals are emitted as JSON
-numbers, not JavaScript source tokens; SSR compares integers and floats by
-numeric value when their storage types differ (for example, `100 == 1e2`).
-Other comparisons retain the existing client coercion rules. The runtime rejects
-earlier metadata versions; rebuild the protocol, lazy packs, and generated
-component assets with the matching compiler.
+numbers, not JavaScript source tokens. For SSR equality, a float equals an
+integer only if it represents that exact integer (for example, `100 == 1e2`).
+Client comparisons retain their existing JavaScript coercion and number
+precision. The runtime rejects earlier metadata versions; rebuild the protocol,
+lazy packs, and generated component assets with the matching compiler.
 
 ---
 

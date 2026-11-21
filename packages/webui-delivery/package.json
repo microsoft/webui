@@ -33,6 +33,7 @@
   "license": "MIT",
   "name": "@microsoft/webui-delivery",
   "scripts": {
+    "bench:condition-routes": "node benchmarks/condition-routes.mjs",
     "build": "tsc",
     "prepack": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc --incremental false",
     "build:e2e": "esbuild tests/fixtures/router-app/src/index.ts tests/fixtures/router-app/src/interaction-entry.ts --bundle --outdir=tests/fixtures/router-app/dist --format=esm --splitting --sourcemap --tsconfig=tsconfig.e2e.json && esbuild tests/fixtures/router-app/src/lean-entry.ts --bundle --outfile=tests/fixtures/router-app/dist/lean-entry.js --format=esm --sourcemap --tsconfig=tsconfig.e2e.json",

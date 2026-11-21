@@ -27,6 +27,7 @@ WebUI itself.
 | `cargo xtask bench streaming-browser` | Playwright | ~30 s | real Chromium TTFB / FCP / LCP / DCL / load | proving user-perceived paint improvement |
 | `cargo xtask bench lazy-hydration` | Playwright + CDP | ~1 min | hydration, heap, rendering, and trace metrics at 10/100/1000 rows | validating offscreen work reduction |
 | `pnpm --filter @microsoft/webui-framework bench:conditions` | Playwright | ~15 s | isolated condition evaluation and warm DOM updates | changes to the condition evaluator |
+| `pnpm --filter @microsoft/webui-delivery bench:condition-routes` | Playwright + CDP | minutes | cold route latency, warm updates, and retained heap for simple comparisons | deciding whether evaluator overhead matters in the UI |
 | `cargo xtask bench full` (= `streaming-all`) | suite | ~3 min | runs all four streaming-related benches in sequence | full streaming evidence pack for a PR |
 | `cargo bench -p microsoft-webui-desktop --bench navigation` | criterion micro | ~15 s after build | desktop partial-navigation serialization with owned route state | typed handler result and state-copy changes |
 
@@ -63,6 +64,31 @@ comparison, and a compound check. DOM timings include completed renders
 for both stable and toggling conditions;
 the isolated loop uses a simple state lookup to expose evaluator overhead.
 Add `--cpu 4` for a throttled Chromium run or `--samples 4` for a smoke run.
+
+For end-to-end simple comparisons, build the workspace packages and both native
+addons, then run:
+
+```bash
+pnpm --filter @microsoft/webui --filter @microsoft/webui-framework --filter @microsoft/webui-delivery build
+cargo xtask build-node-addons --release -- pnpm --filter @microsoft/webui-delivery bench:condition-routes
+```
+
+This compiles `count > 0` and `status == 'active'` from templates and exercises
+one row and 1,000 rows. Both arms start with the same bundle and cold-load one
+JSON partial and one required route module under enforcing Trusted Types and
+nonce CSP. The direct-JS control gets its function from the module, never from
+response text. The 1,000 rows share one compiled template; this measures
+repeated evaluation, not shipping 1,000 distinct predicates.
+
+Timings are in milliseconds: from click to a verified reactive DOM change,
+and per warm batch changing one row or all rows. Stable batches alternate
+between positive numbers or different non-matching strings without changing
+the branch. Separate fresh contexts measure retained JS and embedder heap in
+bytes after forced GC, relative to startup, while active and after navigating
+away. Neither is process RSS. The JSON includes raw samples and compressed
+startup and route bytes. Defaults are 4× CPU slowdown, 80 ms network latency,
+24 timing contexts and 8 heap contexts per arm and workload. For a
+smoke run, use `--samples 1 --heap-samples 1 --cpu 1 --latency 0`.
 
 Criterion, example, and Playwright benches support **named before/after
 baselines**:

@@ -7,7 +7,7 @@
 
 use std::borrow::Cow;
 
-use serde_json::Value;
+use serde_json::{Number, Value};
 use thiserror::Error;
 use webui_protocol::{
     condition_expr, ComparisonOperator, CompoundCondition, ConditionExpr, LogicalOperator,
@@ -282,11 +282,7 @@ impl Operand<'_> {
     fn equals(&self, left: &Value) -> bool {
         match self {
             Self::Value(right) => match (left, right.as_ref()) {
-                (Value::Number(left), Value::Number(right)) if left.is_f64() != right.is_f64() => {
-                    // The browser has one numeric type; keep exact equality
-                    // when both server values are integers.
-                    left.as_f64() == right.as_f64()
-                }
+                (Value::Number(left), Value::Number(right)) => numbers_equal(left, right),
                 (_, right) => left == right,
             },
             Self::String(right) => left.as_str() == Some(*right),
@@ -298,6 +294,35 @@ impl Operand<'_> {
             Self::Value(value) => extract_number(value),
             Self::String(value) => parse_string_number(value),
         }
+    }
+}
+
+fn numbers_equal(left: &Number, right: &Number) -> bool {
+    match (left.is_f64(), right.is_f64()) {
+        (true, false) => float_equals_integer(left, right),
+        (false, true) => float_equals_integer(right, left),
+        _ => left == right,
+    }
+}
+
+fn float_equals_integer(float: &Number, integer: &Number) -> bool {
+    let Some(value) = float.as_f64() else {
+        return false;
+    };
+    if value.fract() != 0.0 {
+        return false;
+    }
+    // i128 covers both JSON integer ranges; a saturating cast outside i128
+    // cannot match an i64 or u64. Never round the integer to f64.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "fractional values are rejected first"
+    )]
+    let value = value as i128;
+    if let Some(integer) = integer.as_i64() {
+        value == i128::from(integer)
+    } else {
+        integer.as_u64().is_some_and(|n| value == i128::from(n))
     }
 }
 
@@ -728,17 +753,46 @@ mod tests {
 
     #[test]
     fn integer_and_exponent_literals_compare_by_numeric_value() {
-        let state = test_json!({ "count": 100, "floating": 100.0, "large": 9007199254740993_i64 });
+        let state = test_json!({
+            "count": 100,
+            "floating": 100.0,
+            "large": 9007199254740993_i64,
+            "rounded": 9007199254740992.0,
+            "min": i64::MIN,
+            "negative": -9007199254740993_i64,
+            "signed_max": i64::MAX,
+            "unsigned": 1_u64 << 63,
+            "unsigned_max": u64::MAX,
+            "zero": 0
+        });
         for (left, right, expected) in [
             ("count", "1e2", true),
             ("floating", "100", true),
             ("count", "1e1", false),
             ("large", "9007199254740992", false),
+            ("large", "rounded", false),
+            ("rounded", "large", false),
+            ("negative", "-9007199254740992.0", false),
+            ("min", "-9223372036854775808.0", true),
+            ("signed_max", "9223372036854775808.0", false),
+            ("unsigned", "9223372036854775808.0", true),
+            ("unsigned_max", "18446744073709551616.0", false),
+            ("unsigned_max", "1e100", false),
+            ("count", "100.5", false),
+            ("zero", "-0.0", true),
         ] {
             let equal = ConditionExpr::predicate(left, ComparisonOperator::Equal, right);
             let unequal = ConditionExpr::predicate(left, ComparisonOperator::NotEqual, right);
-            assert_eq!(evaluate(&equal, &state).ok(), Some(expected));
-            assert_eq!(evaluate(&unequal, &state).ok(), Some(!expected));
+            assert_eq!(
+                evaluate(&equal, &state).ok(),
+                Some(expected),
+                "{left} == {right}"
+            );
+            assert_eq!(
+                evaluate(&unequal, &state).ok(),
+                Some(!expected),
+                "{left} != {right}"
+            );
         }
     }
 
