@@ -1,7 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-use super::{emit_js_string, emit_json_template_section, TemplateMeta, TemplateSectionMeta};
+use super::{
+    emit_js_string, emit_json_template_section, TemplateMeta, TemplateSectionMeta,
+    TEMPLATE_META_VERSION_FIELD,
+};
 use crate::plugin::LazyTemplateArtifact;
 use std::collections::{HashMap, HashSet};
 use webui_protocol::{ClientFragmentData, StateProjectionMode};
@@ -129,7 +132,8 @@ impl Plan {
             let mut json = String::with_capacity(section.html.len() + local_html + 128);
             json.push('{');
             emit_json_template_section(section, &mut json, Some(self));
-            json.push_str(",\"v\":4,\"f\":");
+            json.push_str(TEMPLATE_META_VERSION_FIELD);
+            json.push_str(",\"f\":");
             emit_js_string(id, &mut json);
             json.push_str(",\"o\":");
             emit_js_string(owner, &mut json);

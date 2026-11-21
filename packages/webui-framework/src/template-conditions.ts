@@ -23,31 +23,39 @@ export function validateCondition(condition: unknown): void {
   if (!Array.isArray(plan)) throw invalidPlan();
   const size = plan.length;
   if (size === 1) {
-    if ((plan[0] !== 0 && plan[0] !== 1) || paths.length === 0) throw invalidPlan();
+    if (!isUnaryOp(plan[0]) || paths.length === 0) throw invalidPlan();
     return;
   }
-  if (size !== 3 && (size === 0 || size % 5 !== 0)) throw invalidPlan();
+  const branched = size !== 3;
+  if (branched && (size === 0 || size % 5 !== 0)) throw invalidPlan();
   for (let offset = 0; offset < size; offset += 5) {
     const op: unknown = plan[offset];
     const right: unknown = plan[offset + 2];
-    if (!indexIn(op, 0, 15) || op === 8) throw invalidPlan();
-    if (op === 7 ? typeof right !== 'boolean' : !indexIn(plan[offset + 1], 0, paths.length)) {
-      throw invalidPlan();
-    }
-    if (op & 8 ? !indexIn(right, 0, paths.length) :
-        typeof right !== 'string' && typeof right !== 'boolean' && !Number.isFinite(right)) {
+    if (!isTestOp(op)) throw invalidPlan();
+    if (op === 7 ? typeof right !== 'boolean' :
+        !indexIn(plan[offset + 1], 0, paths.length) ||
+        (op & 8 ? !indexIn(right, 0, paths.length) :
+          typeof right !== 'string' && typeof right !== 'boolean' && !Number.isFinite(right))) {
       throw invalidPlan();
     }
     // Check both targets, including the branch that current state would skip.
     const node = offset / 5;
-    if (size > 3 && (!indexIn(plan[offset + 3], -2, node) || !indexIn(plan[offset + 4], -2, node))) {
+    if (branched && (!indexIn(plan[offset + 3], -2, node) || !indexIn(plan[offset + 4], -2, node))) {
       throw invalidPlan();
     }
   }
 }
 
+function isUnaryOp(op: unknown): boolean {
+  return op === 0 || op === 1;
+}
+
+function isTestOp(op: unknown): op is number {
+  return typeof op === 'number' && (op & 15) === op && op < 15 && op !== 8;
+}
+
 function indexIn(value: unknown, start: number, end: number): value is number {
-  return typeof value === 'number' && Number.isInteger(value) && value >= start && value < end;
+  return Number.isInteger(value) && (value as number) >= start && (value as number) < end;
 }
 
 /** Run a compiler plan without allocating a stack or a closure per condition. */
@@ -57,7 +65,7 @@ export function evaluateCondition(condition: CompiledCondition, resolve: Resolve
   const paths = condition[1];
   if (plan.length === 1) {
     const op = plan[0];
-    if (op !== 0 && op !== 1) throw invalidPlan();
+    if (!isUnaryOp(op)) throw invalidPlan();
     return isConditionTruthy(resolve(paths[0], scope)) !== (op === 1);
   }
   // Keep single tests out of the branching interpreter so hot callers can inline them.
@@ -72,17 +80,16 @@ function evaluateBranches(plan: ConditionPlan, paths: string[], resolve: Resolve
   for (;;) {
     const offset = node * 5;
     const result = evaluateTest(plan, offset, paths, resolve, scope);
-    const next = plan[offset + (result ? 3 : 4)] as number;
+    const next = plan[offset + (result ? 3 : 4)];
     if (next === -2 || next === -1) return next === -2;
-    if (next < 0 || next >= node || (next | 0) !== next) break;
+    if (!indexIn(next, -2, node)) throw invalidPlan();
     node = next;
   }
-  throw invalidPlan();
 }
 
 function evaluateTest(plan: ConditionPlan, offset: number, paths: string[], resolve: Resolver, scope: unknown): boolean {
-  const op = plan[offset] as number;
-  if ((op & 15) !== op || op > 14 || op === 8) throw invalidPlan();
+  const op = plan[offset];
+  if (!isTestOp(op)) throw invalidPlan();
   const argument = plan[offset + 2];
   if (op === 7) return argument === true;
   const left = resolve(paths[plan[offset + 1] as number], scope);
@@ -95,8 +102,8 @@ function evaluateTest(plan: ConditionPlan, offset: number, paths: string[], reso
     case 3: return left == right;
     case 4: return left != right;
     case 5: return (left as number) >= (right as number);
-    case 6: return (left as number) <= (right as number);
-    default: throw invalidPlan();
+    // 6 is the only remaining operator after validation and the constant case above.
+    default: return (left as number) <= (right as number);
   }
 }
 

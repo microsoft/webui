@@ -433,7 +433,8 @@ capability boundaries, and partial-stream ownership.
 ### Condition references
 
 Template metadata version `4` stores conditions as `[plan, paths]`. The compiler interns operand paths
-into `paths`, which also drives the reactive path index. `[0]` tests the
+into `paths`, which also drives the reactive path index. Boolean literals
+(`true` and `false`) do not contribute hydration roots. `[0]` tests the
 truthiness of the first path and `[1]` negates it. A single non-negated comparison
 or constant uses `[op, leftSlot, argument]`. The general form uses flat, five-value
 records `[op, leftSlot, argument, onTrue, onFalse]`. The last record is the

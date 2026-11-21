@@ -2,10 +2,9 @@
 // Licensed under the MIT license.
 
 use super::{
-    condition_expr, path_root, CompiledAttrBinding, CompiledAttrPart, ConditionExpr,
+    condition_plan, path_root, CompiledAttrBinding, CompiledAttrPart, ConditionExpr,
     TemplateSectionMeta,
 };
-use webui_protocol::PredicateOperand;
 
 pub(super) fn single_root<'a>(meta: &TemplateSectionMeta, roots: &'a [String]) -> Option<&'a str> {
     let [root] = roots else {
@@ -41,36 +40,9 @@ fn parts_use_root(parts: &[CompiledAttrPart], root: &str) -> bool {
 }
 
 fn condition_uses_root(condition: &ConditionExpr, root: &str) -> bool {
-    let mut stack = Vec::with_capacity(2);
-    stack.push(condition);
     let mut dynamic = false;
-    while let Some(condition) = stack.pop() {
-        match &condition.expr {
-            Some(condition_expr::Expr::Identifier(id)) => {
-                if id.value == "true" || id.value == "false" {
-                    continue;
-                }
-                if path_root(&id.value) != root {
-                    return false;
-                }
-                dynamic = true;
-            }
-            Some(condition_expr::Expr::Predicate(predicate)) => {
-                if path_root(&predicate.left) != root
-                    || matches!(PredicateOperand::classify(&predicate.right),
-                        PredicateOperand::Path(path) if path_root(path) != root)
-                {
-                    return false;
-                }
-                dynamic = true;
-            }
-            Some(condition_expr::Expr::Not(value)) => stack.extend(value.condition.as_deref()),
-            Some(condition_expr::Expr::Compound(value)) => {
-                stack.extend(value.left.as_deref());
-                stack.extend(value.right.as_deref());
-            }
-            None => {}
-        }
-    }
-    dynamic
+    condition_plan::visit_paths(condition, |path| {
+        dynamic = true;
+        path_root(path) == root
+    }) && dynamic
 }

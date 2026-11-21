@@ -76,7 +76,7 @@ use std::borrow::Cow;
 use std::cell::Cell;
 use std::fmt::Write;
 use std::ops::Range;
-use webui_protocol::{condition_expr, ConditionExpr, PredicateOperand, WebUIElementData};
+use webui_protocol::{ConditionExpr, WebUIElementData};
 
 mod condition_plan;
 mod lazy_templates;
@@ -492,6 +492,7 @@ fn append_render_policy(template_json: &mut String, policy: &ComponentRenderPoli
 
 // ── Compiled template generation ───────────────────────────────────
 
+const TEMPLATE_META_VERSION_FIELD: &str = ",\"v\":4";
 const TEXT_MARKER_PREFIX: &str = "<!--t:";
 const TEXT_MARKER_SUFFIX: &str = "-->";
 const MIN_TEXT_MARKER_DIGITS: usize = 1;
@@ -932,7 +933,8 @@ fn emit_compiled_template_payload(
         out.push(']');
     }
 
-    out.push_str(",\"v\":4}");
+    out.push_str(TEMPLATE_META_VERSION_FIELD);
+    out.push('}');
     CompiledTemplatePayload {
         template_json: out,
         hydration_roots: build_meta.roots.clone(),
@@ -1274,35 +1276,10 @@ fn add_condition_roots(
     scopes: &[RootScope<'_>],
     scope: Option<usize>,
 ) {
-    let mut stack = Vec::with_capacity(1);
-    stack.push(condition);
-    while let Some(current) = stack.pop() {
-        match &current.expr {
-            Some(condition_expr::Expr::Identifier(id)) => {
-                add_root(roots, &id.value, scopes, scope);
-            }
-            Some(condition_expr::Expr::Predicate(pred)) => {
-                add_root(roots, &pred.left, scopes, scope);
-                if let PredicateOperand::Path(path) = PredicateOperand::classify(&pred.right) {
-                    add_root(roots, path, scopes, scope);
-                }
-            }
-            Some(condition_expr::Expr::Not(not_cond)) => {
-                if let Some(inner) = not_cond.condition.as_ref() {
-                    stack.push(inner);
-                }
-            }
-            Some(condition_expr::Expr::Compound(compound)) => {
-                if let Some(left) = compound.left.as_ref() {
-                    stack.push(left);
-                }
-                if let Some(right) = compound.right.as_ref() {
-                    stack.push(right);
-                }
-            }
-            None => {}
-        }
-    }
+    condition_plan::visit_paths(condition, |path| {
+        add_root(roots, path, scopes, scope);
+        true
+    });
 }
 
 fn emit_js_slot(slot: &SlotLocator, out: &mut String) {
@@ -3675,6 +3652,15 @@ mod tests {
             condition_plan::emit(&condition, &mut output);
             assert_eq!(output, format!("[[7,0,{value}],[]]"));
         }
+    }
+
+    #[test]
+    fn condition_roots_exclude_literals_and_preserve_path_order() {
+        let payload = generate_compiled_template_payload(
+            "condition-roots",
+            r#"<if condition="true && !false && count > limits.max && ready"><span>Ready</span></if>"#,
+        );
+        assert_eq!(payload.hydration_roots, ["ready", "count", "limits"]);
     }
 
     #[test]

@@ -49,7 +49,7 @@ enum Pending<'a> {
 pub(super) fn emit(condition: &ConditionExpr, out: &mut String) {
     let (expr, yes, _) = strip_negation(Some(condition), Target::True, Target::False);
     if let Some(Expr::Identifier(id)) = expr {
-        if id.value != "true" && id.value != "false" {
+        if boolean_literal(&id.value).is_none() {
             out.push_str(if yes == Target::True {
                 "[[0],["
             } else {
@@ -135,6 +135,48 @@ pub(super) fn emit(condition: &ConditionExpr, out: &mut String) {
     out.push_str("]]");
 }
 
+/// Visit condition dependencies in hydration-root order, stopping if the callback returns false.
+pub(super) fn visit_paths(condition: &ConditionExpr, mut visit: impl FnMut(&str) -> bool) -> bool {
+    let mut pending = Vec::new();
+    let mut next = Some(condition);
+    while let Some(current) = next.or_else(|| pending.pop()) {
+        next = None;
+        match &current.expr {
+            Some(Expr::Identifier(id)) if boolean_literal(&id.value).is_none() => {
+                if !visit(&id.value) {
+                    return false;
+                }
+            }
+            Some(Expr::Predicate(predicate)) => {
+                if !visit(&predicate.left) {
+                    return false;
+                }
+                if let PredicateOperand::Path(path) = PredicateOperand::classify(&predicate.right) {
+                    if !visit(path) {
+                        return false;
+                    }
+                }
+            }
+            Some(Expr::Not(not)) => next = not.condition.as_deref(),
+            Some(Expr::Compound(compound)) => {
+                // Keep the compiler's existing right-before-left dependency order.
+                pending.extend(compound.left.as_deref());
+                next = compound.right.as_deref();
+            }
+            _ => {}
+        }
+    }
+    true
+}
+
+fn boolean_literal(identifier: &str) -> Option<bool> {
+    match identifier {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
+}
+
 fn strip_negation(
     mut condition: Option<&ConditionExpr>,
     mut yes: Target,
@@ -153,10 +195,10 @@ fn strip_negation(
 
 fn compile_leaf<'a>(expr: Option<&'a Expr>, paths: &mut Vec<&'a str>) -> (i32, usize, Operand<'a>) {
     match expr {
-        Some(Expr::Identifier(id)) if id.value == "true" || id.value == "false" => {
-            (CONSTANT, 0, Operand::Bool(id.value == "true"))
-        }
-        Some(Expr::Identifier(id)) => (0, slot(paths, &id.value), Operand::Bool(false)),
+        Some(Expr::Identifier(id)) => match boolean_literal(&id.value) {
+            Some(value) => (CONSTANT, 0, Operand::Bool(value)),
+            None => (0, slot(paths, &id.value), Operand::Bool(false)),
+        },
         Some(Expr::Predicate(predicate)) => {
             let left = slot(paths, &predicate.left);
             let (flag, right) = match PredicateOperand::classify(&predicate.right) {
