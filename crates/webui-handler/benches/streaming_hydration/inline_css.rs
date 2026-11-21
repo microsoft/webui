@@ -119,7 +119,6 @@ fn inline_css_document() -> WebUIProtocol {
                     css,
                     uses_shadow_dom: artifact.uses_shadow_dom,
                     template_json: artifact.template_json,
-                    template_functions: artifact.template_functions,
                     // This fixture's client surface uses only the authored bindings.
                     hydration_mode: StateProjectionMode::Keys as i32,
                     hydration_keys: artifact.template_roots,

@@ -27,7 +27,7 @@
  */
 
 import type { CompiledAttrPart } from './template.js';
-import { isConditionTruthy } from './template-conditions.js';
+import { evaluateCondition } from './template-conditions.js';
 import {
   ATTR_KIND_BOOLEAN,
   ATTR_KIND_COMPLEX,
@@ -49,7 +49,7 @@ export type { PathBindings } from './element/types.js';
  * reaches into private state.
  */
 export interface MismatchContext {
-  /** Resolver handed to compiled condition functions (`condition[0]`). */
+  /** Resolve condition operands against the live component and repeat scope. */
   resolver: (path: string, scope?: unknown) => unknown;
   /** Resolve a template-part list (`data-x="{{a}}-{{b}}"`) to its string value. */
   resolveParts: (parts: CompiledAttrPart[], scope?: ScopeFrame) => string;
@@ -133,7 +133,7 @@ export function attrDiffersFromDom(b: AttrBinding, ctx: MismatchContext): boolea
     case ATTR_KIND_COMPLEX:
       return false;
     case ATTR_KIND_BOOLEAN:
-      return el.hasAttribute(b.name) !== !!b.condition![0](ctx.resolver, b.scope, isConditionTruthy);
+      return el.hasAttribute(b.name) !== evaluateCondition(b.condition!, ctx.resolver, b.scope);
     case ATTR_KIND_TEMPLATE:
       return (el.getAttribute(b.name) ?? '') !== ctx.resolveParts(b.parts!, b.scope);
     default: {
@@ -155,7 +155,7 @@ export function attrDiffersFromDom(b: AttrBinding, ctx: MismatchContext): boolea
  * under `count > 0`) leaves the DOM correct and must not warn.
  */
 export function condDiffersFromDom(c: CondBinding, ctx: MismatchContext): boolean {
-  return (c.instance != null) !== !!c.condition[0](ctx.resolver, c.scope, isConditionTruthy);
+  return (c.instance != null) !== evaluateCondition(c.condition, ctx.resolver, c.scope);
 }
 
 /**

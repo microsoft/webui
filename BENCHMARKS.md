@@ -26,6 +26,7 @@ WebUI itself.
 | `cargo xtask bench streaming-e2e-ttfb` | example | ~10 s | HTTP-level TTFB / TTLB through actix | confirming wire-level streaming win |
 | `cargo xtask bench streaming-browser` | Playwright | ~30 s | real Chromium TTFB / FCP / LCP / DCL / load | proving user-perceived paint improvement |
 | `cargo xtask bench lazy-hydration` | Playwright + CDP | ~1 min | hydration, heap, rendering, and trace metrics at 10/100/1000 rows | validating offscreen work reduction |
+| `pnpm --filter @microsoft/webui-framework bench:conditions` | Playwright | ~15 s | isolated condition evaluation and warm DOM updates | changes to the condition evaluator |
 | `cargo xtask bench full` (= `streaming-all`) | suite | ~3 min | runs all four streaming-related benches in sequence | full streaming evidence pack for a PR |
 | `cargo bench -p microsoft-webui-desktop --bench navigation` | criterion micro | ~15 s after build | desktop partial-navigation serialization with owned route state | typed handler result and state-copy changes |
 
@@ -53,6 +54,15 @@ Allocation counts, process RSS/footprint and cold-start latency were not measure
 by this benchmark. Do not extrapolate these results to native application startup.
 
 ## The before/after workflow
+
+For client conditions, run `pnpm --filter @microsoft/webui-framework bench:conditions <baseline-ref>`.
+The baseline ref must already support condition plans. The benchmark also runs
+equivalent direct JavaScript functions as a control for dispatch overhead.
+It reports p50, p95, and raw samples for truthiness, negation, a single
+comparison, and a compound check. DOM timings include completed renders
+for both stable and toggling conditions;
+the isolated loop uses a simple state lookup to expose evaluator overhead.
+Add `--cpu 4` for a throttled Chromium run or `--samples 4` for a smoke run.
 
 Criterion, example, and Playwright benches support **named before/after
 baselines**:

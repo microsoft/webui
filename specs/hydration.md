@@ -304,7 +304,9 @@ Hydration assumes SSR DOM, marker comments, and compiled metadata come from the 
 
 ## Compiled template metadata
 
-The compiler emits one JSON-safe `TemplateMeta` per component plus a small component-local condition closure array. During SSR, all non-executable metadata is delivered in `<script type="application/json" id="webui-data">`; during SPA partial navigation, the router registers the metadata object directly and executes only the closure arrays.
+The compiler emits one inert `TemplateMeta` per component. SSR delivers it in
+`<script type="application/json" id="webui-data">`; partial navigation and lazy
+resources deliver the same metadata as JSON.
 
 ```json
 {
@@ -316,7 +318,7 @@ The compiler emits one JSON-safe `TemplateMeta` per component plus a small compo
       "tx": [],
       "a": [],
       "ag": [],
-      "c": [[[0, ["items.length"]], 0, [[], 0]]],
+      "c": [[[[0], ["items.length"]], 0, [[], 0]]],
       "r": [["items", "item", 1, [[0], 0]]],
       "eg": [],
       "b": [],
@@ -327,19 +329,13 @@ The compiler emits one JSON-safe `TemplateMeta` per component plus a small compo
 }
 ```
 
-The matching executable payload is stored under
-`window.__webui.templateFns['todo-app']`, for example
-`[function(v,s,t){return t(v("items.length",s))}]`. The framework normalizes
-`[functionIndex, paths]` condition references into direct `[fn, paths]`
-tuples once before hydration.
-
 | Field | Purpose |
 |---|---|
 | `h` | Static HTML, marker-free, used for client-created cloning. **Never has SSR markers.** |
 | `l` | Pre-order static element shapes, starting with the section root. |
 | `tx` | Text-binding runs, ordered slot + parts, optional raw flag and static successor. |
 | `a` / `ag` | Attribute bindings and the elements they target. |
-| `c` | Conditional blocks with `[conditionRef, blockRef, slot, trigger?]`; a lazy region's trigger is `1` intent, `2` idle, `3` eager, or `4` demand. |
+| `c` | Conditional blocks with `[condition, blockRef, slot, trigger?]`; a lazy region's trigger is `1` intent, `2` idle, `3` eager, or `4` demand. |
 | `r` | Repeat blocks with `[collection, itemVar, blockRef, slot]`. |
 | `eg` | Event bindings grouped by event name, with handler argument specs and target paths. |
 | `b` | Nested block table (sub-templates for conditional/repeat bodies). |
@@ -427,9 +423,8 @@ Retained parents keep conditional/repeat descendants available even when those
 descendants have no live DOM or native definition yet.
 
 Equivalent responses reuse canonical metadata; conflicting live templates fail
-rather than replacing an artifact still in use. Compiled condition closures are
-resolver/scope-only code, allowing equivalent closure source to participate in
-that comparison. Browser-native ESM/custom-element lifetimes and CSS ownership
+rather than replacing an artifact still in use. Conditions participate in
+the same structural metadata comparison. Browser-native ESM/custom-element lifetimes and CSS ownership
 remain independent and are not reclaimed by this adapter.
 
 See [Client delivery](client-delivery.md) for inventory acknowledgement,
@@ -437,30 +432,26 @@ capability boundaries, and partial-stream ownership.
 
 ### Condition references
 
-Conditions are stored in JSON as `[functionIndex, paths]`. `functionIndex`
-points into `window.__webui.templateFns[tagName]`, and `paths` drives the
-reactive path index. The framework normalizes this once to `[fn, paths]`
-before hydration or client-created wiring.
+Template metadata version `4` stores conditions as `[plan, paths]`. The compiler interns operand paths
+into `paths`, which also drives the reactive path index. `[0]` tests the
+truthiness of the first path and `[1]` negates it. A single non-negated comparison
+or constant uses `[op, leftSlot, argument]`. The general form uses flat, five-value
+records `[op, leftSlot, argument, onTrue, onFalse]`. The last record is the
+entry point; branches point to an earlier record or terminate with `-1` for
+false or `-2` for true. This encodes short-circuiting without allocating an
+evaluation stack. `op` `0` tests truthiness, `1` through `6` are protocol
+comparison operators, and `7` uses a boolean constant. Bit `8` in a comparison
+makes the right operand a path slot rather than a literal. The browser
+decodes ordinary JSON, then evaluates the selected plan against the live
+resolver and repeat scope without compiling an expression or creating closures.
 
-Identifier operands use the server's truthiness rules before negation and
-logical operators are applied: empty arrays and objects are false, nonempty
-collections are true, and scalar coercion is unchanged. Comparisons still
-resolve raw values. The framework passes the resolver, scope, and one shared
-truthiness function to each closure. The compiler emits calls to that helper,
-not copies of its implementation. Closures containing only literals or
-comparisons omit the unused third parameter.
-
-```javascript
-// Metadata
-[0, ['visible']]
-
-// Function table; t is supplied by the client runtime.
-[function(v, s, t) { return t(v('visible', s)); }]
-```
-
-Existing two-argument closures remain callable by the updated runtime. Newly
-compiled identifier conditions require a client runtime that supplies the
-third argument; deploy compatible compiler and framework builds together.
+Identifier operands use server truthiness for collections. The compiler and SSR
+classify predicate operands the same way. Numeric literals are emitted as JSON
+numbers, not JavaScript source tokens; SSR compares integers and floats by
+numeric value when their storage types differ (for example, `100 == 1e2`).
+Other comparisons retain the existing client coercion rules. The runtime rejects
+earlier metadata versions; rebuild the protocol, lazy packs, and generated
+component assets with the matching compiler.
 
 ---
 

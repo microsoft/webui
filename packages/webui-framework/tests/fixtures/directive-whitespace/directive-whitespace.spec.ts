@@ -67,10 +67,10 @@ for (const fixture of directiveCases) {
     const statePath = (property: string) => fixture.message ? `message.${property}` : property;
     if (fixture.kind === 'if') {
       expect(meta.h).toBe(betweenTags ? '<article>\r\n\r\n</article>' : '<article></article>');
-      expect(meta.c).toEqual([[[0, [statePath('enabled')]], 0, slot]]);
+      expect(meta.c).toEqual([[[[0], [statePath('enabled')]], 0, slot]]);
       if (fixture.conditions === 2) {
         expect(meta.b?.[0].h).toBe('<footer></footer>');
-        expect(meta.b?.[0].c).toEqual([[[1, [statePath('ready')]], 1, [1, 0]]]);
+        expect(meta.b?.[0].c).toEqual([[[[0], [statePath('ready')]], 1, [1, 0]]]);
       }
     } else if (fixture.kind === 'for') {
       expect(meta.r).toEqual([['items', 'item', 0, slot]]);
@@ -101,6 +101,42 @@ for (const fixture of directiveCases) {
     expect(errors).toEqual([]);
   });
 }
+
+test('compiled exponent comparisons agree across SSR, hydration, and reactive updates', async ({ page }) => {
+  const { html } = compileFixture({
+    name: 'condition plan parity',
+    kind: 'if',
+    conditions: 3,
+    repeats: 0,
+    parent: 'ARTICLE',
+    source: `<article>
+      <if condition="items.length == 2e0"><p id="equal">Two</p></if>
+      <if condition="!items.length == 2e0"><p id="unequal">Not two</p></if>
+      <if condition="enabled && items.length == 2e0 && !false"><p id="compound">Enabled two</p></if>
+    </article>`,
+  }, workspace);
+  await loadSsr(page, html, browserModule);
+  const root = page.locator('test-directive-whitespace');
+  await expect(root.locator('#equal')).toHaveText('Two');
+  await expect(root.locator('#unequal')).toHaveCount(0);
+  await expect(root.locator('#compound')).toHaveText('Enabled two');
+  await hydrate(page);
+  await expectOriginalElements(page);
+  await page.evaluate(async () => {
+    const host = document.querySelector('test-directive-whitespace')!;
+    host.enabled = false;
+    await host.$whenRendered();
+  });
+  await expect(root.locator('#equal')).toHaveText('Two');
+  await expect(root.locator('#compound')).toHaveCount(0);
+  await page.evaluate(async () => {
+    const host = document.querySelector('test-directive-whitespace')!;
+    host.items = [];
+    await host.$whenRendered();
+  });
+  await expect(root.locator('#equal')).toHaveCount(0);
+  await expect(root.locator('#unequal')).toHaveText('Not two');
+});
 
 async function exerciseMinimal(page: Page, fixture: DirectiveCase): Promise<void> {
   const buttons = page.locator('test-directive-whitespace button');

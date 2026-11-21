@@ -6,7 +6,7 @@
 //! # Overview
 //!
 //! Compiles HTML templates into structured metadata objects stored as JSON
-//! data plus component-local condition closure arrays in the protocol.
+//! data including compiled condition plans in the protocol.
 //! During SSR the handler emits metadata in an `application/json` data block
 //! and only emits the closures as JavaScript. During SPA navigation the
 //! router registers the JSON data directly and evaluates only the closures.
@@ -57,7 +57,7 @@
 //! 3. **`register_component_template`** — caches the component's plugin-facing
 //!    template HTML for later compilation (deduplicates by tag name).
 //! 4. **`take_component_templates`** — called after parsing is complete;
-//!    compiles each tracked component into JSON metadata plus condition closures.
+//!    compiles each tracked component into JSON metadata with condition plans.
 
 use super::{
     AttributeAction, AttributeContext, ComponentBuildContext, ComponentTemplateArtifact,
@@ -76,8 +76,9 @@ use std::borrow::Cow;
 use std::cell::Cell;
 use std::fmt::Write;
 use std::ops::Range;
-use webui_protocol::{condition_expr, ConditionExpr, WebUIElementData};
+use webui_protocol::{condition_expr, ConditionExpr, PredicateOperand, WebUIElementData};
 
+mod condition_plan;
 mod lazy_templates;
 mod named_repeats;
 mod reactive_plan;
@@ -207,7 +208,6 @@ impl WebUIParserPlugin {
             let mut artifact = ComponentTemplateArtifact::webui(
                 c.tag_name.clone(),
                 payload.template_json,
-                payload.template_functions,
                 c.uses_shadow_dom,
             )
             .with_hydration(hydration)
@@ -710,7 +710,6 @@ enum CompiledAttrPart {
 
 struct CompiledTemplatePayload {
     template_json: String,
-    template_functions: String,
     /// Template reactive roots used when client navigation creates or updates
     /// a component whose initial DOM was not server rendered.
     hydration_roots: Vec<String>,
@@ -762,52 +761,16 @@ struct RootVisit<'a> {
     scope: Option<usize>,
 }
 
-struct ConditionFunctionEmitter {
-    functions: String,
-    count: usize,
-}
-
-impl ConditionFunctionEmitter {
-    fn new(capacity: usize) -> Self {
-        Self {
-            functions: String::with_capacity(capacity),
-            count: 0,
-        }
-    }
-
-    fn push(&mut self, condition: &ConditionExpr, needs_truthiness: bool) -> usize {
-        if self.count == 0 {
-            self.functions.push('[');
-        } else {
-            self.functions.push(',');
-        }
-        emit_js_condition_function(condition, &mut self.functions, needs_truthiness);
-        let index = self.count;
-        self.count += 1;
-        index
-    }
-
-    fn finish(mut self) -> String {
-        if self.count == 0 {
-            String::new()
-        } else {
-            self.functions.push(']');
-            self.functions
-        }
-    }
-}
-
 /// Generate a compiled template as JSON-safe metadata.
 ///
-/// The returned string is the metadata data payload. Condition closures are
-/// emitted separately by [`generate_compiled_template_with_root_source`].
+/// Condition plans are embedded in the returned metadata.
 ///
 /// # Flow
 ///
 /// 1. Extract `@event` bindings from the `<template>` wrapper (→ `root_events`).
 /// 2. Strip the open declarative Shadow DOM wrapper if present.
 /// 3. Compile the inner body via [`compile_to_metadata`].
-/// 4. Serialize into JSON metadata and component-local condition closures.
+/// 4. Serialize into JSON metadata with condition plans.
 ///
 /// # Compilation rules
 ///
@@ -895,11 +858,10 @@ fn emit_compiled_template_payload(
     options: TemplatePayloadOptions,
 ) -> CompiledTemplatePayload {
     let lazy_plan = lazy_templates::Plan::new(options.owner, meta);
-    let mut conditions = ConditionFunctionEmitter::new(128);
     let mut out = String::with_capacity(512 + html_content.len());
     out.push('{');
 
-    emit_json_template_section(&meta.root, &mut out, &mut conditions, lazy_plan.as_ref());
+    emit_json_template_section(&meta.root, &mut out, lazy_plan.as_ref());
     if let Some(root) = reactive_plan::single_root(&meta.root, &build_meta.roots) {
         out.push_str(",\"rp\":");
         emit_js_string(root, &mut out);
@@ -964,16 +926,15 @@ fn emit_compiled_template_payload(
             }
             wrote = true;
             out.push('{');
-            emit_json_template_section(block, &mut out, &mut conditions, lazy_plan.as_ref());
+            emit_json_template_section(block, &mut out, lazy_plan.as_ref());
             out.push('}');
         }
         out.push(']');
     }
 
-    out.push_str(",\"v\":3}");
+    out.push_str(",\"v\":4}");
     CompiledTemplatePayload {
         template_json: out,
-        template_functions: conditions.finish(),
         hydration_roots: build_meta.roots.clone(),
         lazy_templates: lazy_plan.map_or_else(Vec::new, |plan| plan.emit(options.owner, meta)),
     }
@@ -1115,11 +1076,7 @@ fn collect_event_groups(events: &[EventBinding]) -> Vec<EventGroup<'_>> {
     groups
 }
 
-fn emit_json_attr_binding(
-    binding: &CompiledAttrBinding,
-    out: &mut String,
-    functions: &mut ConditionFunctionEmitter,
-) {
+fn emit_json_attr_binding(binding: &CompiledAttrBinding, out: &mut String) {
     out.push('[');
     match binding {
         CompiledAttrBinding::Simple { name, value } => {
@@ -1135,7 +1092,7 @@ fn emit_json_attr_binding(
         CompiledAttrBinding::Boolean { name, condition } => {
             emit_js_string(name, out);
             out.push_str(",2,");
-            emit_json_condition_ref(condition, out, functions);
+            condition_plan::emit(condition, out);
         }
         CompiledAttrBinding::Template { name, parts } => {
             emit_js_string(name, out);
@@ -1311,17 +1268,6 @@ fn add_part_roots(
     }
 }
 
-fn is_condition_literal(value: &str) -> bool {
-    (value.starts_with('"') && value.ends_with('"'))
-        || (value.starts_with('\'') && value.ends_with('\''))
-        || value == "true"
-        || value == "false"
-        || (!value.is_empty()
-            && value
-                .bytes()
-                .all(|b| b.is_ascii_digit() || b == b'.' || b == b'-'))
-}
-
 fn add_condition_roots(
     roots: &mut Vec<String>,
     condition: &ConditionExpr,
@@ -1337,8 +1283,8 @@ fn add_condition_roots(
             }
             Some(condition_expr::Expr::Predicate(pred)) => {
                 add_root(roots, &pred.left, scopes, scope);
-                if !is_condition_literal(&pred.right) {
-                    add_root(roots, &pred.right, scopes, scope);
+                if let PredicateOperand::Path(path) = PredicateOperand::classify(&pred.right) {
+                    add_root(roots, path, scopes, scope);
                 }
             }
             Some(condition_expr::Expr::Not(not_cond)) => {
@@ -1357,171 +1303,6 @@ fn add_condition_roots(
             None => {}
         }
     }
-}
-
-fn emit_js_condition_function(condition: &ConditionExpr, out: &mut String, needs_truthiness: bool) {
-    out.push_str("function(v,s");
-    if needs_truthiness {
-        out.push_str(",t");
-    }
-    out.push_str("){return ");
-    emit_js_condition_expr(condition, out);
-    out.push('}');
-}
-
-/// Emit a JSON condition reference as `[functionIndex,["path1",...]]`.
-/// The paths array lists all referenced identifiers for the reactive path index.
-fn emit_json_condition_ref(
-    condition: &ConditionExpr,
-    out: &mut String,
-    functions: &mut ConditionFunctionEmitter,
-) {
-    let mut paths = Vec::new();
-    let needs_truthiness = collect_condition_paths(condition, &mut paths);
-    let function_index = functions.push(condition, needs_truthiness);
-    out.push('[');
-    let _ = write!(out, "{}", function_index);
-    out.push_str(",[");
-    for (i, path) in paths.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        emit_js_string(path, out);
-    }
-    out.push_str("]]");
-}
-
-fn emit_js_condition_expr(condition: &ConditionExpr, out: &mut String) {
-    match &condition.expr {
-        Some(condition_expr::Expr::Identifier(id)) if id.value == "true" || id.value == "false" => {
-            out.push_str(&id.value);
-        }
-        Some(condition_expr::Expr::Identifier(id)) => {
-            out.push_str("t(v(");
-            emit_js_string(&id.value, out);
-            out.push_str(",s))");
-        }
-        Some(condition_expr::Expr::Predicate(pred)) => {
-            // Comparison: resolve left, compare with right
-            out.push_str("v(");
-            emit_js_string(&pred.left, out);
-            out.push_str(",s)");
-            match pred.operator {
-                1 => out.push('>'),      // GT
-                2 => out.push('<'),      // LT
-                3 => out.push_str("=="), // EQ (use == for loose comparison like Object.is)
-                4 => out.push_str("!="), // NEQ
-                5 => out.push_str(">="), // GTE
-                6 => out.push_str("<="), // LTE
-                _ => out.push_str("=="),
-            }
-            // Right side: resolve as value or emit literal
-            emit_js_predicate_right(&pred.right, out);
-        }
-        Some(condition_expr::Expr::Not(not_cond)) => {
-            out.push('!');
-            if let Some(inner) = not_cond.condition.as_ref() {
-                out.push('(');
-                emit_js_condition_expr(inner, out);
-                out.push(')');
-            } else {
-                out.push_str("false");
-            }
-        }
-        Some(condition_expr::Expr::Compound(compound)) => {
-            out.push('(');
-            if let Some(left) = compound.left.as_ref() {
-                emit_js_condition_expr(left, out);
-            } else {
-                out.push_str("false");
-            }
-            match compound.op {
-                1 => out.push_str("&&"), // AND
-                2 => out.push_str("||"), // OR
-                _ => out.push_str("&&"),
-            }
-            if let Some(right) = compound.right.as_ref() {
-                emit_js_condition_expr(right, out);
-            } else {
-                out.push_str("false");
-            }
-            out.push(')');
-        }
-        None => out.push_str("false"),
-    }
-}
-
-/// Emit the right-hand side of a predicate comparison.
-/// Literals are emitted directly; identifiers are resolved via v().
-fn emit_js_predicate_right(value: &str, out: &mut String) {
-    // Check for string literals: "..." or '...'
-    if (value.starts_with('"') && value.ends_with('"'))
-        || (value.starts_with('\'') && value.ends_with('\''))
-    {
-        // Emit as JS string (strip outer quotes, re-emit as double-quoted)
-        emit_js_string(&value[1..value.len() - 1], out);
-        return;
-    }
-    // Boolean literals
-    if value == "true" || value == "false" {
-        out.push_str(value);
-        return;
-    }
-    // Numeric literals
-    if value
-        .bytes()
-        .all(|b| b.is_ascii_digit() || b == b'.' || b == b'-')
-        && !value.is_empty()
-    {
-        out.push_str(value);
-        return;
-    }
-    // Otherwise it's an identifier — resolve it
-    out.push_str("v(");
-    emit_js_string(value, out);
-    out.push_str(",s)");
-}
-
-// Collect reactive paths and detect coercion in the same build-time traversal.
-fn collect_condition_paths(condition: &ConditionExpr, paths: &mut Vec<String>) -> bool {
-    let mut needs_truthiness = false;
-    match &condition.expr {
-        Some(condition_expr::Expr::Identifier(id)) if id.value == "true" || id.value == "false" => {
-        }
-        Some(condition_expr::Expr::Identifier(id)) => {
-            paths.push(id.value.clone());
-            needs_truthiness = true;
-        }
-        Some(condition_expr::Expr::Predicate(pred)) => {
-            paths.push(pred.left.clone());
-            // Right side might also be an identifier (not a literal)
-            let r = &pred.right;
-            if !((r.starts_with('"') && r.ends_with('"'))
-                || (r.starts_with('\'') && r.ends_with('\''))
-                || r == "true"
-                || r == "false"
-                || r.bytes()
-                    .all(|b| b.is_ascii_digit() || b == b'.' || b == b'-'))
-            {
-                paths.push(r.clone());
-            }
-        }
-        Some(condition_expr::Expr::Not(not_cond)) => {
-            if let Some(inner) = not_cond.condition.as_ref() {
-                needs_truthiness = collect_condition_paths(inner, paths);
-            }
-        }
-        Some(condition_expr::Expr::Compound(compound)) => {
-            if let Some(left) = compound.left.as_ref() {
-                needs_truthiness |= collect_condition_paths(left, paths);
-            }
-            if let Some(right) = compound.right.as_ref() {
-                needs_truthiness |= collect_condition_paths(right, paths);
-            }
-        }
-        None => {}
-    }
-    needs_truthiness
 }
 
 fn emit_js_slot(slot: &SlotLocator, out: &mut String) {
@@ -1598,7 +1379,6 @@ fn invalid_lazy_trigger(
 fn emit_json_template_section(
     meta: &TemplateSectionMeta,
     out: &mut String,
-    functions: &mut ConditionFunctionEmitter,
     references: Option<&lazy_templates::Plan>,
 ) {
     out.push_str("\"h\":");
@@ -1647,7 +1427,7 @@ fn emit_json_template_section(
             if i > 0 {
                 out.push(',');
             }
-            emit_json_attr_binding(binding, out, functions);
+            emit_json_attr_binding(binding, out);
         }
         out.push(']');
     }
@@ -1681,7 +1461,7 @@ fn emit_json_template_section(
                 out.push(',');
             }
             out.push('[');
-            emit_json_condition_ref(cond, out, functions);
+            condition_plan::emit(cond, out);
             out.push(',');
             emit_block_reference(*block_index, references, out);
             out.push(',');
@@ -3891,17 +3671,14 @@ mod tests {
     fn boolean_literal_conditions_have_no_state_dependencies() {
         for value in ["true", "false"] {
             let condition = ConditionExpr::identifier(value);
-            let mut javascript = String::new();
-            emit_js_condition_expr(&condition, &mut javascript);
-            assert_eq!(javascript, value);
-            let mut paths = Vec::new();
-            collect_condition_paths(&condition, &mut paths);
-            assert!(paths.is_empty());
+            let mut output = String::new();
+            condition_plan::emit(&condition, &mut output);
+            assert_eq!(output, format!("[[7,0,{value}],[]]"));
         }
     }
 
     #[test]
-    fn condition_functions_receive_runtime_truthiness_across_bindings() {
+    fn condition_plans_encode_truthiness_and_short_circuit_across_bindings() {
         let payload = generate_compiled_template_payload(
             "collection-check",
             concat!(
@@ -3911,23 +3688,17 @@ mod tests {
                 "<input ?disabled=\"{{items.length}}\">",
             ),
         );
-        let functions = payload.template_functions;
-        assert!(functions.starts_with('['));
-        assert!(functions.ends_with(']'));
-        assert_eq!(functions.matches("function(v,s,t)").count(), 4);
-        assert!(!functions.contains("function t("));
-        assert!(!functions.contains("Array.isArray"));
-        assert!(!functions.contains("Object.keys"));
-        assert!(functions.contains(r#"return t(v("items",s))"#));
-        assert!(functions.contains(r#"return !(t(v("actions.trailing",s)))"#));
-        assert!(functions.contains(r#"return (t(v("ready",s))&&t(v("record",s)))"#));
-        assert!(functions.contains(r#"return t(v("items.length",s))"#));
+        let json = payload.template_json;
+        assert!(json.contains(r#"[[0],["items"]]"#));
+        assert!(json.contains(r#"[[1],["actions.trailing"]]"#));
+        assert!(json.contains(r#"[[0,0,false,-2,-1,0,1,false,0,-1],["record","ready"]]"#));
+        assert!(json.contains(r#"[[0],["items.length"]]"#));
     }
 
     #[test]
-    fn condition_truthiness_helper_is_omitted_when_unused() {
+    fn literal_and_comparison_plans_need_no_function_table() {
         let no_conditions = generate_compiled_template_payload("plain-check", "<p>static</p>");
-        assert!(no_conditions.template_functions.is_empty());
+        assert!(!no_conditions.template_json.contains(r#""c":"#));
         let payload = generate_compiled_template_payload(
             "predicate-check",
             concat!(
@@ -3935,10 +3706,8 @@ mod tests {
                 "<if condition=\"count > 0\"><span>positive</span></if>",
             ),
         );
-        assert_eq!(
-            payload.template_functions,
-            r#"[function(v,s){return true},function(v,s){return v("count",s)>0}]"#
-        );
+        assert!(payload.template_json.contains(r#"[[7,0,true],[]]"#));
+        assert!(payload.template_json.contains(r#"[[1,0,0],["count"]]"#));
     }
 
     #[test]
@@ -4128,10 +3897,10 @@ mod tests {
                 .template_json
                 .as_str()
         };
-        assert!(metadata("x-parent").contains(r#""v":3"#));
+        assert!(metadata("x-parent").contains(r#""v":4"#));
         assert!(metadata("x-parent").contains(r#""d":["x-child","x-leaf"]"#));
         assert!(metadata("x-child").contains(r#""d":["x-grandchild"]"#));
-        assert!(metadata("x-leaf").contains(r#""v":3"#));
+        assert!(metadata("x-leaf").contains(r#""v":4"#));
         assert!(!metadata("x-leaf").contains(r#""d":"#));
     }
 
@@ -4403,10 +4172,7 @@ mod tests {
         );
         let result = payload.template_json;
         assert_no_client_markers(&result);
-        assert!(result.contains(r#""c":[[[0,["state"]],0,[0,0]]]"#));
-        assert!(payload
-            .template_functions
-            .contains(r#"function(v,s){return v("state",s)=="done"}"#));
+        assert!(result.contains(r#""c":[[[[3,0,"done"],["state"]],0,[0,0]]]"#));
         assert!(result.contains("<span>yes</span>"));
         assert!(!result.contains("<if"));
     }
@@ -4723,10 +4489,7 @@ mod tests {
         assert_no_client_markers(&result);
         assert!(result.contains(r#","a":["#));
         assert!(result.contains(r#","ag":[[1,0,1]]"#));
-        assert!(result.contains(r#"["data-active",2,[0,["page"]]]"#));
-        assert!(payload
-            .template_functions
-            .contains(r#"function(v,s){return v("page",s)=="dashboard"}"#));
+        assert!(result.contains(r#"["data-active",2,[[3,0,"dashboard"],["page"]]]"#));
     }
 
     #[test]
@@ -4842,7 +4605,7 @@ mod tests {
         assert_eq!(paired, self_closing);
         assert!(paired.contains(r#"<main><outlet></outlet></main></div>"#));
         assert!(paired.contains(
-            r#""c":[[[0,["showNestedAfter"]],0,[1,1]],[[1,["showRootAfter"]],1,[0,1]]]"#,
+            r#""c":[[[[0],["showNestedAfter"]],0,[1,1]],[[[0],["showRootAfter"]],1,[0,1]]]"#,
         ));
     }
 
@@ -4855,7 +4618,7 @@ mod tests {
 
         assert!(result.contains(r#""h":"<div><INPUT /></div>""#), "{result}");
         assert!(
-            result.contains(r#""c":[[[0,["nested"]],0,[1,1]],[[1,["root"]],1,[0,1]]]"#,),
+            result.contains(r#""c":[[[[0],["nested"]],0,[1,1]],[[[0],["root"]],1,[0,1]]]"#,),
             "{result}"
         );
     }
@@ -4876,10 +4639,7 @@ mod tests {
         );
         let result = payload.template_json;
         assert_no_client_markers(&result);
-        assert!(result.contains(r#"["active",2,[0,["s.id","sectionId"]]]"#));
-        assert!(payload
-            .template_functions
-            .contains(r#"function(v,s){return v("s.id",s)==v("sectionId",s)}"#));
+        assert!(result.contains(r#"["active",2,[[11,0,1],["s.id","sectionId"]]]"#));
         assert!(!result.contains("?active"));
     }
 
@@ -5113,7 +4873,7 @@ mod tests {
             "repeat block index expected"
         );
         assert!(
-            result.contains(r#"[[0,["item.active"]],1,[0,0]]"#),
+            result.contains(r#"[[[0],["item.active"]],1,[0,0]]"#),
             "nested conditional block index expected"
         );
         assert!(!result.contains("<if"), "nested if should be compiled");
@@ -5133,7 +4893,7 @@ mod tests {
             "compiled block table expected"
         );
         assert!(
-            result.contains(r#"[[0,["showList"]],0,[0,0]]"#),
+            result.contains(r#"[[[0],["showList"]],0,[0,0]]"#),
             "conditional block index expected"
         );
         assert!(
@@ -5236,7 +4996,7 @@ mod tests {
         // table=1, tbody=2, first tr=3, td=4, second tr=5, td=6, button=7
         assert!(result.contains(r#""tx":[[[6,0],[["cell"]]]]"#), "{result}");
         assert!(
-            result.contains(r#""c":[[[0,["show"]],0,[2,1]]]"#),
+            result.contains(r#""c":[[[[0],["show"]],0,[2,1]]]"#),
             "{result}"
         );
         assert!(
@@ -5565,10 +5325,9 @@ mod tests {
         // The right-side literal should remain properly escaped in the AST payload.
         assert!(
             payload
-                .template_functions
-                .contains(r#"function(v,s){return v("name",s)==v("&quot;test&quot;",s)}"#),
-            "condition function with escaped quotes should be present: {}",
-            payload.template_functions
+                .template_json
+                .contains(r#"[[11,0,1],["name","&quot;test&quot;"]]"#),
+            "condition plan preserves the escaped operand"
         );
         assert!(
             !payload.template_json.contains("function(v,s)"),

@@ -360,7 +360,7 @@ beside the page:
   chunks load relative to the entry script, so serve the entry from the same
   base.
 
-Packs contain only compiled templates, condition functions, styles, and
+Packs contain only compiled templates, styles, and
 inventory data. Hosts render pages with the usual APIs; there is no lazy-specific
 host API. When you build programmatically, publish the returned pack files and
 write the returned loader module where your bundler imports it:
@@ -374,9 +374,8 @@ writes that report as `lazyPacks`, with brotli-compressed sizes, so your
 deployment can upload and precache everything a region loads, for example in a
 service worker, and CI can budget each region.
 
-Condition functions in a pack run with the page's CSP nonce and the `webui`
-Trusted Types policy, as in SSR. Allow the policy name `webui` when you enforce
-Trusted Types.
+Packs carry conditions as data, not scripts. Compiled template HTML still uses
+the private `webui` policy; allow that policy name when you enforce Trusted Types.
 
 Build with the WebUI plugin and matching compiler and runtime versions.
 

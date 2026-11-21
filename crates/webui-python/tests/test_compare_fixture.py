@@ -18,7 +18,7 @@ def current_protocol() -> dict[str, Any]:
         "build_id": "sha256:" + "a" * 64,
         "components": {
             "owner-widget": {
-                "template_json": '{"v":3,"h":"<child-widget></child-widget>","d":["child-widget"]}'
+                "template_json": '{"v":4,"h":"<child-widget></child-widget>","d":["child-widget"]}'
             },
         },
     }
@@ -31,7 +31,7 @@ def test_current_comparison_preserves_all_metadata() -> None:
     assert expected == actual == current_protocol()
 
 
-@pytest.mark.parametrize("version", [None, 1, 2, 4])
+@pytest.mark.parametrize("version", [None, 1, 2, 3, 5])
 @pytest.mark.parametrize("group", ["components", "client_fragments"])
 def test_old_or_missing_metadata_versions_are_not_normalized(
     version: int | None, group: str,
@@ -42,15 +42,15 @@ def test_old_or_missing_metadata_versions_are_not_normalized(
         template["v"] = version
     expected[group] = {"owner-widget": {"template_json": json.dumps(template)}}
     actual = deepcopy(expected)
-    with pytest.raises(ValueError, match="must use v3"):
+    with pytest.raises(ValueError, match="must use v4"):
         compare_fixture.compare_protocols(expected, actual)
     assert actual == expected
 
 
 @pytest.mark.parametrize("template", [
-    '{"h":"<child-widget></child-widget>","v":3,"d":[]}',
-    '{"h":"Changed","v":3,"d":["child-widget"]}',
-    '{"h":"<child-widget></child-widget>","v":3,"d":["child-widget"],"rf":[["button",1]]}',
+    '{"h":"<child-widget></child-widget>","v":4,"d":[]}',
+    '{"h":"Changed","v":4,"d":["child-widget"]}',
+    '{"h":"<child-widget></child-widget>","v":4,"d":["child-widget"],"rf":[["button",1]]}',
 ])
 def test_current_content_dependencies_and_refs_cannot_be_discarded(template: str) -> None:
     expected = current_protocol()

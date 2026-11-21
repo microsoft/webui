@@ -20,8 +20,6 @@ pub struct WebUiTemplatePayload<'a> {
     pub tag_name: &'a str,
     /// JSON-safe template metadata object.
     pub template_json: &'a str,
-    /// Component-local JavaScript condition closure array.
-    pub template_functions: &'a str,
 }
 
 /// Context passed to plugin-specific SSR bootstrap extension hooks.
@@ -153,10 +151,9 @@ pub trait HandlerPlugin: Send {
         emit_component_templates(protocol, components, writer)
     }
 
-    /// Return split WebUI template payloads for the given components.
+    /// Return compiled WebUI template metadata for the given components.
     ///
-    /// The WebUI plugin overrides this so `lib.rs` can emit JSON metadata in an
-    /// inert data block and only emit condition closures as executable JS.
+    /// The WebUI plugin overrides this to emit metadata in an inert data block.
     /// Returns `None` when templates are non-WebUI payloads (e.g. FAST
     /// `<f-template>` tags).
     fn collect_template_payloads<'a>(
@@ -215,9 +212,7 @@ pub trait HandlerPlugin: Send {
     /// Emit plugin-specific executable SSR bootstrap code, if needed.
     ///
     /// The handler emits shared metadata as inert `#webui-data`; client
-    /// packages parse that data lazily. Plugins can still emit executable
-    /// side-channel data here, such as WebUI framework `templateFns` closures.
-    /// The default is a no-op for FAST plugins, which use `<f-template>` tags.
+    /// packages parse that data lazily. The default is a no-op.
     fn emit_bootstrap_extension(
         &self,
         _context: BootstrapExtensionContext<'_>,

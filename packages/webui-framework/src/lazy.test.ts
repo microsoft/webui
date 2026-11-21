@@ -4,8 +4,9 @@
 import { strict as assert } from 'node:assert';
 import { after, test } from 'node:test';
 import { whenRendered } from './render-completion.js';
+import { evaluateCondition } from './template-conditions.js';
 import type { CondBinding, TemplateInstance } from './element/types.js';
-import type { CompiledConditionalMeta, TemplateMeta } from './template-types.js';
+import type { CompiledCondition, CompiledConditionalMeta, TemplateMeta } from './template-types.js';
 
 interface FakeScript {
   nonce: string;
@@ -76,8 +77,7 @@ function pack(owner: string, extra: Record<string, unknown> = {}): Record<string
     styleInventory: '',
     required: [id],
     bits: { [id]: 1 },
-    templates: { [id]: { v: 3, f: id, o: owner, e: 1, h: '<p></p>', c: [[[0, ['open']], -1, [0, 0]]], b: [{ h: '<i></i>' }] } },
-    templateFunctions: { [id]: '[function(v,s,t){return t(v("open",s))}]' },
+    templates: { [id]: { v: 4, f: id, o: owner, e: 1, h: '<p></p>', c: [[[[0], ['open']], -1, [0, 0]]], b: [{ h: '<i></i>' }] } },
     ...extra,
   };
 }
@@ -110,7 +110,7 @@ function holdResources(): { release(): void; restore(): void } {
 
 /** A compiled conditional entry for a lazy region with a prefetch trigger. */
 function lazyCondition(id: string, trigger: 1 | 2 | 3 | 4): CompiledConditionalMeta {
-  return [[0, ['open']], id, [0, 0], trigger];
+  return [[[0], ['open']], id, [0, 0], trigger];
 }
 
 /** A binding in a live owner instance unless `detached`. */
@@ -135,7 +135,7 @@ test('the core needs lazy.js and the runtime owns hostless fragments and their b
   await import('./lazy-entry.js');
   runtime = await import('./lazy-runtime.js');
   const id = region('app-shell');
-  const meta: TemplateMeta = { v: 3, f: id, o: 'app-shell', e: 1, h: '<p></p>', b: [{ h: '<span></span>' }] };
+  const meta: TemplateMeta = { v: 4, f: id, o: 'app-shell', e: 1, h: '<p></p>', b: [{ h: '<span></span>' }] };
   (browser.__webui.templates ??= {})[id] = meta;
   assert.equal(contract.requireLazyFragment(id, 'app-shell'), meta);
   assert.equal(contract.lazyBlockOwner(meta), meta);
@@ -146,19 +146,15 @@ test('the core needs lazy.js and the runtime owns hostless fragments and their b
   assert.throws(() => contract.requireLazyFragment('wrong-identity', 'app-shell'), /Invalid fragment/);
 });
 
-test('a pack loads once, runs closures with the document nonce, and merges its inventory', async () => {
+test('a pack loads once, uses compiled condition data without scripts, and merges its inventory', async () => {
   const id = region('pack-owner');
   const url = '_webui/packs/pack-owner.0001.json';
   serve(url, pack('pack-owner'));
   await Promise.all([runtime.load(id, url), runtime.load(id, url)]);
   assert.deepEqual(requests, [{ url, priority: 'auto' }]);
   const template = registry()[id];
-  const condition = template.c![0][0][0] as unknown as (
-    v: (path: string) => unknown, s: unknown, t: (value: unknown) => boolean,
-  ) => boolean;
-  assert.equal(typeof condition, 'function');
-  assert.equal(condition(path => path === 'open', undefined, Boolean), true);
-  assert.equal(scripts.at(-1)?.nonce, 'pack-nonce');
+  assert.equal(evaluateCondition(template.c![0][0] as CompiledCondition, path => path === 'open', undefined), true);
+  assert.equal(scripts.length, 0);
   assert.equal(browser.__webui.inventory, '12');
   await runtime.load(id, url);
   assert.equal(requests.length, 1, 'a registered region needs no request');
@@ -182,29 +178,24 @@ test('invalid or failed packs reject with guidance and the next load retries', a
 test('templates the page already owns are neither replaced nor re-executed', async () => {
   const id = region('shared-owner');
   const url = '_webui/packs/shared-owner.0003.json';
-  const owned: TemplateMeta = { v: 3, h: '<b>page</b>' };
+  const owned: TemplateMeta = { v: 4, h: '<b>page</b>' };
   registry()['shared-card'] = owned;
   const scriptCount = scripts.length;
   const base = pack('shared-owner');
   serve(url, {
     ...base,
-    templates: { ...base.templates as object, 'shared-card': { v: 3, h: '<b>pack</b>' } },
-    templateFunctions: {
-      ...base.templateFunctions as object,
-      'shared-card': '[function(){throw new Error("page closures must not run twice")}]',
-    },
+    templates: { ...base.templates as object, 'shared-card': { v: 4, h: '<b>pack</b>' } },
   });
   await runtime.load(id, url);
   assert.equal(registry()['shared-card'], owned);
   assert.ok(registry()[id]);
-  assert.equal(scripts.length, scriptCount + 1, 'only missing templates contribute closures');
-  assert.ok(!scripts.at(-1)!.textContent.includes('shared-card'));
+  assert.equal(scripts.length, scriptCount, 'registering a condition plan must not insert a script');
 });
 
 test('templates only the template cache holds are registered again before their bits merge', async () => {
   const id = region('cached-owner');
   const url = '_webui/packs/cached-owner.0014.json';
-  const cached: TemplateMeta = { v: 3, h: '<b>cached</b>' };
+  const cached: TemplateMeta = { v: 4, h: '<b>cached</b>' };
   const retained: string[] = [];
   (browser as unknown as Window).__webuiRetainTemplate = (tag: string): TemplateMeta | undefined => {
     if (tag !== 'cached-card') return undefined;
@@ -215,11 +206,7 @@ test('templates only the template cache holds are registered again before their 
   const base = pack('cached-owner');
   serve(url, {
     ...base,
-    templates: { ...base.templates as object, 'cached-card': { v: 3, h: '<b>pack</b>' } },
-    templateFunctions: {
-      ...base.templateFunctions as object,
-      'cached-card': '[function(){throw new Error("cached closures must not run twice")}]',
-    },
+    templates: { ...base.templates as object, 'cached-card': { v: 4, h: '<b>pack</b>' } },
   });
   await runtime.load(id, url);
   assert.deepEqual(retained, ['cached-card']);
@@ -275,7 +262,7 @@ test('never-opened packs stay warm; closing releases only the root, not ordinary
   const base = pack('policy-owner');
   const templates = { ...base.templates as Record<string, TemplateMeta> };
   templates[id] = { ...templates[id], d: [child] };
-  templates[child] = { v: 3, h: '<p>shared</p>' };
+  templates[child] = { v: 4, h: '<p>shared</p>' };
   serve(url, { ...base, templates, required: [id, child], inventory: '06', bits: { [id]: 1, [child]: 2 } });
   const saved = Object.getOwnPropertyDescriptor(globalThis, 'customElements');
   Object.defineProperty(globalThis, 'customElements', { configurable: true, value: { get: () => true } });
@@ -310,7 +297,7 @@ test('intent prefetches the waiting regions of every owner on the event path onc
   serve(url, pack('intent-owner'));
   requests.length = 0;
   const template: TemplateMeta = {
-    v: 3,
+    v: 4,
     h: '',
     c: [lazyCondition(id, 1), lazyCondition(demand, 4)],
     b: [{ h: '', c: [lazyCondition(nested, 1)] }],
@@ -338,7 +325,7 @@ test('idle and eager triggers prefetch at low priority after startup unless the 
   serve(eagerUrl, pack('eager-owner'));
   requests.length = 0;
   runtime.blockOwner({
-    v: 3,
+    v: 4,
     h: '',
     c: [lazyCondition(idleId, 2), lazyCondition(eagerId, 3)],
     lp: { [idleId]: idleUrl, [eagerId]: eagerUrl },
@@ -360,7 +347,7 @@ test('idle and eager triggers prefetch at low priority after startup unless the 
   assert.equal(registry()[eagerId], undefined);
   requests.length = 0;
   runtime.blockOwner({
-    v: 3,
+    v: 4,
     h: '',
     c: [lazyCondition(eagerId, 3)],
     lp: { [eagerId]: eagerUrl },
@@ -376,7 +363,7 @@ test('idle and eager triggers prefetch at low priority after startup unless the 
     const saver = region('saver-owner');
     const saverMore = region('saver-owner', 1);
     runtime.blockOwner({
-      v: 3,
+      v: 4,
       h: '',
       c: [lazyCondition(saver, 2), lazyCondition(saverMore, 3)],
       lp: { [saver]: '_webui/packs/saver-owner.0009.json', [saverMore]: '_webui/packs/saver-owner.0010.json' },
@@ -751,7 +738,7 @@ test('the element waits for a closed region condition and never mounts into a di
   const host = Object.assign(Object.create(TemplateElement.prototype) as object, {
     localName: 'glue-owner',
     isConnected: true,
-    $meta: { v: 3, h: '', lp: { [id]: url } } as TemplateMeta,
+    $meta: { v: 4, h: '', lp: { [id]: url } } as TemplateMeta,
   }) as import('./lazy-runtime.js').LazyHost & {
     $meta?: TemplateMeta;
     $whenRendered(): Promise<void>;
@@ -781,7 +768,7 @@ test('the element joins an installing pack instead of mounting before its resour
     const host = Object.assign(Object.create(TemplateElement.prototype) as object, {
       localName: 'join-owner',
       isConnected: true,
-      $meta: { v: 3, h: '', lp: { [id]: url } } as TemplateMeta,
+      $meta: { v: 4, h: '', lp: { [id]: url } } as TemplateMeta,
     }) as unknown as import('./lazy-runtime.js').LazyHost;
     // Detached bindings never mount, so the core needs no DOM here.
     const first = bindingFor(id, true);

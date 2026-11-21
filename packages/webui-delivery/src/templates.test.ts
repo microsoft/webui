@@ -22,6 +22,21 @@ import {
 } from './templates.js';
 import { navigationCache, type PartialResponse } from './cache.js';
 
+test('delivery publishes condition plans unmodified and does not insert a script', t => {
+  t.mock.method(document.head, 'appendChild', () => assert.fail('Unexpected script insertion'));
+  const tag = 'plan-fixture';
+  const template = { v: 4, h: '', c: [[[[0], ['ready']], 0, [0, 0]]] };
+  const original = window.__webuiPrepareTemplates;
+  let received: unknown;
+  window.__webuiPrepareTemplates = templates => { received = templates[tag]; };
+  try {
+    registerTemplatesAndStyles({ templates: { [tag]: template } }, 'document-nonce', () => {});
+    assert.equal(received, template);
+  } finally {
+    window.__webuiPrepareTemplates = original;
+  }
+});
+
 test('injected stylesheet links resolve against the runtime asset base', t => {
   const appended: { rel?: string; href?: string }[] = [];
   t.mock.method(document.head, 'appendChild', (link: { rel?: string; href?: string }) => {

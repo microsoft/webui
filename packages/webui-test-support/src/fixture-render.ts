@@ -29,7 +29,7 @@ import { Protocol } from '@microsoft/webui';
 export interface RenderedFixture {
   /** Fixture directory name (e.g. "counter"). */
   name: string;
-  /** Full rendered HTML including template metadata, condition closures, and hydration markers. */
+  /** Full rendered HTML including compiled template metadata and hydration markers. */
   html: string;
   /** Opt-in for request/stream fixtures that reuse one compiled protocol. */
   protocol?: Protocol;

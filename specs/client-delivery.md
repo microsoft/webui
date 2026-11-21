@@ -60,6 +60,13 @@ registration bridge once normal bootstrap is active. Renderer-independent
 consumers keep their wire validation and pre-bootstrap publication behavior;
 they do not import a second DOM style engine.
 
+JSON partials, NDJSON partials, and on-demand component responses share one
+registration path. Condition plans belong to their compiled template metadata;
+delivery publishes them as data and does not parse or execute them. The same
+representation is available in SSR and static lazy packs. It has no side
+channel, script sink, or additional resource request. Compiled template HTML
+is still trusted build output, not untrusted HTML.
+
 Within one inventory epoch, concurrently completing responses merge their
 availability bitsets instead of replacing one another's bits. Explicit template
 collection resets inventory and advances a document-local epoch. A request
@@ -207,8 +214,8 @@ compiled substitution point, not a request-time HTML parsing step.
 ### Packs
 
 A pack is `{ type: "webui-pack", version: 1, fragment, inventory,
-styleInventory, required, bits, componentStyles?, templates?,
-templateFunctions? }`. `templates` is the region's resource closure minus the
+styleInventory, required, bits, componentStyles?, templates? }`.
+`templates` is the region's resource closure minus the
 owner's eager closure; nested regions are separate packs. `required` lists
 everything the region needs, including owner-provided resources. `bits` maps
 each serialized template to its inventory bit. `componentStyles` is omitted
@@ -323,8 +330,7 @@ resource preparation rerun.
 Installation validates
 the type, version, and region; registers only templates the document does not
 already hold (registered, still held by the template cache, which registers
-them again, or still alive after release); runs their condition closures with
-the document nonce and the compiler-owned Trusted Types policy; publishes them
+them again, or still alive after release); publishes their compiled data
 through the registration event; joins its definition and style readiness; and
 then merges the pack's inventory bits only if the publication's epoch is still
 current. Collection during either awaited step invalidates that acknowledgement

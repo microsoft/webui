@@ -13,7 +13,7 @@ pub(super) fn write(pack: &Pack<'_>) -> Result<String> {
         .needed
         .iter()
         .filter_map(|id| document.client_template(id))
-        .map(|data| data.metadata.len() + data.functions.len() + data.legacy_html.len())
+        .map(|data| data.metadata.len() + data.legacy_html.len())
         .sum();
     let mut output = Vec::with_capacity(256 + bytes);
     output.extend_from_slice(b"{\"type\":\"webui-pack\",\"version\":1,\"fragment\":");
@@ -62,27 +62,6 @@ pub(super) fn write(pack: &Pack<'_>) -> Result<String> {
                 output.extend_from_slice(payload.metadata.as_bytes());
             }
         }
-        output.push(b'}');
-    }
-    let mut wrote = false;
-    for id in &pack.needed {
-        let payload = document
-            .client_template(id)
-            .ok_or_else(|| HandlerError::MissingFragment((*id).into()))?;
-        if payload.functions.is_empty() {
-            continue;
-        }
-        if wrote {
-            output.push(b',');
-        } else {
-            output.extend_from_slice(b",\"templateFunctions\":{");
-        }
-        wrote = true;
-        json(&mut output, *id)?;
-        output.push(b':');
-        json(&mut output, payload.functions)?;
-    }
-    if wrote {
         output.push(b'}');
     }
     output.push(b'}');

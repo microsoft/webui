@@ -29,7 +29,7 @@ test('startup installs styles before early declarations and waits for missing me
         __webui: {
           state: { bootstrap: 'server' },
           componentStyles: styles,
-          templates: { 'early-widget': { v: 3, h: '', th: 1, tr: ['title'], ta: ['title'] } },
+          templates: { 'early-widget': { v: 4, h: '', th: 1, tr: ['title'], ta: ['title'] } },
         },
       }),
     },
@@ -70,7 +70,7 @@ test('startup installs styles before early declarations and waits for missing me
     MissingWidget.define('missing-widget');
     assert.equal(constructors.size, 0, 'declarations wait for explicit runtime startup');
     assert.throws(() => EarlyWidget.define('early-widget'), /already pending definition/);
-    registerTemplateData({ 'arriving-widget': { v: 3, h: '', tr: ['count'], ta: ['count'] } });
+    registerTemplateData({ 'arriving-widget': { v: 4, h: '', tr: ['count'], ta: ['count'] } });
     assert.equal(constructors.size, 0, 'metadata delivery must not start queued declarations');
     assert.equal(bootstrapReads, 0, 'declarations do not consume metadata before installers');
 
@@ -103,12 +103,12 @@ test('startup installs styles before early declarations and waits for missing me
     t.mock.timers.tick(0);
     assert.equal(constructors.size, 2, 'repeated startup does not repeat definitions');
 
-    registerTemplateData({ 'missing-widget': { v: 3, h: '', tr: ['value'], ta: ['value'] } });
+    registerTemplateData({ 'missing-widget': { v: 4, h: '', tr: ['value'], ta: ['value'] } });
     assert.equal(customElements.get('missing-widget'), MissingWidget);
     assert.deepEqual(Reflect.get(MissingWidget, 'observedAttributes'), ['value']);
 
     class ImmediateWidget extends WebUIElement {}
-    registerTemplateData({ 'immediate-widget': { v: 3, h: '' } });
+    registerTemplateData({ 'immediate-widget': { v: 4, h: '' } });
     ImmediateWidget.define('immediate-widget');
     assert.equal(customElements.get('immediate-widget'), ImmediateWidget, 'later definitions are synchronous');
 
@@ -125,7 +125,7 @@ test('startup installs styles before early declarations and waits for missing me
     await defineComponentAsset({
       type: 'webui-component-asset', version: 4, root: 'asset-widget', externalComponents: [],
       imports: [{
-        templates: { 'asset-widget': { v: 3, h: '<p>Asset</p>', th: 1 } },
+        templates: { 'asset-widget': { v: 4, h: '<p>Asset</p>', th: 1 } },
         componentStyles: assetStyles,
       }],
       componentStyles: assetStyles,

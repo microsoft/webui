@@ -113,7 +113,7 @@ describe('dormant template host runtime', () => {
     const waits: PromiseLike<unknown>[] = [];
     assert.doesNotThrow(() => window.dispatchEvent(new CustomEvent('webui:templates-registered', {
       detail: {
-        templates: { 'failed-native-definition': { v: 3, h: '', th: 1 } },
+        templates: { 'failed-native-definition': { v: 4, h: '', th: 1 } },
         waitUntil: (promise: PromiseLike<unknown>) => { waits.push(promise); },
       },
     })));
@@ -124,7 +124,7 @@ describe('dormant template host runtime', () => {
   test('defines compiler-owned hosts without authored stubs', () => {
     const tag = `dormant-unit-${Date.now()}`;
     registerTemplate(tag, {
-      v: 3,
+      v: 4,
       h: '<p></p>',
       th: 1,
       tr: ['message'],
@@ -153,7 +153,7 @@ describe('dormant template host runtime', () => {
 
   test('defines fully static templates for client-created navigation', () => {
     const tag = `static-unit-${Date.now()}`;
-    registerTemplate(tag, { v: 3, h: '<p>Static</p>', th: 1 });
+    registerTemplate(tag, { v: 4, h: '<p>Static</p>', th: 1 });
 
     installTemplateElementRuntime();
 
@@ -164,7 +164,7 @@ describe('dormant template host runtime', () => {
 
   test('defines empty compiler-owned hosts without TemplateElement state', () => {
     const tag = `empty-static-unit-${Date.now()}`;
-    registerTemplate(tag, { v: 3, h: '', th: 1 });
+    registerTemplate(tag, { v: 4, h: '', th: 1 });
 
     installTemplateElementRuntime();
 
@@ -189,7 +189,7 @@ describe('dormant template host runtime', () => {
 
   test('preserves parent properties queued before an empty host upgrades', () => {
     const tag = `empty-pending-property-${Date.now()}`;
-    registerTemplate(tag, { v: 3, h: '', th: 1 });
+    registerTemplate(tag, { v: 4, h: '', th: 1 });
     const child = new HTMLElement() as HTMLElement & {
       later?: { answer: number };
       payload?: { answer: number };
@@ -220,7 +220,7 @@ describe('dormant template host runtime', () => {
 
   test('defers queued properties with a streamed empty host', () => {
     const tag = `empty-pending-streamed-${Date.now()}`;
-    registerTemplate(tag, { v: 3, h: '', th: 1 });
+    registerTemplate(tag, { v: 4, h: '', th: 1 });
     const child = new HTMLElement();
     (child as unknown as { localName: string }).localName = tag;
     child.setAttribute('data-ws', '');
@@ -278,7 +278,7 @@ describe('dormant template host runtime', () => {
         [tag]: [resource],
       },
     });
-    registerTemplate(tag, { v: 3, h: '', th: 1 });
+    registerTemplate(tag, { v: 4, h: '', th: 1 });
 
     installTemplateElementRuntime();
 
@@ -303,7 +303,7 @@ describe('dormant template host runtime', () => {
     for (let i = 0; i < cases.length; i++) {
       const [name, behavior] = cases[i];
       const tag = `empty-${name.replace(' ', '-')}-${Date.now()}-${i}`;
-      registerTemplate(tag, { v: 3, h: '', th: 1, ...behavior });
+      registerTemplate(tag, { v: 4, h: '', th: 1, ...behavior });
 
       installTemplateElementRuntime();
 
@@ -323,8 +323,8 @@ describe('dormant template host runtime', () => {
     const existing = class ExistingElement extends HTMLElement {};
     customElements.define(existingTag, existing);
 
-    registerTemplate(authoredTag, { v: 3, h: '<p></p>', tr: ['message'] });
-    registerTemplate(existingTag, { v: 3, h: '<p></p>', th: 1 });
+    registerTemplate(authoredTag, { v: 4, h: '<p></p>', tr: ['message'] });
+    registerTemplate(existingTag, { v: 4, h: '<p></p>', th: 1 });
 
     installTemplateElementRuntime();
 
@@ -334,7 +334,7 @@ describe('dormant template host runtime', () => {
 
   test('claims templates registered after startup', () => {
     const tag = `event-unit-${Date.now()}`;
-    const meta = registerTemplate(tag, { v: 3, h: '<p></p>', th: 1 });
+    const meta = registerTemplate(tag, { v: 4, h: '<p></p>', th: 1 });
 
     window.dispatchEvent(new CustomEvent('webui:templates-registered', {
       detail: { templates: { [tag]: meta } },
@@ -346,7 +346,7 @@ describe('dormant template host runtime', () => {
   test('router-style registration defines a pending authored class before a static host can claim it', () => {
     const tag = `router-authored-unit-${Date.now()}`;
     const authored = class AuthoredRouteElement extends HTMLElement {};
-    const meta = registerTemplate(tag, { v: 3, h: '<p></p>', th: 1 });
+    const meta = registerTemplate(tag, { v: 4, h: '<p></p>', th: 1 });
     deferTemplateDefinition(tag, authored, () => customElements.define(tag, authored));
 
     window.dispatchEvent(new CustomEvent('webui:templates-registered', {
@@ -358,7 +358,7 @@ describe('dormant template host runtime', () => {
 
   test('does not claim tags reserved for authored lazy loaders', () => {
     const tag = `loader-unit-${Date.now()}`;
-    const meta = registerTemplate(tag, { v: 3, h: '<p></p>', th: 1 });
+    const meta = registerTemplate(tag, { v: 4, h: '<p></p>', th: 1 });
     window.__webui!.templateHostExclusions = new Set([tag]);
 
     window.dispatchEvent(new CustomEvent('webui:templates-registered', {

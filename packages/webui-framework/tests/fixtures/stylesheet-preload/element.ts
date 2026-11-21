@@ -39,7 +39,7 @@ declare global {
 window.__registerPreloadedStylesheetFixture = (): void => {
   registerTemplateData({
     [TAG_NAME]: {
-      v: 3,
+      v: 4,
       h:
         `<link rel="stylesheet" href="${STYLESHEET_HREF}">` +
         '<p class="early-label">Preloaded stylesheet</p>',
@@ -61,7 +61,7 @@ window.__preloadUnsupportedStylesheetFixture = (): void => {
 window.__registerAttributeStylesheetFixture = (): void => {
   registerTemplateData({
     [ATTRIBUTE_TAG_NAME]: {
-      v: 3,
+      v: 4,
       h:
         `<link rel="stylesheet" href="${ATTRIBUTE_STYLESHEET_HREF}" ` +
         'crossorigin="anonymous" referrerpolicy="no-referrer">' +

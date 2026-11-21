@@ -392,12 +392,7 @@ test.describe('streaming priority hydration', () => {
         (count, root) => count + root.querySelectorAll('webui-hydrate').length,
         0,
       );
-      // `<if>` conditions compile to an inline `templateFns` script emitted
-      // between each payload and its sentinel. Those are boundary
-      // scaffolding too, so a non-zero count means
-      // `removeBoundaryScaffolding` missed them. The weather island's own
-      // loader also lives in <body>, inside its boundary, so it is excluded
-      // by src — teardown must not treat authored content as scaffolding.
+      // The weather island's authored loader must survive boundary teardown.
       const bodyScripts = Array.from(pageRoot?.querySelectorAll('script') ?? []).filter(
         (script) => !script.src.endsWith('/weather-panel.js'),
       ).length;

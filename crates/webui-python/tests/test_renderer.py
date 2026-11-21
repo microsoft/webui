@@ -158,9 +158,9 @@ def test_partial_and_component_template_payloads_are_json_bytes(renderer: Render
     assert single_template_bytes == templates_bytes
 
 
-def test_current_fixture_preserves_exact_v3_template_metadata(renderer: Renderer) -> None:
+def test_current_fixture_preserves_exact_template_metadata(renderer: Renderer) -> None:
     expected = {
-        "v": 3,
+        "v": 4,
         "h": '<p class="message"></p>',
         "l": [3, 1],
         "tx": [[[1, 0], ["Hello, ", ["name"], "!"]]],

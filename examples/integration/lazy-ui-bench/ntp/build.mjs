@@ -98,10 +98,9 @@ export function duplication(packs) {
         seen.add(id);
         continue;
       }
-      raw += JSON.stringify(json.templates[id]).length + (json.templateFunctions?.[id]?.length ?? 0)
+      raw += JSON.stringify(json.templates[id]).length
         + JSON.stringify(json.componentStyles?.resources?.[id] ?? '').length;
       delete json.templates[id];
-      if (json.templateFunctions) delete json.templateFunctions[id];
       if (json.componentStyles?.resources) delete json.componentStyles.resources[id];
       if (json.componentStyles?.closures) delete json.componentStyles.closures[id];
     }

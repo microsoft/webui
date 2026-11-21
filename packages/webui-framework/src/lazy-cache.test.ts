@@ -32,7 +32,7 @@ Object.assign(globalThis, {
     styleInventory: '',
     required: [id],
     bits: { [id]: 1 },
-    templates: { [id]: { v: 3, f: id, o: 'cache-owner', h: '<p></p>' } },
+    templates: { [id]: { v: 4, f: id, o: 'cache-owner', h: '<p></p>' } },
   }), { headers: { 'Content-Type': 'application/json' } }),
 });
 

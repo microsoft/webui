@@ -217,7 +217,7 @@ mod tests {
 
     #[test]
     fn lazy_children_read_root_and_block_conditions_only_when_lazy() {
-        let json = r#"{"h":"","c":[[0,"o::lazy:@0",[0,0,0],2],[0,1,[0,0,0]]],"b":[{"h":"","c":[[0,"o::lazy:@1",[0,0,0],1],[0,"o::block:3",[0,0,0]]]}],"v":3}"#;
+        let json = r#"{"h":"","c":[[0,"o::lazy:@0",[0,0,0],2],[0,1,[0,0,0]]],"b":[{"h":"","c":[[0,"o::lazy:@1",[0,0,0],1],[0,"o::block:3",[0,0,0]]]}],"v":4}"#;
         let mut triggers = HashMap::new();
         let children = lazy_children(json, &mut triggers).unwrap();
         assert_eq!(
@@ -248,12 +248,12 @@ mod tests {
             "o.1111111111111111.json",
             &["b.css", "q\"uote.css"],
         );
-        let mut json = r#"{"v":3"#.to_owned();
+        let mut json = r#"{"v":4"#.to_owned();
         append_references(&mut json, &[&unstyled, &styled]);
         assert_eq!(
             json,
             concat!(
-                r#"{"v":3,"lp":{"o::lazy:@0":"_webui/packs/o.0000000000000000.json","#,
+                r#"{"v":4,"lp":{"o::lazy:@0":"_webui/packs/o.0000000000000000.json","#,
                 r#""o::lazy:@1":"_webui/packs/o.1111111111111111.json"}"#,
                 r#","lc":{"o::lazy:@1":["b.css","q\"uote.css"]}"#,
             )
@@ -265,11 +265,11 @@ mod tests {
             serde_json::json!(styled.stylesheets)
         );
 
-        let mut plain = r#"{"v":3"#.to_owned();
+        let mut plain = r#"{"v":4"#.to_owned();
         append_references(&mut plain, &[&unstyled]);
         assert_eq!(
             plain,
-            r#"{"v":3,"lp":{"o::lazy:@0":"_webui/packs/o.0000000000000000.json"}"#
+            r#"{"v":4,"lp":{"o::lazy:@0":"_webui/packs/o.0000000000000000.json"}"#
         );
     }
 }

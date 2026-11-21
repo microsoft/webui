@@ -56,7 +56,6 @@ function internals(router: WebUIRouter): RouterInternals {
 interface TemplateRegistry {
   __webui?: {
     templates?: Record<string, unknown>;
-    templateFns?: Record<string, unknown>;
     styles?: string[];
     [key: string]: unknown;
   };
@@ -127,7 +126,7 @@ describe('WebUIRouter', () => {
   });
 
   describe('SSR metadata bootstrap', () => {
-    test('start lazily loads webui-data and preserves templateFns', () => {
+    test('start lazily loads webui-data', () => {
       const origGetElementById = (globalThis as any).document.getElementById;
       const origQuerySelector = (globalThis as any).document.querySelector;
       const origQuerySelectorAll = (globalThis as any).document.querySelectorAll;
@@ -135,9 +134,7 @@ describe('WebUIRouter', () => {
       const origRemoveEventListener = (globalThis as any).document.removeEventListener;
       let removed = false;
 
-      globals().__webui = {
-        templateFns: { greeting: [() => true] },
-      };
+      globals().__webui = {};
 
       (globalThis as any).document.getElementById = (id: string) => {
         if (id !== 'webui-data') return null;
@@ -159,7 +156,6 @@ describe('WebUIRouter', () => {
         assert.equal(globals().__webui!.nonce, 'n');
         assert.deepEqual(globals().__webui!.state, { title: 'Hello' });
         assert.ok(globals().__webui!.templates?.greeting, 'template metadata should be loaded');
-        assert.ok(globals().__webui!.templateFns?.greeting, 'existing templateFns should be preserved');
         assert.deepEqual(
           globals().__webui!.styles,
           ['x-card'],
@@ -188,22 +184,12 @@ describe('WebUIRouter', () => {
       registry['shell'] = { h: '<div>Shell</div>' };
       registry['page-x'] = { h: '<div>X</div>' };
       registry['page-y'] = { h: '<div>Y</div>' };
-      globals().__webui!.templateFns = {
-        shell: [() => true],
-        'page-x': [() => true],
-      };
-
-      globals().__webui!.inventory = inventoryWith('shell', 'page-x', 'page-y');
-
       const previous = window.__webuiCollectTemplates;
       let collected = false;
       window.__webuiCollectTemplates = keep => {
         assert.deepEqual(keep, []);
         collected = true;
         for (const tag of Object.keys(registry)) delete registry[tag];
-        for (const tag of Object.keys(globals().__webui!.templateFns!)) {
-          delete globals().__webui!.templateFns![tag];
-        }
         globals().__webui!.inventory = '';
         return 3;
       };
@@ -213,8 +199,6 @@ describe('WebUIRouter', () => {
         assert.equal(registry['shell'], undefined, 'shell should be cleared');
         assert.equal(registry['page-x'], undefined, 'page-x should be cleared');
         assert.equal(registry['page-y'], undefined, 'page-y should be cleared');
-        assert.equal(globals().__webui!.templateFns!.shell, undefined, 'shell functions should be cleared');
-        assert.equal(globals().__webui!.templateFns!['page-x'], undefined, 'page-x functions should be cleared');
         assert.equal(globals().__webui!.inventory, '', 'inventory should be reset to empty');
       } finally {
         window.__webuiCollectTemplates = previous;
@@ -281,7 +265,7 @@ describe('WebUIRouter', () => {
       let respond!: (response: Response) => void;
       const response = new Promise<Response>(resolve => { respond = resolve; });
       const requested: string[] = [];
-      const resident = { v: 3, h: '<p>resident</p>' };
+      const resident = { v: 4, h: '<p>resident</p>' };
       globals().__webui!.templates!['x-resident'] = resident;
       globalThis.fetch = async input => {
         requested.push(String(input));
@@ -299,7 +283,7 @@ describe('WebUIRouter', () => {
         const joined = router.ensureLoaded('x-resident', 'x-missing');
         router.gc();
         assert.equal(globals().__webui!.templates!['x-resident'], undefined);
-        respond(Response.json({ templates: { 'x-missing': { v: 3, h: '<p>missing</p>' } }, inventory: '03' }));
+        respond(Response.json({ templates: { 'x-missing': { v: 4, h: '<p>missing</p>' } }, inventory: '03' }));
         await Promise.all([first, joined]);
         assert.equal(requested.length, 1, 'concurrent calls share the missing fetch');
         assert.match(requested[0], /\?t=x-missing&/);
@@ -462,34 +446,17 @@ describe('WebUIRouter', () => {
     });
   });
 
-  describe('template execution in fetchPartial', () => {
-    test('split template registration stores data and condition closures', () => {
-      const origCreateElement = (globalThis as any).document.createElement;
-      const origHead = (globalThis as any).document.head;
+  describe('template registration in fetchPartial', () => {
+    test('template registration stores the compiled condition plan as data', () => {
       let registeredEvent = false;
       const onRegistered = () => {
         registeredEvent = true;
       };
       window.addEventListener('webui:templates-registered', onRegistered);
 
-      (globalThis as any).document.createElement = (tag: string) => ({
-        tagName: tag,
-        nonce: '',
-        textContent: '',
-      });
-      (globalThis as any).document.head = {
-        appendChild(el: Record<string, unknown>) {
-          // eslint-disable-next-line no-new-func
-          Function(el.textContent as string)();
-          return el;
-        },
-        removeChild() { return undefined; },
-      };
-
       try {
         registerTemplatesAndStyles({
-          templates: { 'test-comp': { h: '<div>hello</div>', c: [[[0, ['ready']], 0, [[], 0]]] } },
-          templateFunctions: { 'test-comp': '[function(){return true}]' },
+          templates: { 'test-comp': { h: '<div>hello</div>', c: [[[[0], ['ready']], 0, [0, 0]]] } },
           componentStyles: emptyComponentStyles(),
         }, '', () => {});
 
@@ -500,12 +467,10 @@ describe('WebUIRouter', () => {
           '<div>hello</div>',
           'template HTML should match',
         );
-        assert.equal(typeof (globals().__webui as any).templateFns['test-comp'][0], 'function');
+        assert.deepEqual((registry['test-comp'] as { c: unknown }).c, [[[[0], ['ready']], 0, [0, 0]]]);
         assert.equal(registeredEvent, true, 'template registration should notify optional runtimes');
       } finally {
         window.removeEventListener('webui:templates-registered', onRegistered);
-        (globalThis as any).document.createElement = origCreateElement;
-        (globalThis as any).document.head = origHead;
       }
     });
 
@@ -544,10 +509,9 @@ describe('WebUIRouter', () => {
       }
     });
 
-    test('registers component styles and closures before templates are announced', () => {
-      const origCreateElement = (globalThis as any).document.createElement;
-      const origHead = (globalThis as any).document.head;
+    test('registers component styles and prepares plans before templates are announced', () => {
       const origBridge = window.__webuiRegisterComponentStyles;
+      const origPrepare = window.__webuiPrepareTemplates;
       const order: string[] = [];
       const tag = 'ordered-component';
       let styleRegistrations = 0;
@@ -565,20 +529,10 @@ describe('WebUIRouter', () => {
         styleRegistrations++;
         order.push('styles');
       };
-      (globalThis as any).document.createElement = (elementTag: string) => ({
-        tagName: elementTag,
-        nonce: '',
-        textContent: '',
-      });
-
-      (globalThis as any).document.head = {
-        appendChild(el: Record<string, unknown>) {
-          order.push('closures');
-          // eslint-disable-next-line no-new-func
-          Function(el.textContent as string)();
-          return el;
-        },
-        removeChild() { return undefined; },
+      window.__webuiPrepareTemplates = templates => {
+        assert.ok(templates[tag]);
+        assert.deepEqual((templates[tag] as { c: unknown }).c, [[[[0], ['ready']], 0, [0, 0]]]);
+        order.push('plans');
       };
 
       try {
@@ -591,11 +545,10 @@ describe('WebUIRouter', () => {
             },
             closures: { [tag]: [tag] },
           },
-          templateFunctions: { [tag]: '[function(){return true}]' },
-          templates: { [tag]: { h: '<p>ordered</p>' } },
+          templates: { [tag]: { h: '<p>ordered</p>', c: [[[[0], ['ready']], 0, [0, 0]]] } },
         }, '', () => {});
 
-        assert.deepEqual(order, ['styles', 'closures', 'event']);
+        assert.deepEqual(order, ['styles', 'plans', 'event']);
         assert.equal(styleRegistrations, 1);
         assert.equal(
           announcedStyles,
@@ -605,8 +558,7 @@ describe('WebUIRouter', () => {
       } finally {
         window.removeEventListener('webui:templates-registered', onRegistered);
         window.__webuiRegisterComponentStyles = origBridge;
-        (globalThis as any).document.createElement = origCreateElement;
-        (globalThis as any).document.head = origHead;
+        window.__webuiPrepareTemplates = origPrepare;
         delete globals().__webui?.templates?.[tag];
       }
     });
@@ -710,7 +662,7 @@ describe('WebUIRouter', () => {
       }
     });
 
-    test('fetchPartial forwards componentStyles through the registration bridge and batches closure scripts', async () => {
+    test('fetchPartial forwards componentStyles and condition plans without a script', async () => {
       const origFetch = (globalThis as any).fetch;
       const origCreateElement = (globalThis as any).document.createElement;
       const origQuerySelector = (globalThis as any).document.querySelector;
@@ -718,8 +670,6 @@ describe('WebUIRouter', () => {
       const origBridge = window.__webuiRegisterComponentStyles;
 
       const order: string[] = [];
-      const templateScriptBodies: string[] = [];
-      const templateScriptNonces: string[] = [];
       let receivedComponentStyles: unknown;
 
       window.__webuiRegisterComponentStyles = (value: unknown) => {
@@ -742,12 +692,8 @@ describe('WebUIRouter', () => {
             closures: { alpha: ['alpha'], beta: ['beta'] },
           },
           templates: {
-            alpha: { h: '<div>a</div>', c: [[[0, ['ready']], 0, [[], 0]]] },
-            beta: { h: '<div>b</div>', c: [[[0, ['ready']], 0, [[], 0]]] },
-          },
-          templateFunctions: {
-            alpha: '[function(){return true}]',
-            beta: '[function(){return false}]',
+            alpha: { h: '<div>a</div>', c: [[[[0], ['ready']], 0, [0, 0]]] },
+            beta: { h: '<div>b</div>', c: [[[[1], ['ready']], 0, [0, 0]]] },
           },
           path: '/',
           chain: [],
@@ -767,20 +713,8 @@ describe('WebUIRouter', () => {
       });
       (globalThis as any).document.querySelector = () => null;
       (globalThis as any).document.head = {
-        appendChild(el: Record<string, unknown>) {
-          // Import-map installation for Module resources is now the
-          // framework's responsibility (installed lazily per Document when
-          // a component mounts), so the router only appends the batched
-          // condition-closure script.
-          order.push('script');
-          templateScriptNonces.push(el.nonce as string);
-          templateScriptBodies.push(el.textContent as string);
-          // eslint-disable-next-line no-new-func
-          Function(el.textContent as string)();
-          return el;
-        },
-        removeChild() {
-          return undefined;
+        appendChild() {
+          assert.fail('Delivery must not insert a script to install conditions');
         },
       };
 
@@ -796,33 +730,10 @@ describe('WebUIRouter', () => {
         const result = await fetchPartial('/test');
 
         assert.ok(result, 'should return partial data');
-        // componentStyles registration (via the bridge) happens before the
-        // batched closure script executes.
-        assert.deepEqual(order, ['styles', 'script']);
-        // All condition closure arrays are batched into one script tag
-        assert.equal(
-          templateScriptBodies.length,
-          1,
-          'all JS condition closures should be batched into one script tag',
-        );
-        assert.ok(
-          templateScriptBodies[0].includes('f["alpha"]'),
-          'batch should include alpha closure table',
-        );
-        assert.ok(
-          templateScriptBodies[0].startsWith('(function(){'),
-          'closure registration should be wrapped to avoid global name collisions',
-        );
-        assert.ok(
-          templateScriptBodies[0].includes('f["beta"]'),
-          'batch should include beta closure table',
-        );
-        // CSP nonce preserved on the emitted closure batch script.
-        assert.deepEqual(
-          templateScriptNonces,
-          ['test-nonce'],
-          'batched closure script should carry the nonce',
-        );
+        assert.deepEqual(order, ['styles']);
+        const templates = globals().__webui?.templates as Record<string, { c: unknown }>;
+        assert.deepEqual(templates.alpha.c, [[[[0], ['ready']], 0, [0, 0]]]);
+        assert.deepEqual(templates.beta.c, [[[[1], ['ready']], 0, [0, 0]]]);
         assert.equal(
           (receivedComponentStyles as { strategy?: string } | undefined)?.strategy,
           'module',

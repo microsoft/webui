@@ -2,4 +2,7 @@
   <h2>Keep-Alive Page</h2>
   <p class="counter">Counter: {{clickCount}}</p>
   <button class="increment" @click="{onIncrement()}">Increment</button>
+  <if condition="clickCount > 0">
+    <p data-testid="incremented">Counter updated</p>
+  </if>
 </div>

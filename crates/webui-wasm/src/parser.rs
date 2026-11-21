@@ -296,7 +296,6 @@ fn compile(
         let component = protocol.components.entry(artifact.tag_name).or_default();
         component.template = artifact.template;
         component.template_json = artifact.template_json;
-        component.template_functions = artifact.template_functions;
         let hydration = manifest_entry.map_or(artifact.hydration, |entry| {
             StateSurface::Keys(entry.hydration_keys.clone())
         });

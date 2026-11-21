@@ -2,9 +2,10 @@
 // Licensed under the MIT license.
 
 use super::{
-    condition_expr, is_condition_literal, path_root, CompiledAttrBinding, CompiledAttrPart,
-    ConditionExpr, TemplateSectionMeta,
+    condition_expr, path_root, CompiledAttrBinding, CompiledAttrPart, ConditionExpr,
+    TemplateSectionMeta,
 };
+use webui_protocol::PredicateOperand;
 
 pub(super) fn single_root<'a>(meta: &TemplateSectionMeta, roots: &'a [String]) -> Option<&'a str> {
     let [root] = roots else {
@@ -56,8 +57,8 @@ fn condition_uses_root(condition: &ConditionExpr, root: &str) -> bool {
             }
             Some(condition_expr::Expr::Predicate(predicate)) => {
                 if path_root(&predicate.left) != root
-                    || (!is_condition_literal(&predicate.right)
-                        && path_root(&predicate.right) != root)
+                    || matches!(PredicateOperand::classify(&predicate.right),
+                        PredicateOperand::Path(path) if path_root(path) != root)
                 {
                     return false;
                 }

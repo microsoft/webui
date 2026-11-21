@@ -3,7 +3,7 @@
 
 import { getTemplate, getTemplateRegistry } from './template-registry.js';
 import { installTemplateCacheHooks, type TemplateCacheHooks } from './template-cache-contract.js';
-import type { TemplateMeta } from './template-types.js';
+import { TEMPLATE_META_VERSION, type TemplateMeta } from './template-types.js';
 
 interface TemplateRecord {
   meta: TemplateMeta | undefined;
@@ -46,7 +46,7 @@ function recordFor(cache: TemplateCache, tag: string): TemplateRecord {
 }
 
 function validateOwnership(tag: string, meta: TemplateMeta): void {
-  if (meta.v !== 3) {
+  if (meta.v !== TEMPLATE_META_VERSION) {
     throw new Error(
       `[WebUI] Template <${tag}> has no cache ownership metadata. ` +
       'Rebuild the complete protocol with a matching WebUI compiler before collecting templates.',
@@ -161,7 +161,6 @@ function retainCachedTemplate(tag: string): TemplateMeta | undefined {
  */
 export function collectTemplates(keep: readonly string[] = []): number {
   const registry = getTemplateRegistry();
-  const runtime = window.__webui;
   if (!registry) {
     resetInventory();
     return 0;
@@ -188,7 +187,6 @@ export function collectTemplates(keep: readonly string[] = []): number {
     const record = cache.records.get(name)?.deref();
     if (record && retained?.has(record)) continue;
     delete registry[name];
-    if (runtime?.templateFns) delete runtime.templateFns[name];
     released++;
   }
   resetInventory();
@@ -257,7 +255,6 @@ function sameTemplate(first: TemplateMeta, second: TemplateMeta): boolean {
     const left = pending.pop();
     if (Object.is(left, right)) continue;
     if (typeof left === 'function' && typeof right === 'function') {
-      // Compiler conditions only close over their explicit resolver/scope inputs.
       if (Function.prototype.toString.call(left) !== Function.prototype.toString.call(right)) return false;
       continue;
     }

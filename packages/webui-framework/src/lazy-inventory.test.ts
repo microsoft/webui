@@ -34,8 +34,8 @@ test('collection during publication readiness cannot acknowledge a root or ordin
         type: 'webui-pack', version: 1, fragment: root, inventory: '06',
         required: [root, child], bits: { [root]: 1, [child]: 2 },
         templates: {
-          [root]: { v: 3, f: root, o: 'epoch-owner', e: 1, h: '<epoch-child></epoch-child>', d: [child] },
-          [child]: { v: 3, h: '<p>child</p>' },
+          [root]: { v: 4, f: root, o: 'epoch-owner', e: 1, h: '<epoch-child></epoch-child>', d: [child] },
+          [child]: { v: 4, h: '<p>child</p>' },
         },
       });
     },
