@@ -28,6 +28,7 @@
   },
   "include": [
     "playwright.config.ts",
+    "benchmarks/conditions-entry.ts",
     "src/**/*.ts",
     "tests/**/*.ts",
     "../webui-delivery/tests/fixtures/lazy-routes/index.ts",
