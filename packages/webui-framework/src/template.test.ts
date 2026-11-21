@@ -197,6 +197,33 @@ describe('template registry helpers', () => {
       /Pass component styles as the second argument/);
   });
 
+  test('invalid plans in root and local blocks reject the whole template batch', () => {
+    const previous = Object.getOwnPropertyDescriptor(globalThis, 'window');
+    const registry = {};
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: { __webui: { templates: registry } },
+    });
+    try {
+      for (const invalid of [
+        { v: 4, h: '', c: [[[[2], ['ready']], 0, [0, 0]]] },
+        { v: 4, h: '', b: [{ h: '', c: [[[[16, 0, false], ['ready']], 0, [0, 0]]] }] },
+        { v: 4, h: '', b: [{ h: '', a: [['disabled', 2, [[9, 0, 1], ['ready']]]] }] },
+        { v: 4, h: '', c: [[[[0, 0, false, -2, 0], ['ready']], 0, [0, 0]]] },
+      ] satisfies TemplateMeta[]) {
+        assert.throws(() => prepareAssetTemplateData({ invalid }), /Invalid compiled condition plan/);
+        assert.throws(
+          () => registerTemplateData({ valid: { v: 4, h: '' }, invalid }),
+          /Invalid compiled condition plan/,
+        );
+        assert.deepEqual(registry, {});
+      }
+    } finally {
+      if (previous) Object.defineProperty(globalThis, 'window', previous);
+      else Reflect.deleteProperty(globalThis, 'window');
+    }
+  });
+
   test('registerTemplateData does not re-announce styles it already registered', () => {
     const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
     const previousDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');

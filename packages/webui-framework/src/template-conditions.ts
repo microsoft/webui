@@ -11,6 +11,45 @@ export function isConditionTruthy(value: unknown): boolean {
 
 type Resolver = Parameters<CompiledConditionFn>[0];
 
+/** Check the shape and operands of a plan before accepting its template. */
+export function validateCondition(condition: unknown): void {
+  if (!Array.isArray(condition) || condition.length !== 2) throw invalidPlan();
+  const [plan, paths]: readonly unknown[] = condition;
+  if (!Array.isArray(paths)) throw invalidPlan();
+  for (const path of paths) {
+    if (typeof path !== 'string') throw invalidPlan();
+  }
+  if (typeof plan === 'function') return;
+  if (!Array.isArray(plan)) throw invalidPlan();
+  const size = plan.length;
+  if (size === 1) {
+    if ((plan[0] !== 0 && plan[0] !== 1) || paths.length === 0) throw invalidPlan();
+    return;
+  }
+  if (size !== 3 && (size === 0 || size % 5 !== 0)) throw invalidPlan();
+  for (let offset = 0; offset < size; offset += 5) {
+    const op: unknown = plan[offset];
+    const right: unknown = plan[offset + 2];
+    if (!indexIn(op, 0, 15) || op === 8) throw invalidPlan();
+    if (op === 7 ? typeof right !== 'boolean' : !indexIn(plan[offset + 1], 0, paths.length)) {
+      throw invalidPlan();
+    }
+    if (op & 8 ? !indexIn(right, 0, paths.length) :
+        typeof right !== 'string' && typeof right !== 'boolean' && !Number.isFinite(right)) {
+      throw invalidPlan();
+    }
+    // Check both targets, including the branch that current state would skip.
+    const node = offset / 5;
+    if (size > 3 && (!indexIn(plan[offset + 3], -2, node) || !indexIn(plan[offset + 4], -2, node))) {
+      throw invalidPlan();
+    }
+  }
+}
+
+function indexIn(value: unknown, start: number, end: number): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= start && value < end;
+}
+
 /** Run a compiler plan without allocating a stack or a closure per condition. */
 export function evaluateCondition(condition: CompiledCondition, resolve: Resolver, scope: unknown): boolean {
   const plan = condition[0];

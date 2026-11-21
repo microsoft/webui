@@ -29,8 +29,9 @@ const BASELINE = {
 
 const BUDGETS = {
   startupRaw: 94_000,
-  startupGzip: 29_500,
-  startupBrotli: 26_000,
+  // Include one-time validation of delivered condition plans.
+  startupGzip: 29_600,
+  startupBrotli: 26_250,
   totalRaw: 96_500,
   totalGzip: 30_700,
   totalBrotli: 27_100,

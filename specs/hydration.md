@@ -434,9 +434,12 @@ entry point; branches point to an earlier record or terminate with `-1` for
 false or `-2` for true. This encodes short-circuiting without allocating an
 evaluation stack. `op` `0` tests truthiness, `1` through `6` are protocol
 comparison operators, and `7` uses a boolean constant. Bit `8` in a comparison
-makes the right operand a path slot rather than a literal. The browser
-decodes ordinary JSON, then evaluates the selected plan against the live
-resolver and repeat scope without compiling an expression or creating closures.
+makes the right operand a path slot rather than a literal. The framework
+validates plan shapes, opcodes, operands, and both branch targets once when
+preparing a template, including its local blocks and boolean attributes.
+Malformed plans reject resource registration before publication. The renderer
+evaluates plans against the live resolver and repeat scope without compiling an
+expression or creating closures.
 
 Identifier operands use server truthiness for collections. The compiler and SSR
 classify predicate operands the same way. Numeric literals are emitted as JSON

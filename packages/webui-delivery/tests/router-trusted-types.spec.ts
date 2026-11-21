@@ -53,7 +53,7 @@ for (const transport of ['JSON', 'NDJSON'] as const) {
           return;
         }
 
-        // Frame the CLI's actual compiler payload as NDJSON; keep the templates and closures intact.
+        // Frame the CLI's actual compiler payload as NDJSON; keep the template plans intact.
         const response = await route.fetch({ headers: { ...headers, accept: 'application/json' } });
         const { state, ...metadata } = await response.json() as PartialResponse;
         await route.fulfill({
@@ -147,5 +147,37 @@ test('ensureLoaded registers a cold conditional template under Trusted Types', a
   await page.getByRole('button', { name: 'Increment' }).click();
   await expect(page.getByTestId('incremented')).toHaveText('Counter updated');
   await expect(page.locator('body')).toHaveAttribute('data-instance', 'same-document');
+  expect(errors).toEqual([]);
+});
+
+test('ensureLoaded rejects a malformed condition plan before accepting template inventory', async ({ page }) => {
+  const { errors } = await useNonceCsp(page);
+  await page.goto('/alpha?cache=zero');
+  await page.waitForFunction(() => {
+    const router = (window as Window & { __testRouter?: { activeComponent: string } }).__testRouter;
+    return router?.activeComponent === 'page-alpha';
+  });
+  const before = await page.evaluate(() => window.__webui?.inventory);
+  await page.route(url => url.pathname === '/_webui/templates', async route => {
+    const response = await route.fetch();
+    expect(response.ok()).toBe(true);
+    const payload = await response.json() as PartialResponse;
+    expect(conditionPlan(payload)).toEqual([1, 0, 0]);
+    const template = payload.templates!['page-keepalive'] as { c: [[[number[], string[]]]] };
+    template.c[0][0][0] = [16, 0, 0];
+    await route.fulfill({ response, json: payload });
+  });
+
+  const load = page.evaluate(() => {
+    const router = (window as Window & {
+      __testRouter: { ensureLoaded(tag: string): Promise<void> };
+    }).__testRouter;
+    return router.ensureLoaded('page-keepalive');
+  });
+  await expect(load).rejects.toThrow(/Invalid compiled condition plan/);
+  expect(await page.evaluate(() => ({
+    inventory: window.__webui?.inventory,
+    hasDestination: Object.hasOwn(window.__webui?.templates ?? {}, 'page-keepalive'),
+  }))).toEqual({ inventory: before, hasDestination: false });
   expect(errors).toEqual([]);
 });

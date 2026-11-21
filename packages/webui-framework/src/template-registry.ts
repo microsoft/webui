@@ -56,7 +56,9 @@ import {
   type ComponentStyles,
 } from './element/style-catalog.js';
 
-import { TEMPLATE_META_VERSION, type TemplateMeta } from './template-types.js';
+import { ATTR_KIND_BOOLEAN } from './element/types.js';
+import { validateCondition } from './template-conditions.js';
+import { TEMPLATE_META_VERSION, type TemplateBlockMeta, type TemplateMeta } from './template-types.js';
 
 import { registerTrustedTemplateBlock } from './trusted-types-policy.js';
 import { noteTemplateRead, templateCacheHooks } from './template-cache-contract.js';
@@ -397,8 +399,16 @@ function normalizeTemplate(name: string, meta: TemplateMeta): void {
   if (meta.v !== TEMPLATE_META_VERSION) {
     throw new Error(`[WebUI] Unsupported template metadata version for <${name}>. Rebuild matching artifacts.`);
   }
-  registerTrustedTemplateBlock(meta);
+  prepareBlock(meta);
   const blocks = meta.b;
-  if (blocks) for (let i = 0; i < blocks.length; i++) registerTrustedTemplateBlock(blocks[i]);
+  if (blocks) for (let i = 0; i < blocks.length; i++) prepareBlock(blocks[i]);
   normalizedTemplates.add(meta);
+}
+
+function prepareBlock(block: TemplateBlockMeta): void {
+  if (block.c) for (const entry of block.c) validateCondition(entry[0]);
+  if (block.a) for (const entry of block.a) {
+    if (entry[1] === ATTR_KIND_BOOLEAN) validateCondition(entry[2]);
+  }
+  registerTrustedTemplateBlock(block);
 }
