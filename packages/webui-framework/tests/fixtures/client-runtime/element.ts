@@ -15,7 +15,7 @@ startRuntime();
 
 const templates: Record<string, TemplateMeta> = {
   'test-runtime-life': {
-    v: 3,
+    v: 4,
     h: '<span></span>',
     l: [3, 1],
     tx: [
@@ -26,19 +26,19 @@ const templates: Record<string, TemplateMeta> = {
     th: 1,
   },
   'test-runtime-effects': {
-    v: 3,
+    v: 4,
     h: '<span></span>',
     l: [3, 1],
     th: 1,
   },
   'test-runtime-throw': {
-    v: 3,
+    v: 4,
     h: '<span></span>',
     l: [3, 1],
     th: 1,
   },
   'test-runtime-immediate': {
-    v: 3,
+    v: 4,
     h: '<span></span>',
     l: [3, 1],
   },

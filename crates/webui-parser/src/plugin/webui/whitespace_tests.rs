@@ -16,10 +16,6 @@ fn assert_same_metadata(source: &str, control: &str) -> Result<()> {
         actual.template_json, expected.template_json,
         "source bytes: {source:?}",
     );
-    assert_eq!(
-        actual.template_functions, expected.template_functions,
-        "source bytes: {source:?}",
-    );
     Ok(())
 }
 

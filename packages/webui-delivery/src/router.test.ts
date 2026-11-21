@@ -56,7 +56,6 @@ function internals(router: WebUIRouter): RouterInternals {
 interface TemplateRegistry {
   __webui?: {
     templates?: Record<string, unknown>;
-    templateFns?: Record<string, unknown>;
     styles?: string[];
     [key: string]: unknown;
   };
@@ -127,7 +126,7 @@ describe('WebUIRouter', () => {
   });
 
   describe('SSR metadata bootstrap', () => {
-    test('start lazily loads webui-data and preserves templateFns', () => {
+    test('start lazily loads webui-data', () => {
       const origGetElementById = (globalThis as any).document.getElementById;
       const origQuerySelector = (globalThis as any).document.querySelector;
       const origQuerySelectorAll = (globalThis as any).document.querySelectorAll;
@@ -135,9 +134,7 @@ describe('WebUIRouter', () => {
       const origRemoveEventListener = (globalThis as any).document.removeEventListener;
       let removed = false;
 
-      globals().__webui = {
-        templateFns: { greeting: [() => true] },
-      };
+      globals().__webui = {};
 
       (globalThis as any).document.getElementById = (id: string) => {
         if (id !== 'webui-data') return null;
@@ -159,7 +156,6 @@ describe('WebUIRouter', () => {
         assert.equal(globals().__webui!.nonce, 'n');
         assert.deepEqual(globals().__webui!.state, { title: 'Hello' });
         assert.ok(globals().__webui!.templates?.greeting, 'template metadata should be loaded');
-        assert.ok(globals().__webui!.templateFns?.greeting, 'existing templateFns should be preserved');
         assert.deepEqual(
           globals().__webui!.styles,
           ['x-card'],
@@ -188,22 +184,12 @@ describe('WebUIRouter', () => {
       registry['shell'] = { h: '<div>Shell</div>' };
       registry['page-x'] = { h: '<div>X</div>' };
       registry['page-y'] = { h: '<div>Y</div>' };
-      globals().__webui!.templateFns = {
-        shell: [() => true],
-        'page-x': [() => true],
-      };
-
-      globals().__webui!.inventory = inventoryWith('shell', 'page-x', 'page-y');
-
       const previous = window.__webuiCollectTemplates;
       let collected = false;
       window.__webuiCollectTemplates = keep => {
         assert.deepEqual(keep, []);
         collected = true;
         for (const tag of Object.keys(registry)) delete registry[tag];
-        for (const tag of Object.keys(globals().__webui!.templateFns!)) {
-          delete globals().__webui!.templateFns![tag];
-        }
         globals().__webui!.inventory = '';
         return 3;
       };
@@ -213,8 +199,6 @@ describe('WebUIRouter', () => {
         assert.equal(registry['shell'], undefined, 'shell should be cleared');
         assert.equal(registry['page-x'], undefined, 'page-x should be cleared');
         assert.equal(registry['page-y'], undefined, 'page-y should be cleared');
-        assert.equal(globals().__webui!.templateFns!.shell, undefined, 'shell functions should be cleared');
-        assert.equal(globals().__webui!.templateFns!['page-x'], undefined, 'page-x functions should be cleared');
         assert.equal(globals().__webui!.inventory, '', 'inventory should be reset to empty');
       } finally {
         window.__webuiCollectTemplates = previous;
@@ -281,7 +265,7 @@ describe('WebUIRouter', () => {
       let respond!: (response: Response) => void;
       const response = new Promise<Response>(resolve => { respond = resolve; });
       const requested: string[] = [];
-      const resident = { v: 3, h: '<p>resident</p>' };
+      const resident = { v: 4, h: '<p>resident</p>' };
       globals().__webui!.templates!['x-resident'] = resident;
       globalThis.fetch = async input => {
         requested.push(String(input));
@@ -299,7 +283,7 @@ describe('WebUIRouter', () => {
         const joined = router.ensureLoaded('x-resident', 'x-missing');
         router.gc();
         assert.equal(globals().__webui!.templates!['x-resident'], undefined);
-        respond(Response.json({ templates: { 'x-missing': { v: 3, h: '<p>missing</p>' } }, inventory: '03' }));
+        respond(Response.json({ templates: { 'x-missing': { v: 4, h: '<p>missing</p>' } }, inventory: '03' }));
         await Promise.all([first, joined]);
         assert.equal(requested.length, 1, 'concurrent calls share the missing fetch');
         assert.match(requested[0], /\?t=x-missing&/);
@@ -463,7 +447,7 @@ describe('WebUIRouter', () => {
   });
 
   describe('template registration in fetchPartial', () => {
-    test('split template registration stores data and condition closures', () => {
+    test('template registration stores the compiled condition plan as data', () => {
       let registeredEvent = false;
       const onRegistered = () => {
         registeredEvent = true;
@@ -472,8 +456,7 @@ describe('WebUIRouter', () => {
 
       try {
         registerTemplatesAndStyles({
-          templates: { 'test-comp': { h: '<div>hello</div>', c: [[[0, ['ready']], 0, [[], 0]]] } },
-          templateFunctions: { 'test-comp': '[function(v,s){return true}]' },
+          templates: { 'test-comp': { h: '<div>hello</div>', c: [[[[0], ['ready']], 0, [0, 0]]] } },
           componentStyles: emptyComponentStyles(),
         }, '', () => {});
 
@@ -484,9 +467,7 @@ describe('WebUIRouter', () => {
           '<div>hello</div>',
           'template HTML should match',
         );
-        const conditions = globals().__webui?.templateFns?.['test-comp'];
-        assert.ok(Array.isArray(conditions));
-        assert.equal(conditions[0](), true);
+        assert.deepEqual((registry['test-comp'] as { c: unknown }).c, [[[[0], ['ready']], 0, [0, 0]]]);
         assert.equal(registeredEvent, true, 'template registration should notify optional runtimes');
       } finally {
         window.removeEventListener('webui:templates-registered', onRegistered);
@@ -528,7 +509,7 @@ describe('WebUIRouter', () => {
       }
     });
 
-    test('registers component styles and closures before templates are announced', () => {
+    test('registers component styles and prepares plans before templates are announced', () => {
       const origBridge = window.__webuiRegisterComponentStyles;
       const origPrepare = window.__webuiPrepareTemplates;
       const order: string[] = [];
@@ -550,10 +531,8 @@ describe('WebUIRouter', () => {
       };
       window.__webuiPrepareTemplates = templates => {
         assert.ok(templates[tag]);
-        const closures = globals().__webui?.templateFns?.[tag];
-        assert.ok(Array.isArray(closures));
-        assert.equal(closures[0](), true);
-        order.push('closures');
+        assert.deepEqual((templates[tag] as { c: unknown }).c, [[[[0], ['ready']], 0, [0, 0]]]);
+        order.push('plans');
       };
 
       try {
@@ -566,11 +545,10 @@ describe('WebUIRouter', () => {
             },
             closures: { [tag]: [tag] },
           },
-          templateFunctions: { [tag]: '[function(v,s){return true}]' },
-          templates: { [tag]: { h: '<p>ordered</p>' } },
+          templates: { [tag]: { h: '<p>ordered</p>', c: [[[[0], ['ready']], 0, [0, 0]]] } },
         }, '', () => {});
 
-        assert.deepEqual(order, ['styles', 'closures', 'event']);
+        assert.deepEqual(order, ['styles', 'plans', 'event']);
         assert.equal(styleRegistrations, 1);
         assert.equal(
           announcedStyles,
@@ -684,7 +662,7 @@ describe('WebUIRouter', () => {
       }
     });
 
-    test('fetchPartial forwards componentStyles and prepares both condition tables without a script', async () => {
+    test('fetchPartial forwards componentStyles and condition plans without a script', async () => {
       const origFetch = (globalThis as any).fetch;
       const origCreateElement = (globalThis as any).document.createElement;
       const origQuerySelector = (globalThis as any).document.querySelector;
@@ -714,12 +692,8 @@ describe('WebUIRouter', () => {
             closures: { alpha: ['alpha'], beta: ['beta'] },
           },
           templates: {
-            alpha: { h: '<div>a</div>', c: [[[0, ['ready']], 0, [[], 0]]] },
-            beta: { h: '<div>b</div>', c: [[[0, ['ready']], 0, [[], 0]]] },
-          },
-          templateFunctions: {
-            alpha: '[function(v,s){return true}]',
-            beta: '[function(v,s){return false}]',
+            alpha: { h: '<div>a</div>', c: [[[[0], ['ready']], 0, [0, 0]]] },
+            beta: { h: '<div>b</div>', c: [[[[1], ['ready']], 0, [0, 0]]] },
           },
           path: '/',
           chain: [],
@@ -757,10 +731,9 @@ describe('WebUIRouter', () => {
 
         assert.ok(result, 'should return partial data');
         assert.deepEqual(order, ['styles']);
-        const functions = globals().__webui?.templateFns;
-        assert.ok(Array.isArray(functions?.alpha) && Array.isArray(functions?.beta));
-        assert.equal(functions.alpha[0](), true);
-        assert.equal(functions.beta[0](), false);
+        const templates = globals().__webui?.templates as Record<string, { c: unknown }>;
+        assert.deepEqual(templates.alpha.c, [[[[0], ['ready']], 0, [0, 0]]]);
+        assert.deepEqual(templates.beta.c, [[[[1], ['ready']], 0, [0, 0]]]);
         assert.equal(
           (receivedComponentStyles as { strategy?: string } | undefined)?.strategy,
           'module',

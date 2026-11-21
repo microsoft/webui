@@ -24,15 +24,9 @@ pub struct ComponentData {
     /// Ordered style closures decide which Document or ShadowRoot owns the link.
     #[prost(string, tag = "3")]
     pub css_href: ::prost::alloc::string::String,
-    /// WebUI plugin JSON-safe component metadata.
-    /// Stored separately from executable condition closures so handlers can emit
-    /// the static metadata in application/json data blocks.
+    /// WebUI plugin component metadata, including condition plans, as JSON.
     #[prost(string, tag = "4")]
     pub template_json: ::prost::alloc::string::String,
-    /// WebUI plugin component-local JavaScript condition closure array.
-    /// Empty when the component has no conditions or boolean attributes.
-    #[prost(string, tag = "5")]
-    pub template_functions: ::prost::alloc::string::String,
     /// Exact @observable + @attr property keys when hydration_mode is KEYS.
     /// Existing SSR host attributes take precedence; bootstrap state fills
     /// attribute-backed properties that were not materialized on the host.
@@ -407,8 +401,6 @@ pub struct ClientFragmentData {
     pub owner: ::prost::alloc::string::String,
     #[prost(string, tag = "3")]
     pub template_json: ::prost::alloc::string::String,
-    #[prost(string, tag = "4")]
-    pub template_functions: ::prost::alloc::string::String,
     /// Ordinary template resources required by this section; nested lazy edges
     /// are separate roots and are not implicit preload dependencies.
     #[prost(string, repeated, tag = "5")]

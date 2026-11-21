@@ -302,8 +302,9 @@ The handler writes response metadata at structural document boundaries
 identified by the compiler, never by scanning rendered HTML for closing tags.
 For non-streaming WebUI pages, inert `#webui-data` contains the startup route
 chain, inventory, styles, templates, and appropriately projected state.
-Browser-executable condition closures are carried separately from JSON-safe
-template metadata. Server output is useful without these extras when no
+The compiler lowers client condition expressions into data-only plans carried
+with template metadata. Browsers run the plans without parsing expressions or
+executing response text as JavaScript. Server output is useful without these extras when no
 client plugin is selected.
 
 Build output does not depend on where it is deployed. Compiled asset
@@ -364,8 +365,8 @@ changed route levels while preserving
 unchanged parents. It may fall back to document navigation when client-side
 mounting cannot complete. Partial responses can be complete JSON or an NDJSON
 pair that sends chain/templates first and state later; neither is the
-progressive HTML streaming protocol. Delivery decodes compiled conditions
-without executing response text as JavaScript. A bounded record reader owns framing and
+progressive HTML streaming protocol. Delivery registers the same compiled
+template plans as SSR without interpreting them. A bounded record reader owns framing and
 body cancellation; the route adapter owns positional state and commit ordering.
 JSON-only navigation does not import that record reader. Cache tags, mutation invalidation,
 pending/error components, and speculative preloading are optional router

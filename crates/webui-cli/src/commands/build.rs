@@ -646,7 +646,8 @@ mod tests {
         assert!(!asset.contains(r#""templates":{"mail-message":"#));
         assert!(asset.contains("export default asset;"));
         let thread = fs::read_to_string(thread_path).unwrap();
-        assert!(thread.contains(r#""templateFunctions":{"mail-thread":"#));
+        assert!(thread.contains(r#""c":[[["#));
+        assert!(!thread.contains("templateFunctions"));
 
         let metafile =
             fs::read_to_string(out_dir.path().join("component-assets.meta.json")).unwrap();

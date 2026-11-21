@@ -223,7 +223,6 @@ fn component_bytes(protocol: &WebUIProtocol, component: &str) -> usize {
         component.len()
             + data.template.len()
             + data.template_json.len()
-            + data.template_functions.len()
             + data.css.len()
             + data.css_href.len()
     })

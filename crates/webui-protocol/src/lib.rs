@@ -67,8 +67,6 @@ pub struct ClientTemplatePayload<'a> {
     pub id: &'a str,
     /// JSON-safe metadata, when emitted by the selected compiler plugin.
     pub metadata: &'a str,
-    /// Separately delivered executable condition closures.
-    pub functions: &'a str,
     /// Non-WebUI template markup for legacy plugin payloads.
     pub legacy_html: &'a str,
 }
@@ -491,7 +489,6 @@ impl WebUiProtocol {
             return Some(ClientTemplatePayload {
                 id: name,
                 metadata: &data.template_json,
-                functions: &data.template_functions,
                 legacy_html: &data.template,
             });
         }
@@ -500,7 +497,6 @@ impl WebUiProtocol {
             .map(|(name, data)| ClientTemplatePayload {
                 id: name,
                 metadata: &data.template_json,
-                functions: &data.template_functions,
                 legacy_html: "",
             })
     }

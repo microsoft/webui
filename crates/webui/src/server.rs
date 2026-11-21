@@ -208,7 +208,6 @@ mod tests {
             "my-page".to_string(),
             ComponentData {
                 template_json: r#"{"h":"<main>ready</main>","th":1}"#.to_string(),
-                template_functions: "[function(){return true}]".to_string(),
                 ..Default::default()
             },
         );
@@ -242,7 +241,9 @@ mod tests {
 
         assert_eq!(html, direct.buf);
         assert!(html.contains(r#"<meta name="webui-nonce" content="request-nonce">"#));
-        assert!(html.contains(r#"<script nonce="request-nonce">(function(){var w=window.__webui"#));
+        assert!(html
+            .contains(r#"<script type="application/json" id="webui-data" nonce="request-nonce">"#));
+        assert!(!html.contains("templateFns"));
         assert!(html.contains(r#"<meta name="host-head">"#));
         assert!(html.contains(r#"<script src="host.js"></script>"#));
     }

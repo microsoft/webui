@@ -120,7 +120,7 @@ const STREAMING_BOUNDARY_ABANDON = Symbol.for('microsoft.webui.boundaryAbandon')
 /** Register template metadata for a tag exactly like `registerTemplateData()`. */
 function registerTemplate(tag: string): void {
   (window as unknown as { __webui: { templates: Record<string, unknown> } }).__webui.templates[tag] = {
-    v: 3,
+    v: 4,
     h: '<div></div>',
   };
 }
@@ -235,7 +235,7 @@ test('binding arrays reserve their compiled size instead of push-grown capacity'
       $wire(root: Node, meta: TemplateMeta): TemplateInstance;
     };
     const instance = host.$wire(root as unknown as Node, {
-      v: 3, h: '', c: [[[() => false, []], 0, [0, 0]]],
+      v: 4, h: '', c: [[[() => false, []], 0, [0, 0]]],
     });
     assert.deepEqual(allocations.get(instance.conds), [1]);
     assert.equal(instance.conds.length, 1);
@@ -323,7 +323,7 @@ test('body-only writes can reach a text-only conditional with an empty SSR range
     $root: { value: root },
     $observableNames: { value: () => new Set(['show', 'details', 'hidden', 'unmounted', 'probe', 'staticBody']) },
     $meta: { value: {
-      v: 3, h: '', b: [
+      v: 4, h: '', b: [
         { h: '', tx: [[[0, 0], [['details'], ['details']]]] },
         { h: '', tx: [[[0, 0], [['unmounted']]]] },
         { h: '', tx: [[[0, 0], [['probe']]]] },
@@ -359,7 +359,7 @@ test('provisional body paths do not imply a conditional presence mismatch', asyn
     $root: { value: root },
     $observableNames: { value: () => new Set(['details', 'show']) },
     $meta: { value: {
-      v: 3, h: '', b: [
+      v: 4, h: '', b: [
         { h: '', tx: [[[0, 0], [['details']]]] },
         { h: '<span></span>' },
       ],
@@ -415,7 +415,7 @@ test('SSR text without a neighboring dynamic marker allocates no topology array'
       $hydrate(root: Node, meta: TemplateMeta): TemplateInstance;
     };
     const instance = host.$hydrate(root as unknown as Node, {
-      v: 3, h: '<p></p>', l: [3, 1],
+      v: 4, h: '<p></p>', l: [3, 1],
       tx: [[[1, 0], ['hello']]],
       c: [[[() => false, []], 0, [0, 1]]],
     });
@@ -438,7 +438,7 @@ test('registered constructors retain attribute names, not complete template meta
     },
   });
   const tag = 'collectible-template';
-  const metadata: TemplateMeta = { v: 3, h: '<span></span>', tr: ['title'], ta: ['title'] };
+  const metadata: TemplateMeta = { v: 4, h: '<span></span>', tr: ['title'], ta: ['title'] };
   window.__webui!.templates![tag] = metadata;
   class CollectibleTemplate extends TemplateElement {
     templateMetadata(): TemplateMeta | undefined {
@@ -584,7 +584,7 @@ test('single dirty paths allocate no collection and promotion preserves reentran
 
 test('flat reactive plans are shared without allocating instance indexes', () => {
   const meta: TemplateMeta = {
-    v: 3, h: '', tx: [[[0, 0], [['value']]]], tr: ['value'], rp: 'value',
+    v: 4, h: '', tx: [[[0, 0], [['value']]]], tr: ['value'], rp: 'value',
   };
   const make = (value: string) => {
     const element = Object.assign(new TemplateElement(), { value });
@@ -633,7 +633,7 @@ test('a compiled single-root plan preserves wildcard updates for an authored non
   const element = Object.assign(new TemplateElement(), { computed: 'derived' });
   const node = { data: '' } as CharacterData;
   const meta: TemplateMeta = {
-    v: 3, h: '', tx: [[[0, 0], [['computed']]]], tr: ['computed'], rp: 'computed',
+    v: 4, h: '', tx: [[[0, 0], [['computed']]]], tr: ['computed'], rp: 'computed',
   };
   Object.defineProperties(element, {
     $meta: { value: meta },
@@ -662,7 +662,7 @@ test('a shared plan stops when a binding destroys its current root', () => {
     attrs: [], conds: [], repeats: [],
   };
   Object.defineProperties(element, {
-    $meta: { value: { v: 3, h: '', tx: [[[0, 0], parts], [[0, 1], parts]], tr: ['value'], rp: 'value' } },
+    $meta: { value: { v: 4, h: '', tx: [[[0, 0], parts], [[0, 1], parts]], tr: ['value'], rp: 'value' } },
     $ready: { value: true },
     $root: { value: root, writable: true },
     $observableNames: { value: () => new Set(['value']) },
@@ -1033,7 +1033,7 @@ describe('TemplateElement — streamed-host activation ownership', () => {
       setAttribute(name: string, value: string): void;
       [STREAMING_BOUNDARY_ACTIVATE](state?: Record<string, unknown>): number;
     };
-    raw.$meta = { v: 3, h: '<span></span>' };
+    raw.$meta = { v: 4, h: '<span></span>' };
     raw.setAttribute('data-ws', '');
 
     raw[STREAMING_BOUNDARY_ACTIVATE]({ detached: true });
@@ -1305,7 +1305,7 @@ describe('TemplateElement.define — ordinary (non-streaming) authored definitio
       // its partial navigation response resolves.
       registerTemplateData({
         [tag]: {
-          v: 3,
+          v: 4,
           h: '<div><span></span></div>',
           tr: ['title'],
           ta: ['title'],

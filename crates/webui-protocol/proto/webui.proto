@@ -19,13 +19,10 @@ message ComponentData {
   // for components without CSS.
   // Ordered style closures decide which Document or ShadowRoot owns the link.
   string css_href = 3;
-  // WebUI plugin JSON-safe component metadata.
-  // Stored separately from executable condition closures so handlers can emit
-  // the static metadata in application/json data blocks.
+  // WebUI plugin component metadata, including condition plans, as JSON.
   string template_json = 4;
-  // WebUI plugin component-local JavaScript condition closure array.
-  // Empty when the component has no conditions or boolean attributes.
-  string template_functions = 5;
+  reserved 5;
+  reserved "template_functions";
   // Exact @observable + @attr property keys when hydration_mode is KEYS.
   // Existing SSR host attributes take precedence; bootstrap state fills
   // attribute-backed properties that were not materialized on the host.
@@ -341,7 +338,8 @@ message ClientFragmentData {
   reserved 2;
   reserved "name";
   string template_json = 3;
-  string template_functions = 4;
+  reserved 4;
+  reserved "template_functions";
   // Ordinary template resources required by this section; nested lazy edges
   // are separate roots and are not implicit preload dependencies.
   repeated string dependencies = 5;

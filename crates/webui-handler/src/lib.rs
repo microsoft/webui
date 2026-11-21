@@ -3938,9 +3938,7 @@ impl WebUIHandler {
                     },
                 )?;
 
-                // Let the active plugin emit any framework-specific executable
-                // side channel. FAST plugins default to no-op; WebUI installs
-                // templateFns. Client packages parse #webui-data lazily.
+                // Allow plugins to extend the bootstrap after the inert data.
                 if let Some(ref plugin) = context.plugin {
                     plugin.emit_bootstrap_extension(
                         BootstrapExtensionContext {
@@ -12911,9 +12909,6 @@ mod tests {
                 comp.hydration_mode = StateProjectionMode::Keys as i32;
                 comp.hydration_keys = vec!["hasItems".to_string()];
             }
-            if name == "product-card" {
-                comp.template_functions = r#"[function(v,s){return !!v("ready",s)}]"#.to_string();
-            }
         }
         protocol.populate_style_closures(&["index.html"]);
 
@@ -12960,12 +12955,8 @@ mod tests {
             "executable bootstrap must not replace existing window.__webui registrations: {html}"
         );
         assert!(
-            !html.contains("w.templateFns={\""),
-            "template function emission must not replace existing templateFns registrations: {html}"
-        );
-        assert!(
-            html.contains(r#"var f=w.templateFns||(w.templateFns={});f["product-card"]=[function(v,s){return !!v("ready",s)}];"#),
-            "template functions should merge into the flat templateFns registry: {html}"
+            !html.contains("templateFns"),
+            "compiled conditions must not use a script side channel: {html}"
         );
 
         // product-card template IS in the output — it's a known component
@@ -15397,7 +15388,6 @@ mod tests {
             "my-counter".to_string(),
             webui_protocol::ComponentData {
                 template_json: r#"{"h":"<button>Count</button>","th":1}"#.to_string(),
-                template_functions: "[function(){return true}]".to_string(),
                 hydration_mode: StateProjectionMode::Keys as i32,
                 hydration_keys: vec!["count".to_string()],
                 ..Default::default()
@@ -15745,7 +15735,7 @@ mod tests {
     }
 
     #[test]
-    fn streaming_render_emits_nonce_and_functions_before_sentinel() {
+    fn streaming_render_emits_nonce_bearing_data_before_sentinel_without_executable_conditions() {
         let protocol = streaming_protocol(true);
         let handler = WebUIHandler::with_plugin(|| {
             Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
@@ -15765,16 +15755,12 @@ mod tests {
             .find("data-webui-boundary nonce=\"test-nonce-123\"")
             .map(|index| index + boundary_end)
             .expect("nonce-bearing envelope");
-        let functions = writer
-            .output
-            .find("templateFns")
-            .expect("function side channel");
         let sentinel = writer
             .output
             .find("<webui-hydrate>")
             .expect("hydration sentinel");
-        assert!(boundary_end < envelope && envelope < functions && functions < sentinel);
-        assert!(writer.output.contains("<script nonce=\"test-nonce-123\">"));
+        assert!(boundary_end < envelope && envelope < sentinel);
+        assert!(!writer.output.contains("templateFns"));
     }
 
     #[test]

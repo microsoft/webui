@@ -70,8 +70,6 @@ pub struct ComponentTemplateArtifact {
     pub template: String,
     /// WebUI JSON-safe template metadata.
     pub template_json: String,
-    /// WebUI component-local JavaScript condition closure array.
-    pub template_functions: String,
     /// Initial hydration state surface derived by the producing plugin.
     pub hydration: StateSurface,
     /// Partial-navigation state surface derived by the producing plugin.
@@ -112,7 +110,6 @@ impl ComponentTemplateArtifact {
             tag_name,
             template,
             template_json: String::new(),
-            template_functions: String::new(),
             hydration: StateSurface::None,
             navigation: StateSurface::None,
             template_roots: Vec::new(),
@@ -122,22 +119,16 @@ impl ComponentTemplateArtifact {
         }
     }
 
-    /// Create a WebUI split metadata/function payload.
+    /// Create a WebUI metadata payload.
     ///
     /// The hydration surface starts empty; the producing plugin attaches it with
     /// [`Self::with_hydration`] once it has derived the surface.
     #[must_use]
-    pub fn webui(
-        tag_name: String,
-        template_json: String,
-        template_functions: String,
-        uses_shadow_dom: bool,
-    ) -> Self {
+    pub fn webui(tag_name: String, template_json: String, uses_shadow_dom: bool) -> Self {
         Self {
             tag_name,
             template: String::new(),
             template_json,
-            template_functions,
             hydration: StateSurface::None,
             navigation: StateSurface::None,
             template_roots: Vec::new(),
@@ -398,28 +389,24 @@ mod artifact_tests {
         assert_eq!(artifact.tag_name, "x-a");
         assert_eq!(artifact.template, "<p></p>");
         assert!(artifact.template_json.is_empty());
-        assert!(artifact.template_functions.is_empty());
         assert_eq!(artifact.hydration, StateSurface::None);
         assert_eq!(artifact.navigation, StateSurface::None);
     }
 
     #[test]
     fn webui_constructor_starts_with_no_hydration_surface() {
-        let artifact =
-            ComponentTemplateArtifact::webui("x-b".into(), "{\"j\":1}".into(), "[]".into(), false);
+        let artifact = ComponentTemplateArtifact::webui("x-b".into(), "{\"j\":1}".into(), false);
         assert_eq!(artifact.tag_name, "x-b");
         assert!(artifact.template.is_empty());
         assert_eq!(artifact.template_json, "{\"j\":1}");
-        assert_eq!(artifact.template_functions, "[]");
         assert_eq!(artifact.hydration, StateSurface::None);
         assert_eq!(artifact.navigation, StateSurface::None);
     }
 
     #[test]
     fn with_hydration_attaches_custom_surface() {
-        let artifact =
-            ComponentTemplateArtifact::webui("x-c".into(), "{}".into(), "[]".into(), false)
-                .with_hydration(StateSurface::keys(vec!["count".into(), "name".into()]));
+        let artifact = ComponentTemplateArtifact::webui("x-c".into(), "{}".into(), false)
+            .with_hydration(StateSurface::keys(vec!["count".into(), "name".into()]));
         assert_eq!(
             artifact.hydration,
             StateSurface::Keys(vec!["count".into(), "name".into()])
@@ -438,9 +425,8 @@ mod artifact_tests {
 
     #[test]
     fn with_navigation_attaches_partial_state_surface() {
-        let artifact =
-            ComponentTemplateArtifact::webui("x-e".into(), "{}".into(), "[]".into(), false)
-                .with_navigation(StateSurface::keys(vec!["items".into(), "title".into()]));
+        let artifact = ComponentTemplateArtifact::webui("x-e".into(), "{}".into(), false)
+            .with_navigation(StateSurface::keys(vec!["items".into(), "title".into()]));
         assert_eq!(
             artifact.navigation,
             StateSurface::Keys(vec!["items".into(), "title".into()])

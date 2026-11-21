@@ -58,7 +58,7 @@ export async function registerComponentAssetGraph(
     const prepared = graph[i];
     const payload = prepared.payload;
     if (payload && !getTemplate(prepared.tag)) {
-      prepareAssetTemplateData(payload.templates, payload.templateFunctions);
+      prepareAssetTemplateData(payload.templates);
     }
   }
   const pendingStyles: Promise<void>[] = [];
@@ -77,7 +77,7 @@ export async function registerComponentAssetGraph(
   for (let i = 0; i < graph.length; i++) {
     const payload = graph[i].payload;
     if (payload && !getTemplate(graph[i].tag)) {
-      registerTemplateData(payload.templates, payload.templateFunctions);
+      registerTemplateData(payload.templates);
     }
   }
 }

@@ -360,7 +360,7 @@ beside the page:
   chunks load relative to the entry script, so serve the entry from the same
   base.
 
-Packs contain only compiled templates, condition functions, styles, and
+Packs contain only compiled templates, styles, and
 inventory data. Hosts render pages with the usual APIs; there is no lazy-specific
 host API. When you build programmatically, publish the returned pack files and
 write the returned loader module where your bundler imports it:

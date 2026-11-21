@@ -56,26 +56,15 @@ import {
   type ComponentStyles,
 } from './element/style-catalog.js';
 
-import type {
-  CompiledCondition,
-  CompiledConditionFn,
-  TemplateBlockMeta,
-  TemplateCondition,
-  TemplateMeta,
-} from './template-types.js';
+import { TEMPLATE_META_VERSION, type TemplateMeta } from './template-types.js';
 
 import { registerTrustedTemplateBlock } from './trusted-types-policy.js';
 import { noteTemplateRead, templateCacheHooks } from './template-cache-contract.js';
 
 const WEBUI_DATA_ID = 'webui-data';
 const HYDRATION_COMPLETE_EVENT = 'webui:hydration-complete';
-const TEMPLATE_FN_COUNT = Symbol();
 const normalizedTemplates = new WeakSet<TemplateMeta>();
-const NO_CONDITION_FNS: CompiledConditionFn[] = [];
 let webuiDataLoaded = false;
-
-type RuntimeTemplateFns = Record<string, CompiledConditionFn[]>
-  & { [TEMPLATE_FN_COUNT]?: number };
 
 interface PendingTemplateDefinition {
   readonly ctor: Function;
@@ -129,11 +118,10 @@ export function installTemplateDefinitionPreparation(
 
 function acceptTemplateData(
   templates: Record<string, TemplateMeta>,
-  templateFns?: Record<string, CompiledConditionFn[]>,
   componentStyles?: ComponentStyles,
 ): string[] {
   validateComponentStylesRegistration(componentStyles);
-  const names = prepareTemplateData(templates, templateFns);
+  const names = prepareTemplateData(templates);
   templateCacheHooks?.accept(templates);
   if (componentStyles) {
     registerPreparedComponentStyles(componentStyles);
@@ -169,7 +157,7 @@ export function installTemplateRegistry(): void {
         ? undefined
         : prepareComponentStyles(detail.componentStyles);
       const templates = detail.templates;
-      const names = acceptTemplateData(templates, undefined, styles);
+      const names = acceptTemplateData(templates, styles);
       const definitions = detail.waitUntil
         ? prepareDefinitions?.(templates, names)
         : undefined;
@@ -218,7 +206,6 @@ declare global {
     nonce?: string;
     state?: Record<string, unknown>;
     templates?: Record<string, TemplateMeta>;
-    templateFns?: Record<string, CompiledConditionFn[]>;
     componentAssetStyles?: Record<string, readonly string[]>;
     templateHostExclusions?: Set<string>;
     componentStyles?: ComponentStyles;
@@ -281,7 +268,7 @@ export function getTemplateRegistry(): Record<string, TemplateMeta> | undefined 
 }
 
 /**
- * Register template metadata and optional condition closures at runtime.
+ * Register template metadata and optional component styles at runtime.
  *
  * Used by component assets and tests. Registration also lets the dormant-host
  * runtime claim newly available scriptless templates.
@@ -290,11 +277,10 @@ export function getTemplateRegistry(): Record<string, TemplateMeta> | undefined 
  */
 export function registerTemplateData(
   templates: Record<string, TemplateMeta>,
-  templateFns?: Record<string, CompiledConditionFn[]>,
   componentStylesValue?: ComponentStyles | unknown,
 ): void {
   const componentStyles = prepareComponentStyles(componentStylesValue);
-  if (acceptTemplateData(templates, templateFns, componentStyles).length > 0) {
+  if (acceptTemplateData(templates, componentStyles).length > 0) {
     // Styles were already accepted above; listeners only need the templates.
     dispatchTemplatesRegistered(templates);
   }
@@ -302,28 +288,22 @@ export function registerTemplateData(
 
 function prepareTemplateData(
   templates: Record<string, TemplateMeta>,
-  templateFns?: Record<string, CompiledConditionFn[]>,
-  missingFns?: CompiledConditionFn[],
 ): string[] {
   const names = Object.keys(templates);
   for (let i = 0; i < names.length; i++) {
     const name = names[i];
-    normalizeTemplate(name, templates[name], templateFns?.[name] ?? missingFns);
+    normalizeTemplate(name, templates[name]);
   }
   return names;
 }
 
 /**
- * Resolve compiler-emitted component asset conditions against asset-local closures.
- *
- * Unlike streamed and SSR registration, asset normalization never falls back
- * to closures already present in the page-wide registry.
+ * Prepare compiled component asset metadata before publishing the asset's resources.
  */
 export function prepareAssetTemplateData(
   templates: Record<string, TemplateMeta>,
-  templateFns?: Record<string, CompiledConditionFn[]>,
 ): void {
-  prepareTemplateData(templates, templateFns, NO_CONDITION_FNS);
+  prepareTemplateData(templates);
 }
 
 /**
@@ -360,13 +340,11 @@ function loadWebUIDataBlock(): void {
   const text = el?.textContent;
   let componentStyles: ComponentStyles | undefined;
   if (text) {
-    const templateFns = window.__webui?.templateFns;
     const componentAssetStyles = window.__webui?.componentAssetStyles;
     const parsed = JSON.parse(text) as NonNullable<Window['__webui']>;
     if (window.__webui?.buildId && parsed.buildId && window.__webui.buildId !== parsed.buildId) {
       throw new Error('[WebUI] Resources use different builds. Reload the document.');
     }
-    if (templateFns) parsed.templateFns = templateFns;
     if (componentAssetStyles) parsed.componentAssetStyles = componentAssetStyles;
     // Publish before registering styles. A malformed present `componentStyles` throws,
     // and doing it the other way round loses the templates and state that
@@ -409,68 +387,16 @@ export function releaseNonRoutedSSRBootstrapState(): void {
   }
 }
 
-function normalizeTemplate(
-  name: string,
-  meta: TemplateMeta,
-  suppliedFns?: CompiledConditionFn[],
-): void {
+function normalizeTemplate(name: string, meta: TemplateMeta): void {
   if (meta.f && (meta.f !== name || typeof meta.o !== 'string' || meta.sd || meta.th)) {
     throw new Error(`[WebUI] Invalid fragment "${name}". Rebuild matching artifacts.`);
   }
   if (normalizedTemplates.has(meta)) return;
-  if (meta.v !== 3) {
+  if (meta.v !== TEMPLATE_META_VERSION) {
     throw new Error(`[WebUI] Unsupported template metadata version for <${name}>. Rebuild matching artifacts.`);
   }
-  const runtime = window.__webui;
-  const runtimeFns: RuntimeTemplateFns | undefined = runtime?.templateFns;
-  const fns = suppliedFns ?? runtimeFns?.[name] ?? NO_CONDITION_FNS;
-  normalizeTemplateConditions(name, meta, fns);
-  normalizedTemplates.add(meta);
-  if (runtime && suppliedFns === undefined && runtimeFns?.[name] === fns) {
-    let remaining = (runtimeFns[TEMPLATE_FN_COUNT] ?? Object.keys(runtimeFns).length) - 1;
-    delete runtimeFns[name];
-    if (remaining === 0) remaining = Object.keys(runtimeFns).length;
-    if (remaining) runtimeFns[TEMPLATE_FN_COUNT] = remaining;
-    else delete runtime.templateFns;
-  }
-}
-
-function normalizeTemplateConditions(
-  name: string,
-  meta: TemplateMeta,
-  fns: CompiledConditionFn[],
-): void {
+  registerTrustedTemplateBlock(meta);
   const blocks = meta.b;
-  let block: TemplateBlockMeta = meta;
-  let next = 0;
-  while (true) {
-    registerTrustedTemplateBlock(block);
-    if (block.a) {
-      for (let i = 0; i < block.a.length; i++) {
-        const attr = block.a[i];
-        if (attr[1] === 2) normalizeCondition(name, attr[2], fns);
-      }
-    }
-    if (block.c) {
-      for (let i = 0; i < block.c.length; i++) {
-        normalizeCondition(name, block.c[i][0], fns);
-      }
-    }
-    if (!blocks || next === blocks.length) break;
-    block = blocks[next++];
-  }
-}
-
-function normalizeCondition(
-  tagName: string,
-  condition: TemplateCondition,
-  fns: CompiledConditionFn[],
-): void {
-  const first = condition[0];
-  if (typeof first === 'function') return;
-  const fn = fns[first];
-  if (typeof fn !== 'function') {
-    throw new Error(`[WebUI] Missing condition closure ${first} for <${tagName}>.`);
-  }
-  (condition as CompiledCondition)[0] = fn;
+  if (blocks) for (let i = 0; i < blocks.length; i++) registerTrustedTemplateBlock(blocks[i]);
+  normalizedTemplates.add(meta);
 }

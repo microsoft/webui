@@ -30,7 +30,7 @@ import {
   type LazyHost,
 } from './lazy-runtime.js';
 import { installRenderTaskRetry, renderWork } from './render-completion.js';
-import { isConditionTruthy } from './template-conditions.js';
+import { evaluateCondition } from './template-conditions.js';
 import { TemplateElement } from './template-element.js';
 import type { CondBinding, TemplateInstance } from './element/types.js';
 import type { TemplateMeta } from './template-types.js';
@@ -87,7 +87,7 @@ element.$toggleCond = function (this: Host, c: CondBinding): void {
     return;
   }
   // A closed region needs its template only once its condition holds.
-  if (!c.condition[0](this.$conditionResolver(), c.scope, isConditionTruthy)) {
+  if (!evaluateCondition(c.condition, this.$conditionResolver(), c.scope)) {
     cancelActivation(this, c);
     return;
   }

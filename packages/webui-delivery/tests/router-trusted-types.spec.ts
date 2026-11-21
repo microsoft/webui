@@ -5,6 +5,11 @@ import { randomBytes } from 'node:crypto';
 import { expect, test, type Page } from '@playwright/test';
 import type { PartialResponse } from '../src/cache.js';
 
+function conditionPlan(response: PartialResponse): unknown {
+  const template = response.templates?.['page-keepalive'] as { c?: [[readonly unknown[]]] } | undefined;
+  return template?.c?.[0]?.[0]?.[0];
+}
+
 async function useNonceCsp(page: Page) {
   const nonce = randomBytes(16).toString('base64');
   const policy = `default-src 'self'; script-src 'nonce-${nonce}'; style-src 'self' 'nonce-${nonce}'; require-trusted-types-for 'script'; trusted-types webui`;
@@ -86,7 +91,8 @@ for (const transport of ['JSON', 'NDJSON'] as const) {
     const metadata = (transport === 'JSON'
       ? await response.json()
       : JSON.parse((await response.text()).split('\n', 1)[0])) as PartialResponse;
-    expect(metadata.templateFunctions?.['page-keepalive']).toBeTruthy();
+    expect(conditionPlan(metadata)).toEqual([1, 0, 0]);
+    expect(Object.hasOwn(metadata, 'templateFunctions')).toBe(false);
 
     try {
       await expect(page.getByRole('heading', { name: 'Keep-Alive Page' })).toBeVisible();
@@ -127,7 +133,8 @@ test('ensureLoaded registers a cold conditional template under Trusted Types', a
   ]);
   expect(response.ok()).toBe(true);
   const metadata = await response.json() as PartialResponse;
-  expect(metadata.templateFunctions?.['page-keepalive']).toBeTruthy();
+  expect(conditionPlan(metadata)).toEqual([1, 0, 0]);
+  expect(Object.hasOwn(metadata, 'templateFunctions')).toBe(false);
 
   const partial = page.waitForResponse(response =>
     new URL(response.url()).pathname === '/keepalive' &&
@@ -135,7 +142,7 @@ test('ensureLoaded registers a cold conditional template under Trusted Types', a
   );
   await page.getByRole('link', { name: 'Keep-Alive' }).click();
   const cached = await (await partial).json() as PartialResponse;
-  expect(cached.templateFunctions?.['page-keepalive']).toBeUndefined();
+  expect(cached.templates?.['page-keepalive']).toBeUndefined();
   await expect(page.getByTestId('incremented')).toHaveCount(0);
   await page.getByRole('button', { name: 'Increment' }).click();
   await expect(page.getByTestId('incremented')).toHaveText('Counter updated');

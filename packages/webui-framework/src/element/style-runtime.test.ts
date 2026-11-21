@@ -18,7 +18,7 @@ function ownerDocument(): Document {
 
 test('unstyled core components do not require a stylesheet runtime', () => {
   const owner = ownerDocument();
-  const meta: TemplateMeta = { v: 3, h: '<p>Plain content</p>', b: [{ h: '<span></span>' }] };
+  const meta: TemplateMeta = { v: 4, h: '<p>Plain content</p>', b: [{ h: '<span></span>' }] };
   assert.equal(requireComponentStyleRuntime('plain-card', meta, owner), undefined);
   assert.equal(requireComponentStyleRuntime('plain-card', meta, owner), undefined);
   assert.equal(componentStyleRuntime, undefined);
@@ -36,15 +36,15 @@ test('registered CSS fails explicitly when only the core entry was loaded', () =
   }, owner);
 
   assert.throws(
-    () => requireComponentStyleRuntime('styled-card', { v: 3, h: '<p></p>' }, owner),
+    () => requireComponentStyleRuntime('styled-card', { v: 4, h: '<p></p>' }, owner),
     /Call startRuntime\(\) before mounting styled <styled-card>/,
   );
 });
 
 test('template-owned links also require the stylesheet runtime', () => {
   for (const meta of [
-    { v: 3, h: '<link rel="stylesheet" href="card.css">' },
-    { v: 3, h: '<section></section>', b: [{ h: '<LINK rel="stylesheet" href="card.css">' }] },
+    { v: 4, h: '<link rel="stylesheet" href="card.css">' },
+    { v: 4, h: '<section></section>', b: [{ h: '<LINK rel="stylesheet" href="card.css">' }] },
   ] satisfies TemplateMeta[]) {
     assert.throws(
       () => requireComponentStyleRuntime('linked-card', meta, ownerDocument()),
@@ -66,7 +66,7 @@ test('one installed runtime is shared without allocating per-component adapters'
   installComponentStyleRuntime(runtime);
   assert.equal(componentStyleRuntime, runtime);
   assert.equal(
-    requireComponentStyleRuntime('any-card', { v: 3, h: '<p></p>' }, ownerDocument()),
+    requireComponentStyleRuntime('any-card', { v: 4, h: '<p></p>' }, ownerDocument()),
     runtime,
   );
   assert.throws(

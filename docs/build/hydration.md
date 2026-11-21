@@ -424,8 +424,9 @@ bundles to avoid duplicate-policy rejection. Policy creation errors are reported
 not bypassed with strings. Browsers without Trusted Types keep normal rendering.
 With `startRuntime()`, native WebUI routes support JSON and NDJSON partial
 navigation under enforcement, including compiled conditions on routes that
-were not part of the initial render. Use matching framework and delivery
-versions and keep the document's nonce-based CSP in force.
+were not part of the initial render. Conditions arrive as data, not scripts
+to execute. Rebuild the protocol, lazy packs, and generated component assets
+with the matching compiler when upgrading the framework and delivery packages.
 
 **This policy is not an HTML sanitizer.** Treat compiled template resources and
 component asset modules as executable application code. Serve them from trusted

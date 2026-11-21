@@ -1002,7 +1002,7 @@ describe('renderComponentTemplates', () => {
     const parsed: ComponentTemplatesResponse = JSON.parse(json);
     assert.equal(typeof parsed.templates, 'object');
     assert.equal(typeof parsed.componentStyles, 'object');
-    assert.equal(typeof parsed.templateFunctions, 'object');
+    assert.equal(Object.hasOwn(parsed, 'templateFunctions'), false);
     assert.equal(typeof parsed.inventory, 'string');
   });
 
@@ -1012,7 +1012,7 @@ describe('renderComponentTemplates', () => {
     const json = protocol.renderComponentTemplates(['nonexistent-widget'], '');
     const parsed: ComponentTemplatesResponse = JSON.parse(json);
     assert.deepEqual(parsed.templates, {});
-    assert.deepEqual(parsed.templateFunctions, {});
+    assert.equal(Object.hasOwn(parsed, 'templateFunctions'), false);
     assert.deepEqual(parsed.componentStyles.resources, {});
     assert.deepEqual(parsed.componentStyles.closures, {});
   });

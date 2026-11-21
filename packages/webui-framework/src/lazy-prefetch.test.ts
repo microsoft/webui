@@ -73,7 +73,7 @@ function pack(owner: string, ordinal = 0): string {
 }
 
 function condition(id: string, trigger: LazyTrigger, paths: string[] = ['open']): CompiledConditionalMeta {
-  return [[0, paths], id, [0, 0], trigger];
+  return [[[0], paths], id, [0, 0], trigger];
 }
 
 /** A component template with lazy regions in its root block. */
@@ -81,7 +81,7 @@ function owner(tag: string, regions: [ordinal: number, trigger: LazyTrigger, pat
   const lp: Record<string, string> = {};
   for (const [ordinal] of regions) lp[region(tag, ordinal)] = pack(tag, ordinal);
   return {
-    v: 3,
+    v: 4,
     h: '',
     c: regions.map(([ordinal, trigger, paths]) => condition(region(tag, ordinal), trigger, paths)),
     lp,
@@ -195,7 +195,7 @@ test('a compiled event binding passes its string literal to $prefetch', () => {
   (host as unknown as {
     $finalize(instance: TemplateInstance, meta: TemplateMeta, elements: readonly unknown[]): void;
   }).$finalize(instance, {
-    v: 3,
+    v: 4,
     h: '<button></button>',
     eg: [
       ['pointerenter', [['$prefetch', [['s', 'settingsOpen']], 1]]],
@@ -235,7 +235,7 @@ test('shared direct dispatch preserves its owner and zero through five arguments
     const args: CompiledEventArgs = Array.from({ length: count }, (_, index) => ['n', index]);
     const instance: TemplateInstance = { container: null, nodes: [], texts: [], attrs: [], conds: [], repeats: [] };
     interactive.$finalize(instance, {
-      v: 3, h: '', eg: [['click', [['capture', args, 1]]]],
+      v: 4, h: '', eg: [['click', [['capture', args, 1]]]],
     }, [undefined, button]);
     button.dispatchEvent(new Event('click'));
     assert.equal(receivers[count], host);
@@ -258,7 +258,7 @@ test('only removable views retain ref cleanup, including hostless fragment roots
     assert.equal(interactive.ref, node);
     return instance;
   };
-  const root: TemplateMeta = { v: 3, h: '', rf: [['ref', 1]] };
+  const root: TemplateMeta = { v: 4, h: '', rf: [['ref', 1]] };
   assert.equal(wire(root).cleanups, undefined, 'Component roots retain their DOM on destroy');
   for (const meta of [{ h: '', rf: root.rf }, { ...root, f: region('ref-lifetime') }]) {
     const instance = wire(meta);

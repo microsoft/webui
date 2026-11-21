@@ -11,7 +11,6 @@
  */
 
 import type { ComponentStyleResource, ComponentStyles } from './types.js';
-import { readConditionTable, type Condition } from './condition-table.js';
 import { ResourceRequest, resourceHeaders } from './request.js';
 
 /** Shared event name understood by optional framework runtimes. */
@@ -22,7 +21,6 @@ type InventoryReceiver = (inventory: string, styleInventory?: string) => void;
 
 export interface TemplateResourceResponse {
   templates?: Record<string, unknown>;
-  templateFunctions?: Record<string, string>;
   componentStyles?: ComponentStyles;
   inventory?: string;
   styleInventory?: string;
@@ -57,16 +55,9 @@ export function registerTemplatesAndStyles(
     ? validateComponentStyles(data.componentStyles)
     : undefined;
   validateTemplatePayload(data.templates);
-  const conditions = readConditions(data);
   const styleRegistration = componentStyles
     ? registerComponentStyleCatalog(componentStyles)
     : undefined;
-
-  if (conditions) {
-    const runtime: WebUIRuntimeGlobal & { templateFns?: Record<string, Condition[]> } =
-      window.__webui ??= {};
-    Object.assign(runtime.templateFns ??= {}, conditions);
-  }
 
   let registeredTemplates: Record<string, unknown> | undefined;
   if (data.templates) {
@@ -120,20 +111,6 @@ export function registerTemplatesAndStyles(
   if (!inventory && !styles) return complete;
   if (complete) return complete.then(() => updateInventory(inventory ?? '', styles));
   updateInventory(inventory ?? '', styles);
-}
-
-function readConditions(
-  { templates, templateFunctions }: TemplateResourceResponse,
-): Record<string, Condition[]> | undefined {
-  if (!templates || !templateFunctions) return;
-  let tables: Record<string, Condition[]> | undefined;
-  for (const tag of Object.keys(templateFunctions)) {
-    if (tag === '__proto__' || !Object.hasOwn(templates, tag)) continue;
-    const template = templates[tag];
-    if (!template || typeof template !== 'object') continue;
-    (tables ??= {})[tag] = readConditionTable(templateFunctions[tag], tag);
-  }
-  return tables;
 }
 
 /** Register initial bootstrap styles before announcing already-published templates. */

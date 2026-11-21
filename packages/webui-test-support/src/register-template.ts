@@ -26,25 +26,20 @@ type TemplateFixture = Omit<TemplateMeta, 'v'> & { v?: 3 };
 export function registerCompiledTemplate(
   name: string,
   meta: TemplateFixture,
-  fns?: CompiledConditionFn[],
 ): void {
   const w = window as unknown as {
     __webui?: {
       templates?: Record<string, TemplateMeta>;
-      templateFns?: Record<string, CompiledConditionFn[]>;
       [k: string]: unknown;
     };
   };
   if (!w.__webui) w.__webui = {};
   if (!w.__webui.templates) w.__webui.templates = {};
-  w.__webui.templates[name] = { ...meta, v: 3 };
-  if (fns) {
-    if (!w.__webui.templateFns) w.__webui.templateFns = {};
-    w.__webui.templateFns[name] = fns;
-  }
+  w.__webui.templates[name] = { ...meta, v: 4 };
+
 }
 
 /** Render a static template registration as an inline `<script>` tag. */
 export function renderTemplateScript(name: string, meta: TemplateFixture): string {
-  return `<script>window.__webui=window.__webui||{};window.__webui.templates=window.__webui.templates||{};window.__webui.templates[${JSON.stringify(name)}]=${JSON.stringify({ ...meta, v: 3 })};</script>`;
+  return `<script>window.__webui=window.__webui||{};window.__webui.templates=window.__webui.templates||{};window.__webui.templates[${JSON.stringify(name)}]=${JSON.stringify({ ...meta, v: 4 })};</script>`;
 }

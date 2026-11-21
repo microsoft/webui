@@ -83,26 +83,6 @@ function getTemplatePolicy(meta: TemplateBlockMeta): BrowserPolicy | undefined {
   return policy;
 }
 
-/**
- * @internal Install condition tables for templates being registered from a
- * trusted compiler response. The templates and closure sources are code, not
- * request state. Neither the policy nor a TrustedScript leaves this module.
- *
- * The document nonce satisfies CSP and the compiler-owned `webui` policy
- * satisfies Trusted Types, matching how SSR delivers the same closures.
- */
-export function installCompilerConditions(closures: string, nonce: string): void {
-  const script = document.createElement('script');
-  if (nonce) script.nonce = nonce;
-  setScriptContent(
-    script,
-    `Object.assign(window.__webui.templateFns??={},{${closures}});`,
-    window,
-  );
-  document.head.appendChild(script);
-  script.remove();
-}
-
 /** @internal Serialize CSS data into an inert import map, never executable source. */
 export function setImportMapContent(
   script: HTMLScriptElement,

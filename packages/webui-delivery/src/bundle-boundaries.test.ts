@@ -19,7 +19,7 @@ const assetConsumer = `import { defineComponentAsset } from '@microsoft/webui-fr
 window.asset = defineComponentAsset({
   type: 'webui-component-asset', version: 4, root: 'asset-card', externalComponents: [],
   imports: [{
-    templates: { 'asset-card': { v: 3, h: '<p>Asset</p>' } },
+    templates: { 'asset-card': { v: 4, h: '<p>Asset</p>' } },
     componentStyles: { version: 1, strategy: 'style', resources: {}, closures: {} },
   }],
   componentStyles: { version: 1, strategy: 'style', resources: {}, closures: {} },

@@ -617,7 +617,6 @@ struct ProtocolIndex {
 struct ComponentAssets {
     component_styles: Value,
     templates: serde_json::Map<String, Value>,
-    functions: serde_json::Map<String, Value>,
 }
 
 /// Build the versioned, tree-local component style metadata for the requested
@@ -3176,7 +3175,6 @@ fn walk_children_for_inventory_and_chain<'protocol>(
 /// Returns a `serde_json::Value` object with fields:
 /// - `componentStyles`: versioned tree-local resources and ordered closures
 /// - `templates`: client template metadata keyed by component tag (inventory-filtered)
-/// - `templateFunctions`: component-local condition closure arrays keyed by component tag
 /// - `inventory`: updated hex bitmask
 /// - `path`: the request path
 /// - `chain`: matched route chain array
@@ -3289,7 +3287,6 @@ fn render_partial_indexed_with_state<'a>(
     }
     result.insert("componentStyles".into(), assets.component_styles);
     result.insert("templates".into(), Value::Object(assets.templates));
-    result.insert("templateFunctions".into(), Value::Object(assets.functions));
     result.insert(
         "inventory".into(),
         Value::String(filtered.updated_inventory),
@@ -3484,7 +3481,6 @@ fn render_component_templates_indexed(
     }
     result.insert("componentStyles".into(), assets.component_styles);
     result.insert("templates".into(), Value::Object(assets.templates));
-    result.insert("templateFunctions".into(), Value::Object(assets.functions));
     result.insert(
         "inventory".into(),
         Value::String(filtered.updated_inventory),
@@ -3508,7 +3504,6 @@ fn collect_component_assets(
         index.component_index,
     )?;
     let mut tmpl_map = serde_json::Map::new();
-    let mut function_map = serde_json::Map::new();
 
     // Sort for deterministic output (reproducible responses, cache keys)
     let mut sorted_tags: Vec<&str> = tags.to_vec();
@@ -3528,9 +3523,6 @@ fn collect_component_assets(
                 payload.metadata,
             )?;
             tmpl_map.insert(tag.to_string(), template_value);
-            if !payload.functions.is_empty() {
-                function_map.insert(tag.to_string(), Value::String(payload.functions.to_owned()));
-            }
         } else {
             tmpl_map.insert(
                 tag.to_string(),
@@ -3542,7 +3534,6 @@ fn collect_component_assets(
     Ok(ComponentAssets {
         component_styles,
         templates: tmpl_map,
-        functions: function_map,
     })
 }
 
@@ -3943,10 +3934,10 @@ mod tests {
 
     fn assert_client_fragment_metadata_validation(component_template: Option<&str>) {
         for (template_json, valid) in [
-            (r#"{"h":"<p>Body</p>","v":3}"#, true),
+            (r#"{"h":"<p>Body</p>","v":4}"#, true),
             ("", false),
-            (r#"{"h":"<p>Body</p>","v":3"#, false),
-            (r#"{"h":"<p>Body</p>","v":3} trailing"#, false),
+            (r#"{"h":"<p>Body</p>","v":4"#, false),
+            (r#"{"h":"<p>Body</p>","v":4} trailing"#, false),
             (r#"{"h":"<p>Body</p>","v":1e9999}"#, false),
             (r#"{"h":"<p>Body</p>","v":[{"nested":-1e9999}]}"#, false),
             (r#"{"h":"<p>Body</p>","v":"1e9999"}"#, true),
@@ -4006,7 +3997,7 @@ mod tests {
 
     #[test]
     fn protocol_validates_client_fragments_with_component_templates() {
-        assert_client_fragment_metadata_validation(Some(r#"{"h":"<main></main>","v":3}"#));
+        assert_client_fragment_metadata_validation(Some(r#"{"h":"<main></main>","v":4}"#));
     }
 
     #[test]

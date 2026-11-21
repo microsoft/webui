@@ -22,37 +22,18 @@ import {
 } from './templates.js';
 import { navigationCache, type PartialResponse } from './cache.js';
 
-test('conditions are decoded only for accompanying templates, before publication or inventory', t => {
-  t.mock.method(document.head, 'appendChild', () => assert.fail('Condition registration must never insert scripts'));
-  const registeredTag = 'condition-table-test';
-  const unrelatedTag = 'unrelated-condition-table';
-  const runtime = (window.__webui ??= {}) as WebUIRuntimeGlobal & {
-    templates?: Record<string, unknown>;
-    templateFns?: Record<string, unknown>;
-  };
+test('delivery publishes condition plans unmodified and does not insert a script', t => {
+  t.mock.method(document.head, 'appendChild', () => assert.fail('Unexpected script insertion'));
+  const tag = 'plan-fixture';
+  const template = { v: 4, h: '', c: [[[[0], ['ready']], 0, [0, 0]]] };
+  const original = window.__webuiPrepareTemplates;
+  let received: unknown;
+  window.__webuiPrepareTemplates = templates => { received = templates[tag]; };
   try {
-    assert.throws(() => registerTemplatesAndStyles({
-      templates: { [registeredTag]: { v: 3, h: '' } },
-      templateFunctions: { [registeredTag]: '[true]' },
-      inventory: '01',
-    }, 'document-nonce', () => assert.fail('Malformed conditions cannot advance inventory')),
-    /Invalid compiler condition table/);
-    assert.equal(runtime.templates?.[registeredTag], undefined);
-    assert.equal(runtime.templateFns?.[registeredTag], undefined);
-
-    registerTemplatesAndStyles({
-      templates: { [registeredTag]: { v: 3, h: '' } },
-      templateFunctions: {
-        [registeredTag]: '[function(v,s){return true}]',
-        [unrelatedTag]: '[true]',
-      },
-    }, 'document-nonce', () => {});
-    assert.ok(runtime.templates?.[registeredTag]);
-    assert.ok(Array.isArray(runtime.templateFns?.[registeredTag]));
-    assert.equal(runtime.templateFns?.[unrelatedTag], undefined);
+    registerTemplatesAndStyles({ templates: { [tag]: template } }, 'document-nonce', () => {});
+    assert.equal(received, template);
   } finally {
-    delete runtime.templates?.[registeredTag];
-    delete runtime.templateFns?.[registeredTag];
+    window.__webuiPrepareTemplates = original;
   }
 });
 

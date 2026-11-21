@@ -91,7 +91,6 @@ export interface ComponentTemplatesResponse {
   /** JSON-safe component template metadata keyed by tag name. */
   templates: Record<string, unknown>;
   /** JavaScript condition closure arrays keyed by tag name. */
-  templateFunctions: Record<string, string>;
   /** Updated hex bitmask of loaded component templates. */
   inventory: string;
 }
@@ -105,7 +104,6 @@ export interface PartialResponse {
   /** JSON-safe component template metadata keyed by tag name. */
   templates: Record<string, unknown>;
   /** JavaScript condition closure arrays keyed by tag name. */
-  templateFunctions?: Record<string, string>;
   /** Versioned component style definitions and ordered closures. */
   componentStyles: ComponentStyles;
   /** Updated hex bitmask of loaded component templates. */

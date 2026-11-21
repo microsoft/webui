@@ -14,7 +14,6 @@ const PARALLEL_RENDER_THRESHOLD: usize = 128;
 pub(super) struct RenderedComponent<'a> {
     pub resource: Option<RenderedStyleResource<'a>>,
     pub template: Cow<'a, str>,
-    pub functions: Option<&'a str>,
 }
 
 #[derive(Clone, Copy)]
@@ -74,13 +73,7 @@ fn render_component<'a>(
     } else {
         Cow::Borrowed(component.template_json.as_str())
     };
-    let functions =
-        (!component.template_functions.is_empty()).then_some(component.template_functions.as_str());
-    Ok(RenderedComponent {
-        resource,
-        template,
-        functions,
-    })
+    Ok(RenderedComponent { resource, template })
 }
 
 /// Resolve a component's delivered style resource, tagged with the shape the

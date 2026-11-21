@@ -45,11 +45,11 @@ class TestImportLinkCard extends WebUIElement {}
 class TestStyledLinkCard extends WebUIElement {}
 
 registerTemplateData({
-  'test-shared-link-card': { v: 3, h: '<p class="label">Shared</p>', sd: 1 },
-  'test-cold-link-card': { v: 3, h: '<p class="label">Cold</p>', sd: 1 },
-  'test-import-link-card': { v: 3, h: '<p class="label">Import</p>', sd: 1 },
+  'test-shared-link-card': { v: 4, h: '<p class="label">Shared</p>', sd: 1 },
+  'test-cold-link-card': { v: 4, h: '<p class="label">Cold</p>', sd: 1 },
+  'test-import-link-card': { v: 4, h: '<p class="label">Import</p>', sd: 1 },
   'test-styled-link-card': {
-    v: 3,
+    v: 4,
     h: '<style>.label { font-weight: 700; }</style><p class="label">Styled</p>',
     sd: 1,
   },

@@ -124,7 +124,7 @@ import {
   hasNativeLiveProperty,
 } from './element/types.js';
 import { templateHasRoot, templateRootForAttribute } from './template-roots.js';
-import { isConditionTruthy } from './template-conditions.js';
+import { evaluateCondition } from './template-conditions.js';
 import type {
   AttrBinding,
   CondBinding,
@@ -2390,7 +2390,7 @@ export class TemplateElement extends HTMLElement {
         break;
       }
       case ATTR_KIND_BOOLEAN: {
-        const show = b.condition![0](this.$conditionResolver(), b.scope, isConditionTruthy);
+        const show = evaluateCondition(b.condition!, this.$conditionResolver(), b.scope);
         blockUnupgradedAttribute(el);
         if (show) el.setAttribute(name, '');
         else el.removeAttribute(name);
@@ -2437,7 +2437,7 @@ export class TemplateElement extends HTMLElement {
 
 
   private $toggleCond(c: CondBinding): void {
-    const show = c.condition[0](this.$conditionResolver(), c.scope, isConditionTruthy);
+    const show = evaluateCondition(c.condition, this.$conditionResolver(), c.scope);
     if (show) {
       if (c.instance) {
         this.$updateInstance(c.instance);

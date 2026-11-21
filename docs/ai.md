@@ -136,8 +136,9 @@ templates and generated CSS import maps. No setup call or special import order i
 needed. To enforce Trusted Types, use `require-trusted-types-for 'script'; trusted-types webui`
 alongside the normal nonce CSP. Share one framework module across bundles; do not
 pre-create its policy. With `startRuntime()`, native WebUI routes support both
-JSON and NDJSON partial navigation under enforcement. Raw triple-brace state
-HTML, FAST strings, and arbitrary scripts/URLs are not promoted. See
+JSON and NDJSON partial navigation under enforcement, including compiled
+conditions on cold routes. Rebuild and deploy compiler output and browser
+packages together. Raw triple-brace state HTML, FAST strings, and arbitrary scripts/URLs are not promoted. See
 [Trusted Types](/build/hydration#trusted-types).
 
 ```text

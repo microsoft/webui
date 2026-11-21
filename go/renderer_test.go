@@ -202,7 +202,7 @@ func TestRenderHTTPNonce(t *testing.T) {
 					t.Errorf("wrong CSP header: %s", got)
 				}
 				for _, want := range []string{
-					`<script nonce="` + nonce + `">`,
+					`<script type="application/json" id="webui-data" nonce="` + nonce + `">`,
 					`<meta name="webui-nonce" content="` + nonce + `">`,
 				} {
 					if !strings.Contains(html, want) {

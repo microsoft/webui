@@ -3,7 +3,6 @@
 
 export type RuntimeBootstrap = WebUIRuntimeGlobal & {
   templates?: Record<string, unknown>;
-  templateFns?: Record<string, unknown>;
   componentAssetStyles?: Record<string, readonly string[]>;
 };
 
@@ -20,7 +19,6 @@ export function loadRuntimeBootstrap(): void {
     if (runtime?.buildId && parsed.buildId && runtime.buildId !== parsed.buildId) {
       throw new Error('[WebUI] Resources use different builds. Reload the document.');
     }
-    if (runtime?.templateFns) parsed.templateFns = runtime.templateFns;
     if (runtime?.componentAssetStyles) parsed.componentAssetStyles = runtime.componentAssetStyles;
     window.__webui = parsed;
   }

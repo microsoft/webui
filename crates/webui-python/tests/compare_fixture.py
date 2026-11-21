@@ -28,8 +28,8 @@ def validate_metadata(protocol: dict[str, Any]) -> None:
     for group in ("components", "client_fragments"):
         for name, record in protocol.get(group, {}).items():
             template = record.get("template_json")
-            if template and json.loads(template).get("v") != 3:
-                raise ValueError(f"protocol fixture metadata for {name} must use v3")
+            if template and json.loads(template).get("v") != 4:
+                raise ValueError(f"protocol fixture metadata for {name} must use v4")
 
 
 def compare_protocols(expected: dict[str, Any], actual: dict[str, Any]) -> None:
