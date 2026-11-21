@@ -205,4 +205,35 @@ mod tests {
             assert_eq!(out, expected);
         }
     }
+
+    #[test]
+    fn negation_swaps_terminal_targets_in_single_and_nested_tests() {
+        use ConditionExpr as C;
+        for (condition, expected) in [
+            (
+                C::negated(C::predicate("count", ComparisonOperator::Equal, "100")),
+                r#"[[3,0,100,-1,-2],["count"]]"#,
+            ),
+            (
+                C::negated(C::identifier("false")),
+                r#"[[7,0,false,-1,-2],[]]"#,
+            ),
+            (
+                C::negated(C::compound(
+                    C::identifier("visible"),
+                    LogicalOperator::Or,
+                    C::compound(
+                        C::identifier("enabled"),
+                        LogicalOperator::Or,
+                        C::negated(C::identifier("ready")),
+                    ),
+                )),
+                r#"[[0,0,false,-2,-1,0,1,false,-1,0,0,2,false,-1,1],["ready","enabled","visible"]]"#,
+            ),
+        ] {
+            let mut out = String::new();
+            emit(&condition, &mut out);
+            assert_eq!(out, expected);
+        }
+    }
 }

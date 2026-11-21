@@ -61,8 +61,7 @@ declare global {
   }
 }
 
-window.__webui!.templateHostExclusions ??= new Set();
-window.__webui!.templateHostExclusions.add('test-completion-unloaded');
+((window.__webui ??= {}).templateHostExclusions ??= new Set()).add('test-completion-unloaded');
 window.__defineCompletionUnloaded = () => CompletionUnloaded.define('test-completion-unloaded');
 
 CompletionRoot.define('test-completion-root');

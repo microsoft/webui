@@ -33,6 +33,25 @@ test('a malformed condition cannot loop or fall through as a successful evaluati
   }
 });
 
+test('a negated nested disjunction follows the compiler’s short-circuit branches', () => {
+  // !(visible || (enabled || !ready))
+  const plan = [0, 0, false, -2, -1, 0, 1, false, -1, 0, 0, 2, false, -1, 1];
+  const paths = ['ready', 'enabled', 'visible'];
+  for (const [scope, expected, reads] of [
+    [{ visible: true, enabled: false, ready: true }, false, ['visible']],
+    [{ visible: false, enabled: true, ready: true }, false, ['visible', 'enabled']],
+    [{ visible: false, enabled: false, ready: true }, true, ['visible', 'enabled', 'ready']],
+    [{ visible: false, enabled: false, ready: false }, false, ['visible', 'enabled', 'ready']],
+  ] as const) {
+    const actualReads: string[] = [];
+    assert.equal(evaluateCondition([plan, paths], path => {
+      actualReads.push(path);
+      return scope[path as keyof typeof scope];
+    }, scope), expected);
+    assert.deepEqual(actualReads, reads);
+  }
+});
+
 test('comparison plans select literal and scoped path operands', () => {
   const cases = [
     [1, [false, true, false, true, false, true]],
