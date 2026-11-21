@@ -163,6 +163,37 @@ export interface SSRIndex {
   raws: Array<[Comment, Comment]>;
 }
 
+function isOrdinaryElement(node: Node | null): boolean {
+  if (!node || node.nodeType !== 1) return false;
+  const element = node as Element;
+  const tag = element.localName;
+  return (tag !== 'style' && tag !== 'link' && tag !== 'script') ||
+    !isComponentStyleResourceMarker(element);
+}
+
+/**
+ * Index a single wrapper and its leaf children without allocating traversal
+ * frames. Non-text gaps (including outlet and style markers) use the full walk.
+ */
+function indexFlatWrapper(
+  shape: readonly number[],
+  root: Node,
+  first: ChildNode | null,
+  end: Node | null,
+): Array<Node | undefined> | undefined {
+  if ((shape[0] >> 1) !== 1 || (shape[1] >> 1) !== shape.length - 2 ||
+    !first || first === end || !isOrdinaryElement(first)) return undefined;
+  const elements: Array<Node | undefined> = [root, first];
+  let node = first.firstChild;
+  for (let i = 2; i < shape.length; i++) {
+    while (node?.nodeType === 3) node = node.nextSibling;
+    if (!node || !isOrdinaryElement(node)) return undefined;
+    elements[i] = node;
+    node = node.nextSibling;
+  }
+  return elements;
+}
+
 /**
  * Pair compiled static topology with its server-rendered subtree in one walk.
  *
@@ -204,8 +235,11 @@ export function buildSSRIndex(
   first: ChildNode | null = ssrRoot.firstChild,
   rangeEnd: Node | null = null,
 ): SSRIndex {
+  if (!needMarkers) {
+    const flat = shape.length === 1 ? [ssrRoot] : indexFlatWrapper(shape, ssrRoot, first, rangeEnd);
+    if (flat) return { elements: flat, conds: EMPTY, repeats: EMPTY, raws: EMPTY };
+  }
   const elements: Array<Node | undefined> = [ssrRoot];
-  if (!needMarkers && shape.length === 1) return { elements, conds: EMPTY, repeats: EMPTY, raws: EMPTY };
   const conds: Array<Comment | null> = [];
   const repeats: SSRRepeatRange[] = [];
   const raws: Array<[Comment, Comment]> = [];

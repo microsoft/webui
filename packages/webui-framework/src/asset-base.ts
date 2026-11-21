@@ -16,13 +16,15 @@ let documentBase: string | undefined;
 let base: string | undefined;
 /** Each document's asset base meta, read once. */
 const published = new WeakMap<Document, string | undefined>();
+const resolvedStyles = new WeakMap<object, { base: string | undefined; path: string; href: string }>();
 
 /**
  * Resolve a compiler-emitted, base-relative asset path to an absolute URL.
  *
- * Returns `path` unchanged when there is no document or it does not resolve.
+ * Compiler-owned stylesheet resources may reuse the result by identity while
+ * the effective base is unchanged. Unresolvable paths keep their input value.
  */
-export function resolveAsset(path: string, owner?: Document): string {
+export function resolveAsset(path: string, owner?: Document, stylesheet?: object): string {
   try {
     owner ??= document;
     const value = (owner.defaultView ?? globalThis.window)?.__webui?.assetBase ?? publishedBase(owner);
@@ -33,7 +35,12 @@ export function resolveAsset(path: string, owner?: Document): string {
       configured = value;
       documentBase = baseURI;
     }
-    return new URL(path, base).href;
+    if (!stylesheet) return new URL(path, base).href;
+    const cached = resolvedStyles.get(stylesheet);
+    if (cached && cached.base === base && cached.path === path) return cached.href;
+    const href = new URL(path, base).href;
+    resolvedStyles.set(stylesheet, { base, path, href });
+    return href;
   } catch {
     return path;
   }

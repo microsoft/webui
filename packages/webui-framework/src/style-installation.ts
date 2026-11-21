@@ -3,7 +3,7 @@
 
 import { installTemplateResourcePreparation } from './template-registry.js';
 import { installComponentStyleRuntime, type ComponentStyleRuntime } from './element/style-runtime.js';
-import { claimSsrComponentStyles, installMountedComponentStyles } from './element/styles.js';
+import { installMountedComponentStyles } from './element/styles.js';
 import {
   cancelTemplateLinkStyleMount,
   COMPONENT_LINKS_EAGER,
@@ -24,7 +24,6 @@ import {
 } from './element/style-catalog.js';
 
 const runtime: ComponentStyleRuntime = {
-  claimSsr: claimSsrComponentStyles,
   // Fresh roots keep their first native link; roots with other author styles
   // promote eagerly so every instance keeps the same cascade.
   install: (tag, target, host, freshShadow, meta) => installMountedComponentStyles(

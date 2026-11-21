@@ -159,11 +159,6 @@ const authorStyleTemplates = new WeakMap<TemplateMeta, boolean>();
  * no longer be authorized: memory cache hits add no new resource timing entry.
  */
 const componentLinkRecords = new WeakMap<Document, Map<string, ComponentLinkRecord>>();
-/** Catalog hrefs resolved against one Document base URL; see {@link resolveComponentHref}. */
-const resolvedComponentHrefs = new WeakMap<
-  Document,
-  { readonly base: string; readonly hrefs: Map<string, string> }
->();
 let speculativeStylesheetPreloads:
   | Map<string, SpeculativeStylesheetPreload | undefined>
   | undefined;
@@ -294,7 +289,7 @@ export function preloadComponentAssetStyles(
 }
 
 /**
- * Adopt shared sheets for every component link href a root still needs.
+ * Adopt shared sheets for the resolved component link URLs a root still needs.
  *
  * An href qualifies once an earlier root mounted it and its sheet exists or
  * can be promoted from that root's loaded, authorized link. Returns false
@@ -305,12 +300,11 @@ export function adoptPromotedComponentLinks(
   hrefs: readonly string[],
   flags = 0,
 ): boolean {
-  const owner = root.ownerDocument;
-  const records = componentLinkRecords.get(owner);
+  const records = componentLinkRecords.get(root.ownerDocument);
   if (!records || hrefs.length === 0) return false;
   const sheets = new Array<CSSStyleSheet>(hrefs.length);
   for (let i = 0; i < hrefs.length; i++) {
-    const record = records.get(resolveComponentHref(owner, hrefs[i]));
+    const record = records.get(hrefs[i]);
     const sheet = record && (record.sheet ?? promoteSource(record));
     if (!sheet) return false;
     sheets[i] = sheet;
@@ -318,24 +312,15 @@ export function adoptPromotedComponentLinks(
   return adoptPreparedSheets(root, sheets, (flags & COMPONENT_ROOT_FRESH) !== 0);
 }
 
-/**
- * Resolve a catalog href the way a native link created now would, without
- * parsing a URL for every mounted root. A base URL change, from a `<base>`
- * edit or a soft navigation in a Document without one, starts a new cache.
- */
-function resolveComponentHref(owner: Document, href: string): string {
-  const base = owner.baseURI;
-  let cache = resolvedComponentHrefs.get(owner);
-  if (cache === undefined || cache.base !== base) {
-    cache = { base, hrefs: new Map() };
-    resolvedComponentHrefs.set(owner, cache);
-  }
-  let resolved = cache.hrefs.get(href);
-  if (resolved === undefined) {
-    resolved = resolveHref(href, base);
-    cache.hrefs.set(href, resolved);
-  }
-  return resolved;
+/** Whether this document previously ruled out promotion for this URL. */
+export function isNativeOnlyComponentLink(owner: Document, href: string): boolean {
+  const record = componentLinkRecords.get(owner)?.get(href);
+  return record?.used === true && record.unpromotable;
+}
+
+/** Skip settling a ready native-only link if no speculative load needs release. */
+export function isSettledNativeComponentLink(link: HTMLLinkElement, href: string): boolean {
+  return link.href === href && link.sheet !== null && !speculativeStylesheetPreloads?.has(href);
 }
 
 /**
@@ -1141,19 +1126,12 @@ function constructNativeStylesheets(
 ): CSSStyleSheet[] | undefined {
   const sheets = new Array<CSSStyleSheet>(links.length);
   for (let i = 0; i < links.length; i++) {
+    const link = links[i];
     if (unsupportedLinkReason(descriptors[i])) return undefined;
-    const cssText = readNativeStylesheet(links[i], mountStartedAt);
-    if (cssText === undefined) return undefined;
-
-    const options: CSSStyleSheetInit = { baseURL: links[i].href };
-    if (descriptors[i].media) options.media = descriptors[i].media;
-    try {
-      const sheet = new CSSStyleSheet(options);
-      sheet.replaceSync(cssText);
-      sheets[i] = sheet;
-    } catch {
-      return undefined;
-    }
+    if (!hasUnredirectedNativeTiming(link, mountStartedAt)) return undefined;
+    const sheet = constructReadableSheet(link, descriptors[i].media);
+    if (!sheet) return undefined;
+    sheets[i] = sheet;
   }
   return sheets;
 }
@@ -1259,16 +1237,7 @@ function promoteLink(
 ): CSSStyleSheet | undefined {
   if (record.sheet) return record.sheet;
   if (!record.authorized || record.unpromotable) return undefined;
-  const cssText = readStylesheetText(link);
-  let sheet: CSSStyleSheet | undefined;
-  if (cssText !== undefined) {
-    try {
-      sheet = new CSSStyleSheet({ baseURL: link.href });
-      sheet.replaceSync(cssText);
-    } catch {
-      sheet = undefined;
-    }
-  }
+  const sheet = constructReadableSheet(link);
   record.source = undefined;
   if (!sheet) {
     // Imports, unreadable rules, and unrewritable URLs do not change for the
@@ -1280,12 +1249,19 @@ function promoteLink(
   return sheet;
 }
 
-function readNativeStylesheet(
-  link: HTMLLinkElement,
-  mountStartedAt: number,
-): string | undefined {
-  if (!hasUnredirectedNativeTiming(link, mountStartedAt)) return undefined;
-  return readStylesheetText(link);
+/** Build a sheet from a native load already authorized by the caller. */
+function constructReadableSheet(link: HTMLLinkElement, media?: string): CSSStyleSheet | undefined {
+  const cssText = readStylesheetText(link);
+  if (cssText === undefined) return undefined;
+  const options: CSSStyleSheetInit = { baseURL: link.href };
+  if (media) options.media = media;
+  try {
+    const sheet = new CSSStyleSheet(options);
+    sheet.replaceSync(cssText);
+    return sheet;
+  } catch {
+    return undefined;
+  }
 }
 
 function readStylesheetText(link: HTMLLinkElement): string | undefined {
