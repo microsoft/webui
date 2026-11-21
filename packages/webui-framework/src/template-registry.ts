@@ -278,7 +278,9 @@ export function getTemplateRegistry(): Record<string, TemplateMeta> | undefined 
 export function registerTemplateData(
   templates: Record<string, TemplateMeta>,
   componentStylesValue?: ComponentStyles | unknown,
+  removed?: never,
 ): void {
+  if (removed !== undefined) throw new Error('[WebUI] Pass component styles as the second argument.');
   const componentStyles = prepareComponentStyles(componentStylesValue);
   if (acceptTemplateData(templates, componentStyles).length > 0) {
     // Styles were already accepted above; listeners only need the templates.

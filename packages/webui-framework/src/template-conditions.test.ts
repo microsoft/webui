@@ -27,6 +27,30 @@ test('condition plans use scoped values, collection truthiness, and short-circui
 });
 
 test('a malformed condition cannot loop or fall through as a successful evaluation', () => {
-  assert.throws(() => evaluateCondition([[0, 0, false, 0, -1], ['ready']], () => true, undefined),
-    /Invalid compiled condition plan/);
+  for (const plan of [[0, 0, false, 0, -1], [2], [16, 0, false], [8, 0, 0], [1.5, 0, 0]]) {
+    assert.throws(() => evaluateCondition([plan, ['ready']], () => true, undefined),
+      /Invalid compiled condition plan/);
+  }
+});
+
+test('comparison plans select literal and scoped path operands', () => {
+  const cases = [
+    [1, [false, true, false, true, false, true]],
+    [2, [false, false, true, false, true, true]],
+    [3, [true, false, false, true, true, false]],
+  ] as const;
+  for (const [i, op] of [1, 2, 3, 4, 5, 6].entries()) {
+    for (const [value, expected] of cases) {
+      const resolve = (path: string) => path === 'value' ? value : 2;
+      assert.equal(evaluateCondition([[op, 0, 2], ['value']], resolve, undefined), expected[i]);
+      assert.equal(evaluateCondition([[op | 8, 0, 1], ['value', 'limit']], resolve, undefined), expected[i]);
+    }
+  }
+});
+
+test('compiled constants and negated comparisons terminate without following a fallthrough', () => {
+  const resolve = () => 100;
+  assert.equal(evaluateCondition([[7, 0, true], []], resolve, undefined), true);
+  assert.equal(evaluateCondition([[7, 0, false, -1, -2], []], resolve, undefined), true);
+  assert.equal(evaluateCondition([[3, 0, 100, -1, -2], ['count']], resolve, undefined), false);
 });

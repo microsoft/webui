@@ -443,6 +443,42 @@ impl ConditionExpr {
     }
 }
 
+/// Right-hand operand of a template predicate, shared by compilation and SSR.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PredicateOperand<'a> {
+    Path(&'a str),
+    String(&'a str),
+    Bool(bool),
+    Integer(i64),
+    Float(f64),
+    Invalid,
+}
+
+impl<'a> PredicateOperand<'a> {
+    /// Classify an operand without allocating or changing its state path.
+    #[must_use]
+    pub fn classify(text: &'a str) -> Self {
+        match text.as_bytes() {
+            [quote @ (b'\'' | b'"'), .., end] if quote == end => {
+                Self::String(&text[1..text.len() - 1])
+            }
+            [b'\'' | b'"', ..] => Self::Invalid,
+            [b'0'..=b'9', ..] | [b'-', b'0'..=b'9', ..] => {
+                if let Ok(value) = text.parse::<i64>() {
+                    Self::Integer(value)
+                } else if let Ok(value) = text.parse::<f64>() {
+                    Self::Float(value)
+                } else {
+                    Self::Invalid
+                }
+            }
+            b"true" => Self::Bool(true),
+            b"false" => Self::Bool(false),
+            _ => Self::Path(text),
+        }
+    }
+}
+
 // ── Constructors ────────────────────────────────────────────────────────
 
 enum StyleClosureOp<'a> {

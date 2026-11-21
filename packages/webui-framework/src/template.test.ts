@@ -192,6 +192,11 @@ describe('template registry helpers', () => {
     }
   });
 
+  test('registerTemplateData rejects component styles in the removed third argument', () => {
+    assert.throws(() => Reflect.apply(registerTemplateData, null, [{}, undefined, {}]),
+      /Pass component styles as the second argument/);
+  });
+
   test('registerTemplateData does not re-announce styles it already registered', () => {
     const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
     const previousDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');

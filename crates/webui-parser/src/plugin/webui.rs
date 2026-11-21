@@ -76,7 +76,7 @@ use std::borrow::Cow;
 use std::cell::Cell;
 use std::fmt::Write;
 use std::ops::Range;
-use webui_protocol::{condition_expr, ConditionExpr, WebUIElementData};
+use webui_protocol::{condition_expr, ConditionExpr, PredicateOperand, WebUIElementData};
 
 mod condition_plan;
 mod lazy_templates;
@@ -1268,17 +1268,6 @@ fn add_part_roots(
     }
 }
 
-fn is_condition_literal(value: &str) -> bool {
-    (value.starts_with('"') && value.ends_with('"'))
-        || (value.starts_with('\'') && value.ends_with('\''))
-        || value == "true"
-        || value == "false"
-        || (!value.is_empty()
-            && value
-                .bytes()
-                .all(|b| b.is_ascii_digit() || b == b'.' || b == b'-'))
-}
-
 fn add_condition_roots(
     roots: &mut Vec<String>,
     condition: &ConditionExpr,
@@ -1294,8 +1283,8 @@ fn add_condition_roots(
             }
             Some(condition_expr::Expr::Predicate(pred)) => {
                 add_root(roots, &pred.left, scopes, scope);
-                if !is_condition_literal(&pred.right) {
-                    add_root(roots, &pred.right, scopes, scope);
+                if let PredicateOperand::Path(path) = PredicateOperand::classify(&pred.right) {
+                    add_root(roots, path, scopes, scope);
                 }
             }
             Some(condition_expr::Expr::Not(not_cond)) => {

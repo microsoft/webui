@@ -10,14 +10,15 @@
  * client-created component tests).
  */
 
-import type {
-  CompiledConditionFn,
-  TemplateMeta,
+import {
+  TEMPLATE_META_VERSION,
+  type CompiledConditionFn,
+  type TemplateMeta,
 } from '../../webui-framework/src/template-types.js';
 
 export type { CompiledConditionFn, TemplateMeta };
 
-type TemplateFixture = Omit<TemplateMeta, 'v'> & { v?: 3 };
+type TemplateFixture = Omit<TemplateMeta, 'v'> & Partial<Pick<TemplateMeta, 'v'>>;
 
 /**
  * Register a compiled template so the framework can hydrate or mount
@@ -35,11 +36,10 @@ export function registerCompiledTemplate(
   };
   if (!w.__webui) w.__webui = {};
   if (!w.__webui.templates) w.__webui.templates = {};
-  w.__webui.templates[name] = { ...meta, v: 4 };
-
+  w.__webui.templates[name] = { ...meta, v: TEMPLATE_META_VERSION };
 }
 
 /** Render a static template registration as an inline `<script>` tag. */
 export function renderTemplateScript(name: string, meta: TemplateFixture): string {
-  return `<script>window.__webui=window.__webui||{};window.__webui.templates=window.__webui.templates||{};window.__webui.templates[${JSON.stringify(name)}]=${JSON.stringify({ ...meta, v: 4 })};</script>`;
+  return `<script>window.__webui=window.__webui||{};window.__webui.templates=window.__webui.templates||{};window.__webui.templates[${JSON.stringify(name)}]=${JSON.stringify({ ...meta, v: TEMPLATE_META_VERSION })};</script>`;
 }

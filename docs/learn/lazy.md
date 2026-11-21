@@ -374,9 +374,8 @@ writes that report as `lazyPacks`, with brotli-compressed sizes, so your
 deployment can upload and precache everything a region loads, for example in a
 service worker, and CI can budget each region.
 
-Condition functions in a pack run with the page's CSP nonce and the `webui`
-Trusted Types policy, as in SSR. Allow the policy name `webui` when you enforce
-Trusted Types.
+Packs carry conditions as data, not scripts. Compiled template HTML still uses
+the private `webui` policy; allow that policy name when you enforce Trusted Types.
 
 Build with the WebUI plugin and matching compiler and runtime versions.
 

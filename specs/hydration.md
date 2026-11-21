@@ -438,9 +438,11 @@ makes the right operand a path slot rather than a literal. The browser
 decodes ordinary JSON, then evaluates the selected plan against the live
 resolver and repeat scope without compiling an expression or creating closures.
 
-Identifier operands use server truthiness for collections. Numeric literals
-are emitted as JSON numbers, not JavaScript source tokens. Comparisons retain
-JavaScript's existing coercion rules in the client. The runtime rejects
+Identifier operands use server truthiness for collections. The compiler and SSR
+classify predicate operands the same way. Numeric literals are emitted as JSON
+numbers, not JavaScript source tokens; SSR compares integers and floats by
+numeric value when their storage types differ (for example, `100 == 1e2`).
+Other comparisons retain the existing client coercion rules. The runtime rejects
 earlier metadata versions; rebuild the protocol, lazy packs, and generated
 component assets with the matching compiler.
 

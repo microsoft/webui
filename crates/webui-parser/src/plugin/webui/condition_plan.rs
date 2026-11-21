@@ -3,7 +3,7 @@
 
 use super::emit_js_string;
 use std::fmt::Write as _;
-use webui_protocol::{condition_expr::Expr, ConditionExpr, LogicalOperator};
+use webui_protocol::{condition_expr::Expr, ConditionExpr, LogicalOperator, PredicateOperand};
 
 const PATH_OPERAND: i32 = 8;
 const CONSTANT: i32 = 7;
@@ -28,6 +28,7 @@ impl std::fmt::Display for Target {
 enum Operand<'a> {
     Path(usize),
     Literal(&'a str),
+    Integer(i64),
     Number(f64),
     Bool(bool),
 }
@@ -112,6 +113,9 @@ pub(super) fn emit(condition: &ConditionExpr, out: &mut String) {
                 let _ = write!(out, "{slot}");
             }
             Operand::Literal(text) => emit_js_string(text, out),
+            Operand::Integer(number) => {
+                let _ = write!(out, "{number}");
+            }
             Operand::Number(number) => {
                 let _ = write!(out, "{number}");
             }
@@ -155,13 +159,15 @@ fn compile_leaf<'a>(expr: Option<&'a Expr>, paths: &mut Vec<&'a str>) -> (i32, u
         Some(Expr::Identifier(id)) => (0, slot(paths, &id.value), Operand::Bool(false)),
         Some(Expr::Predicate(predicate)) => {
             let left = slot(paths, &predicate.left);
-            let right = operand(&predicate.right, paths);
-            let op = if matches!(right, Operand::Path(_)) {
-                predicate.operator | PATH_OPERAND
-            } else {
-                predicate.operator
+            let (flag, right) = match PredicateOperand::classify(&predicate.right) {
+                PredicateOperand::Path(path) => (PATH_OPERAND, Operand::Path(slot(paths, path))),
+                PredicateOperand::String(text) => (0, Operand::Literal(text)),
+                PredicateOperand::Bool(value) => (0, Operand::Bool(value)),
+                PredicateOperand::Integer(value) => (0, Operand::Integer(value)),
+                PredicateOperand::Float(value) if value.is_finite() => (0, Operand::Number(value)),
+                _ => return (CONSTANT, 0, Operand::Bool(false)),
             };
-            (op, left, right)
+            (predicate.operator | flag, left, right)
         }
         _ => (CONSTANT, 0, Operand::Bool(false)),
     }
@@ -176,27 +182,6 @@ fn slot<'a>(paths: &mut Vec<&'a str>, path: &'a str) -> usize {
     index
 }
 
-fn operand<'a>(text: &'a str, paths: &mut Vec<&'a str>) -> Operand<'a> {
-    if let Some(inner) = text
-        .strip_prefix('"')
-        .and_then(|text| text.strip_suffix('"'))
-        .or_else(|| {
-            text.strip_prefix('\'')
-                .and_then(|text| text.strip_suffix('\''))
-        })
-    {
-        return Operand::Literal(inner);
-    }
-    match text {
-        "true" => Operand::Bool(true),
-        "false" => Operand::Bool(false),
-        _ => match text.parse::<f64>() {
-            Ok(number) if number.is_finite() => Operand::Number(number),
-            _ => Operand::Path(slot(paths, text)),
-        },
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -208,6 +193,8 @@ mod tests {
             ("010", r#"[[3,0,10],["count"]]"#),
             ("1e2", r#"[[3,0,100],["count"]]"#),
             ("'010'", r#"[[3,0,"010"],["count"]]"#),
+            ("+1", r#"[[11,0,1],["count","+1"]]"#),
+            (".5", r#"[[11,0,1],["count",".5"]]"#),
             ("limits.count", r#"[[11,0,1],["count","limits.count"]]"#),
         ] {
             let mut out = String::new();

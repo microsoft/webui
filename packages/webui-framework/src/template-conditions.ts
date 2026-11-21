@@ -15,7 +15,11 @@ type Resolver = Parameters<CompiledConditionFn>[0];
 export function evaluateCondition(condition: CompiledCondition, resolve: Resolver, scope: unknown): boolean {
   const [plan, paths] = condition;
   if (typeof plan === 'function') return plan(resolve, scope, isConditionTruthy);
-  if (plan.length === 1) return isConditionTruthy(resolve(paths[0], scope)) !== (plan[0] === 1);
+  if (plan.length === 1) {
+    const op = plan[0];
+    if (op !== 0 && op !== 1) throw invalidPlan();
+    return isConditionTruthy(resolve(paths[0], scope)) !== (op === 1);
+  }
 
   // The compiler emits dependencies in reverse execution order. Each jump
   // points strictly backwards, or to one of the two terminal values.
@@ -24,7 +28,7 @@ export function evaluateCondition(condition: CompiledCondition, resolve: Resolve
   for (;;) {
     const offset = node * 5;
     const op = plan[offset];
-    if (typeof op !== 'number') break;
+    if (typeof op !== 'number' || (op >>> 0) !== op || op > 14 || op === 8) break;
     const argument = plan[offset + 2];
     let result: boolean;
     if (op === 7) {
