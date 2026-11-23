@@ -334,10 +334,10 @@ mod tests {
         for (tag, json) in [
             (
                 "app-shell",
-                format!(r#"{{"h":"<p></p>","c":[[0,"{root}",[0,0,0],1]],"v":3}}"#),
+                format!(r#"{{"h":"<p></p>","c":[[0,"{root}",[0,0,0],1]],"v":4}}"#),
             ),
-            ("shared-badge", r#"{"h":"<p>Badge</p>","v":3}"#.to_owned()),
-            ("settings-form", r#"{"h":"<form></form>","v":3}"#.to_owned()),
+            ("shared-badge", r#"{"h":"<p>Badge</p>","v":4}"#.to_owned()),
+            ("settings-form", r#"{"h":"<form></form>","v":4}"#.to_owned()),
         ] {
             document.components.insert(
                 tag.to_owned(),
@@ -350,9 +350,9 @@ mod tests {
         for (id, json) in [
             (
                 root.clone(),
-                format!(r#"{{"h":"<p></p>","c":[[0,"{nested}",[0,0,0],4]],"v":3}}"#),
+                format!(r#"{{"h":"<p></p>","c":[[0,"{nested}",[0,0,0],4]],"v":4}}"#),
             ),
-            (nested, r#"{"h":"<p>Deep</p>","v":3}"#.to_owned()),
+            (nested, r#"{"h":"<p>Deep</p>","v":4}"#.to_owned()),
         ] {
             document.client_fragments.insert(
                 id,
@@ -411,7 +411,7 @@ mod tests {
         document.components.insert(
             "theme-picker".to_owned(),
             ComponentData {
-                template_json: r#"{"h":"<select></select>","v":3}"#.to_owned(),
+                template_json: r#"{"h":"<select></select>","v":4}"#.to_owned(),
                 ..Default::default()
             },
         );
@@ -568,7 +568,7 @@ mod tests {
             .components
             .get_mut("app-shell")
             .unwrap()
-            .template_json = r#"{"h":"<p></p>","v":3}"#.to_owned();
+            .template_json = r#"{"h":"<p></p>","v":4}"#.to_owned();
         let error = emit(&mut protocol).unwrap_err();
         assert!(matches!(error, HandlerError::Invariant(_)), "{error}");
         assert!(error.to_string().contains("app-shell::lazy:@0"), "{error}");

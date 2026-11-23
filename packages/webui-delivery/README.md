@@ -63,5 +63,9 @@ The request deadline defaults to 10 seconds, including a deferred state tail.
 `ndjson(maxRecordBytes?)` defaults to 256 KiB per record. JSON-only applications
 do not ship the decoder when bundled with tree-shaking.
 
+With the framework runtime started, native WebUI routes support both transports
+under [Trusted Types enforcement](https://microsoft.github.io/webui/build/hydration#trusted-types)
+alongside the normal nonce-based CSP.
+
 See the [Routing guide](https://microsoft.github.io/webui/build/routing)
 for HTML declarations, initialization ordering, server APIs, and cancellation.

@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import type { CompiledConditionFn, TemplateMeta } from '../template.js';
+import type { TemplateMeta } from '../template.js';
 import {
   requireComponentStyles,
   type ComponentStyles,
@@ -14,7 +14,6 @@ export interface ComponentAssetPayload {
   componentStyles: ComponentStyles;
   /** Exactly one compiled component template. */
   templates: Record<string, TemplateMeta>;
-  templateFunctions?: Record<string, CompiledConditionFn[]>;
 }
 
 /** Versioned root emitted by `webui build --emit-component-assets`. */
@@ -112,15 +111,5 @@ function validatePayload(value: unknown): string {
   }
   const tag = tags[0];
   prepareAssetComponentStyles(value.componentStyles);
-  const functions = value.templateFunctions;
-  if (functions !== undefined) {
-    if (!isObject(functions) || Object.keys(functions).some(name => name !== tag)) {
-      throw new Error(`[WebUI] Component asset templateFunctions contains undeclared payload for <${tag}>.`);
-    }
-    const closures = functions[tag];
-    if (!Array.isArray(closures) || closures.some(candidate => typeof candidate !== 'function')) {
-      throw new Error(`[WebUI] Component asset templateFunctions for <${tag}> must contain only functions.`);
-    }
-  }
   return tag;
 }

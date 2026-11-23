@@ -21,30 +21,26 @@ interface BrowserTrustedTypes {
   }): BrowserPolicy;
 }
 
-interface CompilerPolicy {
-  readonly policy: BrowserPolicy;
-  readonly capability: object;
-}
-
 interface BrowserWindow extends Window {
   readonly trustedTypes?: BrowserTrustedTypes;
 }
 
-let documentPolicies: WeakMap<Window, CompilerPolicy> | undefined;
+const compilerCapability = {};
+let documentPolicies: WeakMap<Window, BrowserPolicy> | undefined;
 let templateHTML: WeakMap<TemplateBlockMeta, string> | undefined;
 
-function getDocumentPolicy(view: BrowserWindow | null): CompilerPolicy | undefined {
+function authorize(input: string, token: object): string {
+  if (token !== compilerCapability) {
+    throw new TypeError('[WebUI] Only the compiled-template runtime may use this policy.');
+  }
+  return input;
+}
+
+function getDocumentPolicy(view: BrowserWindow | null): BrowserPolicy | undefined {
   if (!view?.trustedTypes) return undefined;
   const existing = documentPolicies?.get(view);
   if (existing) return existing;
 
-  const capability = {};
-  const authorize = (input: string, token: object): string => {
-    if (token !== capability) {
-      throw new TypeError('[WebUI] Only the compiled-template runtime may use this Trusted Types policy.');
-    }
-    return input;
-  };
   let policy: BrowserPolicy;
   try {
     policy = view.trustedTypes.createPolicy('webui', {
@@ -52,11 +48,10 @@ function getDocumentPolicy(view: BrowserWindow | null): CompilerPolicy | undefin
       createScript: authorize,
     });
   } catch (cause) {
-    throw new Error('[WebUI] Cannot create Trusted Types policy "webui". Allow "webui" in CSP, share one framework module, and do not pre-create the policy.', { cause });
+    throw new Error('[WebUI] Could not create Trusted Types policy. Allow "webui" in CSP and share one framework module.', { cause });
   }
-  const trust = { policy, capability };
-  (documentPolicies ??= new WeakMap()).set(view, trust);
-  return trust;
+  (documentPolicies ??= new WeakMap()).set(view, policy);
+  return policy;
 }
 
 /** Record immutable compiler HTML during template normalization, never state updates. */
@@ -69,12 +64,8 @@ export function registerTrustedTemplateBlock(meta: TemplateBlockMeta): void {
 
 /** @internal Parse registered compiler HTML without exposing a trusted value. */
 export function setTemplateContent(target: Element, meta: TemplateBlockMeta): void {
-  const trust = getTemplatePolicy(meta);
-  if (!trust) {
-    target.innerHTML = meta.h;
-    return;
-  }
-  target.innerHTML = trust.policy.createHTML(meta.h, trust.capability) as string & TrustedValue;
+  const policy = getTemplatePolicy(meta);
+  target.innerHTML = policy?.createHTML(meta.h, compilerCapability) as string & TrustedValue ?? meta.h;
 }
 
 /** Preserve compiler registration and CSP policy checks without an HTML sink. */
@@ -82,31 +73,14 @@ export function validateTrustedTemplateBlock(meta: TemplateBlockMeta): void {
   getTemplatePolicy(meta);
 }
 
-function getTemplatePolicy(meta: TemplateBlockMeta): CompilerPolicy | undefined {
-  const trust = getDocumentPolicy(window);
-  if (!trust) return undefined;
+function getTemplatePolicy(meta: TemplateBlockMeta): BrowserPolicy | undefined {
+  const policy = getDocumentPolicy(window);
+  if (!policy) return;
   const html = templateHTML?.get(meta);
   if (html === undefined || html !== meta.h) {
-    throw new Error('[WebUI] Unregistered or modified compiled template. Register only immutable compiler output.');
+    throw new Error('[WebUI] Unregistered or modified template. Register immutable compiler output.');
   }
-  return trust;
-}
-
-/**
- * @internal Run compiler-emitted condition closures from a same-build pack.
- *
- * The document nonce satisfies CSP and the compiler-owned `webui` policy
- * satisfies Trusted Types, matching how SSR delivers the same closures.
- */
-export function runCompilerScript(source: string, nonce: string): void {
-  const script = document.createElement('script');
-  if (nonce) script.nonce = nonce;
-  const trust = getDocumentPolicy(window);
-  script.textContent = trust
-    ? trust.policy.createScript(source, trust.capability) as string & TrustedValue
-    : source;
-  document.head.appendChild(script);
-  script.remove();
+  return policy;
 }
 
 /** @internal Serialize CSS data into an inert import map, never executable source. */
@@ -119,10 +93,12 @@ export function setImportMapContent(
   if (script.type !== 'importmap') {
     throw new TypeError('[WebUI] CSS data requires a script with type="importmap".');
   }
-  const json = JSON.stringify({
+  setScriptContent(script, JSON.stringify({
     imports: { [specifier]: `data:text/css,${encodeURIComponent(css)}` },
-  });
-  const trust = getDocumentPolicy(view);
-  if (trust) script.textContent = trust.policy.createScript(json, trust.capability) as string & TrustedValue;
-  else script.textContent = json;
+  }), view);
+}
+
+function setScriptContent(script: HTMLScriptElement, source: string, view: Window | null): void {
+  const policy = getDocumentPolicy(view);
+  script.textContent = policy?.createScript(source, compilerCapability) as string & TrustedValue ?? source;
 }

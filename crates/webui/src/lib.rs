@@ -927,7 +927,6 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
             .or_default();
         component.template = artifact.template.clone();
         component.template_json = artifact.template_json.clone();
-        component.template_functions = artifact.template_functions.clone();
         let (hydration_mode, hydration_keys) = encode_state_surface(&artifact.hydration);
         component.hydration_mode = hydration_mode;
         component.hydration_keys = hydration_keys;
@@ -1631,7 +1630,7 @@ mod tests {
             let metadata: serde_json::Value =
                 serde_json::from_str(&built.protocol.components["app-owner"].template_json)
                     .unwrap();
-            assert_eq!(metadata["v"], 3);
+            assert_eq!(metadata["v"], 4);
             assert_eq!(metadata["rf"], serde_json::json!([["rootInput", 1]]));
             assert_eq!(metadata["l"], serde_json::json!([3, 1]));
             let block = if lazy.is_empty() {
@@ -3403,7 +3402,10 @@ mod tests {
             .contains(r#""root":"lazy-panel""#));
         assert!(result.component_asset_files[1]
             .content
-            .contains(r#""templateFunctions":{"lazy-panel":"#));
+            .contains(r#""c":[[["#));
+        assert!(!result.component_asset_files[1]
+            .content
+            .contains("templateFunctions"));
         let root = &result.component_asset_files[0].content;
         let payload = &result.component_asset_files[1].content;
         for field in ["kind", "components", "requiredComponents"] {

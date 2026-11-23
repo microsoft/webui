@@ -15,7 +15,6 @@ import {
   installTemplateRegistry,
 } from './template-registry.js';
 import { TEMPLATES_REGISTERED_EVENT } from './template-events.js';
-import { runCompilerScript } from './trusted-types-policy.js';
 import { resolveAsset } from './asset-base.js';
 import { loadScripts, warnUnscriptedComponents } from './lazy-scripts.js';
 import { afterLoad, idle, speculativeTemplates } from './speculation.js';
@@ -54,7 +53,6 @@ interface TemplatePack {
   bits?: Readonly<Record<string, number>>;
   componentStyles?: unknown;
   templates?: Record<string, TemplateMeta>;
-  templateFunctions?: Readonly<Record<string, string>>;
 }
 
 /** A region template this runtime registered and may release. */
@@ -211,7 +209,6 @@ async function install(pack: TemplatePack, region: string, url: string, priority
   const registry = getTemplateRegistry();
   const templates = pack.templates ?? {};
   let fresh: Record<string, TemplateMeta> | undefined;
-  let closures = '';
   for (const id in templates) {
     // Packs are coarse; the page may already own shared templates. Ones only
     // the template cache still holds weakly are registered again, so the
@@ -225,21 +222,12 @@ async function install(pack: TemplatePack, region: string, url: string, priority
     // Registering prepares a template's own stylesheets on paths that pass
     // the style runtime only the template, so the template carries the speculation.
     if (priority === 'low') speculativeTemplates.add(templates[id]);
-    const source = pack.templateFunctions?.[id];
-    if (source) closures += `f[${JSON.stringify(id)}]=${source};`;
   }
   // Published templates are present but not ready until every step below
   // succeeds. Only their IDs are kept, so template collection can still free them.
   unready.set(url, new Set(Object.keys(fresh || 0)));
   const waits: PromiseLike<unknown>[] = [];
   if (fresh) {
-    if (closures) {
-      runCompilerScript(
-        `(function(){var w=window.__webui||(window.__webui={}),f=w.templateFns||(w.templateFns={});${closures}})();`,
-        runtime.nonce
-          ?? document.querySelector<HTMLMetaElement>('meta[name="webui-nonce"]')?.content ?? '',
-      );
-    }
     installTemplateRegistry();
     window.dispatchEvent(new CustomEvent(TEMPLATES_REGISTERED_EVENT, {
       detail: {

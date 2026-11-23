@@ -10,7 +10,7 @@
 //! in-place hydration on the client: the framework reuses the SSR comment
 //! nodes as runtime anchors instead of creating temporary wrappers.
 
-use super::{BootstrapExtensionContext, HandlerPlugin};
+use super::HandlerPlugin;
 use crate::{ResponseWriter, Result};
 use webui_protocol::WebUIProtocol;
 
@@ -199,23 +199,6 @@ impl HandlerPlugin for WebUIHydrationPlugin {
     ) -> Option<Vec<super::WebUiTemplatePayload<'a>>> {
         webui_collect_payloads(protocol, tags.iter().copied())
     }
-
-    fn emit_bootstrap_extension(
-        &self,
-        context: BootstrapExtensionContext<'_>,
-        writer: &mut dyn ResponseWriter,
-    ) -> Result<()> {
-        webui_emit_bootstrap_fns(context.payloads, context.nonce, writer)
-    }
-
-    fn emit_bootstrap_extension_payloads(
-        &self,
-        payloads: &[super::WebUiTemplatePayload<'_>],
-        nonce: Option<&str>,
-        writer: &mut dyn ResponseWriter,
-    ) -> Result<()> {
-        webui_emit_bootstrap_fns(payloads, nonce, writer)
-    }
 }
 
 /// Emit non-split WebUI component templates inside a single `<script>` tag.
@@ -276,7 +259,6 @@ fn webui_collect_payloads<'a, 'b>(
                 templates.push(super::WebUiTemplatePayload {
                     tag_name: payload.id,
                     template_json: payload.metadata,
-                    template_functions: payload.functions,
                 });
             }
         }
@@ -286,46 +268,6 @@ fn webui_collect_payloads<'a, 'b>(
     } else {
         Some(templates)
     }
-}
-
-/// Emit the WebUI `templateFns` executable side-channel for payloads that carry
-/// component-local condition closures. Shared by the ordinary and streaming
-/// bootstrap-extension hooks.
-fn webui_emit_bootstrap_fns(
-    payloads: &[super::WebUiTemplatePayload<'_>],
-    nonce: Option<&str>,
-    writer: &mut dyn ResponseWriter,
-) -> Result<()> {
-    let has_functions = payloads
-        .iter()
-        .any(|payload| !payload.template_functions.is_empty());
-    if !has_functions {
-        return Ok(());
-    }
-
-    if let Some(nonce) = nonce {
-        writer.write("<script nonce=\"")?;
-        writer.write(nonce)?;
-        writer.write("\">")?;
-    } else {
-        writer.write("<script>")?;
-    }
-    writer.write("(function(){var w=window.__webui||(window.__webui={});")?;
-    writer.write("var f=w.templateFns||(w.templateFns={});")?;
-    // Request-local scratch reused across every tag_name serialized in this
-    // loop; dropped when the emission returns.
-    let mut json_scratch = Vec::new();
-    for payload in payloads {
-        if payload.template_functions.is_empty() {
-            continue;
-        }
-        writer.write("f[")?;
-        crate::write_script_safe_json(writer, &mut json_scratch, payload.tag_name)?;
-        writer.write("]=")?;
-        writer.write(payload.template_functions)?;
-        writer.write(";")?;
-    }
-    writer.write("})();</script>\n")
 }
 
 #[cfg(test)]

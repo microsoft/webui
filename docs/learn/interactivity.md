@@ -47,7 +47,7 @@ wait for it to arrive. Repeated startup calls do not repeat installation.
 | Package root | Pure component, decorator, and data API exports |
 | `runtime.js` | `startRuntime()` starts compiled hydration/client mounting, component styling, and scriptless hosts |
 | `styles.js` | Stylesheet helper exports and compatibility installer; no separate import is needed for normal startup |
-| `templates.js` | `getTemplate()` and `registerTemplateData()` without installing a renderer |
+| `templates.js` | `getTemplate()` and `registerTemplateData(templates, componentStyles?)` without installing a renderer |
 | `template-cache.js` | Optional lifetime-aware template collection |
 | `lazy.js` | Loads `<if lazy>` packs and releases inactive regions; import through generated `lazy.webui.js`. Bare lazy is activation-only; use selective idle or path prefetch for warming |
 | `streaming.js` | Progressive HTML streaming hydration |

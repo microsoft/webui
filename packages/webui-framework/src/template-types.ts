@@ -49,21 +49,19 @@ export type CompiledAttrGroupMeta = [
 ];
 
 /**
- * Compiled condition — JSON metadata carries a function index plus the paths it
- * references. The Rust compiler emits the actual function bodies in a separate
- * closure array, and the runtime normalizes indexes to functions once.
- *
- * - `[0]` — evaluator function or component-local function index
- * - `[1]` — referenced paths for the reactive path index
+ * A compiled condition pairs a build-time plan with its reactive dependency
+ * paths. Explicit JavaScript registrations may supply function values instead.
  */
 export type CompiledConditionFn = (
   v: (path: string, s?: unknown) => unknown,
   s: unknown,
   t: (value: unknown) => boolean,
 ) => boolean;
-export type CompiledCondition = [fn: CompiledConditionFn, paths: string[]];
-export type SerializedCompiledCondition = [fnIndex: number, paths: string[]];
-export type TemplateCondition = CompiledCondition | SerializedCompiledCondition;
+export type ConditionPlan = readonly (number | string | boolean)[];
+export type PlannedCondition = [plan: ConditionPlan, paths: string[]];
+export type SerializedCompiledCondition = PlannedCondition;
+export type CompiledCondition = [fn: CompiledConditionFn, paths: string[]] | PlannedCondition;
+export type TemplateCondition = CompiledCondition;
 /** Local block index or an independently delivered template-fragment identity. */
 export type TemplateBlockReference = number | string;
 /**
@@ -119,7 +117,7 @@ export type CompiledSSRLayout = [
 ];
 
 export interface TemplateBlockMeta {
-  /** Compiled owner refs for v3 templates, using the same element ordinal space. */
+  /** Compiled owner refs using the same element ordinal space. */
   rf?: [name: string, target: TemplateNodeIndex][];
   /** Hostless external section identity and its owning template. */
   f?: string;
@@ -137,9 +135,11 @@ export interface TemplateBlockMeta {
   eg?: CompiledEventGroupMeta[];
 }
 
+export const TEMPLATE_META_VERSION = 4;
+
 export interface TemplateMeta extends TemplateBlockMeta {
   /** Current compiled-template format; compiler and runtime must match. */
-  v: 3;
+  v: typeof TEMPLATE_META_VERSION;
   /** Direct compiled component dependencies; absent is empty. */
   d?: readonly string[];
   /** Pack URLs of the lazy regions whose conditions this template contains. */

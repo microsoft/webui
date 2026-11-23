@@ -2,8 +2,8 @@
 // Licensed under the MIT license.
 
 use super::{
-    emit_js_string, emit_json_template_section, ConditionFunctionEmitter, TemplateMeta,
-    TemplateSectionMeta,
+    emit_js_string, emit_json_template_section, TemplateMeta, TemplateSectionMeta,
+    TEMPLATE_META_VERSION_FIELD,
 };
 use crate::plugin::LazyTemplateArtifact;
 use std::collections::{HashMap, HashSet};
@@ -106,12 +106,7 @@ impl Plan {
             return None;
         }
         let mut key = String::with_capacity(section.html.len() + 128);
-        emit_json_template_section(
-            section,
-            &mut key,
-            &mut ConditionFunctionEmitter::new(0),
-            None,
-        );
+        emit_json_template_section(section, &mut key, None);
         Some(key)
     }
 
@@ -130,15 +125,15 @@ impl Plan {
             let local_blocks = declaration
                 .map(|(region, _)| self.bundles[region].as_slice())
                 .unwrap_or_default();
-            let mut functions = ConditionFunctionEmitter::new(64);
             let local_html: usize = local_blocks
                 .iter()
                 .map(|index| meta.blocks[*index].html.len())
                 .sum();
             let mut json = String::with_capacity(section.html.len() + local_html + 128);
             json.push('{');
-            emit_json_template_section(section, &mut json, &mut functions, Some(self));
-            json.push_str(",\"v\":3,\"f\":");
+            emit_json_template_section(section, &mut json, Some(self));
+            json.push_str(TEMPLATE_META_VERSION_FIELD);
+            json.push_str(",\"f\":");
             emit_js_string(id, &mut json);
             json.push_str(",\"o\":");
             emit_js_string(owner, &mut json);
@@ -152,12 +147,7 @@ impl Plan {
                         json.push(',');
                     }
                     json.push('{');
-                    emit_json_template_section(
-                        &meta.blocks[*index],
-                        &mut json,
-                        &mut functions,
-                        Some(self),
-                    );
+                    emit_json_template_section(&meta.blocks[*index], &mut json, Some(self));
                     json.push('}');
                 }
                 json.push(']');
@@ -169,7 +159,6 @@ impl Plan {
                 data: ClientFragmentData {
                     owner: owner.to_owned(),
                     template_json: json,
-                    template_functions: functions.finish(),
                     dependencies,
                     state_keys: if meta.has_named_repeats {
                         super::collect_template_roots::<true, true>(section, &meta.blocks, false)

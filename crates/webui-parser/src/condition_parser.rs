@@ -7,7 +7,7 @@
 //! It uses a non-recursive approach for parsing expressions.
 
 use crate::{ParserError, Result};
-use webui_protocol::{ComparisonOperator, ConditionExpr, LogicalOperator};
+use webui_protocol::{ComparisonOperator, ConditionExpr, LogicalOperator, PredicateOperand};
 
 /// Parser for WebUI condition expressions.
 pub struct ConditionParser;
@@ -127,6 +127,12 @@ impl ConditionParser {
                 // Check that both sides are valid
                 if left.is_empty() || right.is_empty() {
                     continue;
+                }
+
+                match PredicateOperand::classify(right) {
+                    PredicateOperand::Invalid => continue,
+                    PredicateOperand::Float(value) if !value.is_finite() => continue,
+                    _ => {}
                 }
 
                 // Convert operator string to enum variant.

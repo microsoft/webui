@@ -82,7 +82,6 @@ const SSR_PRELOAD_SELECTOR = 'link[data-webui-ssr-preload]';
 
 type RouterRuntimeGlobal = WebUIRuntimeGlobal & {
   templates?: Record<string, unknown>;
-  templateFns?: Record<string, unknown>;
 };
 
 interface PartialReadResult {
@@ -444,12 +443,6 @@ export class WebUIRouter {
       }
       for (const tag of Object.keys(registry)) {
         delete registry[tag];
-      }
-    }
-    const functionRegistry = runtime?.templateFns;
-    if (functionRegistry) {
-      for (const tag of Object.keys(functionRegistry)) {
-        delete functionRegistry[tag];
       }
     }
     clearInventory();

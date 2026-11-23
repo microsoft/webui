@@ -4,7 +4,7 @@
 import { startRuntime } from '../../../src/runtime.js';
 import { registerComponentStyles } from '../../../src/element/style-catalog.js';
 import type { TemplateInstance } from '../../../src/element/types.js';
-import type { TemplateBlockMeta } from '../../../src/template-types.js';
+import { TEMPLATE_META_VERSION, type TemplateBlockMeta } from '../../../src/template-types.js';
 import '../../../src/styles-entry.js';
 import {
   WebUIElement,
@@ -18,7 +18,7 @@ startRuntime();
 
 const templates: Record<string, TemplateMeta> = {
   'test-runtime-life': {
-    v: 3,
+    v: TEMPLATE_META_VERSION,
     h: '<span></span>',
     l: [3, 1],
     tx: [
@@ -29,24 +29,24 @@ const templates: Record<string, TemplateMeta> = {
     th: 1,
   },
   'test-runtime-effects': {
-    v: 3,
+    v: TEMPLATE_META_VERSION,
     h: '<span></span>',
     l: [3, 1],
     th: 1,
   },
   'test-runtime-throw': {
-    v: 3,
+    v: TEMPLATE_META_VERSION,
     h: '<span></span>',
     l: [3, 1],
     th: 1,
   },
   'test-runtime-immediate': {
-    v: 3,
+    v: TEMPLATE_META_VERSION,
     h: '<span></span>',
     l: [3, 1],
   },
-  'test-runtime-static-shadow': { v: 3, h: '<span>Ready</span>', l: [3, 1], sd: 1 },
-  'test-runtime-custom-finalizer': { v: 3, h: '<span>Ready</span>', l: [3, 1], sd: 1 },
+  'test-runtime-static-shadow': { v: TEMPLATE_META_VERSION, h: '<span>Ready</span>', l: [3, 1], sd: 1 },
+  'test-runtime-custom-finalizer': { v: TEMPLATE_META_VERSION, h: '<span>Ready</span>', l: [3, 1], sd: 1 },
 };
 
 export class TestRuntimeLife extends WebUIElement {

@@ -34,7 +34,7 @@ export const ITEM_COUNTS = [10, 100, 1_000] as const;
 export type LazyBenchMode = 'eager' | 'lazy-hydrate' | 'lazy-render';
 
 const TODO_TEMPLATE: TemplateMeta = {
-  v: 3,
+  v: 4,
   h: '<article><input type="checkbox"><span></span><small></small><strong></strong><time></time><button type="button">Toggle</button><button type="button">Delete</button></article>',
   l: [3, 15, 1, 1, 1, 1, 1, 1, 1],
   tr: ['title', 'description', 'priority', 'due'],

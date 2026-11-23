@@ -607,7 +607,7 @@ fn handler_protocol_construction_bench(c: &mut Criterion) {
             document.components.insert(
                 format!("card-{component}"),
                 webui_protocol::ComponentData {
-                    template_json: r#"{"v":3,"h":"<main></main>","l":[3,1]}"#.into(),
+                    template_json: r#"{"v":4,"h":"<main></main>","l":[3,1]}"#.into(),
                     ..Default::default()
                 },
             );
@@ -619,7 +619,7 @@ fn handler_protocol_construction_bench(c: &mut Criterion) {
                     owner: "card-0".into(),
                     entry: true,
                     template_json:
-                        r#"{"v":3,"h":"<section><h2>Settings</h2><input></section>","l":[3,5,1,1]}"#
+                        r#"{"v":4,"h":"<section><h2>Settings</h2><input></section>","l":[3,5,1,1]}"#
                             .into(),
                     ..Default::default()
                 },

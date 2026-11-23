@@ -23,7 +23,7 @@ The test server (`tests/server.ts`) uses `fixture-render.ts` to:
 
 1. **Discover** fixture dirs that have `src/index.html`
 2. **Build** each via `@microsoft/webui` `build()` → compiles templates to protocol
-3. **Render** via `render()` → produces SSR HTML with hydration markers, template metadata, condition closures, and inventory
+3. **Render** via `render()` → produces SSR HTML with hydration markers, compiled template metadata, and inventory
 4. **Inject** the `<script>` tag for the bundled `element.ts`
 5. **Serve** the result at `/<name>/fixture.html`
 

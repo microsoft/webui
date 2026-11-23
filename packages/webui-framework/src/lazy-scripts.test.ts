@@ -64,7 +64,7 @@ function region(ordinal: number): string {
 }
 
 function template(id: string): TemplateMeta {
-  return { v: 3, f: id, o: 'test-shell', e: 1, h: '<p></p>' };
+  return { v: 4, f: id, o: 'test-shell', e: 1, h: '<p></p>' };
 }
 
 /** Answer a pack request with the region's template. */
@@ -150,7 +150,7 @@ function shell(packs: Record<string, string>): Shell {
   const Owner = class extends TemplateElement {};
   const host = new Owner() as unknown as Shell;
   markMounted(host, 'test-shell');
-  host.$meta = { v: 3, h: '', lp: packs };
+  host.$meta = { v: 4, h: '', lp: packs };
   return host;
 }
 
@@ -441,10 +441,10 @@ test('an owner host hears intent that the shadow tree around it keeps from the d
   // that tree's host. An owner nested in the tree is on the path when the move enters it.
   const id = 'tree-owner::lazy:@0';
   const url = '_webui/packs/tree-owner.0000.json';
-  const meta: TemplateMeta = { v: 3, h: '', c: [[[0, ['open']], id, [0, 0], 1]], lp: { [id]: url } };
+  const meta: TemplateMeta = { v: 4, h: '', c: [[[[0], ['open']], id, [0, 0], 1]], lp: { [id]: url } };
   const owner = ownerHost('tree-owner');
   const sibling = ownerHost('tree-sibling');
-  sibling.$mount({ v: 3, h: '' });
+  sibling.$mount({ v: 4, h: '' });
   owner.$mount(meta);
   owner.$mount(meta);
   assert.equal(getEventListeners(sibling, 'pointerover').length, 0, 'a host without waiting intent regions is not watched');
@@ -466,8 +466,8 @@ test('an owner host hears intent that the shadow tree around it keeps from the d
 test('an owner host hears intent for a region that a block reveals after the owner mounted', () => {
   const id = 'reveal-owner::lazy:@0';
   const url = '_webui/packs/reveal-owner.0000.json';
-  const block: TemplateBlockMeta = { h: '', c: [[[0, ['open']], id, [0, 0], 1]] };
-  const meta: TemplateMeta = { v: 3, h: '', b: [block], lp: { [id]: url } };
+  const block: TemplateBlockMeta = { h: '', c: [[[[0], ['open']], id, [0, 0], 1]] };
+  const meta: TemplateMeta = { v: 4, h: '', b: [block], lp: { [id]: url } };
   const owner = ownerHost('reveal-owner');
   owner.$mount(meta);
   assert.equal(getEventListeners(owner, 'pointerover').length, 0, 'the closed block arms nothing');
@@ -533,7 +533,7 @@ test('a speculative load before the window loads defers scripts that an activati
   const panel = deferredLoader('deferred-panel');
   registerGeneratedLazyScripts({ [id]: { 'deferred-panel': panel.load } });
   const host = shell({ [id]: url });
-  host.$meta!.c = [[[0, ['open']], id, [0, 0], 4]];
+  host.$meta!.c = [[[[0], ['open']], id, [0, 0], 4]];
   page.readyState = 'interactive';
   try {
     requests.length = 0;
@@ -586,7 +586,7 @@ function captureStyles(prepared: () => Promise<void> | undefined = () => undefin
 /** A shell whose template holds one demand region with link stylesheets. */
 function styledShell(id: string, url: string): Shell {
   const host = shell({ [id]: url });
-  host.$meta!.c = [[[0, ['open']], id, [0, 0], 4]];
+  host.$meta!.c = [[[[0], ['open']], id, [0, 0], 4]];
   host.$meta!.lc = { [id]: ['region.css'] };
   return host;
 }
@@ -699,7 +699,7 @@ test('development warns once when a pack registers scripted components nothing l
     class PackDeclared extends TemplateElement {}
     PackDeclared.define('pack-declared');
     defined.set('pack-defined', class {});
-    const component = (extra: Partial<TemplateMeta> = {}): TemplateMeta => ({ v: 3, h: '<p></p>', ...extra });
+    const component = (extra: Partial<TemplateMeta> = {}): TemplateMeta => ({ v: 4, h: '<p></p>', ...extra });
     const install = async (id: string, url: string, templates: Record<string, TemplateMeta>): Promise<void> => {
       const host = shell({ [id]: url });
       host.$toggleCond(binding(id));

@@ -52,20 +52,20 @@ describe('Link stylesheet scanning', () => {
 
   test('finds author styles in any template block', () => {
     assert.equal(
-      templateMayContainAuthorStyles({ v: 3, h: '<p class="card">Ready</p>' }),
+      templateMayContainAuthorStyles({ v: 4, h: '<p class="card">Ready</p>' }),
       false,
     );
     assert.equal(
-      templateMayContainAuthorStyles({ v: 3, h: '<style-card></style-card><link-card></link-card>' }),
+      templateMayContainAuthorStyles({ v: 4, h: '<style-card></style-card><link-card></link-card>' }),
       false,
     );
     assert.equal(
-      templateMayContainAuthorStyles({ v: 3, h: '<STYLE>.a{}</STYLE><p></p>' }),
+      templateMayContainAuthorStyles({ v: 4, h: '<STYLE>.a{}</STYLE><p></p>' }),
       true,
     );
     assert.equal(
       templateMayContainAuthorStyles({
-        v: 3,
+        v: 4,
         h: '<p></p>',
         b: [{ h: '<span></span>' }, { h: '<link rel="stylesheet" href="x.css">' }],
       }),
@@ -447,7 +447,7 @@ describe('Speculative stylesheet preload priority', () => {
 
   /** A template whose only stylesheet is `href`. */
   function linked(href: string): TemplateMeta {
-    return { v: 3, h: `<link rel="stylesheet" href="${href}"><p></p>` };
+    return { v: 4, h: `<link rel="stylesheet" href="${href}"><p></p>` };
   }
 
   test('after the window loads, templates a speculative lazy load registers preload their stylesheets at low priority', async (context) => {
@@ -476,7 +476,7 @@ describe('Speculative stylesheet preload priority', () => {
       const speculative = linked('owned.css');
       const declared = linked('declared.css');
       const mounted = linked('mounted.css');
-      const plain: TemplateMeta = { v: 3, h: '<p></p>' };
+      const plain: TemplateMeta = { v: 4, h: '<p></p>' };
       for (const meta of [speculative, declared, mounted, plain]) speculativeTemplates.add(meta);
       assert.equal(prepareRegisteredLinkStyles({ 'owned-card': speculative, 'plain-card': plain }), undefined);
       assert.equal(prepareTemplateLinkStyles(declared), undefined);

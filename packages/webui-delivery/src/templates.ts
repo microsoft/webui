@@ -21,7 +21,6 @@ type InventoryReceiver = (inventory: string, styleInventory?: string) => void;
 
 export interface TemplateResourceResponse {
   templates?: Record<string, unknown>;
-  templateFunctions?: Record<string, string>;
   componentStyles?: ComponentStyles;
   inventory?: string;
   styleInventory?: string;
@@ -30,15 +29,16 @@ export interface TemplateResourceResponse {
 }
 
 /**
- * Register templates + inject CSS from a server response.
+ * Register templates and component styles from a server response.
  * Shared by fetchPartial and fetchComponentTemplates.
  *
  * WebUI JSON template payloads are stored directly. FAST string templates are
- * materialized as DOM.
+ * materialized as DOM. The nonce argument is retained for API compatibility;
+ * native condition registration does not insert a script.
  */
 export function registerTemplatesAndStyles(
   data: TemplateResourceResponse,
-  nonce: string,
+  _nonce: string,
   updateInventory: InventoryReceiver,
 ): Promise<void> | undefined {
   if (data.buildId !== undefined) {
@@ -59,39 +59,7 @@ export function registerTemplatesAndStyles(
     ? registerComponentStyleCatalog(componentStyles)
     : undefined;
 
-  let executableTemplateBody = '';
   let registeredTemplates: Record<string, unknown> | undefined;
-  // 1. Template closures: execute only the component-local condition arrays.
-  //    TRUST BOUNDARY: closure scripts come from the same-origin server
-  //    that compiled the protocol. The CSP nonce gates script execution.
-  //    If the server endpoint is compromised, this is an XSS vector —
-  //    same risk as the existing fetchPartial pipeline.
-  if (data.templateFunctions) {
-    const tags = Object.keys(data.templateFunctions);
-    if (tags.length > 0) {
-      executableTemplateBody += 'var w=(window.__webui||(window.__webui={}));var f=w.templateFns||(w.templateFns={});';
-    }
-    for (let i = 0; i < tags.length; i++) {
-      const tag = tags[i];
-      const functions = data.templateFunctions[tag];
-      if (!functions) continue;
-      executableTemplateBody += 'f[';
-      executableTemplateBody += JSON.stringify(tag);
-      executableTemplateBody += ']=';
-      executableTemplateBody += functions;
-      executableTemplateBody += ';';
-    }
-  }
-
-  if (executableTemplateBody) {
-    const script = document.createElement('script');
-    if (nonce) script.nonce = nonce;
-    script.textContent = `(function(){${executableTemplateBody}})();`;
-    document.head.appendChild(script);
-    document.head.removeChild(script);
-  }
-
-  // 2. Template metadata is published only after resources and closures.
   if (data.templates) {
     const w = window as unknown as { __webui?: { templates?: Record<string, unknown>; [key: string]: unknown } };
     if (!w.__webui) w.__webui = {};

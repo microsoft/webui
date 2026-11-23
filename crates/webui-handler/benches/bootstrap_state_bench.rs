@@ -686,7 +686,6 @@ fn bootstrap_state_bench(c: &mut Criterion) {
 fn partial_state_serialization_bench(c: &mut Criterion) {
     let response = json!({
         "templates": {},
-        "templateFunctions": {},
         "componentStyles": {
             "version": 1,
             "strategy": "link",

@@ -113,22 +113,6 @@ pub(super) fn render_asset(
         )?;
         js.push('}');
     }
-    if pending.components.iter().any(|id| {
-        payloads
-            .get(*id)
-            .and_then(Option::as_ref)
-            .is_some_and(|payload| payload.functions.is_some())
-    }) {
-        js.push_str(",\"templateFunctions\":{");
-        push_functions(
-            &mut js,
-            &pending.components,
-            plan,
-            payloads,
-            &mut attribution,
-        )?;
-        js.push('}');
-    }
     js.push_str("};\n");
     js.push_str("export default asset;\n");
 
@@ -179,7 +163,6 @@ fn estimate_asset_size(
                 };
                 bytes + 64
             });
-            size += payload.functions.map_or(0, str::len);
         }
     }
     for import in &pending.imports {
@@ -330,32 +313,6 @@ fn push_templates(
         out.push(':');
         out.push_str(&payload.template);
         add_attribution(attribution, index, out.len() - start);
-    }
-    Ok(())
-}
-
-fn push_functions(
-    out: &mut String,
-    components: &[usize],
-    plan: &AssetGraphPlan,
-    payloads: &[Option<RenderedComponent<'_>>],
-    attribution: &mut [usize],
-) -> Result<(), WebUIError> {
-    let mut written = 0usize;
-    for (index, component) in components.iter().copied().enumerate() {
-        let payload = payload(payloads, component)?;
-        let Some(functions) = &payload.functions else {
-            continue;
-        };
-        let start = out.len();
-        if written > 0 {
-            out.push(',');
-        }
-        push_json_string(out, plan.component_names[component], "component tag")?;
-        out.push(':');
-        out.push_str(functions);
-        add_attribution(attribution, index, out.len() - start);
-        written += 1;
     }
     Ok(())
 }

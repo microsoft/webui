@@ -4,8 +4,8 @@
 //! Build-time template packs for lazy regions.
 //!
 //! A pack is the immutable JSON resource record for one lazy region: its
-//! template, private and shared blocks, component dependencies, styles,
-//! condition functions, and inventory bits. Templates and styles that the
+//! template (including condition plans), private and shared blocks, component
+//! dependencies, styles, and inventory bits. Templates and styles that the
 //! owning template already guarantees are omitted, and nested lazy regions
 //! are separate packs. Builds publish packs as static files; hosts never
 //! render them per request.
@@ -228,7 +228,7 @@ mod tests {
             document.components.insert(
                 tag.to_owned(),
                 ComponentData {
-                    template_json: format!(r#"{{"h":"<p>{tag}</p>","v":3}}"#),
+                    template_json: format!(r#"{{"h":"<p>{tag}</p>","v":4}}"#),
                     ..Default::default()
                 },
             );
@@ -239,7 +239,7 @@ mod tests {
                 ClientFragmentData {
                     owner: "app-shell".into(),
                     entry: true,
-                    template_json: r#"{"h":"<p>Inline</p>","v":3}"#.into(),
+                    template_json: r#"{"h":"<p>Inline</p>","v":4}"#.into(),
                     ..Default::default()
                 },
             );

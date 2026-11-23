@@ -18,7 +18,6 @@ export interface PartialResponse extends TemplateResourceResponse {
   /** JSON-safe template metadata keyed by component tag. */
   templates: Record<string, unknown>;
   /** JavaScript condition closure arrays keyed by component tag. */
-  templateFunctions?: Record<string, string>;
   path: string;
   chain?: RouteChainEntry[];
   /** CSS stylesheet URLs to inject into `<head>` for this route's components. */

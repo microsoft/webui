@@ -52,7 +52,6 @@ fn benchmark_protocol() -> Protocol {
         "bench-page".to_string(),
         ComponentData {
             template_json: r#"{"h":"<main>ready</main>","th":1}"#.to_string(),
-            template_functions: "[function(){return true}]".to_string(),
             navigation_keys: vec!["selected".to_string()],
             navigation_mode: Some(StateProjectionMode::Keys as i32),
             ..Default::default()

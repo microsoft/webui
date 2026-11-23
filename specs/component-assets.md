@@ -7,8 +7,8 @@ deployment or chunk loader. Only stable root paths belong in authored imports.
 
 A root default-exports a versioned `webui-component-asset` object with `root`,
 `externalComponents`, static `imports`, and `componentStyles`. Each imported
-payload contains exactly one entry in `templates`, its `componentStyles`, and
-optional `templateFunctions`. Payloads have no independent version, kind,
+payload contains exactly one entry in `templates` and its `componentStyles`.
+Condition plans are part of template metadata. Payloads have no independent version, kind,
 component inventory, prerequisites, or imports. The root's required template
 set is the disjoint union of imported template names and external components;
 the root itself belongs to that union.
@@ -25,8 +25,8 @@ ESM imports do not define CSS order.
 
 The trusted runtime checks external template availability and conflicts with
 the live style catalog, including already registered imported components.
-Condition closures and Trusted Types preparation complete before registry
-mutation. CSS readiness precedes template publication and element creation.
+Template preparation completes before registry mutation. CSS readiness precedes
+template publication and element creation.
 Manifest-driven loading additionally validates payload shape, disjoint
 providers, within-graph style consistency, and closure-resource coverage.
 

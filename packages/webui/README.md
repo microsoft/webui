@@ -298,15 +298,15 @@ console.log(JSON.parse(json));
 
 ### `protocol.renderPartial(state, entryId, requestPath, inventoryHex): string`
 
-Produces a JSON partial response for client-side navigation, including state, template metadata, condition closures, and route chain.
+Produces a JSON partial response for client-side navigation, including state, compiled template metadata, and the route chain.
 
 ### `protocol.renderComponentTemplates(componentTags, inventoryHex): string`
 
-Renders templates and styles for on-demand component loading (used by `Router.ensureLoaded()`). Returns a JSON string with `componentStyles`, `templates`, `templateFunctions`, and `inventory`. Uses the same inventory bitfield as partial navigation to avoid sending duplicates.
+Renders templates and styles for on-demand component loading (used by `Router.ensureLoaded()`). Returns a JSON string with `componentStyles`, `templates`, and `inventory`. Uses the same inventory bitfield as partial navigation to avoid sending duplicates.
 
 ```js
 const json = protocol.renderComponentTemplates(["settings-dialog"], inventoryHex);
-const { templates, templateFunctions, componentStyles, inventory } = JSON.parse(json);
+const { templates, componentStyles, inventory } = JSON.parse(json);
 ```
 
 ## CLI

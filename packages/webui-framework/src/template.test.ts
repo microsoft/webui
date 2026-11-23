@@ -40,13 +40,13 @@ describe('template registry helpers', () => {
       value: { __webui: { templates: {} } },
     });
     try {
-      for (const json of ['{"h":""}', '{"v":1,"h":""}', '{"v":4,"h":""}']) {
+      for (const json of ['{"h":""}', '{"v":1,"h":""}', '{"v":3,"h":""}', '{"v":5,"h":""}']) {
         assert.throws(
           () => prepareAssetTemplateData({ invalid: JSON.parse(json) }),
           /Unsupported template metadata version/,
         );
       }
-      const current: TemplateMeta = { v: 3, h: '<p>Current</p>' };
+      const current: TemplateMeta = { v: 4, h: '<p>Current</p>' };
       prepareAssetTemplateData({ current });
       registerTemplateData({ current });
       assert.equal(getTemplate('current'), current);
@@ -63,14 +63,14 @@ describe('template registry helpers', () => {
       value: { __webui: { templates: {} } },
     });
     try {
-      for (const json of ['{"h":""}', '{"v":1,"h":""}', '{"v":2,"h":""}', '{"v":4,"h":""}']) {
+      for (const json of ['{"h":""}', '{"v":1,"h":""}', '{"v":2,"h":""}', '{"v":3,"h":""}', '{"v":5,"h":""}']) {
         assert.throws(
           () => registerTemplateData({ invalid: JSON.parse(json) }),
           /Unsupported template metadata version/,
         );
         assert.equal(window.__webui!.templates!.invalid, undefined);
       }
-      registerTemplateData({ current: { v: 3, h: '<p>Current</p>' } });
+      registerTemplateData({ current: { v: 4, h: '<p>Current</p>' } });
       assert.equal(getTemplate('current')?.h, '<p>Current</p>');
     } finally {
       if (previous) Object.defineProperty(globalThis, 'window', previous);
@@ -80,7 +80,7 @@ describe('template registry helpers', () => {
 
   test('getTemplate returns registered metadata from window', () => {
     const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
-    const template: TemplateMeta = { v: 3, h: '<p>Hello</p>' };
+    const template: TemplateMeta = { v: 4, h: '<p>Hello</p>' };
 
     try {
       Object.defineProperty(globalThis, 'window', {
@@ -106,14 +106,14 @@ describe('template registry helpers', () => {
     }
   });
 
-  test('registerTemplateData normalizes indexed conditions once', () => {
+  test('registerTemplateData preserves inline conditions', () => {
     const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
     const fn = (): boolean => true;
     const template: TemplateMeta = {
-      v: 3,
+      v: 4,
       h: '<p></p>',
       b: [{ h: '<span></span>' }],
-      c: [[[0, ['ready']], 0, [0, 0]]],
+      c: [[[fn, ['ready']], 0, [0, 0]]],
     };
 
     try {
@@ -123,7 +123,7 @@ describe('template registry helpers', () => {
         writable: true,
       });
 
-      registerTemplateData({ greeting: template }, { greeting: [fn] });
+      registerTemplateData({ greeting: template });
       const registered = getTemplate('greeting')!;
       assert.equal((registered.c![0][0][0] as unknown), fn);
       assert.deepEqual(registered.c![0][0][1], ['ready']);
@@ -139,7 +139,7 @@ describe('template registry helpers', () => {
 
   test('registerTemplateData enumerates the template names once', () => {
     const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
-    const template: TemplateMeta = { v: 3, h: '<p>Hello</p>' };
+    const template: TemplateMeta = { v: 4, h: '<p>Hello</p>' };
     let enumerations = 0;
     const templates = new Proxy({ greeting: template }, {
       ownKeys(target) {
@@ -161,18 +161,18 @@ describe('template registry helpers', () => {
     }
   });
 
-  test('normalizes root and nested conditionals across the flat local block table', () => {
+  test('registers root and nested conditions across the flat local block table', () => {
     const previous = Object.getOwnPropertyDescriptor(globalThis, 'window');
     const rootCondition = (): boolean => true;
     const childCondition = (): boolean => false;
     const attributeCondition = (): boolean => true;
     const template: TemplateMeta = {
-      v: 3,
+      v: 4,
       h: '',
-      c: [[[0, ['visible']], 0, [0, 0]]],
+      c: [[[rootCondition, ['visible']], 0, [0, 0]]],
       b: [
-        { h: '', c: [[[1, ['expanded']], 1, [0, 0]]] },
-        { h: '<button></button>', a: [['disabled', 2, [2, ['disabled']]]] },
+        { h: '', c: [[[childCondition, ['expanded']], 1, [0, 0]]] },
+        { h: '<button></button>', a: [['disabled', 2, [attributeCondition, ['disabled']]]] },
       ],
     };
     Object.defineProperty(globalThis, 'window', {
@@ -180,14 +180,44 @@ describe('template registry helpers', () => {
       value: { __webui: {} },
     });
     try {
-      registerTemplateData({ nested: template }, {
-        nested: [rootCondition, childCondition, attributeCondition],
-      });
+      registerTemplateData({ nested: template });
       assert.equal(template.c![0][0][0], rootCondition);
       assert.equal(template.b![0].c![0][0][0], childCondition);
       const attribute = template.b![1].a![0];
       assert.ok(attribute[1] === 2);
       assert.equal(attribute[2][0], attributeCondition);
+    } finally {
+      if (previous) Object.defineProperty(globalThis, 'window', previous);
+      else Reflect.deleteProperty(globalThis, 'window');
+    }
+  });
+
+  test('registerTemplateData rejects component styles in the removed third argument', () => {
+    assert.throws(() => Reflect.apply(registerTemplateData, null, [{}, undefined, {}]),
+      /Pass component styles as the second argument/);
+  });
+
+  test('invalid plans in root and local blocks reject the whole template batch', () => {
+    const previous = Object.getOwnPropertyDescriptor(globalThis, 'window');
+    const registry = {};
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: { __webui: { templates: registry } },
+    });
+    try {
+      for (const invalid of [
+        { v: 4, h: '', c: [[[[2], ['ready']], 0, [0, 0]]] },
+        { v: 4, h: '', b: [{ h: '', c: [[[[16, 0, false], ['ready']], 0, [0, 0]]] }] },
+        { v: 4, h: '', b: [{ h: '', a: [['disabled', 2, [[9, 0, 1], ['ready']]]] }] },
+        { v: 4, h: '', c: [[[[0, 0, false, -2, 0], ['ready']], 0, [0, 0]]] },
+      ] satisfies TemplateMeta[]) {
+        assert.throws(() => prepareAssetTemplateData({ invalid }), /Invalid compiled condition plan/);
+        assert.throws(
+          () => registerTemplateData({ valid: { v: 4, h: '' }, invalid }),
+          /Invalid compiled condition plan/,
+        );
+        assert.deepEqual(registry, {});
+      }
     } finally {
       if (previous) Object.defineProperty(globalThis, 'window', previous);
       else Reflect.deleteProperty(globalThis, 'window');
@@ -220,8 +250,7 @@ describe('template registry helpers', () => {
       });
 
       registerTemplateData(
-        { 'style-card': { v: 3, h: '<p>Styled</p>' } },
-        undefined,
+        { 'style-card': { v: 4, h: '<p>Styled</p>' } },
         {
           version: 1,
           strategy: 'style',
@@ -247,14 +276,13 @@ describe('template registry helpers', () => {
     }
   });
 
-  test('getTemplate normalizes bootstrapped SSR metadata from window', () => {
+  test('getTemplate loads inline condition plans from bootstrapped metadata', () => {
     const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
-    const fn = (): boolean => false;
     const template = {
-      v: 3,
+      v: 4,
       h: '<p></p>',
       b: [{ h: '<span></span>' }],
-      c: [[[0, ['ready']], 0, [[], 0]]],
+      c: [[[[0], ['ready']], 0, [0, 0]]],
     } as unknown as TemplateMeta;
 
     try {
@@ -264,7 +292,6 @@ describe('template registry helpers', () => {
             inventory: '0c',
             state: { title: 'Hello' },
             templates: { greeting: template },
-            templateFns: { greeting: [fn] },
           },
         },
         configurable: true,
@@ -272,7 +299,7 @@ describe('template registry helpers', () => {
       });
 
       const registered = getTemplate('greeting')!;
-      assert.equal((registered.c![0][0][0] as unknown), fn);
+      assert.deepEqual(registered.c![0][0][0], [0]);
       assert.equal(window.__webui!.inventory, '0c');
       assert.deepEqual(window.__webui!.state, { title: 'Hello' });
       assert.equal(window.__webui!.templateFns, undefined);
@@ -285,27 +312,23 @@ describe('template registry helpers', () => {
     }
   });
 
-  test('reconciles standalone closures added after the initial count', () => {
+  test('independently registers early and late condition plans', () => {
     const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
-    const firstFn = (): boolean => true;
-    const secondFn = (): boolean => false;
-    const lateFn = (): boolean => true;
-    const template = (): TemplateMeta => ({
-      v: 3,
+    const template = (code: number): TemplateMeta => ({
+      v: 4,
       h: '<p></p>',
       b: [{ h: '<span></span>' }],
-      c: [[[0, ['ready']], 0, [[], 0]]],
+      c: [[[[code], ['ready']], 0, [0, 0]]],
     } as unknown as TemplateMeta);
-    const first = template();
-    const second = template();
-    const late = template();
+    const first = template(0);
+    const second = template(1);
+    const late = template(0);
 
     try {
       Object.defineProperty(globalThis, 'window', {
         value: {
           __webui: {
-            templates: { first, second, late },
-            templateFns: { first: [firstFn], second: [secondFn] },
+            templates: { first, second },
           },
         },
         configurable: true,
@@ -313,16 +336,9 @@ describe('template registry helpers', () => {
       });
 
       assert.equal(getTemplate('first'), first);
-      assert.deepEqual(Object.keys(window.__webui!.templateFns!), ['second']);
-      window.__webui!.templateFns!.late = [lateFn];
+      window.__webui!.templates!.late = late;
       assert.equal(getTemplate('late'), late);
-      assert.deepEqual(
-        Object.keys(window.__webui!.templateFns!),
-        ['second'],
-        'a late direct registration must not make the count drop the remaining closure',
-      );
-      assert.equal(getTemplate('second'), second);
-      assert.equal(window.__webui!.templateFns, undefined);
+      assert.deepEqual(getTemplate('second')?.c?.[0][0][0], [1]);
     } finally {
       if (previousWindow) {
         Object.defineProperty(globalThis, 'window', previousWindow);
@@ -335,7 +351,6 @@ describe('template registry helpers', () => {
   test('getTemplate loads webui-data without componentStyles and preserves eager runtime metadata', () => {
     const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
     const previousDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
-    const fn = (): boolean => true;
     let removed = false;
 
     try {
@@ -343,7 +358,6 @@ describe('template registry helpers', () => {
         value: {
           __webui: {
             componentAssetStyles: { 'lazy-panel': ['/lazy-panel.css'] },
-            templateFns: { greeting: [fn] },
           },
         },
         configurable: true,
@@ -354,7 +368,7 @@ describe('template registry helpers', () => {
           getElementById(id: string) {
             if (id !== 'webui-data') return null;
             return {
-              textContent: '{"inventory":"0c","state":{"title":"Hello"},"templates":{"greeting":{"v":3,"h":"<p></p>","b":[{"h":"<span></span>"}],"c":[[[0,["ready"]],0,[0,0]]]}}}',
+              textContent: '{"inventory":"0c","state":{"title":"Hello"},"templates":{"greeting":{"v":4,"h":"<p></p>","b":[{"h":"<span></span>"}],"c":[[[[0],["ready"]],0,[0,0]]]}}}',
               remove() { removed = true; },
             };
           },
@@ -364,7 +378,7 @@ describe('template registry helpers', () => {
       });
 
       const registered = getTemplate('greeting')!;
-      assert.equal((registered.c![0][0][0] as unknown), fn);
+      assert.deepEqual(registered.c![0][0][0], [0]);
       assert.equal(window.__webui!.inventory, '0c');
       assert.deepEqual(window.__webui!.state, { title: 'Hello' });
       assert.equal(window.__webui!.componentStyles, undefined);
@@ -389,7 +403,7 @@ describe('template registry helpers', () => {
 
   test('releases one-shot SSR state without dropping template metadata', () => {
     const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
-    const template: TemplateMeta = { v: 3, h: '<p>Hello</p>' };
+    const template: TemplateMeta = { v: 4, h: '<p>Hello</p>' };
     try {
       Object.defineProperty(globalThis, 'window', {
         value: {

@@ -153,7 +153,7 @@ mod tests {
     #![allow(clippy::disallowed_methods)]
 
     use super::super::{
-        collect_template_build_metadata, compile_to_metadata, emit_js_condition_function,
+        collect_template_build_metadata, compile_to_metadata, condition_plan,
         generate_compiled_template, RootScope,
     };
     use super::{visit_scope, ScopedVisits};
@@ -257,8 +257,8 @@ mod tests {
         let metadata = collect_template_build_metadata(&meta);
         assert_eq!(metadata.roots, ["items"]);
         let mut condition = String::new();
-        emit_js_condition_function(&meta.blocks[0].conditionals[0].0, &mut condition, true);
-        assert!(condition.contains(r#"v("child.children",s)"#));
+        condition_plan::emit(&meta.blocks[0].conditionals[0].0, &mut condition);
+        assert_eq!(condition, r#"[[0],["child.children"]]"#);
         assert!(!condition.contains(r#"{{child.children}}"#));
     }
 

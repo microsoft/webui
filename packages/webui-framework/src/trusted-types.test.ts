@@ -94,6 +94,7 @@ test('registration is lazy and policy denial propagates without a string fallbac
   assert.equal(f.creations, 0);
   assert.throws(() => getTemplateFragment(meta), error =>
     error instanceof Error &&
+    error.message.includes('Could not create Trusted Types policy') &&
     error.message.includes('Allow "webui" in CSP') &&
     error.cause instanceof TypeError);
   assert.equal(f.creations, 1);

@@ -211,19 +211,21 @@ for (const mode of ['hydrated', 'client-created'] as const) {
       const repeat = host['$root']!.repeats.find(binding =>
         binding.container === host.shadowRoot!.querySelector('#item-conditions'))!;
       const condition = host.$block(repeat.blockIndex)!.c![0][0];
-      const evaluate = condition[0];
-      if (typeof evaluate !== 'function') throw new Error('Expected a normalized condition');
+      const plan = condition[0];
+      if (!Array.isArray(plan) || plan.length !== 1) throw new Error('Expected a unary condition plan');
       let calls = 0;
-      condition[0] = (...args: Parameters<typeof evaluate>) => {
-        calls++;
-        return evaluate(...args);
-      };
+      condition[0] = new Proxy(plan, {
+        get(target, key, receiver) {
+          if (key === '0') calls++;
+          return Reflect.get(target, key, receiver);
+        },
+      });
       try {
         host.items = [{ value: 'A' }, { value: 'B' }, { value: 'C' }];
         await host.$whenRendered();
         return calls;
       } finally {
-        condition[0] = evaluate;
+        condition[0] = plan;
       }
     });
     expect(evaluations).toBe(3);
