@@ -33,6 +33,10 @@ pnpm start
 
 Then open http://127.0.0.1:3004
 
+The Rust server uses the `cookie` crate directly for cart cookie parsing and
+serialization, with Actix's cookie feature disabled. Cart contents remain
+HMAC-signed and use `Secure`, `HttpOnly`, and `SameSite=Lax` cookies.
+
 ### HTTP versions and TLS
 
 The server speaks cleartext HTTP/1.1 and HTTP/2 with prior knowledge (h2c).

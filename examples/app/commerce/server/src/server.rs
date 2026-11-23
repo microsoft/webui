@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-use actix_web::http::header::LOCATION;
+use actix_web::http::header::{LOCATION, SET_COOKIE};
 use actix_web::{web, HttpRequest, HttpResponse};
 use bytes::Bytes;
 use serde_json::Value;
@@ -205,7 +205,7 @@ fn partial_response(context: &RequestContext, state: &AppState, page_state: Valu
     builder.insert_header(("Cache-Control", "private, no-store"));
     builder.insert_header(("Vary", "Accept, Cookie"));
     if context.cart_read().should_reset {
-        builder.cookie(clear_cookie());
+        builder.append_header((SET_COOKIE, clear_cookie().encoded().to_string()));
     }
     builder.json(payload)
 }
@@ -240,7 +240,7 @@ fn streaming_html_response(
     builder.insert_header(("Vary", "Accept, Cookie"));
     builder.insert_header(("Content-Security-Policy", security::csp_header(&nonce)));
     if context.cart_read().should_reset {
-        builder.cookie(clear_cookie());
+        builder.append_header((SET_COOKIE, clear_cookie().encoded().to_string()));
     }
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Bytes>(StreamingWriter::DEFAULT_CHANNEL_CAPACITY);
@@ -332,11 +332,11 @@ fn cart_response(
     };
 
     if options.should_reset && options.cart.lines.is_empty() {
-        builder.cookie(clear_cookie());
+        builder.append_header((SET_COOKIE, clear_cookie().encoded().to_string()));
     } else if let Some(cookie) = cookie_for_cart(&options.cart) {
-        builder.cookie(cookie);
+        builder.append_header((SET_COOKIE, cookie.encoded().to_string()));
     } else {
-        builder.cookie(clear_cookie());
+        builder.append_header((SET_COOKIE, clear_cookie().encoded().to_string()));
     }
 
     builder.insert_header(("Cache-Control", "private, no-store"));
@@ -645,13 +645,26 @@ mod tests {
         let response = test::call_service(&app, request).await;
 
         assert_eq!(response.status(), StatusCode::OK);
-        let cookies: Vec<_> = response.response().cookies().collect();
+        let cookies: Vec<_> = response
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .map(|value| cookie::Cookie::parse_encoded(value.to_str().unwrap()).unwrap())
+            .collect();
         assert!(
             cookies
                 .iter()
                 .any(|cookie| cookie.name() == cart::CART_COOKIE_NAME),
             "expected cart cookie to be set"
         );
+        let cookie = cookies
+            .iter()
+            .find(|cookie| cookie.name() == cart::CART_COOKIE_NAME)
+            .unwrap();
+        assert_eq!(cookie.http_only(), Some(true));
+        assert_eq!(cookie.secure(), Some(true));
+        assert_eq!(cookie.same_site(), Some(cookie::SameSite::Lax));
+        assert_eq!(cookie.path(), Some("/"));
+        let request_cookie = format!("{}={}", cookie.name(), cookie.value());
 
         let body = match to_bytes(response.into_body()).await {
             Ok(body) => body,
@@ -664,6 +677,36 @@ mod tests {
 
         assert_eq!(json["cartItemCount"], 1);
         assert_eq!(json["cartOpen"], "true");
+
+        for quantity in [2, 0] {
+            let request = TestRequest::post()
+                .uri("/cart/update")
+                .insert_header((header::ACCEPT, "application/json"))
+                .insert_header((header::COOKIE, request_cookie.as_str()))
+                .set_json(serde_json::json!({
+                    "handle": "acme-t-shirt",
+                    "color": "Black",
+                    "size": "M",
+                    "quantity": quantity
+                }))
+                .to_request();
+            let response = test::call_service(&app, request).await;
+            assert_eq!(response.status(), StatusCode::OK);
+            let cookie = cookie::Cookie::parse_encoded(
+                response
+                    .headers()
+                    .get(header::SET_COOKIE)
+                    .unwrap()
+                    .to_str()
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(cookie.name(), cart::CART_COOKIE_NAME);
+            let days = if quantity == 0 { 0 } else { 30 };
+            assert_eq!(cookie.max_age(), Some(cookie::time::Duration::days(days)));
+            let json: serde_json::Value = test::read_body_json(response).await;
+            assert_eq!(json["cartItemCount"], quantity);
+        }
     }
 
     #[actix_web::test]

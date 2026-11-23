@@ -3,9 +3,10 @@
 
 #![allow(clippy::disallowed_methods)]
 
-use actix_web::cookie::time::Duration;
-use actix_web::cookie::{Cookie, SameSite};
+use actix_web::http::header::COOKIE;
 use actix_web::HttpRequest;
+use cookie::time::Duration;
+use cookie::{Cookie, SameSite};
 use hmac::{Hmac, KeyInit, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
@@ -84,8 +85,28 @@ pub struct CartRead {
     pub should_reset: bool,
 }
 
+fn request_cart_cookie(req: &HttpRequest) -> anyhow::Result<Option<Cookie<'_>>> {
+    let mut cart_cookie = None;
+    for header in req.headers().get_all(COOKIE) {
+        for parsed in Cookie::split_parse_encoded(header.to_str()?) {
+            let cookie = parsed?;
+            if cart_cookie.is_none() && cookie.name() == CART_COOKIE_NAME {
+                cart_cookie = Some(cookie);
+            }
+        }
+    }
+    Ok(cart_cookie)
+}
+
 pub fn read_cart(req: &HttpRequest) -> CartRead {
-    let Some(cookie) = req.cookie(CART_COOKIE_NAME) else {
+    let cookie = match request_cart_cookie(req) {
+        Ok(cookie) => cookie,
+        Err(error) => {
+            eprintln!("Invalid Cookie header: {error}");
+            None
+        }
+    };
+    let Some(cookie) = cookie else {
         return CartRead {
             cart: StoredCart::default(),
             should_reset: false,
@@ -142,24 +163,24 @@ pub fn cookie_for_cart(cart: &StoredCart) -> Option<Cookie<'static>> {
     let sig_hex = encode_hex(&sig_bytes);
     let value = format!("{payload_hex}.{sig_hex}");
     Some(
-        Cookie::build(CART_COOKIE_NAME, value)
+        Cookie::build((CART_COOKIE_NAME, value))
             .path("/")
             .max_age(Duration::days(30))
             .http_only(true)
             .secure(true)
             .same_site(SameSite::Lax)
-            .finish(),
+            .build(),
     )
 }
 
 pub fn clear_cookie() -> Cookie<'static> {
-    Cookie::build(CART_COOKIE_NAME, "")
+    Cookie::build((CART_COOKIE_NAME, ""))
         .path("/")
         .max_age(Duration::seconds(0))
         .http_only(true)
         .secure(true)
         .same_site(SameSite::Lax)
-        .finish()
+        .build()
 }
 
 pub fn add_item(cart: &mut StoredCart, handle: &str, color: &str, size: &str, quantity: u16) {
@@ -411,7 +432,7 @@ fn hex_nibble(byte: u8) -> Option<u8> {
 mod tests {
     use super::{
         add_item, build_cart_state, compute_signature, cookie_for_cart, decode_hex, encode_hex,
-        sanitize_redirect, verify_signature, with_cart_open, without_cart, StoredCart,
+        read_cart, sanitize_redirect, verify_signature, with_cart_open, without_cart, StoredCart,
     };
     use crate::catalog::Catalog;
 
@@ -490,6 +511,45 @@ mod tests {
             verify_signature(payload_hex, sig_hex),
             "cookie signature must verify"
         );
+    }
+
+    #[test]
+    fn cart_cookie_reads_multiple_headers_and_encoded_names() {
+        let mut cart = StoredCart::default();
+        add_item(&mut cart, "acme-t-shirt", "Black", "M", 2);
+        let cookie = cookie_for_cart(&cart).unwrap();
+        let request = actix_web::test::TestRequest::default()
+            .append_header(("Cookie", "theme=dark"))
+            .append_header((
+                "Cookie",
+                format!("mp%2Dcart={}; language=en", cookie.value()),
+            ))
+            .to_http_request();
+
+        let result = read_cart(&request);
+        assert_eq!(result.cart, cart);
+        assert!(!result.should_reset);
+    }
+
+    #[test]
+    fn cart_cookie_rejects_malformed_headers_and_tampered_values() {
+        let mut cart = StoredCart::default();
+        add_item(&mut cart, "acme-t-shirt", "Black", "M", 1);
+        let cookie = cookie_for_cart(&cart).unwrap();
+        let request = actix_web::test::TestRequest::default()
+            .append_header(("Cookie", cookie.to_string()))
+            .append_header(("Cookie", "missing-equals"))
+            .to_http_request();
+        let result = read_cart(&request);
+        assert!(result.cart.lines.is_empty());
+        assert!(!result.should_reset);
+
+        let request = actix_web::test::TestRequest::default()
+            .insert_header(("Cookie", format!("mp-cart={}00", cookie.value())))
+            .to_http_request();
+        let result = read_cart(&request);
+        assert!(result.cart.lines.is_empty());
+        assert!(result.should_reset);
     }
 
     #[test]
