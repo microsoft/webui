@@ -1,1 +1,0 @@
-import{n as e,r as t,t as n}from"./docs-theme-toggle-CpUb3Mxh.js";var r=class extends e{constructor(...e){super(...e),this.appearance=`info`,this.title=``,this.icon=`\u2139\uFE0F`}};n([t],r.prototype,`appearance`,void 0),n([t],r.prototype,`title`,void 0),n([t],r.prototype,`icon`,void 0),r.define(`webui-blockquote`);

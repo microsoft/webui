@@ -1,1 +1,0 @@
-import{i as e,n as t,t as n}from"./docs-theme-toggle-CpUb3Mxh.js";var r=class extends t{constructor(...e){super(...e),this.label=`Copy`}copy(){let e=this.querySelector(`code`);e&&navigator.clipboard.writeText(e.textContent||``).then(()=>{this.label=`Copied!`,setTimeout(()=>{this.label=`Copy`},1500)})}};n([e],r.prototype,`label`,void 0),r.define(`code-block`);
