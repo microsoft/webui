@@ -24,7 +24,7 @@ pub(crate) fn profile_directory(out: &Path) -> io::Result<PathBuf> {
         io::Error::new(
             io::ErrorKind::InvalidInput,
             format!(
-                "unexpected Cargo OUT_DIR {}; expected an absolute <target>/<profile>/build/<package>/out path; build with Cargo",
+                "unexpected Cargo OUT_DIR {}; expected an absolute <target>/<profile>/build/<package>[/<unit>]/out path; build with Cargo",
                 out.display()
             ),
         )
@@ -37,10 +37,16 @@ pub(crate) fn profile_directory(out: &Path) -> io::Result<PathBuf> {
     {
         return Err(invalid());
     }
-    let package = out.parent().ok_or_else(invalid)?;
-    let build = package.parent().ok_or_else(invalid)?;
+    let unit = out.parent().ok_or_else(invalid)?;
+    let parent = unit.parent().ok_or_else(invalid)?;
+    // Cargo 1.100 separates the package name from the build-unit hash.
+    let build = if parent.file_name().is_some_and(|name| name == "build") {
+        parent
+    } else {
+        parent.parent().ok_or_else(invalid)?
+    };
     let profile = build.parent().ok_or_else(invalid)?;
-    if package.file_name().is_none()
+    if unit.file_name().is_none()
         || build.file_name().is_none_or(|name| name != "build")
         || profile.file_name().is_none()
     {
@@ -50,10 +56,7 @@ pub(crate) fn profile_directory(out: &Path) -> io::Result<PathBuf> {
     // cause staging outside the profile Cargo actually assigned.
     let canonical_out = out.canonicalize()?;
     let canonical_profile = profile.canonicalize()?;
-    let expected = canonical_profile
-        .join("build")
-        .join(package.file_name().ok_or_else(invalid)?)
-        .join("out");
+    let expected = canonical_profile.join(out.strip_prefix(profile).map_err(|_| invalid())?);
     if canonical_out != expected {
         return Err(invalid());
     }

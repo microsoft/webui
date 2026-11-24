@@ -39,15 +39,39 @@ fn derives_profile_for_host_cross_and_custom_profiles() {
     let dir = test_dir();
     for profile in ["debug", "aarch64-pc-windows-msvc/release", "custom"] {
         let profile = dir.path().join(profile);
-        let out = profile.join("build").join("desktop-123").join("out");
-        fs::create_dir_all(&out).unwrap();
-        assert_eq!(
-            build_support::profile_directory(&out).unwrap(),
-            profile.canonicalize().unwrap()
-        );
+        for unit in ["desktop-123", "microsoft-webui-desktop/5543b5ba328c1e65"] {
+            let out = profile.join("build").join(unit).join("out");
+            fs::create_dir_all(&out).unwrap();
+            assert_eq!(
+                build_support::profile_directory(&out).unwrap(),
+                profile.canonicalize().unwrap()
+            );
+        }
     }
     assert!(build_support::profile_directory(&dir.path().join("out")).is_err());
     assert!(build_support::profile_directory(&PathBuf::from("build/desktop/out")).is_err());
+    assert!(
+        build_support::profile_directory(&dir.path().join("debug/not-build/desktop/unit/out"))
+            .is_err()
+    );
+    assert!(
+        build_support::profile_directory(&dir.path().join("debug/build/desktop/unit/../out"))
+            .is_err()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn rejects_redirected_build_units_in_both_cargo_layouts() {
+    let dir = test_dir();
+    let redirected = dir.path().join("elsewhere");
+    fs::create_dir_all(redirected.join("out")).unwrap();
+    for unit in ["desktop-123", "microsoft-webui-desktop/5543b5ba328c1e65"] {
+        let unit = dir.path().join("debug/build").join(unit);
+        fs::create_dir_all(unit.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&redirected, &unit).unwrap();
+        assert!(build_support::profile_directory(&unit.join("out")).is_err());
+    }
 }
 
 #[test]
