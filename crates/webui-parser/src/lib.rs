@@ -1018,7 +1018,7 @@ fn analyze_component_dom_with_diagnostic_source(
                     }
 
                     for attr in element.attrs() {
-                        let attr_name = attr.name.strip_prefix([':', '?']).unwrap_or(attr.name);
+                        let attr_name = attr.name.trim_prefix([':', '?']);
                         if attr_name.eq_ignore_ascii_case("shadowrootmode") {
                             if shadow_mode.is_some() {
                                 return Err(invalid_shadow_root_mode_error(
@@ -1229,7 +1229,7 @@ fn diagnostic_target_offsets(source: &str, target: DiagnosticTarget) -> Vec<usiz
                 }
                 DiagnosticTarget::Attribute(name) => {
                     for attr in element.attrs() {
-                        let attr_name = attr.name.strip_prefix([':', '?']).unwrap_or(attr.name);
+                        let attr_name = attr.name.trim_prefix([':', '?']);
                         if attr_name.eq_ignore_ascii_case(name) {
                             offsets.push(element.start + attr.raw_range.start);
                         }

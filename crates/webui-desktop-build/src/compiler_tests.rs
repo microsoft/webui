@@ -7,6 +7,28 @@ use super::*;
 use std::ffi::OsString;
 
 #[test]
+fn scratch_cleanup_requires_ownership() {
+    let dir = tempfile::tempdir().unwrap();
+    let scratch_path = dir.path().join("scratch");
+    fs::create_dir(&scratch_path).unwrap();
+    let sentinel = scratch_path.join("existing");
+    fs::write(&sentinel, b"keep").unwrap();
+
+    let error = create_scratch(scratch_path.clone()).err().unwrap();
+    assert!(matches!(
+        error,
+        GenerateError::Io { source, .. } if source.kind() == std::io::ErrorKind::AlreadyExists
+    ));
+    assert_eq!(fs::read(&sentinel).unwrap(), b"keep");
+
+    let owned_path = dir.path().join("owned");
+    let scratch = create_scratch(owned_path.clone()).unwrap();
+    assert!(owned_path.is_dir());
+    drop(scratch);
+    assert!(!owned_path.exists());
+}
+
+#[test]
 fn only_windows_drive_verbatim_prefixes_are_adapted() {
     assert_eq!(
         tools::protoc_path(Path::new(r"\\?\D:\schema with spaces\application.proto")).unwrap(),
