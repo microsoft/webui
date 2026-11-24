@@ -40,6 +40,14 @@ export class HistoryNavigationHold {
     this.store.setItem(CANCELLATION_KEY, `${this.phase}:${this.hidden ? 'pagehide' : 'pending'}`);
     return true;
   }
+
+  confirmTerminal(terminalCode: string): void {
+    const expected = this.transportFailed ? terminalCode === 'transport'
+      : terminalCode === 'navigated' || terminalCode === 'closed';
+    if (!this.navigating || !this.hidden || !expected) {
+      throw new Error(`history terminal not verified phase=${this.phase} terminal=${terminalCode}`);
+    }
+  }
 }
 
 export function confirmHistoryNavigation(store: EvidenceStore, phase: string, terminalCode?: string): void {

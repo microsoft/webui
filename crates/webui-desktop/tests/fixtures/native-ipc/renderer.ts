@@ -13,6 +13,7 @@ interface DocumentConnection {
   connection: AppConnection;
   generation: bigint;
   counts: { labels: number; notifications: number };
+  historyHold?: HistoryNavigationHold;
 }
 let previousDocument: DocumentConnection | undefined;
 
@@ -85,7 +86,7 @@ export async function run(restored = false): Promise<void> {
         await verifyHistoryConnection(connection, visit, retired, retiredCounts);
       }
     }
-    await runLifecycle(connection, stage, retired, platform);
+    await runLifecycle(connection, stage, platform);
     return;
   }
   await checkSameDocument(connection);
@@ -208,16 +209,18 @@ async function verifyHistoryConnection(
     assert(retiredCounts && retired.counts.labels === retiredCounts.labels
       && retired.counts.notifications === retiredCounts.notifications, 'retired renderer callbacks ran after restore');
     const terminal = await retired.connection.closed;
+    assert(retired.historyHold, 'retired document lost its history hold');
+    retired.historyHold.confirmTerminal(terminal.code);
     await rejected(() => retired.connection.host.sessionGeneration(undefined), terminal.code);
   }
   await connection.host.historyVerified(proof);
 }
 
 async function runLifecycle(
-  connection: AppConnection, stage: string, retired: DocumentConnection | undefined, platform: string,
+  connection: AppConnection, stage: string, platform: string,
 ): Promise<void> {
   if (stage === 'history-a' || stage === 'history-b') {
-    await runHistory(connection, stage, retired, platform);
+    await runHistory(connection, stage, platform);
     return;
   }
   if (stage === 'after-close') {
@@ -291,6 +294,8 @@ async function checkSameDocument(connection: AppConnection): Promise<void> {
 async function holdForNavigation(connection: AppConnection, phase: string): Promise<HistoryNavigationHold> {
   const ready = deferred();
   const hold = new HistoryNavigationHold(phase, sessionStorage, window);
+  assert(previousDocument?.connection === connection, 'history hold belongs to another document');
+  previousDocument.historyHold = hold;
   connection.renderer.onChanged(value => {
     validate(value);
     assert(value.phase === phase, 'history probe phase');
@@ -306,25 +311,27 @@ async function holdForNavigation(connection: AppConnection, phase: string): Prom
 }
 
 async function runHistory(
-  connection: AppConnection, stage: string, retired: DocumentConnection | undefined, platform: string,
+  connection: AppConnection, stage: string, platform: string,
 ): Promise<void> {
+  // Shared evidence belongs to the departing document. The restored document's
+  // older connection is checked against its own hold in verifyHistoryConnection.
   const visit = sessionStorage.getItem('native-ipc-history');
   if (stage === 'history-b' && visit === 'first-b') {
     await connection.host.lifecycleCheck(item(0, 'history-forward'));
-    confirmHistoryNavigation(sessionStorage, 'history-forward', (await retired?.connection.closed)?.code);
+    confirmHistoryNavigation(sessionStorage, 'history-forward');
     sessionStorage.setItem('native-ipc-history', 'back-a');
     const hold = await holdForNavigation(connection, 'history-back');
     hold.navigate(() => history.back());
   } else if (stage === 'history-a' && visit === 'back-a') {
     await connection.host.lifecycleCheck(item(0, 'history-back'));
-    confirmHistoryNavigation(sessionStorage, 'history-back', (await retired?.connection.closed)?.code);
+    confirmHistoryNavigation(sessionStorage, 'history-back');
     sessionStorage.setItem('native-ipc-history', 'return-b');
     const hold = await holdForNavigation(connection, 'history-return');
     hold.navigate(() => history.forward());
   } else {
     assert(stage === 'history-b' && visit === 'return-b', 'history traversal state');
     await connection.host.lifecycleCheck(item(0, 'history-return'));
-    confirmHistoryNavigation(sessionStorage, 'history-return', (await retired?.connection.closed)?.code);
+    confirmHistoryNavigation(sessionStorage, 'history-return');
     sessionStorage.removeItem('native-ipc-history');
     if (platform === 'darwin') {
       // The fixture host does not request_close on macOS. Only this trusted
