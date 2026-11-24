@@ -249,7 +249,7 @@ stages:
         artifactName: stage-wasm
 
   - job: BuildLinuxAssets
-    displayName: Build Linux release asset (Ubuntu 22.04)
+    displayName: Build Linux release asset (Ubuntu 22.04 container)
     strategy:
       matrix:
         LinuxX64:
@@ -269,10 +269,6 @@ stages:
     steps:
     - checkout: self
       clean: true
-    - task: GoTool@0
-      displayName: Use Go 1.25
-      inputs:
-        version: '1.25.0'
     - task: UsePythonVersion@0
       displayName: Use Python 3.11
       inputs:
@@ -301,58 +297,24 @@ stages:
           : "${ARTIFACT_NAME:?ARTIFACT_NAME is required}"
           : "${RELEASE_VERSION:?RELEASE_VERSION is required}"
 
-          sudo apt-get update -q
-          sudo apt-get install -y -q protobuf-compiler binutils
-          if [[ "$TARGET_TRIPLE" == aarch64-unknown-linux-gnu ]]; then
-            sudo apt-get install -y -q gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
-            export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
-            export CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++
-          fi
-          rustup toolchain install 1.99.1 --profile minimal --target "$TARGET_TRIPLE"
-
-          # Desktop's GTK/WebKit dependencies require a newer Ubuntu runner.
-          CARGO_HOME="$CARGO_CACHE_HOME" cargo +1.99.1 xtask publish-build \
-            --target "$TARGET_TRIPLE" \
-            --profile release \
-            --portable-only \
-            --output "$BUILD_ARTIFACT_STAGING_DIRECTORY/$ARTIFACT_NAME"
-          # Audit the staged files, which came from each invocation's exact
-          # Cargo artifact (the compiler has a separate node-build target root).
-          staged="$BUILD_ARTIFACT_STAGING_DIRECTORY/$ARTIFACT_NAME/packages"
-          if [[ "$TARGET_TRIPLE" == aarch64-unknown-linux-gnu ]]; then
-            platform=linux-arm64
-          else
-            platform=linux-x64
-          fi
-          for file in \
-            "$staged/webui-$platform/bin/webui" \
-            "$staged/webui-press-$platform/bin/webui-press" \
-            "$staged/webui-$platform/webui.node" \
-            "$staged/webui-$platform/webui-build.node" \
-            "$BUILD_ARTIFACT_STAGING_DIRECTORY/$ARTIFACT_NAME/dotnet/runtimes/$platform/native/libwebui_ffi.so"; do
-            required=$(readelf --version-info --wide "$file" |
-              grep -oE 'GLIBC_[0-9.]+' | sort -Vu | tail -n 1)
-            if [[ $(printf '%s\n' GLIBC_2.35 "$required" | sort -V | tail -n 1) != GLIBC_2.35 ]]; then
-              echo "$file requires $required; expected glibc 2.35 or older" >&2
-              exit 1
-            fi
-          done
-          # The CLI is already built for TARGET_TRIPLE; the producer and its
-          # HTTPS helper run on the runner, never by executing that target.
-          CARGO_HOME="$CARGO_CACHE_HOME" cargo +1.99.1 xtask toolchain-stage \
-            --target "$TARGET_TRIPLE" \
-            --cli "target/$TARGET_TRIPLE/release/webui" \
-            --acquire-checker
-          toolchain="publish/toolchains/webui-toolchain-${RELEASE_VERSION}-${TARGET_TRIPLE}.tar.gz"
-          toolchain_output="$BUILD_ARTIFACT_STAGING_DIRECTORY/$ARTIFACT_NAME/publish/toolchains"
-          mkdir -p "$toolchain_output"
-          cp "$toolchain" "$toolchain.sha256" "$toolchain_output/"
+          # The 1ES host supplies capacity and Docker, not the release sysroot.
+          # Go and system tools are image-owned; Rust is checksum-bootstrapped.
+          docker build --platform linux/amd64 \
+            -f .ado/portable-linux.Dockerfile -t webui-portable-linux .ado
+          mkdir -p "$CARGO_CACHE_HOME/registry/cache" "$BUILD_ARTIFACT_STAGING_DIRECTORY"
+          docker run --rm --platform linux/amd64 \
+            --user "$(id -u):$(id -g)" \
+            -e TARGET_TRIPLE -e ARTIFACT_NAME -e RELEASE_VERSION -e SOURCE_DATE_EPOCH \
+            -v "$(pwd):/io" \
+            -v "$BUILD_ARTIFACT_STAGING_DIRECTORY:/out" \
+            -v "$CARGO_CACHE_HOME/registry/cache:/cargo-cache" \
+            -w /io webui-portable-linux bash .ado/build-linux-portable.sh
       env:
         ARTIFACT_NAME: $(artifactName)
         BUILD_ARTIFACT_STAGING_DIRECTORY: $(Build.ArtifactStagingDirectory)
         TARGET_TRIPLE: $(targetTriple)
         RELEASE_VERSION: $(releaseVersion)
+        SOURCE_DATE_EPOCH: $(sourceDateEpoch)
     - task: Bash@3
       displayName: Build Python wheel ($(targetTriple))
       inputs:
