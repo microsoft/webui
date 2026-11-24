@@ -272,10 +272,7 @@ function createReactiveProperty(
         }
       }
 
-      if (
-        (this as unknown as HTMLElement).isConnected ||
-        this['$deferredSSR'] === true
-      ) {
+      if (this['$ready'] === true || (this as unknown as HTMLElement).isConnected) {
         const upd = this[REQUEST_UPDATE] as ((path?: string) => void) | undefined;
         if (upd) upd.call(this, name);
       }

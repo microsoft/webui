@@ -1,5 +1,5 @@
 <section class="optional-state">
-  <h1 class="heading">{{heading}}</h1>
+  <h1 class="heading" ?hidden="{{!heading}}">{{heading}}</h1>
   <p class="count">Count: {{count}}</p>
   <p class="selected">Selected: {{selected}}</p>
   <button class="toggle" type="button" @click="{toggle()}">Toggle selected</button>

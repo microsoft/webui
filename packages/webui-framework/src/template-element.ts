@@ -718,7 +718,7 @@ export class TemplateElement extends HTMLElement {
       this.$ready = true;
       this.$syncAuthoredAttributes();
       this.$notifyHydrated();
-      this[REQUEST_UPDATE]();
+      if (this[RENDER_PENDING]) flushRender(this);
     } finally {
       hydrationEnd();
     }
@@ -1590,7 +1590,7 @@ export class TemplateElement extends HTMLElement {
       return;
     }
 
-    // Explicit refresh (initial mount or reconnect), not a reactive write.
+    // Explicit full refresh, not a reactive write.
     this.$dirtyPaths = null;
     const tracked = queueRenderWork(this, UPDATE_WORK, true);
     const previous = tracked ? renderWork?.enter(this) : undefined;

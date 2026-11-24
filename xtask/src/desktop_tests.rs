@@ -1,14 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+#[cfg(any(windows, test))]
+use crate::desktop_deployment as deployment;
 use crate::util::build_command;
 
 #[cfg(any(windows, test))]
 #[path = "../../crates/webui-desktop/runtime/architecture.rs"]
 mod architecture;
-#[cfg(any(windows, test))]
-#[path = "../../crates/webui-desktop/runtime/deployment.rs"]
-mod deployment;
 
 // Keep these package-local: workspace feature unification can hide missing gates.
 const FEATURES: &[&str] = &[
@@ -152,7 +151,8 @@ pub(crate) fn run() -> Result<(), String> {
 
 #[cfg(windows)]
 fn prepare_windows_native(args: &[&str]) -> Result<(), String> {
-    let mut command = build_command("cargo", &[]);
+    // Match the isolated Cargo invocation's inherited profile so it runs the binaries we stage.
+    let mut command = std::process::Command::new("cargo");
     command.args(args.iter().take_while(|arg| **arg != "--"));
     command.args(["--no-run", "--message-format=json-render-diagnostics"]);
     let output = command.output().map_err(|error| error.to_string())?;

@@ -1414,7 +1414,7 @@ describe('TemplateElement — hydration lifecycle exceptions', () => {
 
   test('a reconnect update throw also balances hydration lifecycle', () => {
     class ThrowingReconnectElement extends TemplateElement {
-      override [REQUEST_UPDATE](): void {
+      override $updateInstance(): void {
         throw new Error('reconnect update failed');
       }
     }
@@ -1422,14 +1422,11 @@ describe('TemplateElement — hydration lifecycle exceptions', () => {
     __resetLifecycleForTests();
     dispatchedEvents.length = 0;
     const el = new ThrowingReconnectElement();
-    const raw = el as unknown as {
-      tagName: string;
-      $hydrated: boolean;
-      $root: object;
-    };
-    raw.tagName = 'test-throwing-reconnect-widget';
-    raw.$hydrated = true;
-    raw.$root = {};
+    Object.assign(el, {
+      tagName: 'test-throwing-reconnect-widget',
+      $hydrated: true, $ready: true, $root: {}, $pathIndex: 'count',
+    });
+    el[REQUEST_UPDATE]('count');
 
     assert.throws(() => el.connectedCallback(), /reconnect update failed/);
     const state = __getLifecycleStateForTests();

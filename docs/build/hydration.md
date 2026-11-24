@@ -58,6 +58,8 @@ Only `@observable` and `@attr` fields are eligible for exact initial state
 projection. Ordinary template values already exist in the rendered HTML and do
 not need to enter browser state just because the component has an event handler,
 `w-ref`, lifecycle method, or imperative API.
+Moving the same hydrated component within one JavaScript turn preserves those
+rendered values and applies any pending reactive changes.
 
 An authored component with no decorators can therefore wire its behavior
 without adding any startup state.
