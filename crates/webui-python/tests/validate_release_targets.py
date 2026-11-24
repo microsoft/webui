@@ -84,20 +84,53 @@ def _job_block(source: str, job: str, next_job: str) -> str:
 
 def _validate_azure_release_jobs() -> None:
     pipeline = _read(AZURE_PIPELINE_SOURCE)
-    linux = _job_block(pipeline, "BuildLinuxAssets", "BuildMacOSAssets")
+    linux = _job_block(pipeline, "BuildLinuxAssets", "BuildLinuxDesktop")
     macos = _job_block(pipeline, "BuildMacOSAssets", "BuildWindowsAssets")
     windows = _job_block(pipeline, "BuildWindowsAssets", "AssembleRelease")
+    portable = _read(Path(".ado/build-linux-portable.sh"))
+    dockerfile = _read(Path(".ado/portable-linux.Dockerfile"))
     requirements = (
         (
             "Linux wheel job",
             linux,
             (
+                "    pool:\n"
+                "      name: OneESPool\n"
+                "      demands:\n"
+                "      - ImageOverride -equals HostedPoolLinuxImage\n",
+                "-f .ado/portable-linux.Dockerfile -t webui-portable-linux .ado",
+                '--user "$(id -u):$(id -g)"',
+                "-w /io webui-portable-linux bash .ado/build-linux-portable.sh",
+                "-e TARGET_TRIPLE -e ARTIFACT_NAME -e RELEASE_VERSION "
+                "-e SOURCE_DATE_EPOCH",
+                '-v "$CARGO_CACHE_HOME/registry/cache:/cargo-cache"',
                 '-v "${BUILD_ARTIFACT_STAGING_DIRECTORY}:/out"',
                 '"$TARGET_TRIPLE" "/out/$ARTIFACT_NAME"\n'
                 "      env:\n"
                 "        ARTIFACT_NAME: $(artifactName)\n"
                 "        BUILD_ARTIFACT_STAGING_DIRECTORY: "
                 "$(Build.ArtifactStagingDirectory)",
+            ),
+        ),
+        (
+            "portable Linux build environment",
+            portable,
+            (
+                "export CARGO_TARGET_DIR=/tmp/webui-target",
+                'sha256sum --check --strict -',
+                '"$rustup_init" -y --profile minimal --default-toolchain none',
+                '--cli "$CARGO_TARGET_DIR/$TARGET_TRIPLE/release/webui"',
+                "GLIBC_2.35",
+            ),
+        ),
+        (
+            "portable Linux build image",
+            dockerfile,
+            (
+                "FROM ubuntu:22.04@sha256:",
+                "FROM golang:1.25.0-bookworm@sha256:",
+                "COPY --from=go /usr/local/go /opt/go",
+                "gcc-aarch64-linux-gnu g++-aarch64-linux-gnu",
             ),
         ),
         (
@@ -118,6 +151,12 @@ def _validate_azure_release_jobs() -> None:
                 f"{AZURE_PIPELINE_SOURCE}: {label} is missing required release "
                 f"configuration: {missing}"
             )
+
+    if "vmImage:" in linux:
+        raise ValueError(
+            f"{AZURE_PIPELINE_SOURCE}: Linux release builds must use the "
+            "1ES pool rather than a standard Microsoft-hosted agent"
+        )
 
     manylinux = _read(MANYLINUX_SCRIPT_SOURCE)
     target_dir = "export CARGO_TARGET_DIR=/tmp/webui-target"
