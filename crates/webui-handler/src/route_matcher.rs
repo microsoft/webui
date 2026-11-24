@@ -112,7 +112,7 @@ pub fn split_request_path(path: &str) -> Vec<&str> {
 /// Parse a path template string into segment patterns.
 fn parse_template(template: &str) -> Vec<SegmentPattern> {
     let mut segments = Vec::new();
-    let template = template.strip_prefix("./").unwrap_or(template);
+    let template = template.trim_prefix("./");
 
     for part in template.split('/') {
         if part.is_empty() {
@@ -311,7 +311,7 @@ pub(crate) fn resolve_route_path_cow<'a>(path: &'a str, route_base: &str) -> Cow
     }
 
     // Strip leading "./" if present
-    let relative = path.strip_prefix("./").unwrap_or(path);
+    let relative = path.trim_prefix("./");
     if relative.is_empty() {
         return Cow::Owned(route_base.to_string());
     }

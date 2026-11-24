@@ -30,7 +30,7 @@ pub(crate) fn emit(contract: &Contract, hash: &str) -> Result<(String, String), 
     out.push_str("import type { AppConnection, RendererHandlers } from './ipc.js';\n");
     out.push_str("import { connect, validateMessage, validateValue, IpcError, type MessageShape, type MessageCodec, type ConnectionSchema, type RuntimeConnection, type IpcTransport, type RequestContext } from '@microsoft/webui-desktop';\n");
     for (file, i) in &files {
-        let base = file.strip_suffix(".proto").unwrap_or(file);
+        let base = file.trim_suffix(".proto");
         writeln!(
             out,
             "import * as codec_{i} from {:?};",
@@ -84,7 +84,7 @@ fn emit_facade(
     let mut out = String::from(HEADER);
     out.push_str("import type { IpcError, IpcTransport, CallOptions, RequestContext, Subscription, DesktopConnection } from '@microsoft/webui-desktop';\n");
     for (file, i) in files {
-        let base = file.strip_suffix(".proto").unwrap_or(file);
+        let base = file.trim_suffix(".proto");
         writeln!(
             out,
             "import type * as codec_{i} from {:?};",

@@ -30,7 +30,7 @@ fn normalize_link(base: &str, link: &str) -> String {
     // Tolerate config links written without a leading slash; also avoids a
     // panic when `link` starts with a multi-byte UTF-8 char (a bare `&link[1..]`
     // would slice mid-char and abort the build).
-    let stripped = link.strip_prefix('/').unwrap_or(link);
+    let stripped = link.trim_prefix('/');
     if link.contains('#') {
         // Fragment link — preserve original shape, don't touch the slash.
         return format!("{base}{stripped}");
@@ -274,7 +274,7 @@ fn page_url_path(rel_path: &str, base_path: &str, sources: &HashMap<&str, &str>)
     }
 
     let trimmed = rel_path.trim_end_matches(".md");
-    let trimmed = trimmed.strip_suffix("/index").unwrap_or(trimmed);
+    let trimmed = trimmed.trim_suffix("/index");
     let trimmed = normalize_path_as_index(trimmed);
 
     if trimmed.is_empty() || trimmed == "index" {
@@ -411,7 +411,7 @@ fn build_sidebar_state(url_path: &str, config: &DocsConfig) -> serde_json::Value
         .sidebar_groups
         .iter()
         .find(|(prefix, _)| {
-            let full_prefix = format!("{}{}", base, prefix.strip_prefix('/').unwrap_or(prefix));
+            let full_prefix = format!("{}{}", base, prefix.trim_prefix('/'));
             let trimmed = full_prefix.trim_end_matches('/');
             url_path == trimmed || url_path.starts_with(&format!("{trimmed}/"))
         })
@@ -778,10 +778,10 @@ pub(crate) fn process_content_with_states(
                                         "documentTitle",
                                         Value::String(document_title(&title, &config.site.title)),
                                     ),
-                                    ("description", Value::String(description.clone())),
+                                    ("description", Value::String(description)),
                                     ("path", Value::String(page_path)),
                                     ("canonicalUrl", canonical.map_or(Value::Null, Value::String)),
-                                    ("content", Value::String(html.clone())),
+                                    ("content", Value::String(html)),
                                     ("isHome", Value::Bool(is_home)),
                                     ("layout", Value::String(layout)),
                                     ("section", Value::String(page_section)),
@@ -827,11 +827,7 @@ pub(crate) fn process_content_with_states(
             .sidebar_groups
             .iter()
             .find(|(prefix, _)| {
-                let full_prefix = format!(
-                    "{}{}",
-                    base_path,
-                    prefix.strip_prefix('/').unwrap_or(prefix)
-                );
+                let full_prefix = format!("{}{}", base_path, prefix.trim_prefix('/'));
                 let trimmed = full_prefix.trim_end_matches('/');
                 page_path == trimmed || page_path.starts_with(&format!("{trimmed}/"))
             })
@@ -844,7 +840,7 @@ pub(crate) fn process_content_with_states(
     // descriptor. Carrying the registry index explicitly through the
     // parallel pass avoids depending on `par_iter().collect()`'s
     // implicit order-preservation contract.
-    let mut pages: Vec<Option<PageDescriptor>> = (0..results.len()).map(|_| None).collect();
+    let mut pages = Vec::from_fn(results.len(), |_| None);
     for (idx, mut desc) in results {
         let sidebar_items = resolve_sidebar(&desc.path);
         let flat_links = collect_sidebar_links(&sidebar_items);

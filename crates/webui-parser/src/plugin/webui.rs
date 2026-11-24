@@ -3210,9 +3210,7 @@ fn parse_regular_tag(
             if let Some(raw_value) = value.and_then(extract_single_handlebars) {
                 // Strip the ':' prefix and convert to camelCase for the JS property name.
                 // The runtime uses el[name] = value directly — no conversion needed.
-                let prop_name = webui_protocol::attrs::attribute_to_camel(
-                    name.strip_prefix(':').unwrap_or(name),
-                );
+                let prop_name = webui_protocol::attrs::attribute_to_camel(name.trim_prefix(':'));
                 meta.attr_bindings.push(CompiledAttrBinding::Complex {
                     name: prop_name,
                     value: raw_value,

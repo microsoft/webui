@@ -1062,7 +1062,7 @@ fn component_attr_source(attribute: &webui_protocol::WebUIFragmentAttribute) -> 
         && !attribute.raw_value
         && attribute.complex;
     if takes_complex_branch {
-        attribute.name.strip_prefix(':').unwrap_or(&attribute.name)
+        attribute.name.trim_prefix(':')
     } else {
         &attribute.name
     }
@@ -1559,7 +1559,7 @@ fn component_attr_name(name: &str) -> String {
 /// Used while preparing the render fragment index so a protocol with thousands
 /// of attribute fragments grows one arena instead of allocating per name.
 fn push_component_attr_name(buffer: &mut String, name: &str) {
-    let stripped = name.strip_prefix(':').unwrap_or(name);
+    let stripped = name.trim_prefix(':');
     // Same conversion as `webui_protocol::attrs::attribute_to_camel`, written
     // straight into the shared arena. That function returns an owned `String`,
     // so calling it here would allocate and drop one buffer per attribute while
@@ -5492,7 +5492,7 @@ mod tests {
             "",
         ];
         for name in names {
-            let stripped = name.strip_prefix(':').unwrap_or(name);
+            let stripped = name.trim_prefix(':');
             assert_eq!(
                 component_attr_name(name),
                 webui_protocol::attrs::attribute_to_camel(stripped),

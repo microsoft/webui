@@ -46,3 +46,6 @@ tempfile = { workspace = true }
 [[bench]]
 name = "watch_hash_bench"
 harness = false
+
+[lints]
+workspace = true

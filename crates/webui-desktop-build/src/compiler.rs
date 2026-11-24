@@ -6,6 +6,7 @@ use std::{
     fmt::Write as _,
     fs,
     io::Read as _,
+    mem::DropGuard,
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::atomic::{AtomicU64, Ordering},
@@ -29,11 +30,13 @@ mod tools;
 #[path = "compiler_tests.rs"]
 mod tests;
 
-struct Scratch(PathBuf);
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
+fn create_scratch(
+    path: PathBuf,
+) -> Result<DropGuard<PathBuf, impl FnOnce(PathBuf)>, GenerateError> {
+    fs::create_dir(&path).map_err(|e| io(&path, e))?;
+    Ok(DropGuard::new(path, |path| {
+        let _ = fs::remove_dir_all(path);
+    }))
 }
 
 pub(crate) fn generate(config: &GenerateConfig) -> Result<GeneratedFiles, GenerateError> {
@@ -59,14 +62,13 @@ pub(crate) fn generate(config: &GenerateConfig) -> Result<GeneratedFiles, Genera
             "create the application schema directory first",
         ));
     }
-    let scratch = Scratch(base.join(format!(
+    let scratch = create_scratch(base.join(format!(
         ".webui-ipc-{}-{}",
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
-    )));
-    fs::create_dir(&scratch.0).map_err(|e| io(&scratch.0, e))?;
+    )))?;
     let roots = canonical(&config.roots)?;
-    let sdk_include = scratch.0.join("include");
+    let sdk_include = scratch.join("include");
     let sdk_options = sdk_include.join("webui/ipc/options.proto");
     if let Some(parent) = sdk_options.parent() {
         fs::create_dir_all(parent).map_err(|e| io(parent, e))?;
@@ -93,7 +95,7 @@ pub(crate) fn generate(config: &GenerateConfig) -> Result<GeneratedFiles, Genera
             }
         }
     }
-    let descriptor = scratch.0.join("descriptor.bin");
+    let descriptor = scratch.join("descriptor.bin");
     let protoc = config
         .protoc
         .clone()

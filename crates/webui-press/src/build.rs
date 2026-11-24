@@ -359,13 +359,13 @@ pub fn build_docs_with_cache(
             parts.push(appearance_head);
         }
         if !base_css_link.is_empty() {
-            parts.push(base_css_link.clone());
+            parts.push(base_css_link);
         }
         parts.push(format!(
             "<link rel=\"stylesheet\" href=\"{base_path}appearance.css\">"
         ));
         if !theme_css_link.is_empty() {
-            parts.push(theme_css_link.clone());
+            parts.push(theme_css_link);
         }
         for tag in &config.head {
             parts.push(tag.to_html());

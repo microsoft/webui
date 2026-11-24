@@ -46,7 +46,7 @@ pub(crate) struct RouteAttributes {
 /// before parameter extraction.
 pub(crate) fn extract_params(path: &str) -> Result<Vec<String>> {
     // Strip relative prefix — params are the same regardless
-    let normalized = path.strip_prefix("./").unwrap_or(path);
+    let normalized = path.trim_prefix("./");
 
     let mut params = Vec::new();
     let mut seen = HashSet::new();

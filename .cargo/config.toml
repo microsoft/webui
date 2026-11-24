@@ -1,2 +1,7 @@
 [alias]
 xtask = "run --package xtask --"
+
+[registry]
+# Match the dependency cooldown used for GitHub Actions. Locked versions
+# are unaffected; urgent updates can set CARGO_RESOLVER_INCOMPATIBLE_PUBLISH_AGE=allow.
+global-min-publish-age = "7 days"

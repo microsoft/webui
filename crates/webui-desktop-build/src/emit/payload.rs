@@ -103,7 +103,7 @@ pub(crate) fn typescript(contract: &Contract, out_dir: &Path) -> BTreeMap<PathBu
             imports
                 .into_iter()
                 .map(|(target_file, names)| {
-                    let base = target_file.strip_suffix(".proto").unwrap_or(target_file);
+                    let base = target_file.trim_suffix(".proto");
                     let names = names.into_iter().collect::<Vec<_>>().join(", ");
                     format!("import {{ {names} }} from './{base}.js';")
                 })
@@ -127,7 +127,7 @@ pub(crate) fn typescript(contract: &Contract, out_dir: &Path) -> BTreeMap<PathBu
                 })
                 .collect()
         }
-        let base = file.strip_suffix(".proto").unwrap_or(file);
+        let base = file.trim_suffix(".proto");
         files.insert(out_dir.join(format!("{base}.ts")), out.into_bytes());
     }
     files
@@ -668,7 +668,7 @@ fn emit_rust_enum(out: &mut String, full: &str, values: &BTreeMap<String, i32>) 
         full.rsplit('.').next().unwrap_or(full).to_ascii_uppercase()
     );
     for (value, number) in values {
-        let variant = value.strip_prefix(&prefix).unwrap_or(value);
+        let variant = value.trim_prefix(prefix.as_str());
         writeln!(out, "{} = {number},", pascal(&variant.to_ascii_lowercase())).ok();
     }
     out.push_str("}\n");

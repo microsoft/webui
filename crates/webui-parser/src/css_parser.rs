@@ -185,6 +185,7 @@ fn scan_css(
     let mut comments = Vec::new();
     let mut requirements = Vec::new();
     let mut requirement_scopes = Vec::new();
+    let mut var_scratch = VarScratch::default();
     let mut scopes: Vec<CssRuleScope> = Vec::new();
     let mut scope = CssRuleScope::default();
     let mut inheritance = CssInheritance::default();
@@ -275,7 +276,7 @@ fn scan_css(
             b'v' if source[index..].starts_with("var(") => {
                 let start = requirements.len();
                 let offset = index;
-                index = scan_var_call(source, index, &mut requirements)?;
+                index = scan_var_call(source, index, &mut requirements, &mut var_scratch)?;
                 requirement_scopes.extend((start..requirements.len()).map(|_| {
                     CssRequirementScope {
                         rule_id: scope.id,
@@ -484,42 +485,51 @@ fn skip_css_trivia_with_whitespace(mut source: &str) -> (&str, bool) {
     }
 }
 
-fn scan_var_call(
-    source: &str,
+#[derive(Default)]
+struct VarScratch<'a> {
+    frames: Vec<VarFrame>,
+    // Tokens are visited in source order; only fallback flags are frame-local.
+    tokens: Vec<&'a str>,
+}
+
+struct VarFrame {
+    close_depth: usize,
+    after_fallback_comma: bool,
+    has_literal_fallback: bool,
+    fallback_has_unsafe_var: bool,
+}
+
+impl VarFrame {
+    fn new(close_depth: usize) -> Self {
+        Self {
+            close_depth,
+            after_fallback_comma: false,
+            has_literal_fallback: false,
+            fallback_has_unsafe_var: false,
+        }
+    }
+
+    fn has_safe_literal_fallback(&self) -> bool {
+        self.has_literal_fallback && !self.fallback_has_unsafe_var
+    }
+}
+
+fn scan_var_call<'a>(
+    source: &'a str,
     start: usize,
     requirements: &mut Vec<CssFallbackChain>,
+    scratch: &mut VarScratch<'a>,
 ) -> Result<usize> {
-    struct VarFrame<'a> {
-        close_depth: usize,
-        tokens: Vec<&'a str>,
-        after_fallback_comma: bool,
-        has_literal_fallback: bool,
-        fallback_has_unsafe_var: bool,
-    }
-
-    impl<'a> VarFrame<'a> {
-        fn new(close_depth: usize) -> Self {
-            Self {
-                close_depth,
-                tokens: Vec::new(),
-                after_fallback_comma: false,
-                has_literal_fallback: false,
-                fallback_has_unsafe_var: false,
-            }
-        }
-
-        fn has_safe_literal_fallback(&self) -> bool {
-            self.has_literal_fallback && !self.fallback_has_unsafe_var
-        }
-    }
-
     let bytes = source.as_bytes();
     let mut index = start + 4;
     let mut depth = 1usize;
     let mut brace_depth = 0usize;
     let mut bracket_depth = 0usize;
     let mut quote: u8 = 0;
-    let mut frames = vec![VarFrame::new(1)];
+    let VarScratch { frames, tokens } = scratch;
+    frames.clear();
+    tokens.clear();
+    frames.push(VarFrame::new(1));
 
     while index < bytes.len() {
         if quote != 0 {
@@ -589,17 +599,13 @@ fn scan_var_call(
                             css_loc(source, start)
                         )));
                     };
-                    if !frames.is_empty() {
-                        let safe_literal = frame.has_safe_literal_fallback();
-                        if let Some(parent) = frames.last_mut() {
-                            if parent.after_fallback_comma {
-                                if safe_literal {
-                                    parent.has_literal_fallback = true;
-                                } else {
-                                    parent.fallback_has_unsafe_var = true;
-                                }
+                    if let Some(parent) = frames.last_mut() {
+                        if parent.after_fallback_comma {
+                            if frame.has_safe_literal_fallback() {
+                                parent.has_literal_fallback = true;
+                            } else {
+                                parent.fallback_has_unsafe_var = true;
                             }
-                            parent.tokens.extend(frame.tokens);
                         }
                         continue;
                     }
@@ -615,17 +621,16 @@ fn scan_var_call(
                             css_loc(source, start)
                         )));
                     }
-                    if !frame.tokens.is_empty() {
-                        let has_safe_literal_fallback = frame.has_safe_literal_fallback();
-                        let mut chain = Vec::with_capacity(frame.tokens.len());
-                        for token in frame.tokens {
+                    if !tokens.is_empty() {
+                        let mut chain = Vec::with_capacity(tokens.len());
+                        for &token in tokens.iter() {
                             if !chain.iter().any(|existing| existing == token) {
                                 chain.push(token.to_string());
                             }
                         }
                         requirements.push(CssFallbackChain {
                             tokens: chain,
-                            has_literal_fallback: has_safe_literal_fallback,
+                            has_literal_fallback: frame.has_safe_literal_fallback(),
                         });
                     }
                     return Ok(index);
@@ -671,9 +676,7 @@ fn scan_var_call(
             }
             b'-' if bytes.get(index + 1) == Some(&b'-') => {
                 if let Some((name, end)) = parse_custom_property_name(source, index) {
-                    if let Some(frame) = frames.last_mut() {
-                        frame.tokens.push(name);
-                    }
+                    tokens.push(name);
                     index = end;
                 } else {
                     index += 1;
