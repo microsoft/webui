@@ -181,7 +181,7 @@ fn emit_rust_package_tree(out: &mut String, packages: &[String], prefix: &str) {
         let module = rust_ident(&snake(&part));
         writeln!(out, "pub mod {module} {{").ok();
         let package = if prefix.is_empty() {
-            part.clone()
+            part
         } else {
             format!("{prefix}.{part}")
         };

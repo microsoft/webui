@@ -40,7 +40,7 @@ ln -s /cargo-cache "$CARGO_HOME/registry/cache"
 
 rustup_version=1.29.0
 rustup_sha256=4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10
-rust_toolchain=1.99.1
+rust_toolchain=1.100.0
 rustup_init="/tmp/rustup-init-${rustup_version}-x86_64-unknown-linux-gnu"
 trap 'rm -f "$rustup_init"' EXIT
 curl --proto "=https" --tlsv1.2 --fail --silent --show-error \

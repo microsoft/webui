@@ -20,7 +20,7 @@ and `/`. Attribute names passed to `write_escaped_attribute` must be trusted.
 
 ## Installation
 
-To install the standalone compiler without npm, use Rust 1.99.1 or newer:
+To install the standalone compiler without npm, use Rust 1.100.0 or newer:
 
 ```bash
 cargo install microsoft-webui-cli

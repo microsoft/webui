@@ -22,8 +22,7 @@ const { HistoryNavigationHold, confirmHistoryNavigation } = await import(
   `data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].contents).toString('base64')}`
 );
 
-function harness(phase = 'history-back') {
-  const entries = new Map();
+function harness(phase = 'history-back', entries = new Map()) {
   const store = {
     getItem: key => entries.get(key) ?? null,
     setItem: (key, value) => entries.set(key, value),
@@ -75,4 +74,45 @@ test('a different phase or old connection reason cannot reuse cancellation proof
   assert.throws(() => confirmHistoryNavigation(store, 'history-return'), /not verified/);
   assert.throws(() => confirmHistoryNavigation(store, 'history-back', 'navigated'), /not verified/);
   confirmHistoryNavigation(store, 'history-back', 'transport');
+});
+
+test('restoring a document checks its own terminal independently of the departing document', () => {
+  const entries = new Map();
+  const restored = harness('history-back', entries);
+  restored.hold.navigate(() => {});
+  restored.hide(true);
+  const departing = harness('history-return', entries);
+  departing.hold.navigate(() => {});
+  assert.equal(departing.hold.recordTransport(), true);
+  departing.hide(true);
+
+  restored.hold.confirmTerminal('navigated');
+  assert.equal(departing.store.getItem('native-ipc-history-cancellation'), 'history-return:pagehide');
+  confirmHistoryNavigation(departing.store, 'history-return');
+  departing.hold.confirmTerminal('transport');
+  assert.throws(() => departing.hold.confirmTerminal('navigated'), /not verified/);
+  assert.throws(() => restored.hold.confirmTerminal('transport'), /not verified/);
+});
+
+test('consuming shared proof does not erase the retired document terminal evidence', () => {
+  const { hold, store, hide } = harness();
+  hold.navigate(() => {});
+  hide(true);
+  assert.equal(hold.recordTransport(), true);
+  confirmHistoryNavigation(store, 'history-back');
+  confirmHistoryNavigation(store, 'history-return');
+  hold.confirmTerminal('transport');
+  assert.throws(() => hold.confirmTerminal('navigated'), /not verified/);
+});
+
+test('retired terminal verification requires trusted pagehide and preserves unexpected errors', () => {
+  const { hold, hide } = harness();
+  hold.navigate(() => {});
+  assert.equal(hold.recordTransport(), true);
+  assert.throws(() => hold.confirmTerminal('transport'), /not verified/);
+  hide(false);
+  assert.throws(() => hold.confirmTerminal('transport'), /not verified/);
+  hide(true);
+  assert.throws(() => hold.confirmTerminal('deadline-exceeded'), /not verified/);
+  hold.confirmTerminal('transport');
 });

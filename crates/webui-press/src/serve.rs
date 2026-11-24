@@ -450,7 +450,6 @@ mod tests {
         let generated = scratch_dir.join("index.html");
         let authored = root.path().join("index.md");
         std::fs::write(&generated, "generated")?;
-        std::fs::write(&authored, "# Home")?;
         let mut config: DocsConfig = serde_json::from_str(
             r#"{"site":{"title":"Test"},"basePath":"/","contentDir":".","nav":[],"sidebar":[]}"#,
         )?;
@@ -465,16 +464,25 @@ mod tests {
             tx,
         )?;
 
+        // Establish the source baseline through the live watcher. FSEvents can
+        // deliver setup writes after subscription, including during scratch checks.
+        std::fs::write(&authored, "# Home")?;
+        let changed = rx.recv_timeout(Duration::from_secs(3))?;
+        assert_eq!(changed.len(), 1);
+        assert_eq!(changed[0].canonicalize()?, authored.canonicalize()?);
+
         std::fs::write(&generated, "rebuilt")?;
-        assert!(matches!(
-            rx.recv_timeout(Duration::from_millis(500)),
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
-        ));
+        let event = rx.recv_timeout(Duration::from_millis(500));
+        assert!(
+            matches!(event, Err(std::sync::mpsc::RecvTimeoutError::Timeout)),
+            "scratch write triggered a rebuild: {event:?}"
+        );
         std::fs::remove_file(&generated)?;
-        assert!(matches!(
-            rx.recv_timeout(Duration::from_millis(500)),
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
-        ));
+        let event = rx.recv_timeout(Duration::from_millis(500));
+        assert!(
+            matches!(event, Err(std::sync::mpsc::RecvTimeoutError::Timeout)),
+            "scratch deletion triggered a rebuild: {event:?}"
+        );
 
         std::fs::write(&authored, "# Updated home")?;
         let changed = rx.recv_timeout(Duration::from_secs(3))?;

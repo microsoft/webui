@@ -84,7 +84,7 @@ Install the selected server prerequisites separately:
 
 | Server | Prerequisites |
 | --- | --- |
-| Rust | Rust 1.99.1+ and Cargo |
+| Rust | Rust 1.100.0+ and Cargo |
 | Go | Go 1.25+, cgo C compiler, matching [standalone SDK](/build/integrations/go#installation) |
 | C/C++ | CMake 3.24+, native C/C++ toolchain, matching [standalone SDK](/build/integrations/ffi#standalone-native-sdk) |
 | .NET | .NET 8 SDK and an approved matching [Microsoft.WebUI package source](/build/integrations/dotnet) |
@@ -102,7 +102,7 @@ For standalone template compilation, the CLI can also be built without Node:
 cargo install microsoft-webui-cli
 ```
 
-This needs Rust 1.99.1+ and does not by itself install the native TypeScript
+This needs Rust 1.100.0+ and does not by itself install the native TypeScript
 companion required by `webui app check`.
 
 <span id="install-the-cli"></span>

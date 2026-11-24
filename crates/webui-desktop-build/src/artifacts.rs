@@ -133,7 +133,7 @@ pub(crate) fn persist(
             Err(e) => return Err(io(&path, e)),
         };
         if existing.as_deref() != Some(content.as_slice()) {
-            drift.push(path.clone());
+            drift.push(path);
             changes.push(Change {
                 destination,
                 before: existing,
