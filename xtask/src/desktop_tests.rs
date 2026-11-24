@@ -3,6 +3,13 @@
 
 use crate::util::build_command;
 
+#[cfg(any(windows, test))]
+#[path = "../../crates/webui-desktop/runtime/architecture.rs"]
+mod architecture;
+#[cfg(any(windows, test))]
+#[path = "../../crates/webui-desktop/runtime/deployment.rs"]
+mod deployment;
+
 // Keep these package-local: workspace feature unification can hide missing gates.
 const FEATURES: &[&str] = &[
     "",
@@ -134,11 +141,91 @@ pub(crate) fn run() -> Result<(), String> {
     )?;
     #[cfg(windows)]
     run_windows_native_with(|args| {
+        prepare_windows_native(args)?;
         let mut command = Vec::with_capacity(args.len() + 1);
         command.push(String::from("cargo"));
         command.extend(args.iter().map(|arg| String::from(*arg)));
         crate::windows_desktop::run(&command)
     })?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn prepare_windows_native(args: &[&str]) -> Result<(), String> {
+    let mut command = build_command("cargo", &[]);
+    command.args(args.iter().take_while(|arg| **arg != "--"));
+    command.args(["--no-run", "--message-format=json-render-diagnostics"]);
+    let output = command.output().map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err(format!(
+            "Cannot build Windows native tests:\n{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let runtime = crate::util::workspace_root()?.join("crates/webui-desktop/runtime");
+    stage_windows_test_assets(&output.stdout, &runtime, std::env::consts::ARCH)
+}
+
+#[cfg(any(windows, test))]
+fn stage_windows_test_assets(
+    output: &[u8],
+    runtime: &std::path::Path,
+    arch: &str,
+) -> Result<(), String> {
+    use std::{collections::BTreeSet, fs, path::PathBuf};
+
+    let mut directories = BTreeSet::new();
+    for line in output.split(|byte| *byte == b'\n') {
+        if line.iter().all(u8::is_ascii_whitespace) {
+            continue;
+        }
+        let artifact: serde_json::Value = serde_json::from_slice(line)
+            .map_err(|error| format!("Invalid Cargo test artifact: {error}"))?;
+        if artifact["reason"] != "compiler-artifact" || artifact["profile"]["test"] != true {
+            continue;
+        }
+        let Some(executable) = artifact["executable"].as_str() else {
+            continue;
+        };
+        let executable = PathBuf::from(executable);
+        if !executable.is_absolute() || !executable.is_file() {
+            return Err(format!(
+                "Missing absolute Cargo test executable: {}",
+                executable.display()
+            ));
+        }
+        let directory = executable
+            .parent()
+            .ok_or("Cargo test executable has no directory")?;
+        directories.insert(directory.to_path_buf());
+    }
+    if directories.is_empty() {
+        return Err("Cargo did not report Windows native test executables".into());
+    }
+    let rid = architecture::runtime_architecture(arch).map_err(|error| error.to_string())?;
+    let sources = std::iter::once((
+        deployment::BOOTSTRAP_DLL,
+        runtime.join(rid).join(deployment::BOOTSTRAP_DLL),
+    ))
+    .chain(deployment::NOTICES.map(|name| (name, runtime.join(name))));
+    let assets: Vec<_> = sources
+        .map(|(name, path)| {
+            let bytes = fs::read(&path)
+                .map_err(|error| format!("Cannot read {}: {error}", path.display()))?;
+            if bytes.is_empty() {
+                return Err(format!("Empty Windows runtime asset: {}", path.display()));
+            }
+            Ok((name, bytes))
+        })
+        .collect::<Result<_, String>>()?;
+    for directory in directories {
+        for (name, bytes) in &assets {
+            let path = directory.join(name);
+            fs::write(&path, bytes)
+                .map_err(|error| format!("Cannot stage {}: {error}", path.display()))?;
+        }
+    }
     Ok(())
 }
 
@@ -189,7 +276,65 @@ fn nonempty_suites(output: &str) -> Result<(), &'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{nonempty_suites, run_windows_native_with};
+    use super::{deployment, nonempty_suites, run_windows_native_with, stage_windows_test_assets};
+
+    #[test]
+    fn windows_runtime_follows_exact_cargo_test_artifacts() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = tempfile::tempdir()?;
+        let runtime = root.path().join("runtime");
+        std::fs::create_dir_all(runtime.join("win-arm64"))?;
+        std::fs::write(
+            runtime.join("win-arm64").join(deployment::BOOTSTRAP_DLL),
+            b"arm64",
+        )?;
+        for name in deployment::NOTICES {
+            std::fs::write(runtime.join(name), name)?;
+        }
+        let mut output = Vec::new();
+        let mut executables = Vec::new();
+        for relative in [
+            "debug/deps/sdk.exe",
+            "custom/build/desktop/unit/out/sdk.exe",
+        ] {
+            let executable = root.path().join(relative);
+            std::fs::create_dir_all(executable.parent().ok_or("missing test directory")?)?;
+            std::fs::write(&executable, b"test")?;
+            serde_json::to_writer(
+                &mut output,
+                &serde_json::json!({
+                    "reason": "compiler-artifact", "profile": {"test": true},
+                    "executable": executable, "fresh": true
+                }),
+            )?;
+            output.push(b'\n');
+            executables.push(executable);
+        }
+        stage_windows_test_assets(&output, &runtime, "aarch64")?;
+        for executable in executables {
+            let directory = executable.parent().ok_or("missing test directory")?;
+            assert_eq!(
+                std::fs::read(directory.join(deployment::BOOTSTRAP_DLL))?,
+                b"arm64"
+            );
+            for name in deployment::NOTICES {
+                assert_eq!(std::fs::read_to_string(directory.join(name))?, name);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn windows_runtime_staging_requires_real_test_artifacts() {
+        let root = tempfile::tempdir().unwrap();
+        for output in [
+            &b"not json"[..],
+            br#"{"reason":"compiler-artifact","profile":{"test":false},"executable":"app.exe"}"#,
+            br#"{"reason":"compiler-artifact","profile":{"test":true},"executable":"missing.exe"}"#,
+        ] {
+            assert!(stage_windows_test_assets(output, root.path(), "x86_64").is_err());
+        }
+    }
 
     #[test]
     fn windows_gate_runs_native_sdk_and_services_with_original_assertions() {
