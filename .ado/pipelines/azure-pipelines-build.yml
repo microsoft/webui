@@ -156,19 +156,12 @@ stages:
       inputs:
         version: '1.25.0'
     - task: Cache@2
-      displayName: Restore Cargo cache
+      displayName: Restore Cargo crate downloads
       inputs:
-        key: 'hotfix-validation-cargo-home | "$(Agent.OS)" | Cargo.lock'
+        key: 'cargo-crates-v2 | "$(Agent.OS)" | Cargo.lock'
         restoreKeys: |
-          hotfix-validation-cargo-home | "$(Agent.OS)"
-        path: $(CARGO_CACHE_HOME)
-    - task: Cache@2
-      displayName: Restore validation target cache
-      inputs:
-        key: 'hotfix-validation-target | "$(Agent.OS)" | Cargo.lock'
-        restoreKeys: |
-          hotfix-validation-target | "$(Agent.OS)"
-        path: $(Build.SourcesDirectory)/target
+          cargo-crates-v2 | "$(Agent.OS)"
+        path: $(CARGO_CACHE_HOME)/registry/cache
     - task: Cache@2
       displayName: Restore pnpm store
       inputs:
@@ -229,20 +222,14 @@ stages:
     - checkout: self
       clean: true
     - task: Cache@2
-      displayName: Restore Cargo cache
+      # Cache compressed crate downloads, not extracted sources or build outputs.
+      # A separate key namespace prevents restoring old whole-directory caches.
+      displayName: Restore Cargo crate downloads
       inputs:
-        key: 'cargo-home | "$(Agent.OS)" | wasm-release | Cargo.lock'
+        key: 'cargo-crates-v2 | "$(Agent.OS)" | Cargo.lock'
         restoreKeys: |
-          cargo-home | "$(Agent.OS)" | wasm-release
-          cargo-home | "$(Agent.OS)"
-        path: $(CARGO_CACHE_HOME)
-    - task: Cache@2
-      displayName: Restore WASM target cache
-      inputs:
-        key: 'cargo-target | "$(Agent.OS)" | wasm-release | Cargo.lock'
-        restoreKeys: |
-          cargo-target | "$(Agent.OS)" | wasm-release
-        path: $(Build.SourcesDirectory)/target
+          cargo-crates-v2 | "$(Agent.OS)"
+        path: $(CARGO_CACHE_HOME)/registry/cache
     - task: Bash@3
       displayName: Build WASM release assets
       inputs:
@@ -262,7 +249,7 @@ stages:
         artifactName: stage-wasm
 
   - job: BuildLinuxAssets
-    displayName: Build Linux release asset (Ubuntu 22.04)
+    displayName: Build Linux release asset (Ubuntu 22.04 container)
     strategy:
       matrix:
         LinuxX64:
@@ -276,33 +263,23 @@ stages:
           manylinuxCrossImage: messense/manylinux2014-cross:aarch64@sha256:32c92568ebee8db53e0598c21bcd06a6dd1649d45d507646a8a49313c50325f8
           pythonNativeTest: 'false'
     pool:
-      vmImage: ubuntu-22.04
+      name: OneESPool
+      demands:
+      - ImageOverride -equals HostedPoolLinuxImage
     steps:
     - checkout: self
       clean: true
-    - task: GoTool@0
-      displayName: Use Go 1.25
-      inputs:
-        version: '1.25.0'
     - task: UsePythonVersion@0
       displayName: Use Python 3.11
       inputs:
         versionSpec: '3.11'
     - task: Cache@2
-      displayName: Restore Cargo cache
+      displayName: Restore Cargo crate downloads
       inputs:
-        key: 'cargo-home | "$(Agent.OS)" | "$(targetTriple)" | Cargo.lock'
+        key: 'cargo-crates-v2 | "$(Agent.OS)" | Cargo.lock'
         restoreKeys: |
-          cargo-home | "$(Agent.OS)" | "$(targetTriple)"
-          cargo-home | "$(Agent.OS)"
-        path: $(CARGO_CACHE_HOME)
-    - task: Cache@2
-      displayName: Restore target cache
-      inputs:
-        key: 'cargo-target | "ubuntu-22.04-portable" | "$(targetTriple)" | Cargo.lock'
-        restoreKeys: |
-          cargo-target | "ubuntu-22.04-portable" | "$(targetTriple)"
-        path: $(Build.SourcesDirectory)/target
+          cargo-crates-v2 | "$(Agent.OS)"
+        path: $(CARGO_CACHE_HOME)/registry/cache
     - task: Bash@3
       displayName: Build and stage $(targetTriple)
       inputs:
@@ -320,58 +297,24 @@ stages:
           : "${ARTIFACT_NAME:?ARTIFACT_NAME is required}"
           : "${RELEASE_VERSION:?RELEASE_VERSION is required}"
 
-          sudo apt-get update -q
-          sudo apt-get install -y -q protobuf-compiler binutils
-          if [[ "$TARGET_TRIPLE" == aarch64-unknown-linux-gnu ]]; then
-            sudo apt-get install -y -q gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
-            export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
-            export CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++
-          fi
-          rustup toolchain install 1.99.1 --profile minimal --target "$TARGET_TRIPLE"
-
-          # Desktop's GTK/WebKit dependencies require a newer Ubuntu runner.
-          CARGO_HOME="$CARGO_CACHE_HOME" cargo +1.99.1 xtask publish-build \
-            --target "$TARGET_TRIPLE" \
-            --profile release \
-            --portable-only \
-            --output "$BUILD_ARTIFACT_STAGING_DIRECTORY/$ARTIFACT_NAME"
-          # Audit the staged files, which came from each invocation's exact
-          # Cargo artifact (the compiler has a separate node-build target root).
-          staged="$BUILD_ARTIFACT_STAGING_DIRECTORY/$ARTIFACT_NAME/packages"
-          if [[ "$TARGET_TRIPLE" == aarch64-unknown-linux-gnu ]]; then
-            platform=linux-arm64
-          else
-            platform=linux-x64
-          fi
-          for file in \
-            "$staged/webui-$platform/bin/webui" \
-            "$staged/webui-press-$platform/bin/webui-press" \
-            "$staged/webui-$platform/webui.node" \
-            "$staged/webui-$platform/webui-build.node" \
-            "$BUILD_ARTIFACT_STAGING_DIRECTORY/$ARTIFACT_NAME/dotnet/runtimes/$platform/native/libwebui_ffi.so"; do
-            required=$(readelf --version-info --wide "$file" |
-              grep -oE 'GLIBC_[0-9.]+' | sort -Vu | tail -n 1)
-            if [[ $(printf '%s\n' GLIBC_2.35 "$required" | sort -V | tail -n 1) != GLIBC_2.35 ]]; then
-              echo "$file requires $required; expected glibc 2.35 or older" >&2
-              exit 1
-            fi
-          done
-          # The CLI is already built for TARGET_TRIPLE; the producer and its
-          # HTTPS helper run on the runner, never by executing that target.
-          CARGO_HOME="$CARGO_CACHE_HOME" cargo +1.99.1 xtask toolchain-stage \
-            --target "$TARGET_TRIPLE" \
-            --cli "target/$TARGET_TRIPLE/release/webui" \
-            --acquire-checker
-          toolchain="publish/toolchains/webui-toolchain-${RELEASE_VERSION}-${TARGET_TRIPLE}.tar.gz"
-          toolchain_output="$BUILD_ARTIFACT_STAGING_DIRECTORY/$ARTIFACT_NAME/publish/toolchains"
-          mkdir -p "$toolchain_output"
-          cp "$toolchain" "$toolchain.sha256" "$toolchain_output/"
+          # The 1ES host supplies capacity and Docker, not the release sysroot.
+          # Go and system tools are image-owned; Rust is checksum-bootstrapped.
+          docker build --platform linux/amd64 \
+            -f .ado/portable-linux.Dockerfile -t webui-portable-linux .ado
+          mkdir -p "$CARGO_CACHE_HOME/registry/cache" "$BUILD_ARTIFACT_STAGING_DIRECTORY"
+          docker run --rm --platform linux/amd64 \
+            --user "$(id -u):$(id -g)" \
+            -e TARGET_TRIPLE -e ARTIFACT_NAME -e RELEASE_VERSION -e SOURCE_DATE_EPOCH \
+            -v "$(pwd):/io" \
+            -v "$BUILD_ARTIFACT_STAGING_DIRECTORY:/out" \
+            -v "$CARGO_CACHE_HOME/registry/cache:/cargo-cache" \
+            -w /io webui-portable-linux bash .ado/build-linux-portable.sh
       env:
         ARTIFACT_NAME: $(artifactName)
         BUILD_ARTIFACT_STAGING_DIRECTORY: $(Build.ArtifactStagingDirectory)
         TARGET_TRIPLE: $(targetTriple)
         RELEASE_VERSION: $(releaseVersion)
+        SOURCE_DATE_EPOCH: $(sourceDateEpoch)
     - task: Bash@3
       displayName: Build Python wheel ($(targetTriple))
       inputs:
@@ -460,20 +403,12 @@ stages:
       inputs:
         versionSpec: '3.11'
     - task: Cache@2
-      displayName: Restore Cargo cache
+      displayName: Restore Cargo crate downloads
       inputs:
-        key: 'cargo-home | "$(Agent.OS)" | "$(targetTriple)" | Cargo.lock'
+        key: 'cargo-crates-v2 | "$(Agent.OS)" | Cargo.lock'
         restoreKeys: |
-          cargo-home | "$(Agent.OS)" | "$(targetTriple)"
-          cargo-home | "$(Agent.OS)"
-        path: $(CARGO_CACHE_HOME)
-    - task: Cache@2
-      displayName: Restore target cache
-      inputs:
-        key: 'cargo-target | "$(Agent.OS)" | "$(targetTriple)" | Cargo.lock'
-        restoreKeys: |
-          cargo-target | "$(Agent.OS)" | "$(targetTriple)"
-        path: $(Build.SourcesDirectory)/target
+          cargo-crates-v2 | "$(Agent.OS)"
+        path: $(CARGO_CACHE_HOME)/registry/cache
     - task: Bash@3
       displayName: Build and stage $(targetTriple)
       inputs:
@@ -545,7 +480,7 @@ stages:
       inputs:
         versionSpec: '3.11'
     - task: Cache@2
-      displayName: Restore Cargo cache
+      displayName: Restore Cargo crate downloads
       # A failed post-job cache save must not block release assembly.
       continueOnError: true
       # Cache@2 reuses this environment for the post-job save. Select the
@@ -553,18 +488,10 @@ stages:
       env:
         VSTS_TAR_EXECUTABLE: 'C:\Program Files\Git\usr\bin\tar.exe'
       inputs:
-        key: 'cargo-home | "$(Agent.OS)" | "$(targetTriple)" | Cargo.lock'
+        key: 'cargo-crates-v2 | "$(Agent.OS)" | Cargo.lock'
         restoreKeys: |
-          cargo-home | "$(Agent.OS)" | "$(targetTriple)"
-          cargo-home | "$(Agent.OS)"
-        path: $(CARGO_CACHE_HOME)
-    - task: Cache@2
-      displayName: Restore target cache
-      inputs:
-        key: 'cargo-target | "$(Agent.OS)" | "$(targetTriple)" | Cargo.lock'
-        restoreKeys: |
-          cargo-target | "$(Agent.OS)" | "$(targetTriple)"
-        path: $(Build.SourcesDirectory)/target
+          cargo-crates-v2 | "$(Agent.OS)"
+        path: $(CARGO_CACHE_HOME)/registry/cache
     - task: PowerShell@2
       displayName: Build and stage $(targetTriple)
       inputs:
@@ -711,19 +638,12 @@ stages:
       inputs:
         version: '1.25.0'
     - task: Cache@2
-      displayName: Restore Cargo cache
+      displayName: Restore Cargo crate downloads
       inputs:
-        key: 'cargo-home | "$(Agent.OS)" | Cargo.lock'
+        key: 'cargo-crates-v2 | "$(Agent.OS)" | Cargo.lock'
         restoreKeys: |
-          cargo-home | "$(Agent.OS)"
-        path: $(CARGO_CACHE_HOME)
-    - task: Cache@2
-      displayName: Restore assembly target cache
-      inputs:
-        key: 'cargo-target | "$(Agent.OS)" | assembly-release | Cargo.lock'
-        restoreKeys: |
-          cargo-target | "$(Agent.OS)" | assembly-release
-        path: $(Build.SourcesDirectory)/target
+          cargo-crates-v2 | "$(Agent.OS)"
+        path: $(CARGO_CACHE_HOME)/registry/cache
     - task: Cache@2
       displayName: Restore pnpm store
       inputs:
