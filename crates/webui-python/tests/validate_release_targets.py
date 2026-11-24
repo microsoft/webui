@@ -84,7 +84,7 @@ def _job_block(source: str, job: str, next_job: str) -> str:
 
 def _validate_azure_release_jobs() -> None:
     pipeline = _read(AZURE_PIPELINE_SOURCE)
-    linux = _job_block(pipeline, "BuildLinuxAssets", "BuildMacOSAssets")
+    linux = _job_block(pipeline, "BuildLinuxAssets", "BuildLinuxDesktop")
     macos = _job_block(pipeline, "BuildMacOSAssets", "BuildWindowsAssets")
     windows = _job_block(pipeline, "BuildWindowsAssets", "AssembleRelease")
     requirements = (
@@ -92,6 +92,10 @@ def _validate_azure_release_jobs() -> None:
             "Linux wheel job",
             linux,
             (
+                "    pool:\n"
+                "      name: OneESPool\n"
+                "      demands:\n"
+                "      - ImageOverride -equals HostedPoolLinuxImage\n",
                 '-v "${BUILD_ARTIFACT_STAGING_DIRECTORY}:/out"',
                 '"$TARGET_TRIPLE" "/out/$ARTIFACT_NAME"\n'
                 "      env:\n"
@@ -118,6 +122,12 @@ def _validate_azure_release_jobs() -> None:
                 f"{AZURE_PIPELINE_SOURCE}: {label} is missing required release "
                 f"configuration: {missing}"
             )
+
+    if "vmImage:" in linux:
+        raise ValueError(
+            f"{AZURE_PIPELINE_SOURCE}: Linux release builds must use the "
+            "1ES pool rather than a standard Microsoft-hosted agent"
+        )
 
     manylinux = _read(MANYLINUX_SCRIPT_SOURCE)
     target_dir = "export CARGO_TARGET_DIR=/tmp/webui-target"

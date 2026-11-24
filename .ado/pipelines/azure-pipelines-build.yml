@@ -156,19 +156,12 @@ stages:
       inputs:
         version: '1.25.0'
     - task: Cache@2
-      displayName: Restore Cargo cache
+      displayName: Restore Cargo crate downloads
       inputs:
-        key: 'hotfix-validation-cargo-home | "$(Agent.OS)" | Cargo.lock'
+        key: 'cargo-crates-v2 | "$(Agent.OS)" | Cargo.lock'
         restoreKeys: |
-          hotfix-validation-cargo-home | "$(Agent.OS)"
-        path: $(CARGO_CACHE_HOME)
-    - task: Cache@2
-      displayName: Restore validation target cache
-      inputs:
-        key: 'hotfix-validation-target | "$(Agent.OS)" | Cargo.lock'
-        restoreKeys: |
-          hotfix-validation-target | "$(Agent.OS)"
-        path: $(Build.SourcesDirectory)/target
+          cargo-crates-v2 | "$(Agent.OS)"
+        path: $(CARGO_CACHE_HOME)/registry/cache
     - task: Cache@2
       displayName: Restore pnpm store
       inputs:
@@ -229,20 +222,14 @@ stages:
     - checkout: self
       clean: true
     - task: Cache@2
-      displayName: Restore Cargo cache
+      # Cache compressed crate downloads, not extracted sources or build outputs.
+      # A separate key namespace prevents restoring old whole-directory caches.
+      displayName: Restore Cargo crate downloads
       inputs:
-        key: 'cargo-home | "$(Agent.OS)" | wasm-release | Cargo.lock'
+        key: 'cargo-crates-v2 | "$(Agent.OS)" | Cargo.lock'
         restoreKeys: |
-          cargo-home | "$(Agent.OS)" | wasm-release
-          cargo-home | "$(Agent.OS)"
-        path: $(CARGO_CACHE_HOME)
-    - task: Cache@2
-      displayName: Restore WASM target cache
-      inputs:
-        key: 'cargo-target | "$(Agent.OS)" | wasm-release | Cargo.lock'
-        restoreKeys: |
-          cargo-target | "$(Agent.OS)" | wasm-release
-        path: $(Build.SourcesDirectory)/target
+          cargo-crates-v2 | "$(Agent.OS)"
+        path: $(CARGO_CACHE_HOME)/registry/cache
     - task: Bash@3
       displayName: Build WASM release assets
       inputs:
@@ -276,7 +263,9 @@ stages:
           manylinuxCrossImage: messense/manylinux2014-cross:aarch64@sha256:32c92568ebee8db53e0598c21bcd06a6dd1649d45d507646a8a49313c50325f8
           pythonNativeTest: 'false'
     pool:
-      vmImage: ubuntu-22.04
+      name: OneESPool
+      demands:
+      - ImageOverride -equals HostedPoolLinuxImage
     steps:
     - checkout: self
       clean: true
@@ -289,20 +278,12 @@ stages:
       inputs:
         versionSpec: '3.11'
     - task: Cache@2
-      displayName: Restore Cargo cache
+      displayName: Restore Cargo crate downloads
       inputs:
-        key: 'cargo-home | "$(Agent.OS)" | "$(targetTriple)" | Cargo.lock'
+        key: 'cargo-crates-v2 | "$(Agent.OS)" | Cargo.lock'
         restoreKeys: |
-          cargo-home | "$(Agent.OS)" | "$(targetTriple)"
-          cargo-home | "$(Agent.OS)"
-        path: $(CARGO_CACHE_HOME)
-    - task: Cache@2
-      displayName: Restore target cache
-      inputs:
-        key: 'cargo-target | "ubuntu-22.04-portable" | "$(targetTriple)" | Cargo.lock'
-        restoreKeys: |
-          cargo-target | "ubuntu-22.04-portable" | "$(targetTriple)"
-        path: $(Build.SourcesDirectory)/target
+          cargo-crates-v2 | "$(Agent.OS)"
+        path: $(CARGO_CACHE_HOME)/registry/cache
     - task: Bash@3
       displayName: Build and stage $(targetTriple)
       inputs:
@@ -460,20 +441,12 @@ stages:
       inputs:
         versionSpec: '3.11'
     - task: Cache@2
-      displayName: Restore Cargo cache
+      displayName: Restore Cargo crate downloads
       inputs:
-        key: 'cargo-home | "$(Agent.OS)" | "$(targetTriple)" | Cargo.lock'
+        key: 'cargo-crates-v2 | "$(Agent.OS)" | Cargo.lock'
         restoreKeys: |
-          cargo-home | "$(Agent.OS)" | "$(targetTriple)"
-          cargo-home | "$(Agent.OS)"
-        path: $(CARGO_CACHE_HOME)
-    - task: Cache@2
-      displayName: Restore target cache
-      inputs:
-        key: 'cargo-target | "$(Agent.OS)" | "$(targetTriple)" | Cargo.lock'
-        restoreKeys: |
-          cargo-target | "$(Agent.OS)" | "$(targetTriple)"
-        path: $(Build.SourcesDirectory)/target
+          cargo-crates-v2 | "$(Agent.OS)"
+        path: $(CARGO_CACHE_HOME)/registry/cache
     - task: Bash@3
       displayName: Build and stage $(targetTriple)
       inputs:
@@ -545,7 +518,7 @@ stages:
       inputs:
         versionSpec: '3.11'
     - task: Cache@2
-      displayName: Restore Cargo cache
+      displayName: Restore Cargo crate downloads
       # A failed post-job cache save must not block release assembly.
       continueOnError: true
       # Cache@2 reuses this environment for the post-job save. Select the
@@ -553,18 +526,10 @@ stages:
       env:
         VSTS_TAR_EXECUTABLE: 'C:\Program Files\Git\usr\bin\tar.exe'
       inputs:
-        key: 'cargo-home | "$(Agent.OS)" | "$(targetTriple)" | Cargo.lock'
+        key: 'cargo-crates-v2 | "$(Agent.OS)" | Cargo.lock'
         restoreKeys: |
-          cargo-home | "$(Agent.OS)" | "$(targetTriple)"
-          cargo-home | "$(Agent.OS)"
-        path: $(CARGO_CACHE_HOME)
-    - task: Cache@2
-      displayName: Restore target cache
-      inputs:
-        key: 'cargo-target | "$(Agent.OS)" | "$(targetTriple)" | Cargo.lock'
-        restoreKeys: |
-          cargo-target | "$(Agent.OS)" | "$(targetTriple)"
-        path: $(Build.SourcesDirectory)/target
+          cargo-crates-v2 | "$(Agent.OS)"
+        path: $(CARGO_CACHE_HOME)/registry/cache
     - task: PowerShell@2
       displayName: Build and stage $(targetTriple)
       inputs:
@@ -711,19 +676,12 @@ stages:
       inputs:
         version: '1.25.0'
     - task: Cache@2
-      displayName: Restore Cargo cache
+      displayName: Restore Cargo crate downloads
       inputs:
-        key: 'cargo-home | "$(Agent.OS)" | Cargo.lock'
+        key: 'cargo-crates-v2 | "$(Agent.OS)" | Cargo.lock'
         restoreKeys: |
-          cargo-home | "$(Agent.OS)"
-        path: $(CARGO_CACHE_HOME)
-    - task: Cache@2
-      displayName: Restore assembly target cache
-      inputs:
-        key: 'cargo-target | "$(Agent.OS)" | assembly-release | Cargo.lock'
-        restoreKeys: |
-          cargo-target | "$(Agent.OS)" | assembly-release
-        path: $(Build.SourcesDirectory)/target
+          cargo-crates-v2 | "$(Agent.OS)"
+        path: $(CARGO_CACHE_HOME)/registry/cache
     - task: Cache@2
       displayName: Restore pnpm store
       inputs:
