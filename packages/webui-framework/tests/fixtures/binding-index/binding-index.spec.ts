@@ -56,6 +56,19 @@ test('preserves reentrant dirty roots and authored callback ordering', async ({ 
   expect(state).toEqual({ firstReads: 14, suffixReads: 2, callbacks: ['record', 'suffix'] });
 });
 
+test('detached setState renders callback-derived bindings on same-turn reconnect', async ({ page }) => {
+  const result = await page.locator('test-binding-index').evaluate((host: TestBindingIndex) => {
+    const parent = host.parentNode!;
+    const text = host.shadowRoot!.querySelector('.wildcard')!;
+    host.remove();
+    host.setState({ suffix: 'detached' });
+    const beforeReconnect = host.external.last;
+    parent.appendChild(host);
+    return { beforeReconnect, text: text.textContent };
+  });
+  expect(result).toEqual({ beforeReconnect: 'initial', text: 'External outside detached' });
+});
+
 test('keeps local shadowing out of the global root index', async ({ page }) => {
   await page.getByRole('button', { name: 'Change local records', exact: true }).click();
   const host = page.locator('test-binding-index');

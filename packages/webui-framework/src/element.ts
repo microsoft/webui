@@ -197,7 +197,11 @@ export class WebUIElement extends TemplateElement {
   }
 
   override [FLUSH_UPDATES](): void {
-    if (this.$pendingPropertyChanges) this.$notifyHydrated();
+    if (this.$pendingPropertyChanges) {
+      this.$notifyHydrated();
+      // Keep bindings queued until reconnect can deliver the deferred callbacks.
+      if (!this.isConnected) return;
+    }
     super[FLUSH_UPDATES]();
   }
 
