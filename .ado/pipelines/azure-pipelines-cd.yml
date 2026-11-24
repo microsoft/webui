@@ -6,9 +6,8 @@ parameters:
 - name: validationMode
   displayName: Generate signed artifacts without external publication
   type: string
-  default: 'false'
+  default: 'true'
   values:
-  - 'false'
   - 'true'
 - name: publishGitHub
   displayName: Publish GitHub release (disable for registry-only recovery)
@@ -25,12 +24,7 @@ resources:
     branch: refs/heads/main
     # Hotfix builds are selected manually so pushing an unprotected hotfix
     # branch cannot authorize production publication by itself.
-    trigger:
-      branches:
-        include:
-        - main
-      stages:
-      - BuildArtifacts
+    trigger: none
   repositories:
   - repository: webuiPipelines
     type: git

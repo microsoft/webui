@@ -9,11 +9,10 @@ pr: none
 
 parameters:
 - name: validationMode
-  displayName: Rebuild an existing release for artifact validation
+  displayName: Build-only benchmark (external publication disabled)
   type: string
-  default: 'false'
+  default: 'true'
   values:
-  - 'false'
   - 'true'
 
 stages:
