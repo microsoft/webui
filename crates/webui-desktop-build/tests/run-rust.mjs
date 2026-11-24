@@ -2,7 +2,7 @@
 // Licensed under the MIT license.
 
 import { execFileSync, spawnSync } from 'node:child_process';
-import { dirname, join } from 'node:path';
+import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { typedIpcBinaryPath } from './support/target-output.mjs';
@@ -15,6 +15,7 @@ const result = spawnSync('cargo', [
 ], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] });
 if (result.error) throw result.error;
 const libraries = new Map();
+const dependencyDirs = new Set();
 for (const line of result.stdout.split('\n')) {
   if (!line) continue;
   const artifact = JSON.parse(line);
@@ -22,6 +23,7 @@ for (const line of result.stdout.split('\n')) {
     process.stderr.write(artifact.message.rendered);
   }
   if (artifact.reason !== 'compiler-artifact') continue;
+  for (const filename of artifact.filenames) dependencyDirs.add(dirname(filename));
   const library = artifact.filenames.find(name => name.endsWith('.rlib'));
   if (library) libraries.set(artifact.target.name, library);
 }
@@ -32,8 +34,7 @@ const binary = typedIpcBinaryPath(root, process.env.CARGO_TARGET_DIR, process.pl
 execFileSync('rustc', [
   '--test', '--edition=2021', fileURLToPath(new URL('support/runtime.rs', import.meta.url)),
   '--extern', `webui_desktop=${sdk}`,
-  '-L', `dependency=${dirname(sdk)}`,
-  '-L', `dependency=${join(dirname(sdk), 'deps')}`,
+  ...[...dependencyDirs].flatMap(directory => ['-L', `dependency=${directory}`]),
   '-o', binary,
 ], { cwd: root, stdio: 'inherit' });
 const tests = execFileSync(binary, ['--list', '--format=terse'], { cwd: root, encoding: 'utf8' });
