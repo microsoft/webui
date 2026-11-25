@@ -1,1 +1,1 @@
-import{a as e}from"./docs-theme-toggle-DDNHOmJf.js";e();
+import{a as e}from"./docs-theme-toggle-DTT42-To.js";e();
