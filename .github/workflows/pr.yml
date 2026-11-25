@@ -289,7 +289,8 @@ jobs:
         platform:
           # Ubuntu 24.04 is required to match Chromium and the release build baseline.
           - { target: x86_64-unknown-linux-gnu, os: ubuntu-24.04, package: webui-desktop-linux-x64, consumer: true }
-          - { target: aarch64-unknown-linux-gnu, os: ubuntu-24.04, package: webui-desktop-linux-arm64, consumer: false }
+          # Use the native ARM64 image so GTK/WebKitGTK do not need co-installable amd64 libraries.
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-24.04-arm, package: webui-desktop-linux-arm64, consumer: false }
           - { target: x86_64-apple-darwin, os: macos-latest-large, package: webui-desktop-darwin-x64, consumer: true }
           - { target: aarch64-apple-darwin, os: macos-latest-large, package: webui-desktop-darwin-arm64, consumer: false }
           - { target: x86_64-pc-windows-msvc, os: windows-latest, package: webui-desktop-win32-x64, consumer: true }
