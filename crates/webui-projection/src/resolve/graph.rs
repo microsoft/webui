@@ -3,7 +3,10 @@
 
 use std::collections::BTreeMap;
 
-use crate::{diagnostic, Import, Module, ModuleGraph, ProjectionDiagnostic};
+use crate::{
+    diagnostic, Import, Module, ModuleGraph, ProjectionDiagnostic, MAX_MODULES, MAX_MODULE_BYTES,
+    MAX_SOURCE_BYTES,
+};
 
 pub(super) fn package_name<'a>(graph: &'a ModuleGraph, edge: &'a Import) -> Option<&'a str> {
     edge.package_name.as_deref().or_else(|| {
@@ -49,13 +52,13 @@ pub(super) fn validate(graph: &ModuleGraph) -> Vec<ProjectionDiagnostic> {
     let total = graph.modules.values().fold(0_usize, |total, module| {
         total.saturating_add(module.source.as_ref().map_or(0, String::len))
     });
-    if graph.modules.len() > 65_535
-        || total > 64 * 1024 * 1024
+    if graph.modules.len() > MAX_MODULES
+        || total > MAX_SOURCE_BYTES
         || graph.modules.values().any(|module| {
             module
                 .source
                 .as_ref()
-                .is_some_and(|source| source.len() > 16 * 1024 * 1024)
+                .is_some_and(|source| source.len() > MAX_MODULE_BYTES)
         })
     {
         diagnostics.push(diagnostic("", "PROJ-C013", "The native adapter source graph must not exceed 65,535 modules, 16 MiB per module or 64 MiB total."));

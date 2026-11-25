@@ -6,9 +6,9 @@ use std::time::{Duration, Instant};
 
 use crate::{
     build_protocol_inner, component_assets, invalid_asset_base_option, lazy_report, lazy_scripts,
-    module_preload, projection, streaming_without_projection_warning, validate_asset_base,
-    BuildOptions, BuildResult, BuildStats, ComponentAssetFile, GeneratedModule, LazyPackFile,
-    Plugin, ProjectionManifestSource, RawBuildOutput, WebUIError,
+    module_preload, projection, source_projection, validate_asset_base, BuildOptions, BuildResult,
+    BuildStats, ComponentAssetFile, GeneratedModule, LazyPackFile, Plugin,
+    ProjectionManifestSource, RawBuildOutput, WebUIError,
 };
 
 /// A compiled application retained while its generated modules are bundled.
@@ -26,8 +26,8 @@ pub struct PreparedBuild {
 
 /// Compile once and expose projection-independent inputs for the client bundler.
 ///
-/// Write the generated module and component assets, bundle the client, then pass
-/// its completed projection manifests to [`PreparedBuild::finish`].
+/// Write the generated module and component assets, bundle the client, then
+/// call [`PreparedBuild::finish`], optionally with managed-bundle proof.
 pub fn prepare_build(options: BuildOptions) -> Result<PreparedBuild, WebUIError> {
     let started = Instant::now();
     if let Some(base) = options.asset_base.as_deref() {
@@ -96,7 +96,8 @@ impl PreparedBuild {
         )
     }
 
-    /// Validate completed manifests and finalize the retained compilation.
+    /// Finalize the retained compilation, deriving WebUI state from source if
+    /// no managed bundle proof was supplied.
     ///
     /// These sources are merged with any supplied in the preparation options.
     /// Validation retains the one-shot build's input/output hashes and coverage
@@ -149,16 +150,16 @@ impl PreparedBuild {
 }
 
 fn apply_projection(raw: &mut RawBuildOutput, options: &BuildOptions) -> Result<(), WebUIError> {
-    if !options.projection_manifests.is_empty() && options.plugin != Some(Plugin::WebUI) {
-        return Err(projection::incompatible_plugin_error());
+    if options.plugin != Some(Plugin::WebUI) {
+        return if options.projection_manifests.is_empty() {
+            Ok(())
+        } else {
+            Err(projection::incompatible_plugin_error())
+        };
     }
+    raw.protocol.initial_state_strategy = webui_protocol::InitialStateStrategy::Components as i32;
     let Some(merged) = projection::load_and_merge(&options.projection_manifests)? else {
-        if raw.boundary_count > 0 {
-            raw.warnings.push(streaming_without_projection_warning(
-                &options.entry,
-                raw.boundary_count,
-            ));
-        }
+        source_projection::apply(raw, options);
         return Ok(());
     };
     let scripted_tags: Vec<&str> = raw
@@ -170,7 +171,6 @@ fn apply_projection(raw: &mut RawBuildOutput, options: &BuildOptions) -> Result<
         .map(|artifact| artifact.tag_name.as_str())
         .collect();
     projection::validate_coverage(&merged.components, &scripted_tags)?;
-    raw.protocol.initial_state_strategy = webui_protocol::InitialStateStrategy::Components as i32;
     for artifact in &raw.component_templates {
         if !artifact.is_scripted {
             continue;

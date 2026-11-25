@@ -1019,7 +1019,7 @@ describe('renderComponentTemplates', () => {
 });
 
 describe('renderPartial', () => {
-  test('preserves full state when projection metadata is absent', () => {
+  test('retains full state when the component source cannot prove a state surface', () => {
     const result = build({ appDir, entry: 'index3.html', plugin: 'webui' });
     const protocol = new Protocol(result.protocol, { plugin: 'webui' });
     const json = protocol.renderPartial(
@@ -1032,4 +1032,59 @@ describe('renderPartial', () => {
     assert.equal(parsed.state.name, 'Partial');
     assert.equal(parsed.state.serverOnly, 'drop');
   });
+});
+
+test('an independent esbuild bundle gets projected SSR and navigation state without a manifest', async () => {
+  // Resolve the real framework package through the existing delivery workspace.
+  const directory = mkdtempSync(resolve(process.cwd(), '..', 'webui-delivery', '.tmp-source-projection-'));
+  try {
+    writeFileSync(join(directory, 'index.html'), `
+      <html><head></head><body>
+        <route path="/" component="client-card" exact />
+        <script type="module" src="/browser.js"></script>
+      </body></html>
+    `);
+    writeFileSync(join(directory, 'client-card.html'), '<h1>{{title}}</h1><button @click="{increment()}">{{count}}</button>');
+    writeFileSync(join(directory, 'client-card.ts'), `
+      import { WebUIElement, observable } from '@microsoft/webui-framework';
+      class Card extends WebUIElement {
+        @observable count = 0;
+        increment() { this.count += 1; }
+      }
+      Card.define('client-card');
+    `);
+    writeFileSync(join(directory, 'entry.ts'), `
+      import { startRuntime } from '@microsoft/webui-framework/runtime.js';
+      import './client-card.js';
+      startRuntime();
+    `);
+    await bundle({
+      absWorkingDir: directory,
+      entryPoints: ['entry.ts'],
+      outfile: 'dist/browser.js',
+      format: 'esm',
+      platform: 'browser',
+      bundle: true,
+      tsconfigRaw: { compilerOptions: { experimentalDecorators: true, useDefineForClassFields: false } },
+    });
+    const browserFile = join(directory, 'dist', 'browser.js');
+    const before = readFileSync(browserFile);
+    assert.match(before.toString(), /client-card/);
+
+    const compiled = build({ appDir: directory, plugin: 'webui' });
+    assert.deepEqual(compiled.warnings, []);
+    const protocol = new Protocol(compiled.protocol, { plugin: 'webui' });
+    const state = { count: 4, title: 'Server-rendered title', unrelated: [1, 2, 3] };
+    const html = protocol.render(state).toString();
+    assert.match(html, /<h1>.*Server-rendered title/);
+    assert.match(html, /"state":\{"count":4\}/);
+    assert.doesNotMatch(html, /modulepreload|unrelated/);
+    assert.deepEqual(JSON.parse(protocol.renderPartial(state, 'index.html', '/', '')).state, {
+      count: 4, title: 'Server-rendered title',
+    });
+    assert.deepEqual(readFileSync(browserFile), before);
+    assert.deepEqual(readdirSync(join(directory, 'dist')), ['browser.js']);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

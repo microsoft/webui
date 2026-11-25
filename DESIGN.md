@@ -38,7 +38,7 @@ in the sources and references listed at the end.
 ```text
 HTML/CSS + components       optional application JS/TS
           |                            |
-  discovery + parser          bundler + projection adapter
+  discovery + parser           semantic state analysis
           |                            |
           +------ build-time proof -----+
                          |
@@ -63,12 +63,11 @@ browser runtime, and a host can load `protocol.bin` without shipping the
 compiler. Only the selected optional browser entry points should reach an
 application's JavaScript bundle.
 
-Native application tooling enables the optional browser compilation module in
-`webui` and semantic state analysis in `webui-projection`.
-Rolldown bundles the browser graph; Oxc analyzes its original TypeScript
-sources and resolved edges. Neither a JavaScript VM nor a Node subprocess is
-needed for native frontend compilation. Handler crates and standalone native
-renderer hosts do not depend on this compiler module or the analysis crate.
+The native compiler uses `webui-projection` to analyze original JavaScript or
+TypeScript with Oxc. Browser bundling is separate and optional: when WebUI
+manages it, Rolldown supplies the resolved graph and final output membership.
+Neither a JavaScript VM nor a Node subprocess is needed. Handler crates and
+standalone native renderer hosts do not depend on semantic analysis or bundling.
 
 Browser resource data, rendering, and delivery are separate layers. Template
 registration and style catalogs do not require a renderer or navigation
@@ -236,35 +235,28 @@ token inventory for hosts, rather than making each request scan stylesheets.
 Compiler-produced modulepreload hints similarly describe critical static
 imports ahead of time; deferred imports must not be promoted accidentally.
 
-### Optional state projection
+### Build-time state projection
 
-Without a projection manifest, initial hydration uses full state and unknown
-scripted navigation surfaces retain full state for correctness. The WebUI
-projection compiler is a **build-only**, shared Rust semantic analysis in
-`webui-projection`, not part of the render path. Native browser compilation
-calls it directly; Node exposes the same browser build through a thin N-API
-binding. Rolldown captures its already resolved module graph and final output
-membership in Rust. No JavaScript projection adapter, parser service, manifest
-builder, or alternate frontend implementation is retained. The compiler traces
-WebUI-authored component definitions and observable/attribute properties,
-including inherited properties, and emits exact per-component state keys.
-It never infers a key set from raw output text or reruns module resolution.
+The WebUI compiler derives state directly from discovered component source and
+its compiled templates. It traces the component definition and framework
+decorators, including inherited properties, through a restricted set of
+statically identifiable imports. This path is independent of the browser
+bundler: it does not compile application JavaScript or guess final chunk
+relationships. If source evidence is incomplete, the component conservatively
+selects all state. Scriptless components require no JavaScript analysis.
 
-One bundler build produces a deterministic, versioned JSON manifest; one WebUI
-build validates it and produces `protocol.bin`. The manifest binds source and
-output identities to their exact bytes so stale or conflicting fragments
-cannot silently provide incorrect projection data. Manifests may be merged
-only when component ownership is unambiguous. When a WebUI build opts into
-manifests, every compiled scripted component must have exact coverage.
-Unproven analysis fails the build; without manifests, unknown surfaces
-conservatively select all state. Scriptless components require no JavaScript
-analysis. The handler never opens manifests or bundles at request time.
+Managed browser builds use the same semantic analyzer with stronger evidence:
+the bundler's actual resolved edges and final output membership. The build
+validates that proof against source and output identities before using it for
+state projection and preload hints. It does not infer membership from emitted
+text or run a second general-purpose resolver. The runtime only reads the
+finalized protocol; it never opens proof files, source, or browser assets.
 
 When generated client modules are bundler inputs, the build retains its
 compiled templates and styles across bundling. These inputs are independent of
-state projection. Finalization validates the completed manifests, applies
-projection and preload metadata, then assigns the final content identity and
-serializes the protocol. It does not rediscover or recompile templates.
+state projection. Finalization applies source projection or validates managed
+bundle proof, then assigns the final content identity and serializes the
+protocol. It does not rediscover or recompile templates.
 This retained compilation is build-time ownership only, never request-time state.
 
 Initial hydration and partial navigation have separate state surfaces.

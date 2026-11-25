@@ -204,8 +204,11 @@ Compiler APIs from `@microsoft/webui/build.js`:
 
 ## Single-compilation builds
 
-When your client imports generated lazy or component modules and also produces
-a state-projection manifest, retain one compilation across client bundling:
+When your client imports generated lazy or component modules, retain one
+compilation across bundling. With your own bundler, call `writeModules()`
+before bundling and `finish()` afterward; state projection needs no manifest.
+With the optional WebUI-managed `bundleClient()`, you can also pass its
+generated proof for exact bundle-aware projection and preload hints:
 
 ```typescript
 import { prepareBuild, bundleClient } from '@microsoft/webui/build.js';
@@ -250,8 +253,9 @@ requested compression measurements are available in the final result.
 
 `prepareBuild()` accepts `BuildOptions`. `finish()` accepts
 `projectionManifests` and `projectionManifestObjects`, merged with any supplied
-during preparation; omitting both preserves full-state behavior. Manifest
-hashes and scripted-component coverage are checked before finalization.
+during preparation. Omitting both uses automatic source projection with the
+WebUI plugin. Supplied proof is checked for matching hashes and scripted-component
+coverage before finalization.
 The retained templates/CSS are a snapshot: start a new preparation when editing
 them. A `finish()` attempt consumes the handle, even if manifest validation
 fails; subsequent methods or getters throw. Native retained data is released
@@ -419,8 +423,8 @@ Import this type from `@microsoft/webui/build.js`.
 | `metafile` | `boolean` | `false` | Return the build metafile: the component asset graph and the `lazyPacks` report. Also measures `brotliBytes` for each lazy pack |
 | `componentModules` | `Record<string, string>` | - | Module specifiers keyed by custom element tag, for components without a usable `.ts` or `.js` sibling. Written verbatim in `lazy.webui.js` |
 | `modulesOut` | `string` | `appDir` | Directory you write generated modules to; relative specifiers in `lazy.webui.js` start here |
-| `projectionManifests` | `string[]` | - | Projection manifest paths, merged with strict scripted-component coverage |
-| `projectionManifestObjects` | `{ path: string; manifest: unknown }[]` | - | Already-transported manifests with logical paths anchoring `root` and stale checks |
+| `projectionManifests` | `string[]` | - | Optional WebUI-managed bundle proof paths, checked for exact scripted-component coverage |
+| `projectionManifestObjects` | `{ path: string; manifest: unknown }[]` | - | In-memory WebUI-managed bundle proof with logical paths for validating files |
 | `cssFileNameTemplate` | `string` | `"[name].[ext]"` | Emitted filename template for Link-mode CSS. Tokens: `[name]`, `[hash]`, `[ext]` |
 | `assetBase` | `string` | - | Public URL or path ending in `/` that maps to the build output. Stored in the protocol; requests override it with `$webui.assetBase`. See [Asset base](/reference/cli/) |
 | `legalComments` | `"inline" \| "none"` | `"inline"` | Preserve legal CSS comments inline, or strip all comments |
@@ -437,7 +441,6 @@ import { build } from '@microsoft/webui/build.js';
 const result = build({
   appDir: './src',
   plugin: 'webui',
-  projectionManifests: ['./dist/webui-projection.json'],
 });
 ```
 
@@ -456,9 +459,9 @@ analyzer. Its `lazyPacks` array lists every lazy pack, sorted by path, with the
 fields above except `fileName` and `content`; see
 [Build metafile](/reference/cli/#webui-build).
 
-Manifest inputs are build-time only. The returned protocol is self-contained,
-and `render()` does not load projection tooling. If no manifest is supplied,
-the build preserves full state.
+The WebUI plugin [projects state from source](/build/hydration#build-time-state-projection)
+by default, so you can keep your own bundler. The returned protocol is
+self-contained, and `render()` does not load projection tooling.
 
 The Node API requires the platform-specific native addon. Addon resolution and
 loading errors are returned directly and never trigger a CLI subprocess. Use

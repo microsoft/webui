@@ -547,7 +547,7 @@ delivery from a cancelled or stalled stream.
 | `metafile` | `bool` | `false` | Produce `BuildResult::metafile`: the component asset graph and the `lazyPacks` report, when the build emits either. Also measures each pack's `brotli_bytes` |
 | `component_modules` | `BTreeMap<String, String>` | `{}` | Module specifiers keyed by custom element tag, for components without a usable `.ts` or `.js` sibling. Written verbatim in `lazy.webui.js`; checked by `webui::validate_component_module` |
 | `modules_out` | `Option<PathBuf>` | `None` | Directory for generated modules; relative specifiers in `lazy.webui.js` start here, at `app_dir` when `None` |
-| `projection_manifests` | `Vec<ProjectionManifestSource>` | `[]` | Disk, inline, or prepared projection fragments; empty preserves full state |
+| `projection_manifests` | `Vec<ProjectionManifestSource>` | `[]` | Optional WebUI-managed bundle proof; an empty list derives WebUI state requirements from source |
 | `css_file_name_template` | `String` | `"[name].[ext]"` | Emitted filename template for Link-mode CSS. Tokens: `[name]`, `[hash]`, `[ext]` |
 | `asset_base` | `Option<String>` | `None` | Public URL or path ending in `/` that maps to the build output. Stored in the protocol; requests override it with `$webui.assetBase`. Checked by `webui::validate_asset_base` |
 | `theme` | `Option<TokenFile>` | `None` | Loaded design-token theme used to validate unresolved CSS tokens during build |

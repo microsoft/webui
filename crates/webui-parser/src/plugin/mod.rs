@@ -78,14 +78,13 @@ pub struct ComponentTemplateArtifact {
     /// directly by the template (e.g. `{{name}}`) independent of any
     /// authored client script. Always populated (possibly empty), even when
     /// `hydration`/`navigation` collapse to [`StateSurface::All`], so a
-    /// bundler-neutral manifest consumer can union exact client keys with
+    /// build can union proven client keys with
     /// these Rust-derived roots without re-deriving them.
     pub template_roots: Vec<String>,
     /// Whether this component has an authored client module (sibling script
     /// or an externally client-owned package), as opposed to a scriptless
-    /// compiled template. Bundler manifest coverage validation only requires
-    /// an entry for scripted components; scriptless ones are always
-    /// Rust-derived and never require a manifest entry.
+    /// compiled template. Only scripted components need separate proof of
+    /// their client-side state fields.
     pub is_scripted: bool,
     /// Whether this component effectively uses Shadow DOM.
     pub uses_shadow_dom: bool,

@@ -1,13 +1,38 @@
 # State projection contract
 
-This is the internal, cross-language contract between a bundler adapter, the
+This is the internal contract between source and managed-bundle evidence, the
 build-only projection compiler, and the Rust WebUI build. See
-[DESIGN.md](../DESIGN.md#optional-state-projection) for why projection exists;
+[DESIGN.md](../DESIGN.md#build-time-state-projection) for why projection exists;
 see the [hydration guide](../docs/build/hydration.md#build-time-state-projection)
-for application usage. The manifest is a **proof of one completed bundler
-build**, not a request-time input or a secrecy boundary.
+for application usage. Projection is not a secrecy boundary.
 
-## Producer and consumer responsibilities
+## Default source evidence
+
+Use the component registry's selected sibling script and analyze only compiled
+components retained in the protocol. A same-named `.ts` and `.js` pair is
+ambiguous. An explicit `component_modules` override is not proof of a match.
+There must be one literal, top-level registration for the tag in the selected
+module, resolving to a class defined there. Analyzable bases must reach
+`WebUIElement`; all field decorators must resolve to the canonical framework
+symbols. Unsupported class/member decorators, static blocks, or potential
+static `define` overrides cannot prove identity.
+
+Follow only explicit relative `.ts` and `.js` paths during dependency lookup.
+An explicit `.js` may identify `.ts` when it is the only candidate. Analysis
+does not follow symlinked import paths, package imports other than the framework
+entry, wildcard export resolution, aliases, or bundler configuration. Relative
+dependencies stay within app source, or the defining script's directory when
+it was discovered outside app source. This assumes the external bundle uses the
+same source and preserves registrations and import identities; it does not
+prove which modules or chunks the browser receives.
+
+An unproven component keeps `All` for both state surfaces and gets a build
+warning. A proven empty surface is `None`. A nonempty hydration surface is
+the set of proven decorator properties; navigation adds compiled template roots.
+An unproven component only expands response state where the handler selects it.
+No modulepreloads are derived from source evidence.
+
+## Managed-bundle proof
 
 The adapter reports the bundler's resolved module graph, exact authored import
 edges and resolved targets, final output-to-input membership after tree shaking,
@@ -24,9 +49,8 @@ with producer and adapter identities, `root`, `analysisHash`, `buildId`,
 names its defining module, final output set, initial hydration keys, and
 navigation keys. Navigation keys include hydration keys; WebUI adds compiled
 template roots when building the protocol. A scriptless component needs no
-JavaScript analysis. Without a manifest, unknown client surfaces keep full
-state for correctness; **when manifests are supplied**, every compiled
-scripted component requires exactly one proven owner.
+JavaScript analysis. When supplied, bundle proof requires exactly one proven
+owner for every compiled scripted component.
 
 Each fragment is validated independently before merging. Identical component
 tags in separate fragments are an error, not a union of guessed key sets.
@@ -38,8 +62,8 @@ manifests or bundle files per request.
 
 A retained build may compile templates/CSS and publish projection-independent
 generated modules before the client bundle completes. Finalization performs the
-same manifest hash, merge, plugin, and coverage checks as a one-shot build, then
-computes final state surfaces, module preloads, build identity, and protocol bytes.
+same state inference or bundle-proof validation as a one-shot build, then
+computes final surfaces, any managed preloads, build identity, and protocol bytes.
 Deferred fragments inherit the finalized owner's state contract while retaining
 their compiled body roots. Preparation must not erase those roots through an
 intermediate full-state fallback. Packs and generated module content do not
@@ -48,8 +72,9 @@ depend on projection; preparation and finalization share their original payloads
 ### Shared native analysis
 
 `webui-projection` owns semantic proof for both native and Node builds. It uses
-Oxc 0.158.0 on original source and the adapter-owned resolution graph; it does
-not execute application code, open files, or resolve packages independently.
+Oxc 0.158.0 on original source. Source builds supply bounded filesystem
+evidence; managed builds use the adapter-owned resolution graph without
+opening files for resolution. Neither executes application code.
 The Node browser-build entry point passes build configuration through N-API.
 Resolution, source capture, analysis, membership, manifest construction and
 hashing remain native. No JavaScript source graph or AST crosses that boundary,
@@ -185,4 +210,4 @@ and their shared vector.
 - [Manifest schema, validator and shared golden vector](../crates/webui-protocol/src/projection_manifest.rs).
 - [Native semantic conformance](../crates/webui-projection/tests/semantics.rs),
   [browser build contracts](../crates/webui/tests/browser_build.rs), and
-  [thin Node build binding](../crates/webui-node/src/client_build.rs).
+  [thin Node build binding](../crates/webui-node/src/build/client_build.rs).

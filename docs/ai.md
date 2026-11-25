@@ -1440,9 +1440,14 @@ Other Hosts are rejected before the app or API proxy handles them. See the
 
 Use the [CLI reference](/reference/cli/) for CSS/DOM modes, component discovery,
 asset bases, generated assets, and shutdown options rather than guessing flags.
-For generated modules plus state projection, follow the
+`--plugin=webui` automatically projects state from the same-named component
+script and its `@observable` / `@attr` declarations. Keep your own bundler;
+no manifest or bundler plugin is required. Unproven component source keeps
+full state with a build warning. Rebuild the protocol and browser bundle
+together when component source changes. See
+[state projection](/build/hydration#build-time-state-projection).
+If the browser entry imports generated modules, use the
 [single-compilation build pipeline](/build/integrations/node#single-compilation-builds).
-Projection is optional; rebuild its manifest whenever client inputs change.
 
 For custom Node hosts, import `Protocol`, streaming APIs, and runtime types
 from `@microsoft/webui`. Build scripts import `build`, `prepareBuild`,
@@ -1453,8 +1458,8 @@ other addon. CLI installation stays the same. See
 
 Authoring mistakes fail the build with a structured diagnostic carrying a stable
 code, source location, snippet, and a `help:` fix. Branch on the `code`, never
-the message. `--format json` emits one JSON object per error or native browser
-build warning on stdout.
+the message. `--format json` emits one JSON object per error, state-projection
+fallback warning, or native browser build warning on stdout.
 
 ### Desktop apps
 

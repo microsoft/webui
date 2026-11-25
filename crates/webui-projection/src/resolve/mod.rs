@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use oxc::syntax::{node::NodeId, symbol::SymbolId};
 
 use crate::analysis::{self, Analysis, Binding, Export, Value};
+use crate::source::SourceEvidence;
 use crate::{diagnostic, AnalysisReport, ComponentSurface, ModuleGraph, ProjectionDiagnostic};
 
 const FRAMEWORK: &str = "\0framework:@microsoft/webui-framework";
@@ -52,8 +53,13 @@ struct Frame {
     bindings: HashMap<(String, SymbolId), Target>,
 }
 
+enum Evidence<'a> {
+    Bundle(&'a ModuleGraph),
+    Source(SourceEvidence),
+}
+
 pub(super) struct Compiler<'a> {
-    graph: &'a ModuleGraph,
+    evidence: Evidence<'a>,
     analyses: BTreeMap<String, Analysis>,
     environments: Vec<Frame>,
     diagnostics: Vec<ProjectionDiagnostic>,
@@ -62,8 +68,16 @@ pub(super) struct Compiler<'a> {
 
 impl<'a> Compiler<'a> {
     pub(super) fn new(graph: &'a ModuleGraph) -> Self {
+        Self::with_evidence(Evidence::Bundle(graph))
+    }
+
+    pub(super) fn source(evidence: SourceEvidence) -> Self {
+        Self::with_evidence(Evidence::Source(evidence))
+    }
+
+    fn with_evidence(evidence: Evidence<'a>) -> Self {
         Self {
-            graph,
+            evidence,
             analyses: BTreeMap::new(),
             environments: Vec::new(),
             diagnostics: Vec::new(),
@@ -75,28 +89,27 @@ impl<'a> Compiler<'a> {
         if self.analyses.contains_key(module) {
             return true;
         }
-        let syntax = self
-            .graph
-            .modules
-            .get(module)
-            .and_then(|module| module.syntax);
-        if syntax.is_none() && !analysis::supported(module) {
-            return false;
-        }
         if !self.attempted.insert(module.to_owned()) {
             return false;
         }
-        let Some(source) = self
-            .graph
-            .modules
-            .get(module)
-            .filter(|module| !module.opaque)
-            .and_then(|module| module.source.as_deref())
-        else {
-            return false;
+        let parsed = match &mut self.evidence {
+            Evidence::Bundle(graph) => {
+                let Some(input) = graph.modules.get(module).filter(|input| !input.opaque) else {
+                    return false;
+                };
+                if input.syntax.is_none() && !analysis::supported(module) {
+                    return false;
+                }
+                let Some(source) = input.source.as_deref() else {
+                    return false;
+                };
+                analysis::parse(module, source, input.syntax)
+            }
+            Evidence::Source(evidence) => evidence
+                .read(module, self.attempted.len())
+                .and_then(|source| analysis::parse(module, &source, None)),
         };
-
-        match analysis::parse(module, source, syntax) {
+        match parsed {
             Ok(analysis) => {
                 self.analyses.insert(module.to_owned(), analysis);
                 true
@@ -109,7 +122,14 @@ impl<'a> Compiler<'a> {
     }
 
     pub(super) fn analyze(mut self) -> AnalysisReport {
-        self.diagnostics = graph::validate(self.graph);
+        let Evidence::Bundle(graph) = self.evidence else {
+            return AnalysisReport {
+                components: BTreeMap::new(),
+                diagnostics: self.diagnostics,
+                parsed_modules: Vec::new(),
+            };
+        };
+        self.diagnostics = graph::validate(graph);
         if !self.diagnostics.is_empty() {
             return AnalysisReport {
                 components: BTreeMap::new(),
@@ -117,8 +137,7 @@ impl<'a> Compiler<'a> {
                 parsed_modules: Vec::new(),
             };
         }
-        let modules: Vec<_> = self
-            .graph
+        let modules: Vec<_> = graph
             .modules
             .iter()
             .filter(|(id, module)| {
@@ -162,8 +181,20 @@ impl<'a> Compiler<'a> {
         specifier: &str,
         name: Option<&str>,
     ) -> Result<Query, Identity> {
-        let edge = self
-            .graph
+        let Evidence::Bundle(graph) = &self.evidence else {
+            let Evidence::Source(evidence) = &self.evidence else {
+                return Err(Identity::Invalid("PROJ-C002"));
+            };
+            let resolved = if specifier == "@microsoft/webui-framework" {
+                FRAMEWORK.to_owned()
+            } else {
+                evidence
+                    .relative_import(module, specifier)
+                    .ok_or(Identity::Invalid("PROJ-C002"))?
+            };
+            return Ok(Query::Export(resolved, name.unwrap_or("").to_owned()));
+        };
+        let edge = graph
             .modules
             .get(module)
             .and_then(|module| {
@@ -173,7 +204,7 @@ impl<'a> Compiler<'a> {
                     .find(|edge| !edge.dynamic && edge.specifier == specifier)
             })
             .ok_or(Identity::Invalid("PROJ-C002"))?;
-        if graph::package_name(self.graph, edge) == Some("@microsoft/webui-framework") {
+        if graph::package_name(graph, edge) == Some("@microsoft/webui-framework") {
             return Ok(Query::Export(
                 FRAMEWORK.to_owned(),
                 name.unwrap_or("").to_owned(),
@@ -341,7 +372,7 @@ impl<'a> Compiler<'a> {
                 Some(Export::Forward { specifier, name }) => self
                     .imported(&module, specifier, name.as_deref())
                     .map_or_else(Step::Done, Step::Next),
-                None => {
+                None if matches!(self.evidence, Evidence::Bundle(_)) => {
                     let queries: Vec<_> = analysis
                         .stars
                         .iter()
@@ -353,6 +384,7 @@ impl<'a> Compiler<'a> {
                         Step::Branches(queries)
                     }
                 }
+                None => Step::Done(Identity::Invalid("PROJ-C003")),
             },
         }
     }

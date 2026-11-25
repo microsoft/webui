@@ -18,7 +18,6 @@ name = "webui"
 [features]
 cli = ["microsoft-webui-parser/cli"]
 browser-build = [
-    "dep:microsoft-webui-projection",
     "dep:rolldown",
     "dep:rolldown_common",
     "dep:rolldown_error",
@@ -37,7 +36,7 @@ microsoft-webui-protocol = { path = "../webui-protocol", version = "3.2.1", feat
 microsoft-webui-handler = { path = "../webui-handler", version = "3.2.1", features = ["packs"] }
 microsoft-webui-discovery = { path = "../webui-discovery", version = "3.2.1" }
 microsoft-webui-tokens = { path = "../webui-tokens", version = "3.2.1" }
-microsoft-webui-projection = { path = "../webui-projection", version = "3.2.1", optional = true }
+microsoft-webui-projection = { path = "../webui-projection", version = "3.2.1" }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

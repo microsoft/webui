@@ -857,15 +857,15 @@ Configure desktop packaging on the CLI without adding desktop fields to
 webui desktop package ./my-app --target macos-app --out ./packages \
   --source ./my-app/src --state ./my-app/data/state.json \
   --assets ./my-app/dist \
-  --projection-manifest ./my-app/dist/webui-projection.json \
   --build-script build:client \
   --runner-crate my-app-desktop \
   --app-id com.example.contacts --app-name Contacts \
   --titlebar-style overlay --titlebar-height 48
 ```
 
-CLI file paths are relative to the current directory. Client projection
-metadata must stay current. `desktop package` also accepts `--theme`,
+CLI file paths are relative to the current directory. Rebuild browser assets
+and the protocol together when component source changes. `desktop package`
+also accepts `--theme`,
 `--plugin`, `--icon`, identity, publisher, runner and window flags; see the
 [CLI reference](/reference/cli/#webui-desktop) for the full list. Rust hosts set the
 same window fields on `WindowOptions`, pass source and startup state through
@@ -915,7 +915,8 @@ fn package(runner_exe: PathBuf) -> webui_desktop::Result<PathBuf> {
 }
 ```
 
-Set `BuildOptions::plugin` and `projection_manifests` for interactive builds.
+Select the WebUI plugin in `BuildOptions::plugin` for automatic state projection
+in interactive builds.
 `DesktopBundleOptions::token_css` accepts pre-resolved theme tokens. In a Rust
 build script or host tool, run any web build scripts and compile the chosen
 runner before calling these APIs; those build commands are not part of the

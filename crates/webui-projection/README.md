@@ -2,19 +2,19 @@
 
 Native build-time state projection analysis for [WebUI](https://github.com/microsoft/webui).
 
-This crate analyzes original JavaScript and TypeScript sources together with the
-resolved module graph from a completed bundler invocation. It determines the
+This crate analyzes original JavaScript and TypeScript to determine the
 component properties required for hydration and client navigation.
 
-- `analyze` returns the proven component state surfaces.
+- `analyze_sources` analyzes compiler-selected scripts and their supported
+  relative imports, returning a proven state surface or a diagnostic per tag.
+- `analyze` proves component state surfaces from a completed bundle graph.
 - `analyze_with_report` also reports which source modules were parsed.
 - Unsupported or ambiguous declarations produce structured diagnostics rather
   than incomplete property lists or a full-state fallback.
 
-The caller supplies source text, exact resolved imports, and package ownership
-through `ModuleGraph`. This crate does not resolve files or packages, bundle
-browser assets, construct projection manifests, or render requests. It belongs
-in build tooling, not a production rendering dependency graph.
+For managed bundles, the caller supplies source text, exact resolved imports,
+and package ownership through `ModuleGraph`. This crate does not bundle browser
+assets, construct projection manifests, or render requests.
 
 For application authoring and supported build workflows, see the
 [WebUI documentation](https://microsoft.github.io/webui).

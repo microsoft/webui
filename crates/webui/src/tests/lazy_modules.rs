@@ -20,9 +20,9 @@ fn scripted_regions_app() -> TempDir {
                 "</dialog>",
             ),
         ),
-        ("app-shell/app-shell.ts", "export {};"),
+        ("app-shell/app-shell.ts", "import { WebUIElement } from '@microsoft/webui-framework'; class App extends WebUIElement {} App.define('app-shell');"),
         ("eager-badge/eager-badge.html", "<span>Badge</span>"),
-        ("eager-badge/eager-badge.ts", "export {};"),
+        ("eager-badge/eager-badge.ts", "import { WebUIElement } from '@microsoft/webui-framework'; class Badge extends WebUIElement {} Badge.define('eager-badge');"),
         (
             "settings-panel/settings-panel.html",
             "<button @click=\"{save()}\">Save</button>",
@@ -31,7 +31,7 @@ fn scripted_regions_app() -> TempDir {
         ("settings-panel/settings-panel.js", "export {};"),
         ("plain-note/plain-note.html", "<p>Note</p>"),
         ("theme-picker/theme-picker.html", "<select></select>"),
-        ("theme-picker/theme-picker.js", "export {};"),
+        ("theme-picker/theme-picker.js", "import { WebUIElement } from '@microsoft/webui-framework'; class Picker extends WebUIElement {} Picker.define('theme-picker');"),
     ])
 }
 
@@ -100,7 +100,9 @@ fn generated_module_imports_the_scripted_components_each_region_introduces() {
     let nested = pack(&result, "app-shell::lazy:@1");
     assert_eq!(nested.trigger, LazyTrigger::Idle);
     assert_eq!(nested.components, ["theme-picker"]);
-    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(result.warnings.len(), 1, "{:?}", result.warnings);
+    assert_eq!(result.warnings[0].error_code(), Some(FULL_STATE_WARNING));
+    assert_eq!(result.warnings[0].component_name(), Some("settings-panel"));
 }
 
 #[test]
@@ -193,9 +195,9 @@ fn startup_app() -> TempDir {
             "site-header/site-header.html",
             r#"<if condition="signedIn"><user-badge></user-badge></if>"#,
         ),
-        ("site-header/site-header.ts", "export {};"),
+        ("site-header/site-header.ts", "import { WebUIElement } from '@microsoft/webui-framework'; class Header extends WebUIElement {} Header.define('site-header');"),
         ("user-badge/user-badge.html", "<span>User</span>"),
-        ("user-badge/user-badge.ts", "export {};"),
+        ("user-badge/user-badge.ts", "import { WebUIElement } from '@microsoft/webui-framework'; class Badge extends WebUIElement {} Badge.define('user-badge');"),
         (
             "app-shell/app-shell.html",
             concat!(
@@ -203,16 +205,16 @@ fn startup_app() -> TempDir {
                 "<reports-page></reports-page><settings-panel></settings-panel></if>",
             ),
         ),
-        ("app-shell/app-shell.ts", "export {};"),
+        ("app-shell/app-shell.ts", "import { WebUIElement } from '@microsoft/webui-framework'; class App extends WebUIElement {} App.define('app-shell');"),
         (
             "reports-page/reports-page.html",
             "<report-chart></report-chart>",
         ),
-        ("reports-page/reports-page.ts", "export {};"),
+        ("reports-page/reports-page.ts", "import { WebUIElement } from '@microsoft/webui-framework'; class Reports extends WebUIElement {} Reports.define('reports-page');"),
         ("report-chart/report-chart.html", "<canvas></canvas>"),
-        ("report-chart/report-chart.ts", "export {};"),
+        ("report-chart/report-chart.ts", "import { WebUIElement } from '@microsoft/webui-framework'; class Chart extends WebUIElement {} Chart.define('report-chart');"),
         ("settings-panel/settings-panel.html", "<form></form>"),
-        ("settings-panel/settings-panel.ts", "export {};"),
+        ("settings-panel/settings-panel.ts", "import { WebUIElement } from '@microsoft/webui-framework'; class Settings extends WebUIElement {} Settings.define('settings-panel');"),
     ])
 }
 

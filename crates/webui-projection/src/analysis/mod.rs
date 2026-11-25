@@ -69,6 +69,7 @@ pub(super) struct Class {
     pub base: Option<NodeId>,
     pub properties: Vec<Property>,
     pub valid_factory: bool,
+    pub source_identity_preserved: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -76,6 +77,7 @@ pub(super) struct Definition {
     pub class: NodeId,
     pub tag: Option<String>,
     pub arguments_valid: bool,
+    pub top_level: bool,
 }
 
 #[derive(Debug, Default)]
@@ -371,6 +373,18 @@ fn definition(call: &CallExpression<'_>, semantic: &Semantic<'_>, result: &mut A
         class,
         tag,
         arguments_valid: call.arguments.len() == if custom { 2 } else { 1 },
+        top_level: !call.optional
+            && !member.optional
+            && matches!(
+                semantic.nodes().parent_kind(call.node_id.get()),
+                AstKind::ExpressionStatement(_)
+            )
+            && matches!(
+                semantic
+                    .nodes()
+                    .parent_kind(semantic.nodes().parent_id(call.node_id.get())),
+                AstKind::Program(_)
+            ),
     });
 }
 

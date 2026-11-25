@@ -443,7 +443,7 @@ webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--
 | `--css-bundle` | Merge component stylesheets into shared chunks. Composes with `--css`; rejected with `--css module`. | *(off)* |
 | `--plugin <NAME>` | Load a parser plugin | *(none)* |
 | `--components <SOURCE>` | Additional component sources (npm packages or local paths). Repeatable. | *(none)* |
-| `--projection-manifest <PATH>` | Bundler projection manifest fragment. Repeatable and valid only with `--plugin=webui`. | *(none; full state)* |
+| `--projection-manifest <PATH>` | Advanced: proof from a WebUI-managed browser build, repeatable and WebUI plugin only. Independent bundlers do not need it. | derive state from component source |
 | `--emit-component-assets <TAGS>` | Comma-separated root component tags to compile as stable ESM inputs for the application bundler | *(none)* |
 | `--modules-out <DIR>` | Directory for generated bundler inputs: component assets, `lazy.webui.js`, and its declaration | `--out` |
 | `--component-module <TAG=SPECIFIER>` | Module that defines the custom element `TAG`, for components without a usable `.ts` or `.js` sibling. `lazy.webui.js` imports `SPECIFIER` verbatim, overriding a discovered sibling. Repeatable. | *(none)* |
@@ -830,11 +830,6 @@ webui build ./my-app --out ./dist \
 # Build with the WebUI Framework plugin (hydration support)
 webui build ./my-app --out ./dist --plugin=webui
 
-# Build browser code first, then embed exact state projection metadata
-node ./my-app/build-client.mjs
-webui build ./my-app --out ./dist --plugin=webui \
-  --projection-manifest ./my-app/dist/webui-projection.json
-
 # Build with external component packages
 webui build ./my-app --out ./dist --components @reactive-ui
 
@@ -849,12 +844,10 @@ webui build ./src/apps/app1 --out ./dist/app1.bin
 webui build ./src/apps/app2 --out ./dist/app2.bin
 ```
 
-`--projection-manifest` is opt-in and strict. Without it, WebUI performs no
-JavaScript analysis and preserves full state. With one or more fragments, every
-scripted component compiled from the app or `--components` sources must have
-exactly one manifest entry. Build external component bundles separately and
-repeat the flag for each fragment. See
-[Build-Time State Projection](/build/hydration#build-time-state-projection).
+The WebUI plugin automatically [projects state from component source](/build/hydration#build-time-state-projection).
+No projection file is needed with your own bundler. If you supply proof from a
+WebUI-managed browser build, it must cover every compiled scripted component
+and match the emitted browser files.
 
 For progressive pages, use the
 [bundler-independent coordinator delivery contract](/build/hydration#separate-coordinator-and-application-assets)
@@ -915,7 +908,7 @@ webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [-
 | `--css-bundle` | Merge component stylesheets into shared chunks. Composes with `--css`; rejected with `--css module`. | *(off)* |
 | `--plugin <NAME>` | Load parser + handler plugins (e.g., `webui`) | *(none)* |
 | `--components <SOURCE>` | Additional component sources (npm packages or local paths). Repeatable. | *(none)* |
-| `--projection-manifest <PATH>` | Bundler projection manifest fragment. Repeatable and valid only with `--plugin=webui`. | *(none; full state)* |
+| `--projection-manifest <PATH>` | Advanced: proof from a WebUI-managed browser build, repeatable and WebUI plugin only. | derive state from component source |
 | `--api-port <PORT>` | Proxy route requests to your API server. JSON responses provide buffered state; `application/x-webui-stream` responses drive progressive boundary rendering. Encoded paths and queries are forwarded unchanged. | *(none)* |
 | `--emit-component-assets <TAGS>` | Comma-separated root component tags to compile as static WebUI component assets, matching `webui build`. Their templates and CSS are parsed and validated on every build. Roots are served from memory and immutable dependencies from disk. | *(none)* |
 | `--modules-out <DIR>` | Directory refreshed after each successful build with generated bundler inputs: component assets, `lazy.webui.js`, and its declaration. With `--watch`, it cannot equal or contain the app or another watched source path. | *(none)* |
@@ -1065,9 +1058,8 @@ webui serve ./my-app --state ./state.json --servedir ./assets --css style --watc
 # Use the WebUI Framework plugin for hydration
 webui serve ./my-app --state ./state.json --plugin=webui --port 3001
 
-# Rebuild when the client bundler atomically replaces its manifest
-webui serve ./my-app --state ./state.json --plugin=webui \
-  --projection-manifest ./dist/webui-projection.json --watch
+# Rebuild with automatic state projection and a separate browser bundler
+webui serve ./my-app --state ./state.json --plugin=webui --servedir ./dist --watch
 
 # Dev server with external components (--watch watches local paths)
 webui serve ./my-app --state ./state.json --components @reactive-ui --watch
@@ -1298,8 +1290,9 @@ new file are errors rather than silently ignored. `run` and `build` use their
 own explicit flags and Rust source configuration, not this app-root package
 file. Existing desktop bundles are immutable: app-root flags are rejected for them, rather
 than silently ignored. Run the client build first: missing, stale, or incomplete metadata is a
-build error, not a silent fallback. Without supplied manifests, unknown component
-requirements retain full state for correctness. Existing bundles must be rebuilt
+build error, not a silent fallback. Without supplied manifests, the WebUI plugin
+derives state requirements from source, retaining full state for unproven
+components. Existing bundles must be rebuilt
 to change their projection metadata; manifest flags cannot modify them during
 packaging.
 

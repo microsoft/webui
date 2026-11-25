@@ -103,17 +103,15 @@ if (result != NULL) {
 
 ```bash
 # Build with WebUI Framework hydration
-webui build ./src --out ./dist --plugin=webui \
-  --projection-manifest ./dist/webui-projection.json
+webui build ./src --out ./dist --plugin=webui
 
 # Dev server with WebUI Framework
-webui serve ./src --state ./data/state.json --plugin=webui \
-  --projection-manifest ./dist/webui-projection.json --watch
+webui serve ./src --state ./data/state.json --plugin=webui --watch
 ```
 
-Projection is optional. Without a manifest, the WebUI plugin preserves full
-state. When a manifest is supplied, coverage is strict and the manifest must be
-produced by the completed browser bundle. See
+The WebUI plugin projects state automatically without a bundler plugin or
+manifest. If a component's state requirements cannot be proven from source,
+WebUI warns and preserves full state for that component. See
 [Build-Time State Projection](/build/hydration#build-time-state-projection).
 
 ```rust

@@ -445,72 +445,49 @@ Trusted Types also does not sanitize HTML already delivered by the server.
 
 ## Build-Time State Projection
 
-Native application builds include state projection. Use `webui app build`
-to compile browser code and produce the matching protocol in one pipeline.
-Custom Node build hosts can use `bundleClient()` and pass its native proof to
-WebUI finalization.
-
-Projection includes inherited `@observable` and `@attr` fields, including
-those from statically analyzable class factories such as
-`class Card extends withCounter(WebUIElement) {}`. Not every valid JavaScript
-factory is analyzable: if the compiler cannot prove the exact state keys, the
-projection build reports an error rather than dropping inherited state.
-
-```js
-// build-client.mjs
-import { bundleClient } from '@microsoft/webui/build.js';
-
-await bundleClient({
-  project: process.cwd(),
-  entries: { index: 'src/index.ts' },
-  outDir: 'dist',
-});
-```
-
-Run the client build once, then give its manifest to WebUI:
+State projection is automatic with the WebUI plugin. Keep using your own
+bundler, such as esbuild, Rspack, or Webpack, for browser code:
 
 ```bash
-node build-client.mjs
-webui build ./src \
-  --plugin=webui \
-  --projection-manifest ./dist/webui-projection.json \
-  --out ./dist
+webui build ./src --out ./dist --plugin=webui
 ```
 
-Do not edit the generated manifest. Re-run the client build whenever its inputs
-or outputs change, then rebuild the protocol.
+No bundler plugin or projection file is needed. The build does not bundle or
+rewrite your JavaScript. Rebuild both the protocol and your browser bundle
+when you change component source, and deploy them together.
 
-Behavior is intentionally strict:
+For automatic projection, put the class in the template's same-named `.ts` or
+`.js` file, not both. Register it once with a top-level `Class.define('tag')`
+or `customElements.define('tag', Class)` call. Import `WebUIElement`,
+`observable`, and `attr` from `@microsoft/webui-framework`; named aliases and
+namespace imports work. Inherited fields can be inferred through explicit
+relative `.ts` or `.js` imports in the app source tree (or the script's
+directory for external components). A `.js` specifier can refer to its `.ts`
+source when there is no competing JavaScript file.
 
-- With no manifest, the build remains correct and sends full state. Projection
-  is disabled rather than guessed.
-- Once any manifest is supplied, every scripted component compiled into the
-  protocol must have exactly one entry. Missing coverage fails with
-  `PROJ-B001`.
-- Shared controls supplied through `--components` remain application-owned
-  bundles. If they are external to the main bundle, build them separately and
-  pass each manifest fragment with another `--projection-manifest`.
-- Stale source inputs or outputs fail the WebUI build. Re-run the client
-  bundler before rebuilding the protocol.
-- `@attr` entries use JavaScript property names. During hydration, an existing
-  SSR host attribute wins; projected state seeds the property only when that
-  attribute is absent.
+Use the same component source and preserve its registrations, inheritance,
+and decorators in the browser bundle. Declare reactive state on the class
+rather than adding it programmatically. A plain WebUI build does not evaluate
+bundler aliases, custom loaders, or registration code. If it cannot prove a
+component's state needs, it warns (`PROJ-B003`) and retains full state for
+responses that need that component rather than dropping fields. A component
+with no state fields can still project to an empty object.
 
-The native bundler owns entry points, splitting, output naming and the exact
-source/output proof. There is no separate JavaScript projection compiler or
-adapter to configure. See [single-compilation builds](/build/integrations/node#single-compilation-builds)
-when your browser entry imports generated lazy or component modules.
+Alternatively, `webui app build` manages both browser bundling and the
+matching protocol, including preload hints derived from the emitted chunks.
+See [single-compilation builds](/build/integrations/node#single-compilation-builds)
+if your entry imports generated lazy or component modules.
 
 ## State Sent to the Browser
 
-With validated projection manifests, the initial page includes only
+For components with proven fields, the initial page includes only
 `@observable` and `@attr` values needed by authored components on the active
 route. Template values used only for server rendering stay out of browser
-state. Without manifests, WebUI preserves full state for compatibility and
-correctness.
+state. Projected `@attr` fields use JavaScript property names; an existing SSR
+host attribute still wins during hydration.
 
-Later soft navigations include the values needed to render the destination
-components. Inactive sibling routes do not enlarge either payload. If the
+Later soft navigations also include the template state needed to render the
+destination components. Inactive sibling routes do not enlarge either payload. If the
 initial page needs no client state, WebUI writes:
 
 ```json

@@ -431,11 +431,11 @@ the element resumes other pending initial callbacks.
 
 ### Initial Hydration State
 
-For the initial page, build-time projection can narrow state to top-level
+For the initial page, WebUI automatically narrows proven component state to top-level
 `@observable` and `@attr` values from authored components. Template bindings
 still render on the server, but they do not automatically become JavaScript
 state. Only components reachable on the active route contribute projected
-values. Without a projection manifest, WebUI intentionally sends full state.
+values. An unproven component keeps full state with a build warning.
 
 See [Hydration](/build/hydration) for HTML-only components, soft
 navigation, and payload behavior.

@@ -10,10 +10,15 @@ pub(super) fn class_binding(
 ) {
     let mut properties = Vec::new();
     let mut valid_factory = class.decorators.is_empty();
+    let mut source_identity_preserved = valid_factory;
     for element in &class.body.body {
         match element {
             ClassElement::PropertyDefinition(property) => {
                 valid_factory &= !property.r#static;
+                if property.r#static {
+                    source_identity_preserved &=
+                        ordinary_static_member(&property.key) && property.decorators.is_empty();
+                }
                 if property.decorators.is_empty() {
                     continue;
                 }
@@ -34,8 +39,17 @@ pub(super) fn class_binding(
             }
             ClassElement::MethodDefinition(method) => {
                 valid_factory &= !method.r#static;
+                source_identity_preserved &= method.decorators.is_empty()
+                    && (!method.r#static || ordinary_static_member(&method.key));
             }
-            ClassElement::StaticBlock(_) => valid_factory = false,
+            ClassElement::AccessorProperty(accessor) => {
+                source_identity_preserved &= accessor.decorators.is_empty()
+                    && (!accessor.r#static || ordinary_static_member(&accessor.key));
+            }
+            ClassElement::StaticBlock(_) => {
+                valid_factory = false;
+                source_identity_preserved = false;
+            }
             _ => {}
         }
     }
@@ -49,6 +63,7 @@ pub(super) fn class_binding(
                 .map(|heritage| heritage.expression.node_id()),
             properties,
             valid_factory,
+            source_identity_preserved,
         },
     );
     if let Some(symbol) = class.id.as_ref().and_then(|id| id.symbol_id.get()) {
@@ -59,6 +74,10 @@ pub(super) fn class_binding(
         };
         result.bindings.insert(symbol, binding);
     }
+}
+
+fn ordinary_static_member(key: &PropertyKey<'_>) -> bool {
+    matches!(key, PropertyKey::StaticIdentifier(name) if name.name != "define")
 }
 
 pub(super) fn function_binding(

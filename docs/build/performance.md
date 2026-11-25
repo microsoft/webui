@@ -52,18 +52,15 @@ memory costs.
 
 ## Project only the state hydration needs
 
-Pass the application bundler's projection manifest to `webui build`:
+The WebUI plugin projects client state automatically:
 
 ```bash
-webui build ./src \
-  --out ./dist \
-  --plugin webui \
-  --projection-manifest ./dist/webui-projection.json
+webui build ./src --out ./dist --plugin webui
 ```
 
-The manifest narrows initial state to the `@observable` and `@attr` roots used
-by authored client code. Without it, WebUI preserves full state for
-compatibility.
+For proven components, WebUI narrows initial state to the `@observable` and
+`@attr` properties. Read the [source requirements](/build/hydration#build-time-state-projection)
+if a build reports a full-state fallback.
 
 Projection is a payload optimization, not a secrecy boundary. Never place
 credentials or private tokens in render state.

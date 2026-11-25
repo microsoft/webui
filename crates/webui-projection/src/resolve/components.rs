@@ -2,8 +2,63 @@
 // Licensed under the MIT license.
 
 use super::*;
+use std::path::PathBuf;
 
 impl<'a> Compiler<'a> {
+    pub(crate) fn source_component(
+        &mut self,
+        scope: PathBuf,
+        module: &str,
+        tag: &str,
+    ) -> Result<ComponentSurface, ProjectionDiagnostic> {
+        let Evidence::Source(evidence) = &mut self.evidence else {
+            return Err(unproven_definition(module));
+        };
+        evidence.scope = scope;
+        self.diagnostics.clear();
+        self.environments.clear();
+        if !self.prepare(module) {
+            return Err(self
+                .diagnostics
+                .pop()
+                .unwrap_or_else(|| unproven_definition(module)));
+        }
+        let mut sites = self.analyses[module].definitions.iter();
+        let Some(site) = sites.find(|site| site.tag.as_deref() == Some(tag)) else {
+            return Err(unproven_definition(module));
+        };
+        if !site.top_level
+            || !site.arguments_valid
+            || sites.any(|site| site.tag.as_deref() == Some(tag))
+            || self.analyses[module]
+                .definitions
+                .iter()
+                .any(|site| site.tag.is_none())
+        {
+            return Err(unproven_definition(module));
+        }
+        let target = match self.resolve(Query::Value(Target {
+            module: module.to_owned(),
+            value: site.class,
+            environment: None,
+        })) {
+            Identity::Class(target) if target.module == module => target,
+            _ => return Err(unproven_definition(module)),
+        };
+        let (is_webui, keys, errors) = self.lineage(&target);
+        if let Some(error) = self.diagnostics.pop().or_else(|| errors.into_iter().next()) {
+            return Err(error);
+        }
+        if !is_webui {
+            return Err(unproven_definition(module));
+        }
+        Ok(ComponentSurface {
+            module: target.module,
+            hydration_keys: keys.clone(),
+            navigation_keys: keys,
+        })
+    }
+
     pub(super) fn component(
         &mut self,
         module: &str,
@@ -74,6 +129,7 @@ impl<'a> Compiler<'a> {
     }
 
     fn lineage(&mut self, start: &Target) -> (bool, BTreeSet<String>, Vec<ProjectionDiagnostic>) {
+        let source_only = matches!(self.evidence, Evidence::Source(_));
         let mut current = Some(start.clone());
         let mut seen = HashSet::new();
         let mut keys = BTreeSet::new();
@@ -95,6 +151,14 @@ impl<'a> Compiler<'a> {
             else {
                 break;
             };
+            if source_only && !class.source_identity_preserved {
+                errors.push(diagnostic(
+                    &target.module,
+                    "PROJ-C007",
+                    "Use a class with no custom class/member decorators, static blocks or define override.",
+                ));
+                break;
+            }
             let base = class.base;
             let properties: Vec<_> = class
                 .properties
@@ -106,7 +170,11 @@ impl<'a> Compiler<'a> {
                     let form =
                         self.analyses.get(&target.module).and_then(|analysis| {
                             match analysis.values.get(&decorator) {
-                                Some(Value::Call { callee, .. }) => Some((*callee, true)),
+                                Some(Value::Call { callee, valid, .. })
+                                    if *valid || !source_only =>
+                                {
+                                    Some((*callee, true))
+                                }
                                 Some(Value::Symbol(_) | Value::Member(_, _) | Value::Global) => {
                                     Some((decorator, false))
                                 }
@@ -123,7 +191,7 @@ impl<'a> Compiler<'a> {
                     }));
                     match identity {
                         Identity::Observable | Identity::Attr => {
-                            is_webui = true;
+                            is_webui |= !source_only;
                             if called && identity == Identity::Observable {
                                 errors.push(diagnostic(&target.module, "PROJ-C007", "observable is not a decorator factory."));
                                 continue;
@@ -132,7 +200,7 @@ impl<'a> Compiler<'a> {
                                 errors.push(diagnostic(&target.module, "PROJ-C007", "Reactive properties must use plain identifier names."));
                             }
                         }
-                        Identity::Other | Identity::Factory(_, _) => {}
+                        Identity::Other | Identity::Factory(_, _) if !source_only => {}
                         Identity::Invalid("PROJ-C012") => errors.push(diagnostic(
                             &target.module,
                             "PROJ-C012",
@@ -168,4 +236,14 @@ impl<'a> Compiler<'a> {
         }
         (is_webui, keys, errors)
     }
+}
+
+#[cold]
+#[inline(never)]
+fn unproven_definition(module: &str) -> ProjectionDiagnostic {
+    diagnostic(
+        module,
+        "PROJ-C014",
+        "Define the WebUIElement class in its same-named module and register it once with a top-level literal Class.define('tag') or customElements.define('tag', Class).",
+    )
 }

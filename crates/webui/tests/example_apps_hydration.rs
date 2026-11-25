@@ -1,12 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-//! End-to-end evidence that projection is strictly opt-in for real examples.
-//!
-//! These examples do not yet run their client bundler with a projection
-//! adapter. Rust therefore performs no TypeScript inference: initial and
-//! scripted navigation state remain full until the example-conversion phase
-//! supplies real bundler manifests.
+//! End-to-end source projection against real applications without bundle proof.
 
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -15,6 +10,7 @@ use webui::{
     WebUIHandler, WebUIProtocol,
 };
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
+use webui_protocol::{InitialStateStrategy, StateProjectionMode};
 
 /// Locate `examples/app/<app>/src` relative to this crate's manifest.
 fn example_app_dir(app: &str) -> PathBuf {
@@ -97,27 +93,21 @@ fn webui_data(html: &str) -> Value {
 }
 
 #[test]
-fn contact_book_manager_without_manifest_preserves_full_state() {
+fn contact_book_manager_projects_form_and_dashboard_state() {
     let protocol = build_example("contact-book-manager");
 
     assert_eq!(
-        protocol.initial_state_strategy,
-        webui_protocol::InitialStateStrategy::Full as i32
+        protocol.initial_state_strategy(),
+        InitialStateStrategy::Components
     );
     let cb_app = protocol
         .components
         .get("cb-app")
         .unwrap_or_else(|| panic!("contact-book protocol should contain cb-app"));
-    assert_eq!(
-        cb_app.hydration_mode,
-        webui_protocol::StateProjectionMode::All as i32
-    );
-    assert_eq!(
-        cb_app.navigation_mode,
-        Some(webui_protocol::StateProjectionMode::All as i32)
-    );
-    assert!(cb_app.hydration_keys.is_empty());
-    assert!(cb_app.navigation_keys.is_empty());
+    assert_eq!(cb_app.hydration_mode(), StateProjectionMode::Keys);
+    assert_eq!(cb_app.navigation_mode(), StateProjectionMode::Keys);
+    assert_eq!(cb_app.hydration_keys, ["searchQuery", "totalFavorites"]);
+    assert!(cb_app.navigation_keys.iter().any(|key| key == "groups"));
 
     let server_only = "S".repeat(256 * 1024);
     let state = json!({
@@ -127,10 +117,12 @@ fn contact_book_manager_without_manifest_preserves_full_state() {
     });
 
     let html = render(&protocol, &state, "/contacts/add");
-    let block = webui_data_block(&html);
-    assert!(block.contains("SENTINEL_HYDRATABLE_cb"));
-    assert!(html.contains("serverOnlyLedger"));
-    assert!(html.contains(&server_only));
+    assert_eq!(
+        webui_data(&html)["state"],
+        json!({"formTitle": "SENTINEL_HYDRATABLE_cb"})
+    );
+    assert!(!html.contains("serverOnlyLedger"));
+    assert!(!html.contains(&server_only));
 
     let home_state = json!({
         "groups": ["Work", "Family", "Friends", "Other"],
@@ -140,32 +132,30 @@ fn contact_book_manager_without_manifest_preserves_full_state() {
         "totalFavorites": 5,
         "totalGroups": 4,
     });
-    let home_data = webui_data(&render(&protocol, &home_state, "/"));
-    assert_eq!(home_data["state"], home_state);
+    let home = render(&protocol, &home_state, "/");
+    assert!(home.contains("Work"));
+    assert_eq!(webui_data(&home)["state"], json!({"totalFavorites": 5}));
 }
 
 #[test]
-fn routes_example_without_manifest_preserves_full_state() {
+fn routes_projects_template_state_only_for_navigation() {
     let protocol = build_example("routes");
     assert_eq!(
-        protocol.initial_state_strategy,
-        webui_protocol::InitialStateStrategy::Full as i32
+        protocol.initial_state_strategy(),
+        InitialStateStrategy::Components
     );
     let routes_app = protocol
         .components
         .get("routes-app")
         .unwrap_or_else(|| panic!("routes protocol should contain routes-app"));
 
-    assert_eq!(
-        routes_app.hydration_mode,
-        webui_protocol::StateProjectionMode::All as i32
-    );
-    assert_eq!(
-        routes_app.navigation_mode,
-        Some(webui_protocol::StateProjectionMode::All as i32)
-    );
+    assert_eq!(routes_app.hydration_mode(), StateProjectionMode::None);
+    assert_eq!(routes_app.navigation_mode(), StateProjectionMode::Keys);
     assert!(routes_app.hydration_keys.is_empty());
-    assert!(routes_app.navigation_keys.is_empty());
+    assert_eq!(
+        routes_app.navigation_keys,
+        ["appTitle", "sectionId", "sections"]
+    );
 
     let state = json!({
         "appTitle": "Learning Platform",
@@ -173,9 +163,11 @@ fn routes_example_without_manifest_preserves_full_state() {
             { "icon": "paint", "id": "frontend", "name": "Frontend" },
             { "icon": "gear", "id": "backend", "name": "Backend" },
         ],
+        "unrelated": "must not appear in the partial",
     });
-    let full_data = webui_data(&render(&protocol, &state, "/"));
-    assert_eq!(full_data["state"], state);
+    let html = render(&protocol, &state, "/");
+    assert!(html.contains("Learning Platform"));
+    assert_eq!(webui_data(&html)["state"], json!({}));
 
     let runtime_protocol = Protocol::new(protocol);
     let partial_json = runtime_protocol
@@ -188,15 +180,16 @@ fn routes_example_without_manifest_preserves_full_state() {
         partial["state"]["sections"].as_array().map_or(0, Vec::len),
         2
     );
+    assert!(partial["state"].get("unrelated").is_none());
 }
 
 #[test]
-fn commerce_without_manifest_preserves_full_state() {
+fn commerce_projects_cart_state_without_shipping_unrelated_catalog() {
     let protocol = build_example("commerce");
 
     assert_eq!(
-        protocol.initial_state_strategy,
-        webui_protocol::InitialStateStrategy::Full as i32
+        protocol.initial_state_strategy(),
+        InitialStateStrategy::Components
     );
 
     let server_only = "C".repeat(256 * 1024);
@@ -207,8 +200,9 @@ fn commerce_without_manifest_preserves_full_state() {
     });
 
     let html = render(&protocol, &state, "/");
-    let block = webui_data_block(&html);
-    assert!(block.contains("SENTINEL_HYDRATABLE_mp"));
-    assert!(html.contains("serverProductCatalog"));
-    assert!(html.contains(&server_only));
+    let bootstrap = webui_data(&html);
+    assert_eq!(bootstrap["state"]["subtotal"], "SENTINEL_HYDRATABLE_mp");
+    assert_eq!(bootstrap["state"]["storeName"], "Test Store");
+    assert!(!html.contains("serverProductCatalog"));
+    assert!(!html.contains(&server_only));
 }

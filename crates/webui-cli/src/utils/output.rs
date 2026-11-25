@@ -112,18 +112,7 @@ fn error_json(err: &anyhow::Error) -> serde_json::Value {
     let mut map = serde_json::Map::new();
     match template_diagnostic(err) {
         Some(diag) => {
-            let (line, column) = match diag.position_line_column() {
-                Some((line, column)) => (Value::from(line), Value::from(column)),
-                None => (Value::Null, Value::Null),
-            };
-            map.insert("severity".into(), Value::from(diag.severity().label()));
-            map.insert("code".into(), str_or_null(diag.error_code()));
-            map.insert("message".into(), Value::from(diag.title()));
-            map.insert("file".into(), str_or_null(diag.component_name()));
-            map.insert("line".into(), line);
-            map.insert("column".into(), column);
-            map.insert("snippet".into(), str_or_null(diag.snippet_text()));
-            map.insert("help".into(), str_or_null(diag.help_text()));
+            diagnostic_fields(&mut map, diag);
         }
         None => {
             let init = err
@@ -163,6 +152,25 @@ fn error_json(err: &anyhow::Error) -> serde_json::Value {
     }
     map.insert("chain".into(), Value::Array(chain));
     Value::Object(map)
+}
+
+fn diagnostic_fields(map: &mut serde_json::Map<String, serde_json::Value>, diag: &Diagnostic) {
+    use serde_json::Value;
+
+    let str_or_null = |value: Option<&str>| value.map_or(Value::Null, Value::from);
+    let (line, column) = diag
+        .position_line_column()
+        .map_or((Value::Null, Value::Null), |(line, column)| {
+            (Value::from(line), Value::from(column))
+        });
+    map.insert("severity".into(), Value::from(diag.severity().label()));
+    map.insert("code".into(), str_or_null(diag.error_code()));
+    map.insert("message".into(), Value::from(diag.title()));
+    map.insert("file".into(), str_or_null(diag.component_name()));
+    map.insert("line".into(), line);
+    map.insert("column".into(), column);
+    map.insert("snippet".into(), str_or_null(diag.snippet_text()));
+    map.insert("help".into(), str_or_null(diag.help_text()));
 }
 
 pub fn error(err: &anyhow::Error) {
@@ -299,9 +307,15 @@ pub fn hint(message: &str) {
 /// Print a non-fatal build advisory as a multi-line warning [`Diagnostic`]
 /// (yellow `⚠ build warning:`), mirroring the error layout with its
 /// `--> file:line:col`, source snippet, and `help:` suggestion. A leading
-/// blank line frames it. Suppressed in JSON mode.
+/// blank line frames it. Projection fallback warnings are also emitted in JSON mode.
 pub fn warning_diagnostic(diag: &Diagnostic) {
     if is_json() {
+        if diag.error_code() == Some(webui::FULL_STATE_WARNING) {
+            let mut map = serde_json::Map::new();
+            diagnostic_fields(&mut map, diag);
+            map.insert("chain".into(), serde_json::Value::Array(Vec::new()));
+            println!("{}", serde_json::Value::Object(map));
+        }
         return;
     }
     eprintln!(

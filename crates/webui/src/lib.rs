@@ -32,6 +32,7 @@ mod module_preload;
 mod prepared_build;
 mod projection;
 pub mod server;
+mod source_projection;
 pub mod streaming;
 mod style_bundle;
 
@@ -39,6 +40,7 @@ pub use component_assets::{render_component_assets, ComponentAssetFile, Componen
 pub use error::WebUIError;
 pub use lazy_scripts::{GeneratedDeclaration, GeneratedModule};
 pub use prepared_build::{prepare_build, PreparedBuild};
+pub use source_projection::FULL_STATE_WARNING;
 pub use webui_handler::lazy_packs::{
     LazyPackFile, LazyScript, LazyTrigger, LAZY_SCRIPTS_DECLARATION, LAZY_SCRIPTS_MODULE,
     PACK_OUTPUT_DIR,
@@ -340,13 +342,8 @@ pub struct BuildOptions {
     /// `var(--x, 16px)`), which provides its own value. Missing required tokens
     /// fail the build as parser diagnostics.
     pub theme: Option<TokenFile>,
-    /// Bundler-neutral state projection manifest fragments supplied as disk
-    /// paths or inline JSON with a logical manifest path.
-    ///
-    /// Empty (the default) means projection is disabled: the build emits
-    /// [`webui_protocol::InitialStateStrategy::Full`] and every scripted
-    /// component keeps a full-state (`All`) partial-navigation surface. No
-    /// JavaScript/TypeScript analysis ever runs in Rust.
+    /// Optional managed-browser-build proof. By default the WebUI plugin
+    /// derives state surfaces directly from discovered component source.
     ///
     /// When non-empty, every manifest is loaded, hash-validated against the
     /// files it declares, merged by component tag, and used to narrow each
@@ -452,26 +449,6 @@ pub struct BuildResult {
 #[inline(never)]
 fn invalid_asset_base_option(error: AssetBaseError) -> WebUIError {
     WebUIError::InvalidBuildOptions(error.to_string())
-}
-
-/// Advisory for a streaming entry compiled without a state-projection
-/// manifest.
-///
-/// Cold: constructed at most once per build, and only for streaming entries.
-#[cold]
-#[inline(never)]
-fn streaming_without_projection_warning(entry: &str, boundary_count: usize) -> Diagnostic {
-    let plural = if boundary_count == 1 { "" } else { "s" };
-    Diagnostic::warning(format!(
-        "{entry} declares {boundary_count} streaming boundary checkpoint{plural} \
-         but this build has no state-projection manifest"
-    ))
-    .code(webui_parser::codes::STREAMING_WITHOUT_PROJECTION)
-    .help(
-        "every checkpoint will serialize the whole state object instead of its own \
-         components' keys; pass the client build's `webui-projection.json` through \
-         `BuildOptions::projection_manifests` to send boundary-local state only",
-    )
 }
 
 /// Build a WebUI application from an app directory.
@@ -597,7 +574,7 @@ struct RawBuildOutput {
     component_asset_files: Vec<ComponentAssetFile>,
     /// Component asset half of the metafile, when requested and assets exist.
     asset_metafile: Option<component_assets::AssetGraphMetafile>,
-    /// Modules of client-owned components, captured when lazy regions exist.
+    /// Source modules selected by discovery for compiled client components.
     component_scripts: lazy_scripts::ComponentScripts,
     component_templates: Vec<ComponentTemplateArtifact>,
     warnings: Vec<Diagnostic>,
@@ -605,7 +582,6 @@ struct RawBuildOutput {
     component_count: usize,
     token_count: usize,
     module_entry_srcs: Vec<String>,
-    boundary_count: usize,
 }
 
 /// Internal build logic shared by `build()` and `build_to_disk()`.
@@ -691,8 +667,6 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
             ))
         })?;
         for comp in &result.components {
-            // Script presence marks client ownership. Rust never analyzes the
-            // source; exact state surfaces come from projection manifests.
             parser
                 .component_registry_mut()
                 .register_component(webui_parser::ComponentRegistration {
@@ -797,12 +771,8 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
         &options.component_modules,
         &mut warnings,
     );
-    // Only lazy regions load component modules through the generated module.
-    let component_scripts = if component_templates
-        .iter()
-        .any(|artifact| !artifact.lazy_templates.is_empty())
-    {
-        lazy_scripts::capture(parser.component_registry())
+    let component_scripts = if options.plugin == Some(Plugin::WebUI) {
+        lazy_scripts::capture(parser.component_registry(), |tag| parser.has_fragment(tag))
     } else {
         lazy_scripts::ComponentScripts::new()
     };
@@ -811,17 +781,6 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
     for fragment_id in synthetic_asset_fragments {
         fragment_records.remove(&fragment_id);
     }
-    let boundary_count = fragment_records
-        .values()
-        .flat_map(|list| list.fragments.iter())
-        .filter(|fragment| {
-            matches!(
-                fragment.fragment.as_ref(),
-                Some(webui_protocol::web_ui_fragment::Fragment::Boundary(boundary))
-                    if boundary.phase() == webui_protocol::BoundaryPhase::Start
-            )
-        })
-        .count();
     let mut protocol = WebUIProtocol::with_tokens(fragment_records, token_analysis.protocol_tokens);
     protocol.initial_state_strategy = webui_protocol::InitialStateStrategy::Full as i32;
 
@@ -967,7 +926,6 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
         component_count,
         token_count,
         module_entry_srcs,
-        boundary_count,
     })
 }
 
@@ -1867,7 +1825,7 @@ mod tests {
     }
 
     #[test]
-    fn retained_build_publishes_component_inputs_and_keeps_unprojected_state() {
+    fn retained_build_publishes_component_inputs_and_projects_by_default() {
         let app = create_app_dir(&[
             ("index.html", "<p>Entry</p>"),
             ("asset-card.html", "<p>{{title}}</p>"),
@@ -1894,7 +1852,7 @@ mod tests {
         let result = prepared.finish(Vec::new()).unwrap();
         assert_eq!(
             result.protocol.initial_state_strategy,
-            webui_protocol::InitialStateStrategy::Full as i32
+            webui_protocol::InitialStateStrategy::Components as i32
         );
     }
 
@@ -1962,10 +1920,8 @@ mod tests {
         );
     }
 
-    /// Streaming entries pay O(boundaries x full state) without a projection
-    /// manifest, so the build must say so.
     #[test]
-    fn streaming_entry_without_projection_manifest_warns() {
+    fn streaming_entry_projects_without_a_manifest() {
         let app = create_app_dir(&[(
             "index.html",
             concat!(
@@ -1982,7 +1938,7 @@ mod tests {
 
         assert_eq!(
             result.protocol.initial_state_strategy,
-            webui_protocol::InitialStateStrategy::Full as i32
+            webui_protocol::InitialStateStrategy::Components as i32
         );
         let boundary_names = |protocol: &WebUIProtocol| {
             protocol.fragments["index.html"]
@@ -2001,24 +1957,7 @@ mod tests {
         assert_eq!(boundary_names(&result.protocol), ["a", "b"]);
         let decoded = WebUIProtocol::from_protobuf(&result.protocol_bytes).unwrap();
         assert_eq!(boundary_names(&decoded), ["a", "b"]);
-        let warning = result
-            .warnings
-            .iter()
-            .find(|diag| {
-                diag.error_code() == Some(webui_parser::codes::STREAMING_WITHOUT_PROJECTION)
-            })
-            .expect("a streaming build without projection must warn");
-        assert_eq!(warning.severity(), webui_parser::Severity::Warning);
-        assert!(
-            warning.to_string().contains("2 streaming boundary"),
-            "warning should report the boundary count: {warning}"
-        );
-        assert!(
-            warning
-                .help_text()
-                .is_some_and(|help| help.contains("projection_manifests")),
-            "warning should point at the fix: {warning}"
-        );
+        assert!(result.warnings.is_empty(), "{:?}", result.warnings);
     }
 
     #[test]
@@ -2052,16 +1991,13 @@ mod tests {
             !result
                 .warnings
                 .iter()
-                .any(|diag| diag.error_code()
-                    == Some(webui_parser::codes::STREAMING_WITHOUT_PROJECTION)),
+                .any(|diag| diag.error_code() == Some(FULL_STATE_WARNING)),
             "a projected streaming build must not warn"
         );
     }
 
-    /// The advisory is streaming-specific: ordinary entries emit one bootstrap
-    /// block, so full state there is not a per-checkpoint multiplier.
     #[test]
-    fn non_streaming_entry_without_projection_manifest_does_not_warn() {
+    fn source_projection_does_not_warn_for_scriptless_entries() {
         let app = create_app_dir(&[("index.html", "<html><body><p>{{one}}</p></body></html>")]);
         let mut options = default_options(app.path());
         options.plugin = Some(Plugin::WebUI);
@@ -2072,8 +2008,7 @@ mod tests {
             !result
                 .warnings
                 .iter()
-                .any(|diag| diag.error_code()
-                    == Some(webui_parser::codes::STREAMING_WITHOUT_PROJECTION)),
+                .any(|diag| diag.error_code() == Some(FULL_STATE_WARNING)),
             "a non-streaming build must not warn about projection"
         );
     }
@@ -2165,7 +2100,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_populates_component_hydration_keys_from_script() {
+    fn test_build_populates_component_hydration_keys_from_managed_proof() {
         let app = create_app_dir(&[
             ("index.html", "<demo-card></demo-card>"),
             ("demo-card.html", "<p>{{name}}</p>"),
@@ -2180,9 +2115,8 @@ mod tests {
                  DemoCard.define('demo-card');",
             ),
         ]);
-        // Rust performs no JavaScript/TypeScript analysis: the exact keys
-        // come from a bundler-produced projection manifest, not from
-        // scanning `demo-card.ts`.
+        // A managed browser build proves the final source and output even
+        // when the same-named source cannot establish a surface on its own.
         let manifest_json = projection::test_support::build_valid_manifest_json(
             app.path(),
             &[("demo-card.ts", "source")],
@@ -2223,7 +2157,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_scripted_component_without_manifest_falls_back_to_full_state() {
+    fn test_build_unresolved_component_base_falls_back_to_full_state() {
         let app = create_app_dir(&[
             (
                 "index.html",
@@ -2232,8 +2166,9 @@ mod tests {
             ("demo-card.html", "<p>{{name}}</p>"),
             (
                 "demo-card.ts",
-                "import { WebUIElement, observable } from '@microsoft/webui-framework';\n\
-                 class DemoCard extends WebUIElement {\n\
+                "import { Base } from '@app/shared';\n\
+                 import { observable } from '@microsoft/webui-framework';\n\
+                 class DemoCard extends Base {\n\
                  @observable name = '';\n\
                  }\n\
                  DemoCard.define('demo-card');",
@@ -2241,14 +2176,16 @@ mod tests {
         ]);
         let mut options = default_options(app.path());
         options.plugin = Some(Plugin::WebUI);
-        // No `projection_manifests` supplied: without a manifest, Rust never
-        // analyzes `demo-card.ts` and must assume the full, unproven surface.
         let result = build(options).unwrap();
 
         assert_eq!(
             result.protocol.initial_state_strategy,
-            webui_protocol::InitialStateStrategy::Full as i32
+            webui_protocol::InitialStateStrategy::Components as i32
         );
+        assert!(result.warnings.iter().any(|warning| {
+            warning.error_code() == Some(FULL_STATE_WARNING)
+                && warning.title().contains("PROJ-C005")
+        }));
         let component = result.protocol.components.get("demo-card").unwrap();
         assert_eq!(
             component.hydration_mode,
@@ -2261,7 +2198,7 @@ mod tests {
         );
 
         let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
-        let state = serde_json::json!({ "name": "Visible" });
+        let state = serde_json::json!({ "name": "Visible", "other": 1 });
         let protocol = Protocol::new(result.protocol.clone());
         let mut writer = StringWriter { buf: String::new() };
         handler
@@ -2275,7 +2212,9 @@ mod tests {
         assert!(writer.buf.contains("Visible"));
         // Full-state fallback serializes the entire supplied state object,
         // not a narrowed key subset.
-        assert!(writer.buf.contains(r#""state":{"name":"Visible"}"#));
+        assert!(writer
+            .buf
+            .contains(r#""state":{"name":"Visible","other":1}"#));
     }
 
     #[test]
