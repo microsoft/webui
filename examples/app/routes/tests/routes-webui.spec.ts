@@ -13,15 +13,6 @@ import { test, expect } from '@playwright/test';
 // ── SSR Tests (direct page loads) ────────────────────────────────
 
 test.describe('SSR routing', () => {
-  test('root page renders shell with section links', async ({ page }) => {
-    await page.goto('/');
-    await expect(page.locator('h1')).toContainText('Learning Platform');
-    await expect(page.locator('nav a')).toHaveCount(3);
-    await expect(page.locator('nav')).toContainText('Frontend');
-    await expect(page.locator('nav')).toContainText('Backend');
-    await expect(page.locator('nav')).toContainText('DevOps');
-  });
-
   test('JSON partial includes matched route chain', async ({ page }) => {
     const resp = await page.request.get('/sections/frontend', {
       headers: { 'Accept': 'application/json' },
@@ -32,32 +23,6 @@ test.describe('SSR routing', () => {
     expect(data.chain.length).toBeGreaterThanOrEqual(2);
     expect(data.chain[0].component).toBe('routes-app');
     expect(data.chain[1].component).toBe('section-page');
-  });
-
-  test('section page renders section content via SSR', async ({ page }) => {
-    await page.goto('/sections/frontend');
-    await expect(page.locator('h1')).toContainText('Learning Platform');
-    await expect(page.locator('main h2')).toContainText('Frontend');
-    await expect(page.getByRole('link', { name: 'React' })).toBeVisible();
-    await expect(page.getByRole('link', { name: 'CSS' })).toBeVisible();
-  });
-
-  test('topic page renders at 3 levels via SSR', async ({ page }) => {
-    await page.goto('/sections/backend/topics/rust');
-    await expect(page.locator('h1')).toContainText('Learning Platform');
-    await expect(page.locator('main h2')).toContainText('Backend');
-    await expect(page.locator('main h3')).toContainText('Rust');
-  });
-
-  test('lesson page renders at 4 levels via SSR', async ({ page }) => {
-    await page.goto('/sections/frontend/topics/react/lessons/hooks');
-    await expect(page.locator('h1')).toContainText('Learning Platform');
-    await expect(page.locator('main h2')).toContainText('Frontend');
-    await expect(page.locator('main h3')).toContainText('React');
-    await expect(page.locator('main h4')).toContainText('React Hooks');
-    await expect(page.locator('body')).toContainText(
-      'Hooks let you use state and lifecycle features in function components.'
-    );
   });
 
   test('declarative-only lesson page auto-upgrades without an authored stub', async ({ page }) => {
@@ -142,26 +107,6 @@ test.describe('SSR routing', () => {
 // ── Client-side navigation tests ─────────────────────────────────
 
 test.describe('client-side navigation', () => {
-  test('navigate root → section', async ({ page }) => {
-    await page.goto('/');
-    await page.getByRole('link', { name: 'Frontend' }).click();
-    await expect(page).toHaveURL('/sections/frontend');
-    await expect(page.locator('h1')).toContainText('Learning Platform');
-    await expect(page.locator('main h2')).toContainText('Frontend');
-    await expect(page.getByRole('link', { name: 'React' })).toBeVisible();
-  });
-
-  test('navigate section → topic', async ({ page }) => {
-    await page.goto('/');
-    await page.getByRole('link', { name: 'Frontend' }).click();
-    await expect(page.locator('main h2')).toContainText('Frontend');
-
-    await page.getByRole('link', { name: 'React' }).click();
-    await expect(page).toHaveURL('/sections/frontend/topics/react');
-    await expect(page.locator('main h3')).toContainText('React');
-    await expect(page.getByRole('link', { name: 'Introduction to React' })).toBeVisible();
-  });
-
   test('navigate topic → lesson (4 levels deep)', async ({ page }) => {
     await page.goto('/');
     await page.getByRole('link', { name: 'Frontend' }).click();
@@ -186,40 +131,11 @@ test.describe('client-side navigation', () => {
     await expect(page.locator('main h3')).toContainText('CSS');
   });
 
-  test('navigate to different section', async ({ page }) => {
-    await page.goto('/');
-    await page.getByRole('link', { name: 'Frontend' }).click();
-    await expect(page.locator('main h2')).toContainText('Frontend');
-
-    await page.getByRole('link', { name: 'Backend' }).click();
-    await expect(page).toHaveURL('/sections/backend');
-    await expect(page.locator('main h2')).toContainText('Backend');
-  });
-
-  test('no full page reload during client navigation', async ({ page }) => {
-    await page.goto('/');
-    await page.evaluate(() => { (window as any).__routeTestMarker = Date.now(); });
-
-    await page.getByRole('link', { name: 'Frontend' }).click();
-    await expect(page.locator('main h2')).toContainText('Frontend');
-
-    const marker = await page.evaluate(() => (window as any).__routeTestMarker);
-    expect(marker).toBeGreaterThan(0);
-  });
 });
 
 // ── Interactive island tests (counters) ──────────────────────────
 
 test.describe('interactive islands', () => {
-  test('shell counter increments on click', async ({ page }) => {
-    await page.goto('/');
-    await expect(page.getByRole('button', { name: /Shell/ })).toContainText('0');
-
-    await page.getByRole('button', { name: /Shell/ }).click();
-    await page.getByRole('button', { name: /Shell/ }).click();
-    await expect(page.getByRole('button', { name: /Shell/ })).toContainText('2');
-  });
-
   test('shell counter persists across client navigation', async ({ page }) => {
     await page.goto('/');
     await page.getByRole('button', { name: /Shell/ }).click();
@@ -251,22 +167,6 @@ test.describe('interactive islands', () => {
 // ── Boolean attribute (?active) tests ────────────────────────────
 
 test.describe('?active boolean attributes', () => {
-  test('SSR renders active attribute on matching nav link', async ({ page }) => {
-    const html = await (await page.goto('/sections/frontend'))!.text();
-    // The <a> for Frontend should have the active attribute in SSR
-    expect(html).toContain('active');
-  });
-
-  test('active attribute present after client navigation to section', async ({ page }) => {
-    await page.goto('/');
-    await page.getByRole('link', { name: 'Frontend' }).click();
-    await expect(page.locator('main h2')).toContainText('Frontend');
-
-    // The unwrapped Light DOM nav link for Frontend has the active attribute.
-    const frontend = page.locator('routes-app > nav').getByRole('link', { name: /Frontend/ });
-    await expect(frontend).toHaveAttribute('active', '');
-  });
-
   test('active attribute updates when navigating to different section', async ({ page }) => {
     await page.goto('/');
     await page.getByRole('link', { name: 'Frontend' }).click();

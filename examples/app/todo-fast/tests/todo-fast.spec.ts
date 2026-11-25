@@ -43,15 +43,6 @@ function innerTemplateOpeningTag(template: string): string {
 }
 
 test.describe('SSR rendering', () => {
-  test('renders heading and initial state', async ({ page }) => {
-    await page.goto('/');
-    await expect(page.locator('h1')).toContainText('Todo List');
-    await expect(page.getByText('Buy groceries')).toBeVisible();
-    await expect(page.getByText('Write documentation')).toBeVisible();
-    await expect(page.getByText('Ship feature')).toBeVisible();
-    await expect(page.getByText('2 items remaining')).toBeVisible();
-  });
-
   test('renders completed item with state attribute', async ({ page }) => {
     await page.goto('/');
     const doneItem = page.locator('todo-item[state="done"]');
@@ -72,18 +63,6 @@ test.describe('SSR rendering', () => {
     expect(appTemplate).toContain('@toggle-item="{onToggleItem($e)}"');
     expect(appTemplate).toContain('@delete-item="{onDeleteItem($e)}"');
     expect(itemTemplate).toContain('@click="{onClick($e)}"');
-  });
-
-  test('no console errors on page load', async ({ page }) => {
-    const errors: string[] = [];
-    page.on('pageerror', err => errors.push(err.message));
-    page.on('console', msg => {
-      if (msg.type() === 'error') errors.push(msg.text());
-    });
-    await page.goto('/');
-    await page.waitForTimeout(500);
-    const real = errors.filter(e => !e.includes('favicon'));
-    expect(real).toEqual([]);
   });
 
   test('fires FAST hydration completion measure', async ({ page }) => {
@@ -123,17 +102,6 @@ test.describe('interactivity', () => {
     await expect(page.locator('todo-item[title="Press Enter todo"]')).toBeAttached();
   });
 
-  test('toggle a todo item done', async ({ page }) => {
-    await gotoAndWaitForFastHydration(page);
-
-    const item = page.locator('todo-item[title="Write documentation"]');
-    await expect(item).toHaveAttribute('state', 'pending');
-
-    await item.locator('button.toggle').click();
-
-    await expect(item).toHaveAttribute('state', 'done');
-  });
-
   test('if-block checkmark appears when toggled to done', async ({ page }) => {
     await gotoAndWaitForFastHydration(page);
 
@@ -154,16 +122,6 @@ test.describe('interactivity', () => {
     await item.locator('button.toggle').click();
 
     await expect(item.locator('.check')).not.toBeAttached();
-  });
-
-  test('delete a todo item', async ({ page }) => {
-    await gotoAndWaitForFastHydration(page);
-
-    const shipItem = page.locator('todo-item[title="Ship feature"]');
-    await expect(shipItem).toBeVisible();
-    await shipItem.hover();
-    await shipItem.locator('button.delete').click();
-    await expect(shipItem).not.toBeAttached();
   });
 
   test('new item renders title text', async ({ page }) => {

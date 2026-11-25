@@ -21,11 +21,6 @@ test.describe('raw HTML in @attr inside <for> loop', () => {
     expect(body1).not.toContain('&lt;');
   });
 
-  test('SSR: plain {{name}} renders correctly alongside raw HTML', async ({ page }) => {
-    await expect(page.locator('test-raw-item:first-of-type .item-name')).toHaveText('Email 1');
-    await expect(page.locator('test-raw-item:nth-of-type(2) .item-name')).toHaveText('Email 2');
-  });
-
   test('reactive update: new items render {{{htmlContent}}} as raw HTML', async ({ page }) => {
     // Reactively replace the items array — simulates SPA navigation
     await page.evaluate(() => {

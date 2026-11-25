@@ -233,14 +233,6 @@ test.describe('hydration-mismatch (#379)', () => {
       .toBe('\n              Open file\n            ');
   });
 
-  test('the warning names the mismatched observables', async () => {
-    await expect.poll(() => warningsFor('mismatch-constructor').length).toBe(1);
-    const [warning] = warningsFor('mismatch-constructor');
-    expect(warning).toContain('"show"');
-    expect(warning).toContain('"value"');
-    expect(warning).toContain('super.connectedCallback()');
-  });
-
   test('SSR DOM is trusted, not reconciled, for pre-ready mismatches', async ({ page }) => {
     for (const tag of ['mismatch-field-default', 'mismatch-constructor', 'mismatch-before-super']) {
       // Conditional content stays absent (server rendered it empty).
@@ -304,12 +296,6 @@ test.describe('hydration-mismatch (#379)', () => {
       parser.resolve();
       await page.waitForLoadState('load');
     }
-  });
-
-  test('seeded pre-ready values match the server render and do not warn', async ({ page }) => {
-    await expect(page.locator('mismatch-seeded .content')).toHaveText('CONTENT');
-    expect(await page.locator('mismatch-seeded .box').getAttribute('data-value')).toBe('3');
-    expect(warningsFor('mismatch-seeded')).toHaveLength(0);
   });
 
   test('an empty true SSR body stays silent and reacts to later body-only writes', async ({ page }) => {

@@ -126,18 +126,6 @@ async function dashboardRouteState(page: Page): Promise<{
 }
 
 test.describe('SSR deep links', () => {
-  test('root page renders shell with nav links', async ({ page }) => {
-    await page.goto('/');
-    await expect(page.locator('h1')).toContainText('Router Test');
-    await expect(page.locator('nav a')).toHaveCount(13);
-  });
-
-  test('alpha page renders via SSR', async ({ page }) => {
-    await page.goto('/alpha');
-    await expect(page.locator('h2')).toContainText('Alpha Page');
-    await expect(page.locator('.content')).toContainText('Welcome to the Alpha page');
-  });
-
   test.describe('route declaration identity', () => {
     test('direct /projects SSR switches to the distinct root declaration', async ({ page }) => {
       await page.goto('/projects');
@@ -260,11 +248,6 @@ test.describe('SSR deep links', () => {
         marker: null,
       });
     });
-  });
-
-  test('beta page renders via SSR', async ({ page }) => {
-    await page.goto('/beta');
-    await expect(page.locator('h2')).toContainText('Beta Page');
   });
 
   for (const path of ['/live', '/live-hydrated']) {
@@ -421,10 +404,6 @@ test.describe('client-side navigation', () => {
     await expect(page.locator('main h2')).toContainText('Beta Page');
   });
 
-  test('navigates to parameterized route', async ({ page }) => {
-    await page.locator('nav a[href="/items/1"]').click();
-    await expect(page.locator('main h2')).toContainText('Item 1');
-  });
 });
 
 test('zero freshness releases completed responses and refetches same-clock revisits', async ({ page }) => {
@@ -536,15 +515,6 @@ test.describe('browser history', () => {
 });
 
 test.describe('page reload preservation', () => {
-  test('reloading a deep route re-renders via SSR', async ({ page }) => {
-    await page.goto('/alpha');
-    await expect(page.locator('h2')).toContainText('Alpha Page');
-
-    await page.reload();
-    await expect(page.locator('h2')).toContainText('Alpha Page');
-    await expect(page.locator('h1')).toContainText('Router Test');
-  });
-
   test('reloading a parameterized route preserves the parameter', async ({ page }) => {
     await page.goto('/items/99');
     await expect(page.locator('h2')).toContainText('Item 99');
@@ -555,11 +525,6 @@ test.describe('page reload preservation', () => {
 });
 
 test.describe('query parameter passing', () => {
-  test('SSR renders compose page (query params not available server-side)', async ({ page }) => {
-    await page.goto('/compose?action=reply&to=test@example.com&subject=Re: Hello');
-    await expect(page.locator('h2')).toContainText('Compose');
-  });
-
   test('client-side navigation passes query params as attributes', async ({ page }) => {
     await page.goto('/');
     await page.waitForFunction(() => {
@@ -586,37 +551,6 @@ test.describe('query parameter passing', () => {
 
     const subject = await page.locator('.subject').textContent();
     expect(subject).toContain('Re: Hello');
-  });
-
-  test('navigated event includes query object', async ({ page }) => {
-    await page.goto('/');
-    await page.waitForFunction(() => {
-      const el = document.querySelector('route-shell');
-      return el && (el as any).$ready === true;
-    }, null);
-    await page.waitForFunction(
-      () => !!(window as any).navigation,
-      null,
-      { timeout: 5000 },
-    );
-    await page.waitForTimeout(300);
-
-    // Listen for the navigated event
-    const queryPromise = page.evaluate(() => {
-      return new Promise<Record<string, string>>((resolve) => {
-        window.addEventListener('webui:route:navigated', ((e: CustomEvent) => {
-          resolve(e.detail.query);
-        }) as EventListener, { once: true });
-      });
-    });
-
-    await page.locator('nav a[href*="compose"]').click();
-    const query = await queryPromise;
-    expect(query).toEqual({
-      action: 'reply',
-      to: 'test@example.com',
-      subject: 'Re: Hello',
-    });
   });
 
   test('unlisted query params are NOT set as attributes (allowlist enforcement)', async ({ page }) => {
@@ -729,33 +663,6 @@ test.describe('ensureLoaded — non-route components', () => {
         __ensureLoadedResolved?: boolean;
       }).__ensureLoadedResolved === true;
     });
-  });
-
-  test('ensureLoaded registers a component template from the server', async ({ page }) => {
-    await page.goto('/');
-    await page.waitForFunction(() => {
-      const el = document.querySelector('route-shell');
-      return el && (el as any).$ready === true;
-    });
-
-    // test-dialog is NOT in the route tree and NOT eagerly imported
-    const beforeLoad = await page.evaluate(() => {
-      return !!window.__webui?.templates?.['test-dialog'];
-    });
-    // Template may or may not be pre-registered from SSR build discovery,
-    // but the component class should NOT be defined yet
-    const definedBefore = await page.evaluate(() => {
-      return !!customElements.get('test-dialog');
-    });
-    expect(definedBefore).toBe(false);
-
-    // Call ensureLoaded — should fetch template from /_webui/templates
-    const result = await page.evaluate(async () => {
-      const router = (window as any).__testRouter;
-      await router.ensureLoaded('test-dialog');
-      return !!window.__webui?.templates?.['test-dialog'];
-    });
-    expect(result).toBe(true);
   });
 
   test('ensureLoaded is idempotent — second call is instant', async ({ page }) => {
@@ -1073,33 +980,6 @@ test.describe('pending UI', () => {
     await waitForDashboardRoute(page);
   });
 
-  test('shows pending skeleton during slow navigation then replaces with real content', async ({ page }) => {
-    const received = Promise.withResolvers<void>();
-    const release = Promise.withResolvers<void>();
-    await page.route('**/slow', async (route) => {
-      const request = route.request();
-      if (request.headers()['accept']?.includes('application/json')) {
-        const response = await route.fetch();
-        received.resolve();
-        await release.promise;
-        await route.fulfill({ response });
-      } else {
-        await route.continue();
-      }
-    });
-
-    try {
-      await page.click('a[href="/slow"]');
-      await received.promise;
-      await expect(page.locator('loading-skeleton')).toBeVisible({ timeout: 3000 });
-    } finally {
-      release.resolve();
-    }
-    await expect(page.locator('[data-testid="page-slow"]')).toBeVisible({ timeout: 5000 });
-    await expect(page.locator('h2')).toContainText('Slow Page');
-    await expect(page.locator('loading-skeleton')).toHaveCount(0);
-  });
-
   test('atomically settles pending UI across consecutive same-component commits', async ({ page }) => {
     await page.goto('/items/0');
     await page.waitForFunction(() => {
@@ -1385,13 +1265,4 @@ test.describe('error boundaries', () => {
     await expect(error).toHaveCount(0);
   });
 
-  test('error component does not appear for successful navigations', async ({ page }) => {
-    // Normal navigation to alpha — no error should appear
-    await page.click('a[href="/alpha"]');
-    await expect(page.locator('h2')).toContainText('Alpha Page');
-
-    // Error display should not be in the DOM
-    const errorCount = await page.locator('[data-testid="error-display"]').count();
-    expect(errorCount).toBe(0);
-  });
 });

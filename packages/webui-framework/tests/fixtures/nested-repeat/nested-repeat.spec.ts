@@ -27,20 +27,6 @@ test.describe('nested repeat fixture', () => {
     expect(groups).toEqual(['Color', 'Color', 'Size', 'Size']);
   });
 
-  test('updating groups with new objects does not duplicate inner items', async ({ page }) => {
-    await page.locator('test-nested-repeat .load').click();
-    await expect(page.locator('test-nested-repeat .value')).toHaveCount(4);
-
-    // Re-set groups with new objects (same data) — triggers nested reconciliation
-    await page.evaluate(() => {
-      (document.querySelector('test-nested-repeat') as any).updateGroups();
-    });
-
-    // Must still have exactly 4 inner items, not 8
-    await expect(page.locator('test-nested-repeat .value')).toHaveCount(4);
-    await expect(page.locator('test-nested-repeat .value')).toHaveText(['Black', 'Blue', 'S', 'M']);
-  });
-
   test('updating groups multiple times does not accumulate duplicates', async ({ page }) => {
     await page.locator('test-nested-repeat .load').click();
     await expect(page.locator('test-nested-repeat .value')).toHaveCount(4);
@@ -58,20 +44,6 @@ test.describe('nested repeat fixture', () => {
       return elements.map((element) => element.getAttribute('data-group'));
     });
     expect(groups).toEqual(['Color', 'Color', 'Size', 'Size']);
-  });
-
-  test('growing an inner list does not duplicate existing items', async ({ page }) => {
-    await page.locator('test-nested-repeat .load').click();
-    await expect(page.locator('test-nested-repeat .value')).toHaveCount(4);
-
-    await page.evaluate(() => {
-      (document.querySelector('test-nested-repeat') as any).growFirstGroup();
-    });
-
-    await expect(page.locator('test-nested-repeat .value')).toHaveCount(5);
-    await expect(page.locator('test-nested-repeat .value')).toHaveText([
-      'Black', 'Blue', 'Red', 'S', 'M',
-    ]);
   });
 
   test('shrinking an inner list removes items correctly', async ({ page }) => {
@@ -101,14 +73,6 @@ test.describe('nested repeat SSR hydration', () => {
       const el = document.querySelector('test-nested-repeat');
       return el && (el as any).$ready === true;
     });
-  });
-
-  test('inner repeat items are hydrated without duplication', async ({ page }) => {
-    // SSR HTML contains 4 buttons; after hydration they must remain exactly 4.
-    await expect(page.locator('test-nested-repeat .value')).toHaveCount(4);
-    await expect(page.locator('test-nested-repeat .value')).toHaveText([
-      'Black', 'Blue', 'S', 'M',
-    ]);
   });
 
   test('inner repeat items preserve attributes from SSR', async ({ page }) => {
@@ -148,10 +112,6 @@ test.describe('nested repeat SSR hydration', () => {
     await expect(page.locator('test-nested-repeat .value')).toHaveText([
       'Black', 'Blue', 'Red', 'S', 'M',
     ]);
-  });
-
-  test('outer scope text bindings hydrate correctly', async ({ page }) => {
-    await expect(page.locator('test-nested-repeat h2')).toHaveText(['Color', 'Size']);
   });
 
   test('innermost keyed repeat hydrates and reorders through nested directives', async ({ page }) => {

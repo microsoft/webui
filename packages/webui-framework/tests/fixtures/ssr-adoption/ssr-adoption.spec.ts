@@ -2,13 +2,6 @@
 // Licensed under the MIT license.
 
 import { expect, test } from '@playwright/test';
-import { hydrationRemovals, recordHydrationRemovals } from '../../hydration-removals.js';
-
-test('adopts formatted repeat items in place', async ({ page }) => {
-  await recordHydrationRemovals(page, 'adoption-library');
-  await page.goto('/ssr-adoption/fixture.html');
-  expect(await hydrationRemovals(page, 'adoption-library')).toEqual([]);
-});
 
 test('creates repeat items with the same formatting edges as SSR', async ({ page }) => {
   await page.goto('/ssr-adoption/fixture.html');

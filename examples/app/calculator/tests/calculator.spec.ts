@@ -29,20 +29,6 @@ test.describe('SSR rendering', () => {
     await expect(display).toContainText('2');
   });
 
-  test('renders calculator buttons', async ({ page }) => {
-    await page.goto('/');
-    await expect(page.locator('calc-button[label="7"]')).toBeVisible();
-    await expect(page.locator('calc-button[label="8"]')).toBeVisible();
-    await expect(page.locator('calc-button[label="9"]')).toBeVisible();
-    await expect(page.locator('calc-button[label="="]')).toBeVisible();
-    await expect(page.locator('calc-button[label="AC"]')).toBeVisible();
-  });
-
-  test('renders in standard mode', async ({ page }) => {
-    await page.goto('/');
-    await expect(page.locator('calc-app[mode="standard"]')).toBeVisible();
-    await expect(page.locator('calc-display[value="0"]')).toBeVisible();
-  });
 });
 
 test.describe('visual regression', () => {

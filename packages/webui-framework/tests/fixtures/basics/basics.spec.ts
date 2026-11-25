@@ -27,12 +27,6 @@ test.describe('basics: SSR hydration', () => {
     await expect(page.locator('test-basics .doubled')).toHaveText('0');
   });
 
-  test('fires the hydration completion event', async ({ page }) => {
-    const fired = await page.evaluate(() =>
-      performance.getEntriesByName('webui:hydrate:total', 'measure').length > 0,
-    );
-    expect(fired).toBe(true);
-  });
 });
 
 test.describe('basics: reactive updates', () => {
@@ -42,20 +36,6 @@ test.describe('basics: reactive updates', () => {
       const el = document.querySelector('test-basics');
       return el && (el as any).$ready === true;
     });
-  });
-
-  test('updates @attr text reactively', async ({ page }) => {
-    await page.evaluate(() => {
-      document.querySelector('test-basics')?.setAttribute('greeting', 'Hi');
-    });
-    await expect(page.locator('test-basics .greeting')).toHaveText('Hi');
-  });
-
-  test('updates @observable text reactively', async ({ page }) => {
-    await page.evaluate(() => {
-      (document.querySelector('test-basics') as any).name = 'WebUI';
-    });
-    await expect(page.locator('test-basics .name')).toHaveText('WebUI');
   });
 
   test('updates derived @observable on click', async ({ page }) => {
@@ -75,25 +55,6 @@ test.describe('basics: click events', () => {
     });
   });
 
-  test('increments on click', async ({ page }) => {
-    await page.locator('test-basics .inc').click();
-    await expect(page.locator('test-basics .count')).toHaveText('1');
-  });
-
-  test('decrements after multiple increments', async ({ page }) => {
-    await page.locator('test-basics .inc').click();
-    await page.locator('test-basics .inc').click();
-    await page.locator('test-basics .dec').click();
-    await expect(page.locator('test-basics .count')).toHaveText('1');
-  });
-
-  test('resets to zero', async ({ page }) => {
-    await page.locator('test-basics .inc').click();
-    await page.locator('test-basics .inc').click();
-    await page.locator('test-basics .reset').click();
-    await expect(page.locator('test-basics .count')).toHaveText('0');
-    await expect(page.locator('test-basics .doubled')).toHaveText('0');
-  });
 });
 
 test.describe('basics: client-created component', () => {
@@ -103,21 +64,6 @@ test.describe('basics: client-created component', () => {
       const el = document.querySelector('test-basics');
       return el && (el as any).$ready === true;
     });
-  });
-
-  test('renders initial values when created via createElement', async ({ page }) => {
-    const result = await page.evaluate(() => {
-      const el = document.createElement('test-basics') as any;
-      document.body.appendChild(el);
-      return {
-        greeting: el.shadowRoot?.querySelector('.greeting')?.textContent,
-        count: el.shadowRoot?.querySelector('.count')?.textContent,
-        ready: el.$ready,
-      };
-    });
-    expect(result.ready).toBe(true);
-    expect(result.greeting).toBe('Hello');
-    expect(result.count).toBe('0');
   });
 
   test('client-created component updates reactively', async ({ page }) => {

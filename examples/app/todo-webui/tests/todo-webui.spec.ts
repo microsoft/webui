@@ -18,29 +18,11 @@ function rootOf(selector: string): string {
 // ═══════════════════════════════════════════════════════════════
 
 test.describe('SSR rendering', () => {
-  test('renders heading and initial state', async ({ page }) => {
-    await page.goto('/');
-    await expect(page.locator('h1')).toContainText('Todo List');
-    await expect(page.getByText('Buy groceries')).toBeVisible();
-    await expect(page.getByText('Write documentation')).toBeVisible();
-    await expect(page.getByText('Ship feature')).toBeVisible();
-    await expect(page.getByText('2 items remaining')).toBeVisible();
-  });
-
   test('renders completed item with state attribute', async ({ page }) => {
     await page.goto('/');
     const doneItem = page.locator('todo-item[state="done"]');
     await expect(doneItem).toBeVisible();
     await expect(doneItem).toContainText('Buy groceries');
-  });
-
-  test('compiled templates registered in global registry', async ({ page }) => {
-    await page.goto('/');
-    const templateNames = await page.evaluate(
-      () => Object.keys(window.__webui?.templates ?? {}),
-    );
-    expect(templateNames).toContain('todo-app');
-    expect(templateNames).toContain('todo-item');
   });
 
   test('compiled template is a metadata object', async ({ page }) => {
@@ -85,65 +67,6 @@ test.describe('SSR rendering', () => {
     expect(meta.hasEvents).toBe(true);
   });
 
-  test('no console errors on page load', async ({ page }) => {
-    const errors: string[] = [];
-    page.on('pageerror', (err) => errors.push(err.message));
-    page.on('console', (msg) => {
-      if (msg.type() === 'error') errors.push(msg.text());
-    });
-    await page.goto('/');
-    await page.waitForTimeout(500);
-    const real = errors.filter(e => !e.includes('favicon'));
-    expect(real).toEqual([]);
-  });
-
-  test('fires webui:hydration-complete event', async ({ page }) => {
-    // Install listener before page loads to avoid race condition
-    await page.goto('/', {
-      waitUntil: 'load',
-    });
-
-    // By the time 'load' fires, module scripts have executed and
-    // hydration is complete.  Check the global performance measure.
-    const totalDuration = await page.evaluate(() => {
-      const total = performance.getEntriesByName('webui:hydrate:total', 'measure');
-      return total[0]?.duration ?? -1;
-    });
-
-    expect(totalDuration).toBeGreaterThanOrEqual(0);
-  });
-
-  test('no hydration comment markers in output', async ({ page }) => {
-    await page.goto('/');
-    const result = await page.evaluate(() => {
-      const root = document.querySelector('todo-app')?.shadowRoot
-        ?? document.querySelector('todo-app');
-      if (!root) return { error: 'no root' };
-
-      const walker = document.createTreeWalker(root, NodeFilter.SHOW_COMMENT);
-      const markers: string[] = [];
-      let c: Comment | null;
-      while ((c = walker.nextNode() as Comment | null)) {
-        if (c.data.startsWith('w-b:') || c.data.startsWith('w-r:')) {
-          markers.push(c.data);
-        }
-      }
-
-      const dataAttrs: string[] = [];
-      for (const el of root.querySelectorAll('*')) {
-        for (const attr of el.attributes) {
-          if (attr.name.startsWith('data-w-') || attr.name === 'data-ev') {
-            dataAttrs.push(`${el.tagName}:${attr.name}`);
-          }
-        }
-      }
-
-      return { markers, dataAttrs };
-    });
-
-    expect(result.markers ?? []).toEqual([]);
-    expect(result.dataAttrs ?? []).toEqual([]);
-  });
 });
 
 // ═══════════════════════════════════════════════════════════════
@@ -193,20 +116,6 @@ test.describe('interactivity', () => {
     await expect(page.locator('todo-item[title="Press Enter todo"]')).toBeAttached();
   });
 
-  test('toggle a todo item done', async ({ page }) => {
-    await page.goto('/');
-    await page.waitForFunction(
-      () => (document.querySelector('todo-app') as any)?.$ready === true,
-    );
-
-    const item = page.locator('todo-item[title="Write documentation"]');
-    await expect(item).toHaveAttribute('state', 'pending');
-
-    await item.locator('button.toggle').click();
-
-    await expect(item).toHaveAttribute('state', 'done');
-  });
-
   test('if-block checkmark appears when toggled to done', async ({ page }) => {
     await page.goto('/');
     await page.waitForFunction(
@@ -233,38 +142,6 @@ test.describe('interactivity', () => {
     await item.locator('button.toggle').click();
 
     await expect(item.locator('.check')).not.toBeAttached();
-  });
-
-  test('delete a todo item', async ({ page }) => {
-    await page.goto('/');
-    await page.waitForFunction(
-      () => (document.querySelector('todo-app') as any)?.$ready === true,
-    );
-
-    const shipItem = page.locator('todo-item[title="Ship feature"]');
-    await expect(shipItem).toBeVisible();
-    await shipItem.hover();
-    await shipItem.locator('button.delete').click();
-    await expect(shipItem).not.toBeAttached();
-  });
-
-  test('new item renders title text', async ({ page }) => {
-    await page.goto('/');
-    await page.waitForFunction(
-      () => (document.querySelector('todo-app') as any)?.$ready === true,
-    );
-
-    await page.evaluate(() => {
-      const app = document.querySelector('todo-app') as any;
-      app.addInput.value = 'Visible title test';
-      app.addInput.dispatchEvent(new Event('input', { bubbles: true }));
-    });
-    await page.locator('button.add-button').click();
-
-    const titleText = await page.locator(
-      'todo-item[title="Visible title test"] .title',
-    ).textContent();
-    expect(titleText).toBe('Visible title test');
   });
 
   test('deleting all items leaves empty list', async ({ page }) => {

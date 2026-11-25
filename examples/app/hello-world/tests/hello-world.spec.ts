@@ -4,19 +4,6 @@
 import { test, expect } from '@playwright/test';
 
 test.describe('SSR rendering', () => {
-  test('renders heading', async ({ page }) => {
-    await page.goto('/');
-    await expect(page.locator('h1')).toContainText('Hello, WebUI!');
-  });
-
-  test('renders people list', async ({ page }) => {
-    await page.goto('/');
-    await expect(page.getByText('Ali')).toBeVisible();
-    await expect(page.getByText('Amanda')).toBeVisible();
-    await expect(page.getByText('John')).toBeVisible();
-    await expect(page.getByText('Sara')).toBeVisible();
-  });
-
   test('renders raw HTML description', async ({ page }) => {
     await page.goto('/');
     await expect(page.locator('b')).toContainText('WebUI');

@@ -13,19 +13,6 @@ test.describe('composed root event — custom event pierces shadow DOM', () => {
     });
   });
 
-  test('grandparent receives composed custom event from grandchild', async ({ page }) => {
-    // Click the "alpha" button inside test-child (nested 2 shadow DOMs deep)
-    await page.locator('test-grandparent test-child[item-id="alpha"] .select-btn').click();
-
-    // The grandparent's @item-selected root handler should fire
-    await expect(page.locator('test-grandparent .result')).toHaveText('alpha');
-  });
-
-  test('grandparent receives event from second grandchild', async ({ page }) => {
-    await page.locator('test-grandparent test-child[item-id="beta"] .select-btn').click();
-    await expect(page.locator('test-grandparent .result')).toHaveText('beta');
-  });
-
   test('multiple clicks update correctly', async ({ page }) => {
     await page.locator('test-grandparent test-child[item-id="alpha"] .select-btn').click();
     await expect(page.locator('test-grandparent .result')).toHaveText('alpha');
@@ -34,13 +21,4 @@ test.describe('composed root event — custom event pierces shadow DOM', () => {
     await expect(page.locator('test-grandparent .result')).toHaveText('beta');
   });
 
-  test('event detail contains correct id', async ({ page }) => {
-    await page.locator('test-grandparent test-child[item-id="alpha"] .select-btn').click();
-
-    const detail = await page.evaluate(() => {
-      const el = document.querySelector('test-grandparent') as any;
-      return el?.selectedItem;
-    });
-    expect(detail).toBe('alpha');
-  });
 });

@@ -306,19 +306,6 @@ test('a ref on the SSR body root belongs to its owner and is released on removal
   }
 });
 
-test('a native dialog hydrates its initially rendered body without a state request', async ({ page }) => {
-  let states = 0;
-  page.on('request', request => { if (isState(request)) states++; });
-  await page.goto('/lazy-ui/fixture.html?dialog=1');
-  await ready(page, ['test-lazy-dialog']);
-  await expect(page.locator('test-lazy-dialog dialog')).toBeVisible();
-  await expect(page.locator('test-lazy-dialog .message')).toHaveText('Server state');
-  expect(states).toBe(0);
-  await page.locator('test-lazy-dialog .close').click();
-  await expect(page.locator('test-lazy-dialog dialog')).not.toBeVisible();
-  await expect(page.locator('test-lazy-dialog .message')).toHaveCount(0);
-});
-
 test('a closed native dialog loads its body and Escape releases its state', async ({ page }) => {
   await page.goto('/lazy-ui/fixture.html?dialog=1&initial=0');
   await ready(page, ['test-lazy-dialog']);

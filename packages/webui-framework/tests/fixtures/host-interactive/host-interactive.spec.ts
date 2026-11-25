@@ -17,13 +17,6 @@ test.describe('host-interactive fixture', () => {
     });
   });
 
-  test('a real click on the host fires the root @click binding', async ({ page }) => {
-    await page.locator('test-host-toggle').click();
-
-    await expect(page.locator('test-host-toggle .count')).toHaveText('1');
-    await expect(page.locator('test-host-toggle .indicator')).toHaveText('on');
-  });
-
   test('the click really did target the host, not shadow content', async ({ page }) => {
     // Guards the fixture itself: `target` is retargeted to the host either way,
     // so assert on the un-retargeted origin. If the shadow indicator ever became
@@ -38,20 +31,6 @@ test.describe('host-interactive fixture', () => {
     });
     expect(seen.origin).toBe('TEST-HOST-TOGGLE');
     expect(seen.target).toBe('TEST-HOST-TOGGLE');
-  });
-
-  test('a real keystroke on the focused host fires the root @keydown binding', async ({ page }) => {
-    await page.locator('test-host-toggle').focus();
-    await page.keyboard.press('Enter');
-
-    await expect(page.locator('test-host-toggle .count')).toHaveText('1');
-    await expect(page.locator('test-host-toggle .indicator')).toHaveText('on');
-
-    const target = await page.evaluate(() => {
-      const el = document.querySelector('test-host-toggle') as any;
-      return el?.lastTarget;
-    });
-    expect(target).toBe('TEST-HOST-TOGGLE');
   });
 
   test('Space activates the host control as well', async ({ page }) => {

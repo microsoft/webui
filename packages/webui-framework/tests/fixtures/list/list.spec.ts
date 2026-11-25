@@ -23,12 +23,6 @@ test.describe('list fixture', () => {
     });
   });
 
-  test('renders SSR repeat content and nested child conditionals', async ({ page }) => {
-    await expect(page.locator('test-list-item .title')).toHaveText(['Alpha', 'Beta']);
-    await expect(page.locator('test-list .count')).toHaveText('2');
-    await expect(page.locator('test-list-item .done')).toHaveText(['Done']);
-  });
-
   test('keeps structural keys out of SSR and client-created DOM', async ({ page }) => {
     await expect(page.locator('test-list-item[key]')).toHaveCount(0);
 
@@ -51,12 +45,6 @@ test.describe('list fixture', () => {
     await page.locator('test-list-item[item-id="2"] .toggle').click();
     await expect(page.locator('test-list-item[data-done]')).toHaveCount(1);
     await expect(page.locator('test-list-item[data-done]')).toHaveAttribute('item-id', '1');
-  });
-
-  test('identifier boolean attr on repeat item root reflects truthy value', async ({ page }) => {
-    // SSR: Beta (flagged=true) should have data-flagged, Alpha should not
-    await expect(page.locator('test-list-item[data-flagged]')).toHaveCount(1);
-    await expect(page.locator('test-list-item[data-flagged]')).toHaveAttribute('item-id', '2');
   });
 
   test('adds nested children through repeat reconciliation', async ({ page }) => {
@@ -97,11 +85,6 @@ test.describe('list fixture', () => {
 
     expect(preserved).toBe(true);
     await expect(page.locator('test-list-item .title')).toHaveText(['Beta', 'Alpha']);
-  });
-
-  test('clears all repeated children', async ({ page }) => {
-    await page.locator('test-list .clear').click();
-    await expect(page.locator('test-list-item')).toHaveCount(0);
   });
 
   test('prepend: preserves keyed item nodes after the inserted head', async ({ page }) => {

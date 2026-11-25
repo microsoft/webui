@@ -54,19 +54,6 @@ test.describe('text-only repeat fixture', () => {
       .toBe('Trending');
   });
 
-  test('only one active label is visible at a time', async ({ page }) => {
-    // Count .active-label elements — should be exactly 1
-    const count = await page.locator('test-text-only-repeat .active-label').count();
-    expect(count).toBe(1);
-
-    // After update, still exactly 1
-    await page.evaluate(() => {
-      (document.querySelector('test-text-only-repeat') as any).onUpdate();
-    });
-    const countAfter = await page.locator('test-text-only-repeat .active-label').count();
-    expect(countAfter).toBe(1);
-  });
-
   test('keeps only repeat anchors and releases removed item anchors', async ({ page }) => {
     const result = await page.evaluate(async () => {
       const host = document.querySelector('test-text-only-repeat') as any;

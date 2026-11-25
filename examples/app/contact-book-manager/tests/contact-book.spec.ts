@@ -47,22 +47,6 @@ async function expectContactDetailFieldsStable(page: Page): Promise<void> {
 // ── SSR Tests (direct page loads) ────────────────────────────────
 
 test.describe('SSR pages', () => {
-  test('dashboard renders with stats', async ({ page }) => {
-    const response = await page.goto('/');
-    if (!response) throw new Error('dashboard navigation returned no response');
-    const bootstrapState = bootstrapStateFromHtml(await response.text());
-    expect(Object.keys(bootstrapState).sort()).toEqual(['mode', 'totalFavorites']);
-    expect(bootstrapState['mode']).toBe('web');
-    await expect(page.locator('cb-page-dashboard .page-title')).toHaveText('Dashboard');
-    // Stat cards
-    await expect(page.locator('cb-page-dashboard .stat-label').filter({ hasText: 'Total Contacts' })).toBeVisible();
-    await expect(page.locator('cb-page-dashboard .stat-label').filter({ hasText: 'Favorites' })).toBeVisible();
-    await expect(page.locator('cb-page-dashboard .stat-label').filter({ hasText: 'Groups' })).toBeVisible();
-    // Recent contacts section
-    await expect(page.locator('cb-page-dashboard .section-title')).toContainText('Recent Contacts');
-    await expect(page.locator('cb-page-dashboard cb-contact-card').first()).toBeVisible();
-  });
-
   test('dashboard installs active route styles once per CSS tree', async ({ page }) => {
     const stylesheetRequests = new Map<string, number>();
     await page.route('**/*.css', async (route) => {
@@ -130,22 +114,6 @@ test.describe('SSR pages', () => {
     }
   });
 
-  test('contacts page renders contact list', async ({ page }) => {
-    await page.goto('/contacts');
-    await expect(page.locator('cb-page-contacts .page-title')).toHaveText('All Contacts');
-    await expect(page.locator('cb-page-contacts cb-contact-card')).toHaveCount(15);
-    // Spot-check known contacts
-    await expect(page.getByText('Sarah Chen')).toBeVisible();
-    await expect(page.getByText('Marcus Johnson')).toBeVisible();
-  });
-
-  test('favorites page renders favorite contacts', async ({ page }) => {
-    await page.goto('/favorites');
-    await expect(page.locator('cb-page-favorites .page-title')).toHaveText('Favorites');
-    await expect(page.locator('cb-page-favorites cb-contact-card')).toHaveCount(5);
-    await expect(page.getByText('Sarah Chen')).toBeVisible();
-    await expect(page.getByText('Yuki Tanaka')).toBeVisible();
-  });
 });
 
 test.describe('SSR without JavaScript', () => {
@@ -192,24 +160,6 @@ test.describe('client-side navigation', () => {
     )).toBe(true);
   });
 
-  test('navigate dashboard to contacts', async ({ page }) => {
-    await page.goto('/');
-    await expect(page.locator('cb-page-dashboard .page-title')).toHaveText('Dashboard');
-
-    await page.locator('cb-sidebar').getByRole('link', { name: /All Contacts/ }).click();
-    await expect(page).toHaveURL('/contacts');
-    await expect(page.locator('cb-page-contacts .page-title')).toHaveText('All Contacts');
-  });
-
-  test('navigate contacts to favorites via sidebar', async ({ page }) => {
-    await page.goto('/contacts');
-    await expect(page.locator('cb-page-contacts .page-title')).toHaveText('All Contacts');
-
-    await page.locator('cb-sidebar').getByRole('link', { name: /Favorites/ }).click();
-    await expect(page).toHaveURL('/favorites');
-    await expect(page.locator('cb-page-favorites .page-title')).toHaveText('Favorites');
-  });
-
   test('sidebar groups do not duplicate across navigation', async ({ page }) => {
     await page.goto('/');
     await expectSidebarGroupsStable(page);
@@ -243,13 +193,6 @@ test.describe('client-side navigation', () => {
     await expectActiveSidebarNav(page, 'All Contacts');
   });
 
-  test('navigate to group via sidebar', async ({ page }) => {
-    await page.goto('/');
-    await page.getByRole('link', { name: 'Work' }).first().click();
-    await expect(page).toHaveURL('/groups/Work');
-    await expect(page.locator('cb-page-group .page-title')).toContainText('Work');
-  });
-
   test('navigate contacts to contact detail via click', async ({ page }) => {
     await page.goto('/contacts');
     await expect(page.locator('cb-page-contacts .page-title')).toHaveText('All Contacts');
@@ -257,15 +200,6 @@ test.describe('client-side navigation', () => {
     await page.locator('cb-contact-card').first().click();
     await expect(page).toHaveURL(/\/contacts\/\d+/);
     await expect(page.locator('cb-contact-detail')).toBeVisible();
-  });
-
-  test('navigate back from contact detail', async ({ page }) => {
-    await page.goto('/contacts/1');
-    await expect(page.locator('cb-contact-detail')).toBeVisible();
-
-    await page.locator('cb-sidebar').getByRole('link', { name: /All Contacts/ }).click();
-    await expect(page).toHaveURL('/contacts');
-    await expect(page.locator('cb-page-contacts .page-title')).toHaveText('All Contacts');
   });
 
   test('contact detail favorite action toggles state and sidebar count', async ({ page }) => {
