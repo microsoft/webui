@@ -32,6 +32,7 @@ export class TestBindingIndex extends WebUIElement {
 
   suffixChanged(): void {
     this.callbacks.push('suffix');
+    this.external.last = this.suffix;
   }
 
   rename(): void {

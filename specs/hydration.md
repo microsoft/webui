@@ -297,6 +297,8 @@ The removed closing markers make structural SSR hydration intentionally
 one-shot. If delayed disconnect cleanup destroys a hydrated binding graph,
 reconnect remounts templates containing conditions or repeats from current
 component state rather than trying to claim the marker-stripped DOM again.
+Reconnecting before cleanup retains the graph and flushes only pending writes,
+including those made while detached. A move alone does not reevaluate bindings.
 
 Hydration assumes SSR DOM, marker comments, and compiled metadata come from the same trusted WebUI compiler/handler version. Hand-edited marker streams are unsupported; every `<!--wr-->` and `<!--wc-->` must have its matching closing marker.
 

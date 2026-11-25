@@ -2,6 +2,7 @@
 // Licensed under the MIT license.
 
 import { expect, test } from '@playwright/test';
+import type { TestOptionalState } from './element.js';
 
 test.describe('optional template state fixture', () => {
   test.beforeEach(async ({ page }) => {
@@ -28,6 +29,33 @@ test.describe('optional template state fixture', () => {
     });
     expect(exposesTemplateOnlyState).toBe(false);
   });
+
+  for (const write of ['before', 'during'] as const) {
+    test(`same-turn reconnect preserves projected SSR with a write ${write} the move`, async ({ page }) => {
+      const result = await page.locator('test-optional-state').evaluate(async (element, write) => {
+        const host = element as TestOptionalState;
+        const root = host.shadowRoot!;
+        const heading = root.querySelector('h1')!;
+        const parent = host.parentNode!;
+        if (write === 'before') {
+          host.toggle();
+          await host.$whenRendered();
+        }
+        host.remove();
+        if (write === 'during') host.toggle();
+        parent.appendChild(host);
+        return {
+          retained: root.querySelector('h1') === heading,
+          heading: heading.textContent,
+          hidden: heading.hidden,
+          selected: root.querySelector('.selected')!.textContent,
+        };
+      }, write);
+      expect(result).toEqual({
+        retained: true, heading: 'Server heading', hidden: false, selected: 'Selected: on',
+      });
+    });
+  }
 
   test('updates omitted template bindings through setState', async ({ page }) => {
     await page.evaluate(() => {

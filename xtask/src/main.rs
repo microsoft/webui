@@ -6,6 +6,8 @@ mod build_wasm;
 mod cargo_artifacts;
 mod desktop_acceptance;
 mod desktop_assets;
+#[path = "../../crates/webui-desktop/runtime/deployment.rs"]
+mod desktop_deployment;
 mod desktop_tests;
 mod dev;
 mod e2e;

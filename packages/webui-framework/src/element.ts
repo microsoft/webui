@@ -82,8 +82,7 @@ const HYDRATE_EAGER = 'eager';
 const INTERACTION_HYDRATION = 3;
 const LAZY_RENDER_INTERACTION = 4;
 const AUTHORED_LIVE = 1;
-const AUTHORED_PENDING = 2;
-const AUTHORED_FLUSHING = 4;
+const AUTHORED_FLUSHING = 2;
 
 // ── Development build flag ──────────────────────────────────────
 // Guard the warning at its call site so production bundlers can remove it.
@@ -170,7 +169,6 @@ export class WebUIElement extends TemplateElement {
     } else {
       const queued = changes ?? (this.$pendingPropertyChanges = new Map());
       if (!queued.has(name)) queued.set(name, oldValue);
-      this.$authoredPhase |= AUTHORED_PENDING;
     }
   }
 
@@ -189,22 +187,23 @@ export class WebUIElement extends TemplateElement {
     if (this.$authoredPhase === undefined) return true;
     this.$authoredPhase |= AUTHORED_LIVE;
     if (this.$authoredPhase & AUTHORED_FLUSHING) return false;
-    if (this.$pendingPropertyChanges) {
-      this.$authoredPhase |= AUTHORED_PENDING;
-      this.$flushAuthoredChanges();
-    }
+    if (this.$pendingPropertyChanges) this.$flushAuthoredChanges();
     return !this.$pendingPropertyChanges;
   }
 
   override [FLUSH_UPDATES](): void {
-    if (this.$pendingPropertyChanges) this.$notifyHydrated();
+    if (this.$pendingPropertyChanges) {
+      this.$notifyHydrated();
+      // Keep bindings queued until reconnect can deliver the deferred callbacks.
+      if (!this.isConnected) return;
+    }
     super[FLUSH_UPDATES]();
   }
 
   private $flushAuthoredChanges(): void {
     const changes = this.$pendingPropertyChanges;
     if (!changes || !this.$canRunAuthoredEffects()) return;
-    this.$authoredPhase = AUTHORED_LIVE | AUTHORED_PENDING | AUTHORED_FLUSHING;
+    this.$authoredPhase = AUTHORED_LIVE | AUTHORED_FLUSHING;
     try {
       for (const [name, oldValue] of changes) {
         if (!this.$canRunAuthoredEffects()) {
@@ -234,7 +233,6 @@ export class WebUIElement extends TemplateElement {
     if (phase !== undefined && this.$pendingPropertyChanges?.size === 0 &&
         !(phase & AUTHORED_FLUSHING)) {
       this.$pendingPropertyChanges = undefined;
-      this.$authoredPhase = phase & ~AUTHORED_PENDING;
     }
   }
 

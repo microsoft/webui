@@ -16,6 +16,7 @@
 //! - `publish/toolchains/` - native CLI/checker archives and SHA-256 sidecars
 //! - `publish/go/`      - source-only Go module proxy for offline release testing
 
+use crate::desktop_deployment;
 use crate::node_addons::{self, Addons};
 use crate::release_version::ReleaseVersion;
 use crate::util::{build_command, run_command, run_command_quiet};
@@ -26,8 +27,6 @@ use std::process::ExitCode;
 
 #[path = "publish_archives.rs"]
 mod archives;
-#[path = "../../crates/webui-desktop/runtime/deployment.rs"]
-mod desktop_deployment;
 #[path = "publish_go.rs"]
 mod go;
 #[path = "publish_sdk.rs"]
