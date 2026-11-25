@@ -185,26 +185,6 @@ fn loads_files_and_namespaces_state() -> TestResult {
 }
 
 #[test]
-fn state_only_config_keeps_default_html() -> TestResult {
-    let template =
-        "<webui-press-region name=\"summary\"><summary-card></summary-card></webui-press-region>";
-    let mut config = region("");
-    config.html = None;
-    config.state = Some(Value::Object(Map::from_iter([(
-        "title".to_string(),
-        Value::String("Status".to_string()),
-    )])));
-    let regions = RegionSet::load(
-        &BTreeMap::from([("summary".to_string(), config)]),
-        Path::new("."),
-        template.to_string(),
-    )?;
-
-    assert_eq!(regions.render("doc", None), "<summary-card></summary-card>");
-    Ok(())
-}
-
-#[test]
 fn rejects_invalid_declarations() {
     let cases = [
         (

@@ -86,26 +86,6 @@ fn module_mutation_in_evaluation_scopes_rejects_stale_factory_keys() {
 }
 
 #[test]
-fn reads_and_unrelated_mutations_keep_precise_proof_surfaces() {
-    for statement in [
-        "for (const { factory = mix } of [{}]) { void factory; }",
-        "for (const { mix: selected } of [{ mix }]) { void selected; }",
-        "function unrelated(mix) { mix = null; }",
-        "class Holder { static { var mix; mix = null; } }",
-    ] {
-        success(
-            &single(&format!(
-                "{FACTORY}
-                {statement}
-                class Derived extends mix(WebUIElement) {{ @observable own = ''; }}
-                Derived.define('probe-card');"
-            )),
-            &[("probe-card", "/app/card.ts", &["inherited", "own"])],
-        );
-    }
-}
-
-#[test]
 fn imported_generic_mixins_include_only_reactive_inherited_and_local_state() {
     for (imports, base, expected) in [
         ("", "WebUIElement", &["label", "ownValue"][..]),

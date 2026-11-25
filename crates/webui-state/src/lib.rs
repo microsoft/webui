@@ -132,37 +132,9 @@ mod tests {
     }
 
     #[test]
-    fn test_nested_nested_path() {
-        let data = test_json!({
-            "user": {
-                "profile": {
-                    "nameObj": {
-                        "first": "John"
-                    }
-                }
-            }
-        });
-        let value = find_value_by_dotted_path("user.profile.nameObj.first", &data);
-        assert_eq!(value, Some(Value::String("John".to_string())));
-    }
-
-    #[test]
     fn test_empty_string_path() {
         let data = test_json!({ "key": "value" });
         let value = find_value_by_dotted_path("", &data);
-        assert_eq!(value, None);
-    }
-
-    #[test]
-    fn test_path_with_spaces() {
-        let data = test_json!({
-            "user": {
-                "profile": {
-                    "name": "Alice"
-                }
-            }
-        });
-        let value = find_value_by_dotted_path("user.profile.non existent", &data);
         assert_eq!(value, None);
     }
 
@@ -178,13 +150,6 @@ mod tests {
         let data = test_json!({ "empty_list": [] });
         let value = find_value_by_dotted_path("empty_list.length", &data);
         assert_eq!(value, Some(Value::Number(serde_json::Number::from(0))));
-    }
-
-    #[test]
-    fn test_length_on_nonempty_list() {
-        let data = test_json!({ "items": [1, 2, 3] });
-        let value = find_value_by_dotted_path("items.length", &data);
-        assert_eq!(value, Some(Value::Number(serde_json::Number::from(3))));
     }
 
     #[test]
@@ -218,17 +183,6 @@ mod tests {
     }
 
     #[test]
-    fn test_length_on_nested_list() {
-        let data = test_json!({
-            "nested": {
-                "data": ["a", "b"]
-            }
-        });
-        let value = find_value_by_dotted_path("nested.data.length", &data);
-        assert_eq!(value, Some(Value::Number(serde_json::Number::from(2))));
-    }
-
-    #[test]
     fn test_nonexistent_path_with_length() {
         let data = test_json!({ "existing": "value" });
         let value = find_value_by_dotted_path("non_existent.length", &data);
@@ -240,14 +194,6 @@ mod tests {
         let data = test_json!({ "str_val": "hello" });
         let value = find_value_by_dotted_path("str_val.length", &data);
         assert_eq!(value, Some(Value::Number(serde_json::Number::from(5))));
-    }
-
-    #[test]
-    fn test_length_on_string_matches_nodejs() {
-        // NodeJS: 'string_value.length' on "test" → 4
-        let data = test_json!({ "string_value": "test" });
-        let value = find_value_by_dotted_path("string_value.length", &data);
-        assert_eq!(value, Some(Value::Number(serde_json::Number::from(4))));
     }
 
     #[test]

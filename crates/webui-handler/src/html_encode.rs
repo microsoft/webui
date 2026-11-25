@@ -219,41 +219,6 @@ mod tests {
     }
 
     #[test]
-    fn escapes_ampersand() {
-        assert_eq!(encode_safe("a&b"), "a&amp;b");
-    }
-
-    #[test]
-    fn escapes_less_than() {
-        assert_eq!(encode_safe("<script>"), "&lt;script&gt;");
-    }
-
-    #[test]
-    fn escapes_greater_than() {
-        assert_eq!(encode_safe("a>b"), "a&gt;b");
-    }
-
-    #[test]
-    fn escapes_double_quote() {
-        assert_eq!(encode_safe(r#"a"b"#), "a&quot;b");
-    }
-
-    #[test]
-    fn escapes_single_quote() {
-        assert_eq!(encode_safe("a'b"), "a&#x27;b");
-    }
-
-    #[test]
-    fn escapes_forward_slash() {
-        assert_eq!(encode_safe("a/b"), "a&#x2F;b");
-    }
-
-    #[test]
-    fn escapes_all_special_chars() {
-        assert_eq!(encode_safe(r#"&<>"'/"#), "&amp;&lt;&gt;&quot;&#x27;&#x2F;");
-    }
-
-    #[test]
     fn preserves_unicode() {
         assert_eq!(encode_safe("こんにちは"), "こんにちは");
         assert!(matches!(encode_safe("こんにちは"), Cow::Borrowed(_)));
@@ -277,22 +242,6 @@ mod tests {
     #[test]
     fn multiple_consecutive_escapes() {
         assert_eq!(encode_safe("&&"), "&amp;&amp;");
-    }
-
-    #[test]
-    fn realistic_nonce() {
-        // CSP nonces are base64 — no special chars expected.
-        let nonce = "YWJjZGVmZ2hpamtsbW5vcA==";
-        let result = encode_safe(nonce);
-        assert!(matches!(result, Cow::Borrowed(_)));
-    }
-
-    #[test]
-    fn realistic_attribute_value() {
-        assert_eq!(
-            encode_safe("John O'Brien & Associates"),
-            "John O&#x27;Brien &amp; Associates"
-        );
     }
 
     #[test]

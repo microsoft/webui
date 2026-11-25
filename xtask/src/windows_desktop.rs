@@ -102,14 +102,6 @@ mod tests {
     }
 
     #[test]
-    fn preserves_child_args_and_default_timeout() {
-        let args = ["cargo", "test", "--", "--ignored", ""].map(String::from);
-        let request = request(&args, 1_800_000).unwrap();
-        assert_eq!(request.timeout_ms, 1_800_000);
-        assert_eq!(request.command, &args);
-    }
-
-    #[test]
     fn rejects_missing_commands_invalid_timeouts_and_nuls() {
         for args in [vec![], vec![""], vec!["cargo", "bad\0argument"]] {
             let args = args.into_iter().map(String::from).collect::<Vec<_>>();

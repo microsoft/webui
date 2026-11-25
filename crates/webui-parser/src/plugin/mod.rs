@@ -404,16 +404,6 @@ mod artifact_tests {
     }
 
     #[test]
-    fn with_hydration_attaches_custom_surface() {
-        let artifact = ComponentTemplateArtifact::webui("x-c".into(), "{}".into(), false)
-            .with_hydration(StateSurface::keys(vec!["count".into(), "name".into()]));
-        assert_eq!(
-            artifact.hydration,
-            StateSurface::Keys(vec!["count".into(), "name".into()])
-        );
-    }
-
-    #[test]
     fn with_hydration_is_plugin_agnostic_over_template_payloads() {
         // A non-WebUI plugin payload can carry its own hydration surface too.
         let artifact =

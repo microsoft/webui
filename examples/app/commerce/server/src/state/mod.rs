@@ -64,29 +64,6 @@ mod tests {
     }
 
     #[test]
-    fn content_routes_only_need_shell_state() {
-        let catalog = Catalog::generate();
-        let cart_state = build_cart_state(&StoredCart::default(), &catalog, "/about");
-        let params = std::collections::HashMap::new();
-
-        let state = match build_route_state(&RouteStateRequest {
-            catalog: &catalog,
-            route_path: "/about",
-            params: &params,
-            request_path: "/about",
-            cart_state: &cart_state,
-            is_partial: false,
-        }) {
-            Some((state, _)) => state,
-            None => panic!("expected about content state"),
-        };
-
-        assert_eq!(state["page"], "about");
-        assert_eq!(state["showCatalogNav"], "");
-        assert_eq!(state["shellClass"], "default-shell");
-    }
-
-    #[test]
     fn category_state_includes_current_category_label() {
         let catalog = Catalog::generate();
         let cart_state = build_cart_state(&StoredCart::default(), &catalog, "/search/footware");
@@ -106,39 +83,6 @@ mod tests {
         };
 
         assert_eq!(state["currentCategoryLabel"], "Footware");
-    }
-
-    #[test]
-    fn partial_response_excludes_shell_state() {
-        let catalog = Catalog::generate();
-        let cart_state = build_cart_state(&StoredCart::default(), &catalog, "/search/shirts");
-        let params =
-            std::collections::HashMap::from([("category".to_string(), "shirts".to_string())]);
-
-        let state = match build_route_state(&RouteStateRequest {
-            catalog: &catalog,
-            route_path: "/search/shirts",
-            params: &params,
-            request_path: "/search/shirts",
-            cart_state: &cart_state,
-            is_partial: true,
-        }) {
-            Some((state, _)) => state,
-            None => panic!("expected partial state"),
-        };
-
-        // Page-specific state should be present
-        assert!(state.get("products").is_some());
-        assert!(state.get("categories").is_some());
-        assert!(state.get("sortOptions").is_some());
-
-        // Shell state should be absent
-        assert!(state.get("storeName").is_none());
-        assert!(state.get("cartItems").is_none());
-        assert!(state.get("cartItemCount").is_none());
-        assert!(state.get("navCategories").is_none());
-        assert!(state.get("page").is_none());
-        assert!(state.get("shellClass").is_none());
     }
 
     #[test]

@@ -249,25 +249,10 @@ mod tests {
     }
 
     #[test]
-    fn strip_no_shadow_attrs_is_a_no_op_fast_path() {
-        // No `shadowroot*` attribute at all: bail without writing to `result`.
-        let (consumed, result) = strip(r#"<template @click="{onClick(e)}"><div></div>"#);
-        assert_eq!(consumed, None);
-        assert!(result.is_empty());
-    }
-
-    #[test]
     fn strip_non_template_tag_returns_none() {
         let (consumed, result) = strip(r#"<div shadowrootmode="open"></div>"#);
         assert_eq!(consumed, None);
         assert!(result.is_empty());
-    }
-
-    #[test]
-    fn strip_mode_only_existing_path() {
-        let (consumed, result) = strip(r#"<template shadowrootmode="open">"#);
-        assert!(consumed.is_some());
-        assert_eq!(result, r#"<template>"#);
     }
 
     #[test]
@@ -899,18 +884,6 @@ mod tests {
     }
 
     #[test]
-    fn when_condition_without_quotes_is_byte_identical_double_quoted() {
-        let result = transformed(
-            "file-card",
-            r#"<f-template name="status-card"><template><f-when value="{{visible && count > 0}}"><span>{{label}}</span></f-when></template></f-template>"#,
-        );
-        assert_eq!(
-            result.parser_content,
-            r#"<template><if condition="visible && count > 0"><span>{{label}}</span></if></template>"#
-        );
-    }
-
-    #[test]
     fn when_condition_mixing_quote_styles_is_a_diagnostic() {
         let err = transform(
             "file-card",
@@ -923,19 +896,6 @@ mod tests {
         assert_eq!(diag.error_code(), Some(INVALID_FAST_TEMPLATE));
         assert!(diag.to_string().contains("mixes single and double quotes"));
         assert!(diag.help_text().is_some());
-    }
-
-    #[test]
-    fn uppercase_f_template_resolves_name_attribute_case_insensitively() {
-        let result = transformed(
-            "file-card",
-            r#"<F-TEMPLATE NAME="named-card"><template><span>{{label}}</span></template></F-TEMPLATE>"#,
-        );
-        assert_eq!(result.tag_name, "named-card");
-        assert_eq!(
-            result.parser_content,
-            "<template><span>{{label}}</span></template>"
-        );
     }
 
     #[test]

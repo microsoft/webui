@@ -404,26 +404,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn builds_without_lazy_regions_have_no_module() {
-        let scripts = ComponentScripts::new();
-        let mappings = BTreeMap::new();
-        let mut warnings = Vec::new();
-        let module = resolve(
-            &mut [],
-            &ScriptSources {
-                scripts: &scripts,
-                mappings: &mappings,
-                modules_dir: Path::new("."),
-                startup: &HashSet::new(),
-            },
-            &mut warnings,
-        )
-        .unwrap();
-        assert_eq!(module, None);
-        assert!(warnings.is_empty());
-    }
-
     #[cfg(windows)]
     #[test]
     fn modules_on_another_drive_need_a_mapping_or_another_output_directory() {

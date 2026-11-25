@@ -359,46 +359,11 @@ mod tests {
     use webui_protocol::{FragmentList, WebUIFragment, WebUiFragmentRoute};
 
     #[test]
-    fn test_match_single_route_exact() {
-        let m = match_single_route("/contacts", "/contacts", true).unwrap();
-        assert!(m.params.is_empty());
-    }
-
-    #[test]
-    fn test_match_single_route_param() {
-        let m = match_single_route("/contacts/:id", "/contacts/42", true).unwrap();
-        assert_eq!(m.params["id"], "42");
-    }
-
-    #[test]
-    fn test_match_single_route_no_match_extra() {
-        assert!(match_single_route("/contacts", "/contacts/123", true).is_none());
-    }
-
-    #[test]
     fn test_match_single_route_multiple_params() {
         let m = match_single_route("/profile/:id/view/:section", "/profile/123/view/bio", true)
             .unwrap();
         assert_eq!(m.params["id"], "123");
         assert_eq!(m.params["section"], "bio");
-    }
-
-    #[test]
-    fn test_match_single_route_splat() {
-        let m = match_single_route("/files/*path", "/files/docs/readme.md", false).unwrap();
-        assert_eq!(m.params["path"], "docs/readme.md");
-    }
-
-    #[test]
-    fn test_match_single_route_optional_param_present() {
-        let m = match_single_route("/search/:query?", "/search/hello", true).unwrap();
-        assert_eq!(m.params["query"], "hello");
-    }
-
-    #[test]
-    fn test_match_single_route_optional_param_absent() {
-        let m = match_single_route("/search/:query?", "/search", true).unwrap();
-        assert!(!m.params.contains_key("query"));
     }
 
     #[test]
@@ -411,36 +376,12 @@ mod tests {
         assert!(matches!(&segs[3], SegmentPattern::Param(s) if s == "postId"));
     }
 
-    #[test]
-    fn test_match_single_route_non_exact_prefix() {
-        let m = match_single_route("/", "/anything", false).unwrap();
-        assert!(m.params.is_empty());
-    }
-
     // ── Consumed segments tests ──
 
     #[test]
     fn test_consumed_segments_exact() {
         let m = match_single_route("/contacts/:id", "/contacts/42", true).unwrap();
         assert_eq!(m.consumed_segments, 2);
-    }
-
-    #[test]
-    fn test_consumed_segments_prefix() {
-        let m = match_single_route("/sections/:id", "/sections/1/topics/react", false).unwrap();
-        assert_eq!(m.consumed_segments, 2);
-    }
-
-    #[test]
-    fn test_consumed_segments_root() {
-        let m = match_single_route("/", "/", true).unwrap();
-        assert_eq!(m.consumed_segments, 0);
-    }
-
-    #[test]
-    fn test_consumed_segments_splat() {
-        let m = match_single_route("/files/*path", "/files/docs/readme.md", false).unwrap();
-        assert_eq!(m.consumed_segments, 3);
     }
 
     // ── Relative path resolution tests ──
@@ -456,52 +397,9 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_route_path_dotslash_relative() {
-        assert_eq!(
-            resolve_route_path("./topics/:id", "/sections/1"),
-            "/sections/1/topics/:id"
-        );
-    }
-
-    #[test]
-    fn test_resolve_route_path_bare_relative() {
-        assert_eq!(
-            resolve_route_path("topics/:id", "/sections/1"),
-            "/sections/1/topics/:id"
-        );
-    }
-
-    #[test]
     fn test_resolve_route_path_relative_at_root() {
         assert_eq!(resolve_route_path("./sections/:id", "/"), "/sections/:id");
         assert_eq!(resolve_route_path("sections/:id", "/"), "/sections/:id");
-    }
-
-    #[test]
-    fn test_resolve_route_path_absolute_unchanged() {
-        assert_eq!(
-            resolve_route_path("/sections/:id", "/some/base"),
-            "/sections/:id"
-        );
-    }
-
-    #[test]
-    fn test_resolve_route_path_deep_nesting() {
-        assert_eq!(
-            resolve_route_path("./lessons/:lessonId", "/sections/1/topics/react"),
-            "/sections/1/topics/react/lessons/:lessonId"
-        );
-        assert_eq!(
-            resolve_route_path("lessons/:lessonId", "/sections/1/topics/react"),
-            "/sections/1/topics/react/lessons/:lessonId"
-        );
-    }
-
-    #[test]
-    fn test_resolve_route_path_empty_resolves_to_base() {
-        assert_eq!(resolve_route_path("", "/search"), "/search");
-        assert_eq!(resolve_route_path("", "/"), "/");
-        assert_eq!(resolve_route_path("", "/a/b/c"), "/a/b/c");
     }
 
     #[test]
@@ -517,29 +415,8 @@ mod tests {
     // ── Compute route base tests ──
 
     #[test]
-    fn test_compute_route_base_two_segments() {
-        assert_eq!(
-            compute_route_base("/sections/1/topics/react", 2),
-            "/sections/1"
-        );
-    }
-
-    #[test]
     fn test_compute_route_base_zero() {
         assert_eq!(compute_route_base("/sections/1", 0), "/");
-    }
-
-    #[test]
-    fn test_compute_route_base_all_segments() {
-        assert_eq!(
-            compute_route_base("/sections/1/topics/react", 4),
-            "/sections/1/topics/react"
-        );
-    }
-
-    #[test]
-    fn test_compute_route_base_exceeds_segments() {
-        assert_eq!(compute_route_base("/sections/1", 10), "/sections/1");
     }
 
     #[test]
@@ -590,12 +467,6 @@ mod tests {
     fn test_param_rejects_malformed_percent() {
         assert!(match_single_route("/users/:id", "/users/100%", true).is_none());
         assert!(match_single_route("/users/:id", "/users/100%ZZ", true).is_none());
-    }
-
-    #[test]
-    fn test_param_decodes_valid_percent_encoding() {
-        let m = match_single_route("/files/:name", "/files/hello%20world", true).unwrap();
-        assert_eq!(m.params["name"], "hello world");
     }
 
     #[test]

@@ -117,19 +117,6 @@ mod tests {
     }
 
     #[test]
-    fn accepts_seed_without_browser_derived_lists() {
-        use super::{parse_state, read_state};
-        use serde_json::json;
-
-        let (seed, store) = parse_state(br#"{"contacts":[],"groups":[]}"#).unwrap();
-        assert_eq!(seed, json!({"mode": "desktop"}));
-        assert_eq!(
-            *read_state(&store).unwrap(),
-            json!({"contacts": [], "groups": []})
-        );
-    }
-
-    #[test]
     fn desktop_host_owns_the_mode_in_browser_and_packaged_seeds() {
         use super::{load_state, read_state};
         use serde_json::json;

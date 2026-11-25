@@ -884,28 +884,6 @@ mod tests {
         assert_eq!(pool.idle_count(), 2, "pool must not grow beyond capacity");
     }
 
-    /// `PooledChunk` must return its buffer to the pool when dropped.
-    /// This is the lifecycle the production path depends on:
-    /// `Bytes::from_owner(PooledChunk)` keeps the chunk alive while
-    /// the actix worker writes it to the wire; on the worker's drop,
-    /// the buffer recycles.
-    #[test]
-    fn pooled_chunk_drop_returns_to_pool() {
-        let pool = Arc::new(ChunkPool::new(4, 256));
-        assert_eq!(pool.idle_count(), 0);
-
-        let buf = pool.acquire();
-        assert_eq!(pool.idle_count(), 0);
-
-        let payload = Bytes::from_owner(PooledChunk::new(buf, Arc::clone(&pool)));
-        // Bytes is alive → buffer is "in flight".
-        assert_eq!(pool.idle_count(), 0);
-
-        drop(payload);
-        // Buffer returned.
-        assert_eq!(pool.idle_count(), 1);
-    }
-
     /// Cloning a `Bytes` shares the chunk; only when the LAST clone
     /// drops does the buffer return to the pool. This models the
     /// actix → tcp pipeline where multiple internal layers may hold

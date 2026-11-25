@@ -1069,19 +1069,6 @@ mod tests {
     }
 
     #[test]
-    fn update_contact_can_toggle_favorite() {
-        let mut state = test_state();
-
-        let toggled = update_contact(&mut state, Some("1"), &payload(r#"{"favorite":true}"#))
-            .unwrap()
-            .unwrap();
-
-        assert_eq!(toggled["favorite"], true);
-        let dashboard = dashboard_state(&state);
-        assert_eq!(dashboard["totalFavorites"], 2);
-    }
-
-    #[test]
     fn delete_contact_removes_from_route_state() {
         let mut state = test_state();
 

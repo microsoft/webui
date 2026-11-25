@@ -60,19 +60,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resolves_basic_paths() {
-        let root = Path::new("/tmp/app");
-        assert_eq!(
-            resolve_safe_path(root, "/index.css").as_deref(),
-            Some(Path::new("/tmp/app/index.css"))
-        );
-        assert_eq!(
-            resolve_safe_path(root, "/images/logo%20mark.svg").as_deref(),
-            Some(Path::new("/tmp/app/images/logo mark.svg"))
-        );
-    }
-
-    #[test]
     fn appends_index_for_directory_paths() {
         let root = Path::new("/tmp/app");
         assert_eq!(

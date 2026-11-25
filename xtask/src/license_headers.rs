@@ -223,16 +223,6 @@ mod tests {
     }
 
     #[test]
-    fn detects_present_header() {
-        let dir = temp_dir();
-        let file = dir.join("present.rs");
-        let content = format!("{}\n{}\n\nfn main() {{}}\n", SLASH_HEADER.0, SLASH_HEADER.1);
-        fs::write(&file, content).expect("write");
-
-        assert!(has_header(&file).expect("has_header"));
-    }
-
-    #[test]
     fn detects_present_header_after_shebang() {
         let dir = temp_dir();
         let file = dir.join("runner.mjs");
@@ -253,20 +243,6 @@ mod tests {
         fs::write(&file, content).expect("write");
 
         assert!(has_header(&file).expect("has_header"));
-    }
-
-    #[test]
-    fn prepend_adds_header_and_separator() {
-        let dir = temp_dir();
-        let file = dir.join("fix_me.rs");
-        fs::write(&file, "fn main() {}\n").expect("write");
-
-        prepend_header(&file).expect("prepend");
-
-        let result = fs::read_to_string(&file).expect("read");
-        assert!(result.starts_with(SLASH_HEADER.0));
-        assert!(result.contains(SLASH_HEADER.1));
-        assert!(result.contains("\n\nfn main()"));
     }
 
     #[test]

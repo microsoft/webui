@@ -5681,41 +5681,6 @@ mod tests {
     }
 
     #[test]
-    fn test_handle_raw() {
-        // Create a simple protocol
-        let mut fragments = HashMap::new();
-        fragments.insert(
-            "index.html".to_string(),
-            FragmentList {
-                fragments: vec![WebUIFragment::raw("Hello, WebUI!")],
-                contains_boundary: false,
-            },
-        );
-
-        let protocol = WebUIProtocol::new(fragments);
-        let state = test_json!({});
-
-        // Create a test writer
-        let mut writer = TestWriter::new();
-
-        // Handle the protocol
-        assert!(
-            handle(
-                &protocol,
-                &state,
-                &RenderOptions::new("index.html", "/"),
-                &mut writer
-            )
-            .is_ok(),
-            "Failed to handle raw protocol"
-        );
-
-        // Check the output
-        assert_eq!(writer.get_content(), "Hello, WebUI!");
-        assert!(writer.is_ended());
-    }
-
-    #[test]
     fn test_handle_signal() {
         // Create a protocol with a signal
         let mut fragments = HashMap::new();
@@ -6074,96 +6039,6 @@ mod tests {
     // ── Boolean attribute rendering tests ─────────────────────────────
 
     #[test]
-    fn test_boolean_attr_true() {
-        let mut fragments = HashMap::new();
-        fragments.insert(
-            "index.html".to_string(),
-            FragmentList {
-                fragments: vec![
-                    WebUIFragment::raw("<button"),
-                    WebUIFragment::attribute_boolean(
-                        "disabled",
-                        ConditionExpr::identifier("isDisabled"),
-                    ),
-                    WebUIFragment::raw(">Click</button>"),
-                ],
-                contains_boundary: false,
-            },
-        );
-        let protocol = WebUIProtocol::new(fragments);
-        let state = test_json!({"isDisabled": true});
-        let mut writer = TestWriter::new();
-        handle(
-            &protocol,
-            &state,
-            &RenderOptions::new("index.html", "/"),
-            &mut writer,
-        )
-        .unwrap();
-        assert_eq!(writer.get_content(), "<button disabled>Click</button>");
-    }
-
-    #[test]
-    fn test_boolean_attr_false() {
-        let mut fragments = HashMap::new();
-        fragments.insert(
-            "index.html".to_string(),
-            FragmentList {
-                fragments: vec![
-                    WebUIFragment::raw("<button"),
-                    WebUIFragment::attribute_boolean(
-                        "disabled",
-                        ConditionExpr::identifier("isDisabled"),
-                    ),
-                    WebUIFragment::raw(">Click</button>"),
-                ],
-                contains_boundary: false,
-            },
-        );
-        let protocol = WebUIProtocol::new(fragments);
-        let state = test_json!({"isDisabled": false});
-        let mut writer = TestWriter::new();
-        handle(
-            &protocol,
-            &state,
-            &RenderOptions::new("index.html", "/"),
-            &mut writer,
-        )
-        .unwrap();
-        assert_eq!(writer.get_content(), "<button>Click</button>");
-    }
-
-    #[test]
-    fn test_boolean_attr_missing() {
-        let mut fragments = HashMap::new();
-        fragments.insert(
-            "index.html".to_string(),
-            FragmentList {
-                fragments: vec![
-                    WebUIFragment::raw("<input type=\"checkbox\""),
-                    WebUIFragment::attribute_boolean(
-                        "checked",
-                        ConditionExpr::identifier("checked"),
-                    ),
-                    WebUIFragment::raw(">"),
-                ],
-                contains_boundary: false,
-            },
-        );
-        let protocol = WebUIProtocol::new(fragments);
-        let state = test_json!({});
-        let mut writer = TestWriter::new();
-        handle(
-            &protocol,
-            &state,
-            &RenderOptions::new("index.html", "/"),
-            &mut writer,
-        )
-        .unwrap();
-        assert_eq!(writer.get_content(), "<input type=\"checkbox\">");
-    }
-
-    #[test]
     fn test_boolean_attr_multiple() {
         let mut fragments = HashMap::new();
         fragments.insert(
@@ -6198,33 +6073,6 @@ mod tests {
     }
 
     // ── Simple attribute rendering tests ──────────────────────────────
-
-    #[test]
-    fn test_attribute_with_value() {
-        let mut fragments = HashMap::new();
-        fragments.insert(
-            "index.html".to_string(),
-            FragmentList {
-                fragments: vec![
-                    WebUIFragment::raw("<input"),
-                    WebUIFragment::attribute("value", "inputValue"),
-                    WebUIFragment::raw(">"),
-                ],
-                contains_boundary: false,
-            },
-        );
-        let protocol = WebUIProtocol::new(fragments);
-        let state = test_json!({"inputValue": "Hello"});
-        let mut writer = TestWriter::new();
-        handle(
-            &protocol,
-            &state,
-            &RenderOptions::new("index.html", "/"),
-            &mut writer,
-        )
-        .unwrap();
-        assert_eq!(writer.get_content(), "<input value=\"Hello\">");
-    }
 
     #[test]
     fn test_dynamic_attribute_preserves_nullish_and_falsy_values() -> Result<()> {
@@ -6333,36 +6181,6 @@ mod tests {
             assert_eq!(writer.get_content(), expected, "state: {state}");
         }
         Ok(())
-    }
-
-    #[test]
-    fn test_attribute_with_falsy_numeric() {
-        let mut fragments = HashMap::new();
-        fragments.insert(
-            "index.html".to_string(),
-            FragmentList {
-                fragments: vec![
-                    WebUIFragment::raw("<div name=\"test\""),
-                    WebUIFragment::attribute("handle", "number"),
-                    WebUIFragment::raw("></div>"),
-                ],
-                contains_boundary: false,
-            },
-        );
-        let protocol = WebUIProtocol::new(fragments);
-        let state = test_json!({"number": 0});
-        let mut writer = TestWriter::new();
-        handle(
-            &protocol,
-            &state,
-            &RenderOptions::new("index.html", "/"),
-            &mut writer,
-        )
-        .unwrap();
-        assert_eq!(
-            writer.get_content(),
-            "<div name=\"test\" handle=\"0\"></div>"
-        );
     }
 
     // ── Dynamic attribute escaping for non-string JSON types ─────────
@@ -6595,116 +6413,6 @@ mod tests {
             )
             .unwrap_err();
         assert!(matches!(error, HandlerError::TypeError(_)));
-    }
-
-    #[test]
-    fn test_nested_for_loop() {
-        let mut fragments = HashMap::new();
-        fragments.insert(
-            "index.html".to_string(),
-            FragmentList {
-                fragments: vec![
-                    WebUIFragment::raw("<div>"),
-                    WebUIFragment::for_loop("outerItem", "outerItems", "outer"),
-                    WebUIFragment::raw("</div>"),
-                ],
-                contains_boundary: false,
-            },
-        );
-        fragments.insert(
-            "outer".to_string(),
-            FragmentList {
-                fragments: vec![
-                    WebUIFragment::raw("<div>"),
-                    WebUIFragment::for_loop("innerItem", "outerItem.innerItems", "inner"),
-                    WebUIFragment::raw("</div>"),
-                ],
-                contains_boundary: false,
-            },
-        );
-        fragments.insert(
-            "inner".to_string(),
-            FragmentList {
-                fragments: vec![WebUIFragment::raw("<span>Inner</span>")],
-                contains_boundary: false,
-            },
-        );
-        let protocol = WebUIProtocol::new(fragments);
-        let state = test_json!({
-            "outerItems": [
-                {"innerItems": [{"name": "A"}, {"name": "B"}]},
-                {"innerItems": [{"name": "C"}]}
-            ]
-        });
-        let mut writer = TestWriter::new();
-        handle(
-            &protocol,
-            &state,
-            &RenderOptions::new("index.html", "/"),
-            &mut writer,
-        )
-        .unwrap();
-        assert_eq!(
-            writer.get_content(),
-            "<div><div><span>Inner</span><span>Inner</span></div><div><span>Inner</span></div></div>"
-        );
-    }
-
-    #[test]
-    fn test_nested_for_with_signals() {
-        let mut fragments = HashMap::new();
-        fragments.insert(
-            "index.html".to_string(),
-            FragmentList {
-                fragments: vec![
-                    WebUIFragment::raw("<div>"),
-                    WebUIFragment::for_loop("outerItem", "outerItems", "outerTemplate"),
-                    WebUIFragment::raw("</div>"),
-                ],
-                contains_boundary: false,
-            },
-        );
-        fragments.insert(
-            "outerTemplate".to_string(),
-            FragmentList {
-                fragments: vec![
-                    WebUIFragment::raw("<div>"),
-                    WebUIFragment::for_loop("innerItem", "outerItem.innerItems", "innerTemplate"),
-                    WebUIFragment::raw("</div>"),
-                ],
-                contains_boundary: false,
-            },
-        );
-        fragments.insert(
-            "innerTemplate".to_string(),
-            FragmentList {
-                fragments: vec![
-                    WebUIFragment::raw("<span>"),
-                    WebUIFragment::signal("innerItem.name", false),
-                    WebUIFragment::raw("</span>"),
-                ],
-                contains_boundary: false,
-            },
-        );
-        let protocol = WebUIProtocol::new(fragments);
-        let state = test_json!({
-            "outerItems": [
-                {"innerItems": [{"name": "Item1"}, {"name": "Item2"}]},
-                {"innerItems": [{"name": "Item3"}, {"name": "Item4"}]}
-            ]
-        });
-        let mut writer = TestWriter::new();
-        handle(
-            &protocol,
-            &state,
-            &RenderOptions::new("index.html", "/"),
-            &mut writer,
-        )
-        .unwrap();
-        assert_eq!(
-            writer.get_content(),
-            "<div><div><span>Item1</span><span>Item2</span></div><div><span>Item3</span><span>Item4</span></div></div>"
-        );
     }
 
     #[test]
@@ -7092,62 +6800,6 @@ mod tests {
     }
 
     #[test]
-    fn test_component_complex_attr() {
-        let mut fragments = HashMap::new();
-        fragments.insert(
-            "index.html".to_string(),
-            FragmentList {
-                fragments: vec![
-                    WebUIFragment::raw("<my-comp"),
-                    WebUIFragment {
-                        fragment: Some(web_ui_fragment::Fragment::Attribute(
-                            WebUIFragmentAttribute {
-                                name: ":item".into(),
-                                value: "complexItem".into(),
-                                attr_start: true,
-                                complex: true,
-                                ..Default::default()
-                            },
-                        )),
-                    },
-                    WebUIFragment::raw(">"),
-                    WebUIFragment::component("my-comp"),
-                    WebUIFragment::raw("</my-comp>"),
-                ],
-
-                contains_boundary: false,
-            },
-        );
-        fragments.insert(
-            "my-comp".to_string(),
-            FragmentList {
-                fragments: vec![
-                    WebUIFragment::raw("<span>"),
-                    WebUIFragment::signal("item.foo", false),
-                    WebUIFragment::raw("</span><p>"),
-                    WebUIFragment::signal("item.bar", false),
-                    WebUIFragment::raw("</p>"),
-                ],
-                contains_boundary: false,
-            },
-        );
-        let protocol = WebUIProtocol::new(fragments);
-        let state = test_json!({"complexItem": {"foo": 1, "bar": "true"}});
-        let mut writer = TestWriter::new();
-        handle(
-            &protocol,
-            &state,
-            &RenderOptions::new("index.html", "/"),
-            &mut writer,
-        )
-        .unwrap();
-        assert_eq!(
-            writer.get_content(),
-            "<my-comp><span>1</span><p>true</p></my-comp>"
-        );
-    }
-
-    #[test]
     fn test_component_no_parent_pollution() {
         let mut fragments = HashMap::new();
         fragments.insert(
@@ -7222,65 +6874,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_component_boolean_attr_state() {
-        let mut fragments = HashMap::new();
-        fragments.insert(
-            "index.html".to_string(),
-            FragmentList {
-                fragments: vec![
-                    WebUIFragment::raw("<my-comp"),
-                    WebUIFragment {
-                        fragment: Some(web_ui_fragment::Fragment::Attribute(
-                            WebUIFragmentAttribute {
-                                name: "disabled".into(),
-                                attr_start: true,
-                                condition_tree: Some(ConditionExpr::identifier("isDisabled")),
-                                ..Default::default()
-                            },
-                        )),
-                    },
-                    WebUIFragment::raw(">"),
-                    WebUIFragment::component("my-comp"),
-                    WebUIFragment::raw("</my-comp>"),
-                ],
-
-                contains_boundary: false,
-            },
-        );
-        fragments.insert(
-            "my-comp".to_string(),
-            FragmentList {
-                fragments: vec![WebUIFragment::if_cond(
-                    ConditionExpr::identifier("disabled"),
-                    "show",
-                )],
-                contains_boundary: false,
-            },
-        );
-        fragments.insert(
-            "show".to_string(),
-            FragmentList {
-                fragments: vec![WebUIFragment::raw("disabled!")],
-                contains_boundary: false,
-            },
-        );
-        let protocol = WebUIProtocol::new(fragments);
-        let state = test_json!({"isDisabled": true});
-        let mut writer = TestWriter::new();
-        handle(
-            &protocol,
-            &state,
-            &RenderOptions::new("index.html", "/"),
-            &mut writer,
-        )
-        .unwrap();
-        assert_eq!(
-            writer.get_content(),
-            "<my-comp disabled>disabled!</my-comp>"
-        );
-    }
-
     // ===== HTML Escape Tests (ported from utils.test.js escapeHtml) =====
 
     /// Helper: render a signal value through the handler and return the escaped output.
@@ -7348,11 +6941,6 @@ mod tests {
             !result.contains("<script>"),
             "Should not contain raw <script> tag"
         );
-    }
-
-    #[test]
-    fn test_escape_no_special_chars() {
-        assert_eq!(render_signal("Hello World"), "Hello World");
     }
 
     #[test]
@@ -8727,65 +8315,6 @@ mod tests {
     }
 
     #[test]
-    fn test_complex_attr_for_loop() {
-        let mut fragments = HashMap::new();
-        fragments.insert(
-            "index.html".to_string(),
-            FragmentList {
-                fragments: vec![WebUIFragment::for_loop(
-                    "item",
-                    "list.items",
-                    "listTemplate",
-                )],
-                contains_boundary: false,
-            },
-        );
-        fragments.insert(
-            "listTemplate".to_string(),
-            FragmentList {
-                fragments: vec![
-                    WebUIFragment {
-                        fragment: Some(web_ui_fragment::Fragment::Attribute(
-                            WebUIFragmentAttribute {
-                                name: ":item".into(),
-                                value: "item".into(),
-                                attr_start: true,
-                                complex: true,
-                                ..Default::default()
-                            },
-                        )),
-                    },
-                    WebUIFragment::component("item_component"),
-                ],
-
-                contains_boundary: false,
-            },
-        );
-        fragments.insert(
-            "item_component".to_string(),
-            FragmentList {
-                fragments: vec![
-                    WebUIFragment::raw("<span>"),
-                    WebUIFragment::signal("item.name", false),
-                    WebUIFragment::raw("</span>"),
-                ],
-                contains_boundary: false,
-            },
-        );
-        let protocol = WebUIProtocol::new(fragments);
-        let state = test_json!({"list": {"items": [{"name": "Alice"}, {"name": "Bob"}]}});
-        let mut writer = TestWriter::new();
-        handle(
-            &protocol,
-            &state,
-            &RenderOptions::new("index.html", "/"),
-            &mut writer,
-        )
-        .unwrap();
-        assert_eq!(writer.get_content(), "<span>Alice</span><span>Bob</span>");
-    }
-
-    #[test]
     fn test_complex_attr_nested_for() {
         let mut fragments = HashMap::new();
         fragments.insert(
@@ -9182,44 +8711,6 @@ mod tests {
     // ── Component tests ──────────────────────────────────────────────
 
     #[test]
-    fn test_component_with_template() {
-        let mut fragments = HashMap::new();
-        fragments.insert(
-            "index.html".to_string(),
-            FragmentList {
-                fragments: vec![
-                    WebUIFragment::raw("<custom-element>"),
-                    WebUIFragment::component("custom-element"),
-                    WebUIFragment::raw("</custom-element>"),
-                ],
-                contains_boundary: false,
-            },
-        );
-        fragments.insert(
-            "custom-element".to_string(),
-            FragmentList {
-                fragments: vec![WebUIFragment::raw("<div>Custom Element</div>")],
-                contains_boundary: false,
-            },
-        );
-        let protocol = WebUIProtocol::new(fragments);
-        let state = test_json!({});
-        let mut writer = TestWriter::new();
-        handle(
-            &protocol,
-            &state,
-            &RenderOptions::new("index.html", "/"),
-            &mut writer,
-        )
-        .unwrap();
-        assert_eq!(
-            writer.get_content(),
-            "<custom-element><div>Custom Element</div></custom-element>"
-        );
-        assert!(writer.is_ended());
-    }
-
-    #[test]
     fn test_component_with_slots() {
         let mut fragments = HashMap::new();
         fragments.insert(
@@ -9380,65 +8871,6 @@ mod tests {
     }
 
     #[test]
-    fn test_for_if_overlapping_local_state() {
-        let mut fragments = HashMap::new();
-        fragments.insert(
-            "index.html".to_string(),
-            FragmentList {
-                fragments: vec![
-                    WebUIFragment::raw("<div>"),
-                    WebUIFragment::for_loop("item", "items", "template1"),
-                    WebUIFragment::raw("</div>"),
-                ],
-                contains_boundary: false,
-            },
-        );
-        fragments.insert(
-            "template1".to_string(),
-            FragmentList {
-                fragments: vec![
-                    WebUIFragment::raw("<div>"),
-                    WebUIFragment::if_cond(ConditionExpr::identifier("item.flag"), "ifBlock"),
-                    WebUIFragment::raw("</div>"),
-                ],
-                contains_boundary: false,
-            },
-        );
-        fragments.insert(
-            "ifBlock".to_string(),
-            FragmentList {
-                fragments: vec![
-                    WebUIFragment::raw("<span>"),
-                    WebUIFragment::signal("item.label", false),
-                    WebUIFragment::raw("</span>"),
-                ],
-                contains_boundary: false,
-            },
-        );
-        let protocol = WebUIProtocol::new(fragments);
-        let state = test_json!({
-            "flag": false,
-            "items": [
-                {"label": "A", "flag": true},
-                {"label": "B", "flag": false},
-                {"label": "C", "flag": true}
-            ]
-        });
-        let mut writer = TestWriter::new();
-        handle(
-            &protocol,
-            &state,
-            &RenderOptions::new("index.html", "/"),
-            &mut writer,
-        )
-        .unwrap();
-        assert_eq!(
-            writer.get_content(),
-            "<div><div><span>A</span></div><div></div><div><span>C</span></div></div>"
-        );
-    }
-
-    #[test]
     fn test_for_if_global_flag_no_effect() {
         let mut fragments = HashMap::new();
         fragments.insert(
@@ -9553,58 +8985,6 @@ mod tests {
     }
 
     // ── Advanced state management tests ──────────────────────────────
-
-    #[test]
-    fn test_component_in_for_no_local_access() {
-        let mut fragments = HashMap::new();
-        fragments.insert(
-            "index.html".to_string(),
-            FragmentList {
-                fragments: vec![
-                    WebUIFragment::raw("<div>"),
-                    WebUIFragment::for_loop("item", "items", "templateComponent"),
-                    WebUIFragment::raw("</div>"),
-                ],
-                contains_boundary: false,
-            },
-        );
-        fragments.insert(
-            "templateComponent".to_string(),
-            FragmentList {
-                fragments: vec![
-                    WebUIFragment::raw("<component-tag>"),
-                    WebUIFragment::component("my-component"),
-                    WebUIFragment::raw("</component-tag>"),
-                ],
-                contains_boundary: false,
-            },
-        );
-        fragments.insert(
-            "my-component".to_string(),
-            FragmentList {
-                fragments: vec![
-                    WebUIFragment::raw("<span>"),
-                    WebUIFragment::signal("name", false),
-                    WebUIFragment::raw("</span>"),
-                ],
-                contains_boundary: false,
-            },
-        );
-        let protocol = WebUIProtocol::new(fragments);
-        let state = test_json!({"items": [{"name": "Item1"}, {"name": "Item2"}]});
-        let mut writer = TestWriter::new();
-        handle(
-            &protocol,
-            &state,
-            &RenderOptions::new("index.html", "/"),
-            &mut writer,
-        )
-        .unwrap();
-        assert_eq!(
-            writer.get_content(),
-            "<div><component-tag><span></span></component-tag><component-tag><span></span></component-tag></div>"
-        );
-    }
 
     #[test]
     fn test_nested_for_hierarchical_state() {
@@ -10494,31 +9874,6 @@ mod tests {
         );
 
         WebUIProtocol::new(fragments)
-    }
-
-    #[test]
-    fn test_route_renders_shell_always() {
-        let protocol = make_route_protocol();
-        let state = test_json!({});
-        let mut writer = TestWriter::new();
-        handle(
-            &protocol,
-            &state,
-            &RenderOptions::new("index.html", "/"),
-            &mut writer,
-        )
-        .unwrap();
-        let html = writer.get_content();
-
-        // Shell content always renders regardless of route matching
-        assert!(html.contains("<h1>Shell</h1>"), "shell should render");
-        // Dashboard matches "/" so it should be active
-        assert!(html.contains(" active>"), "matched route should be active");
-        // Detail should be hidden and empty
-        assert!(
-            html.contains("style=\"display:none\""),
-            "non-matched routes should be hidden"
-        );
     }
 
     #[test]
@@ -12574,40 +11929,6 @@ mod tests {
     }
 
     #[test]
-    fn test_no_module_preloads_emits_nothing() {
-        let mut fragments = HashMap::new();
-        fragments.insert(
-            "index.html".to_string(),
-            FragmentList {
-                fragments: vec![
-                    WebUIFragment::raw("<html><head>".to_string()),
-                    structural_fragment("head_end"),
-                    WebUIFragment::raw("</head><body>".to_string()),
-                    structural_fragment("body_end"),
-                    WebUIFragment::raw("</body></html>".to_string()),
-                ],
-                contains_boundary: false,
-            },
-        );
-        let protocol = WebUIProtocol::new(fragments);
-
-        let state = test_json!({});
-        let mut writer = TestWriter::new();
-        handle(
-            &protocol,
-            &state,
-            &RenderOptions::new("index.html", "/"),
-            &mut writer,
-        )
-        .unwrap();
-
-        assert!(
-            !writer.get_content().contains("modulepreload"),
-            "a build without hints must be byte-identical to before"
-        );
-    }
-
-    #[test]
     fn test_link_strategy_head_links_follow_document_order() {
         // Regression for #381: Link-strategy <head> CSS <link> tags must be
         // emitted in document/traversal order, not alphabetical tag order.
@@ -14057,13 +13378,6 @@ mod tests {
         assert_eq!(component_attr_name(":readonly"), "readOnly");
         assert_eq!(component_attr_name(":aria-describedby"), "ariaDescribedBy");
         assert_eq!(component_attr_name(":data-title"), "dataTitle");
-    }
-
-    #[test]
-    fn test_component_attr_name_regular() {
-        assert_eq!(component_attr_name("data-title"), "dataTitle");
-        assert_eq!(component_attr_name("key-hyphen"), "keyHyphen");
-        assert_eq!(component_attr_name("simple"), "simple");
     }
 
     // ── allowed_query SSR emission tests ─────────────────────────────

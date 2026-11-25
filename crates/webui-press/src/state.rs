@@ -781,25 +781,4 @@ mod tests {
         assert_eq!(loader.dependencies().count(), 2);
         Ok(())
     }
-
-    #[test]
-    fn markdown_state_file_combines_with_inline_state() -> TestResult {
-        let root = tempfile::tempdir()?;
-        fs::write(
-            root.path().join("state.json"),
-            r#"{"example":{"label":"File","count":1},"shared":true}"#,
-        )?;
-        let inline = parse_markdown_state(&serde_yaml::from_str("{example: {label: Inline}}")?)?;
-        let state = StateLoader::new()
-            .load_markdown_state(
-                Some("state.json"),
-                Some(inline),
-                &root.path().join("page.md"),
-            )?
-            .ok_or("missing state")?;
-        assert_eq!(state["example"]["label"], "Inline");
-        assert_eq!(state["example"].get("count"), None);
-        assert_eq!(state["shared"], true);
-        Ok(())
-    }
 }

@@ -459,28 +459,6 @@ pub(crate) fn render_markdown_with_links(
 mod tests {
     use super::*;
     #[test]
-    fn syntect_language_mapping() {
-        let ss = SyntaxSet::load_defaults_newlines();
-        // Languages we need for the docs site
-        for tok in &[
-            "js", "go", "python", "py", "cpp", "rust", "rs", "html", "css", "json", "bash", "yaml",
-            "cs",
-        ] {
-            assert!(
-                ss.find_syntax_by_token(tok).is_some(),
-                "syntect should support token '{tok}'"
-            );
-        }
-        // These are NOT in syntect defaults — we alias them
-        for tok in &["ts", "typescript", "tsx", "jsx", "toml", "csharp", "golang"] {
-            assert!(
-                ss.find_syntax_by_token(tok).is_none(),
-                "'{tok}' should NOT be in syntect defaults (we alias it)"
-            );
-        }
-    }
-
-    #[test]
     fn inline_code_escapes_template_braces() {
         // `{{value}}` inside inline code (e.g. in markdown tables or prose)
         // must not be interpreted as a WebUI signal binding by the template

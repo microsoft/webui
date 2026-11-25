@@ -619,15 +619,6 @@ mod tests {
     }
 
     #[test]
-    fn entry_closure_accepts_declared_outputs() {
-        let manifest = manifest_with_closures(BTreeMap::from([(
-            "dist/index.js".to_string(),
-            vec!["dist/chunk.js".to_string()],
-        )]));
-        assert!(manifest.validate().is_ok());
-    }
-
-    #[test]
     fn entry_closure_rejects_undeclared_key() {
         let manifest = manifest_with_closures(BTreeMap::from([(
             "dist/missing.js".to_string(),

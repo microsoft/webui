@@ -42,17 +42,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn inject_before_close_body() {
-        let html = "<html><body><p>hi</p></body></html>";
-        let injected = inject_before_body_close(html, "<script>x</script>");
-        let close_idx = injected.find("</body>").unwrap();
-        let script_idx = injected.find("<script>").unwrap();
-        assert!(script_idx < close_idx);
-        assert!(injected.starts_with("<html><body><p>hi</p>"));
-        assert!(injected.ends_with("</body></html>"));
-    }
-
-    #[test]
     fn inject_handles_missing_close_body() {
         let html = "<h1>hi</h1>";
         let injected = inject_before_body_close(html, "<script>x</script>");

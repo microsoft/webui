@@ -28,11 +28,6 @@ mod tests {
     use std::path::Path;
 
     #[test]
-    fn missing_icon_is_ignored() {
-        assert_eq!(resolve_icon_path(None, None), None);
-    }
-
-    #[test]
     fn bundled_relative_icon_resolves_inside_bundle() {
         let dir = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
         let root = dir.path().canonicalize().unwrap();

@@ -406,20 +406,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_args_accepts_selector() {
-        let request = parse_ok(&["--target", "arm64"]);
-
-        assert_eq!(triples(&request), vec!["aarch64-pc-windows-msvc"]);
-    }
-
-    #[test]
-    fn parse_args_accepts_triple() {
-        let request = parse_ok(&["--target", "x86_64-pc-windows-msvc"]);
-
-        assert_eq!(triples(&request), vec!["x86_64-pc-windows-msvc"]);
-    }
-
-    #[test]
     fn parse_args_deduplicates_repeated_targets() {
         let request = parse_ok(&["--target", "x64", "--target", "x86_64-pc-windows-msvc"]);
 

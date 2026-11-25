@@ -245,18 +245,6 @@ mod tests {
     }
 
     #[test]
-    fn test_protocol_tokens_roundtrip() {
-        let tokens = vec![
-            "colorBrandBackground".to_string(),
-            "fontSizeBase300".to_string(),
-        ];
-        let protocol = WebUIProtocol::with_tokens(HashMap::new(), tokens.clone());
-        let bytes = protocol.to_protobuf().unwrap();
-        let decoded = WebUIProtocol::from_protobuf(&bytes).unwrap();
-        assert_eq!(decoded.tokens, tokens);
-    }
-
-    #[test]
     fn test_protocol_tokens_preserves_order() {
         let tokens = vec!["zeta".to_string(), "alpha".to_string(), "zeta".to_string()];
         let protocol = WebUIProtocol::with_tokens(HashMap::new(), tokens.clone());

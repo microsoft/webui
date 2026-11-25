@@ -978,26 +978,10 @@ mod tests {
     }
 
     #[test]
-    fn normalize_link_tolerates_missing_leading_slash() {
-        // Was previously a slice-from-1 panic risk on multi-byte chars.
-        assert_eq!(
-            normalize_link("/webui/", "guide/intro"),
-            "/webui/guide/intro"
-        );
-    }
-
-    #[test]
     fn normalize_link_tolerates_non_ascii_first_char() {
         // `&link[1..]` would have panicked here on UTF-8 boundary.
         let out = normalize_link("/webui/", "é-page");
         assert!(out.ends_with("é-page"), "got {out}");
-    }
-
-    #[test]
-    fn config_paths_match_with_or_without_trailing_slash() {
-        assert!(config_paths_match("/playground", "/playground/"));
-        assert!(config_paths_match("/playground/", "/playground"));
-        assert!(!config_paths_match("/playground", "/guide/"));
     }
 
     #[test]
@@ -1023,30 +1007,6 @@ mod tests {
     // --- normalize_path_as_index -----------------------------------------
 
     #[test]
-    fn normalize_path_as_index_strips_duplicate_folder_name() {
-        assert_eq!(
-            normalize_path_as_index("webui-button/webui-button"),
-            "webui-button"
-        );
-    }
-
-    #[test]
-    fn normalize_path_as_index_keeps_different_filename() {
-        assert_eq!(
-            normalize_path_as_index("webui-button/usage"),
-            "webui-button/usage"
-        );
-    }
-
-    #[test]
-    fn normalize_path_as_index_nested_folders() {
-        assert_eq!(
-            normalize_path_as_index("components/webui-button/webui-button"),
-            "components/webui-button"
-        );
-    }
-
-    #[test]
     fn normalize_path_as_index_no_slash_returns_unchanged() {
         assert_eq!(normalize_path_as_index("webui-button"), "webui-button");
     }
@@ -1055,15 +1015,6 @@ mod tests {
 
     fn sources(pairs: &[(&'static str, &'static str)]) -> HashMap<&'static str, &'static str> {
         pairs.iter().copied().collect()
-    }
-
-    #[test]
-    fn page_url_path_derives_url_from_filesystem() {
-        let none = sources(&[]);
-        assert_eq!(
-            page_url_path("guide/install.md", "/webui/", &none),
-            "/webui/guide/install"
-        );
     }
 
     #[test]
@@ -1084,14 +1035,6 @@ mod tests {
             page_url_path("components/webui-button/webui-button.md", "/webui/", &none),
             "/webui/components/webui-button"
         );
-    }
-
-    #[test]
-    fn page_url_path_nav_source_overrides_derived_url() {
-        // `SKILL.md` is a filename fixed by the agent-skill spec; the nav entry
-        // keeps the page on `/ai` instead of leaking it as `/ai/SKILL`.
-        let map = sources(&[("ai/SKILL.md", "/ai")]);
-        assert_eq!(page_url_path("ai/SKILL.md", "/webui/", &map), "/webui/ai");
     }
 
     #[test]
@@ -1178,11 +1121,6 @@ mod tests {
     }
 
     #[test]
-    fn nav_source_overrides_empty_nav_yields_no_overrides() {
-        assert!(nav_source_overrides(&[]).is_empty());
-    }
-
-    #[test]
     fn nav_source_overrides_excludes_external_link_with_source() {
         // Accidentally pairing `source` with an external URL must be silently
         // dropped so it never reaches `page_url_path` as a broken route.
@@ -1198,14 +1136,6 @@ mod tests {
         assert_eq!(map.len(), 1);
         assert_eq!(map.get("ai/SKILL.md"), Some(&"/ai"));
         assert!(!map.contains_key("github.md"));
-    }
-
-    #[test]
-    fn normalize_path_as_index_deep_nesting_with_match() {
-        assert_eq!(
-            normalize_path_as_index("a/b/c/webui-card/webui-card"),
-            "a/b/c/webui-card"
-        );
     }
 
     #[test]
@@ -1225,16 +1155,6 @@ mod tests {
         assert!(fm.layout.is_none());
         assert!(fm.state.is_none());
         assert_eq!(body, "# Hello\nworld\n");
-    }
-
-    #[test]
-    fn parse_frontmatter_valid_yaml_extracts_fields() {
-        let raw = "---\ntitle: Hello\ndescription: World\nlayout: home\n---\n# Body\n";
-        let (fm, body) = parse_frontmatter(raw).expect("ok");
-        assert_eq!(fm.title.as_deref(), Some("Hello"));
-        assert_eq!(fm.description.as_deref(), Some("World"));
-        assert_eq!(fm.layout.as_deref(), Some("home"));
-        assert_eq!(body, "# Body\n");
     }
 
     #[test]

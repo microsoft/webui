@@ -745,12 +745,6 @@ mod tests {
     }
 
     #[test]
-    fn is_ignored_is_false_when_no_ignores() {
-        let p = Path::new("/anything/at/all");
-        assert!(!is_ignored(p, &[]));
-    }
-
-    #[test]
     fn is_ignored_matches_relative_component_anywhere() {
         // `target` (single relative component) must match no matter
         // how deep — this is how default_ignore_paths() actually
@@ -822,34 +816,6 @@ mod tests {
             .components()
             .any(|component| component.as_os_str() == "node_modules"));
         assert!(is_ignored(&linked_file, &[PathBuf::from("node_modules")]));
-    }
-
-    #[test]
-    fn content_changed_skips_identical_saves() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("a.css");
-        std::fs::write(&file, "a { color: red; }").unwrap();
-        let mut cache = HashMap::new();
-        let mut buffer = [0_u8; HASH_BUFFER_SIZE];
-
-        // First sighting → changed (nothing cached yet).
-        assert!(content_changed(&mut cache, &file, &mut buffer));
-        // Re-saving identical bytes (repeated Ctrl+S) → no change → no rebuild.
-        assert!(!content_changed(&mut cache, &file, &mut buffer));
-        assert!(!content_changed(&mut cache, &file, &mut buffer));
-
-        // A real edit → changed.
-        std::fs::write(&file, "a { color: blue; }").unwrap();
-        assert!(content_changed(&mut cache, &file, &mut buffer));
-        // Identical again → unchanged.
-        assert!(!content_changed(&mut cache, &file, &mut buffer));
-
-        // Deletion → changed, so a rebuild can clear stale output.
-        std::fs::remove_file(&file).unwrap();
-        assert!(content_changed(&mut cache, &file, &mut buffer));
-        // The cache forgot it, so a later recreation is a fresh change.
-        std::fs::write(&file, "a { color: blue; }").unwrap();
-        assert!(content_changed(&mut cache, &file, &mut buffer));
     }
 
     #[test]

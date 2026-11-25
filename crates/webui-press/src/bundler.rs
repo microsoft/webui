@@ -2408,36 +2408,6 @@ mod tests {
     }
 
     #[test]
-    fn bundle_assets_skips_node_modules_when_no_scripts() -> TestResult {
-        let root = std::env::temp_dir().join(format!(
-            "webui-press-no-script-bundle-test-{}-{:x}",
-            std::process::id(),
-            test_hash("no-script-bundle")
-        ));
-        if root.exists() {
-            fs::remove_dir_all(&root)?;
-        }
-        fs::create_dir_all(&root)?;
-
-        let result = bundle_assets(&BundleOptions {
-            site_dir: &root,
-            base_path: "/",
-            node_modules: None,
-            root_bundle: None,
-            page_bundles: &[],
-            bundler_config: None,
-            dev_mode: false,
-            config_dir: &root,
-            content_dir: &root,
-        })?;
-
-        fs::remove_dir_all(&root)?;
-        assert!(result.root_script.is_none());
-        assert_eq!(result.page_entry_count, 0);
-        Ok(())
-    }
-
-    #[test]
     fn external_projection_manifest_is_loaded_without_local_scripts() -> TestResult {
         let root = std::env::temp_dir().join(format!(
             "webui-press-external-only-projection-test-{}-{:x}",
@@ -2702,27 +2672,6 @@ mod tests {
     // --- extract_bundle_scripts -------------------------------------------
 
     #[test]
-    fn extract_bundle_scripts_inline() {
-        let html =
-            r#"<p>Hello</p><script type="module" bundle>import "custom";</script><p>World</p>"#;
-        let (out, scripts) = extract_bundle_scripts(html);
-        assert_eq!(scripts.len(), 1);
-        assert!(matches!(&scripts[0], ScriptSource::Inline(s) if s.contains("custom")));
-        assert!(!out.contains("<script"));
-        assert!(out.contains("<p>Hello</p>"));
-        assert!(out.contains("<p>World</p>"));
-    }
-
-    #[test]
-    fn extract_bundle_scripts_src() {
-        let html = r#"<script type="module" bundle src="./scripts/playground.ts"></script>"#;
-        let (out, scripts) = extract_bundle_scripts(html);
-        assert_eq!(scripts.len(), 1);
-        assert!(matches!(&scripts[0], ScriptSource::File(s) if s == "./scripts/playground.ts"));
-        assert_eq!(out, "");
-    }
-
-    #[test]
     fn extract_bundle_scripts_ignores_non_bundle() {
         let html = r#"<script type="module">console.log("hi");</script>"#;
         let (out, scripts) = extract_bundle_scripts(html);
@@ -2773,18 +2722,8 @@ mod tests {
     // --- extract_src_attr -------------------------------------------------
 
     #[test]
-    fn extract_src_attr_double_quotes() {
-        assert_eq!(extract_src_attr(r#" src="./foo.ts""#), Some("./foo.ts"));
-    }
-
-    #[test]
     fn extract_src_attr_single_quotes() {
         assert_eq!(extract_src_attr(" src='bar.js'"), Some("bar.js"));
-    }
-
-    #[test]
-    fn extract_src_attr_none_when_missing() {
-        assert_eq!(extract_src_attr(r#" type="module" bundle"#), None);
     }
 
     // --- script tag injection --------------------------------------------

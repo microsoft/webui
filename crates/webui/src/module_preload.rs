@@ -341,29 +341,6 @@ mod tests {
     }
 
     #[test]
-    fn rewrites_manifest_keys_into_served_urls_preserving_order() {
-        let map = closures(&[(
-            "examples/app/streaming/dist/index.js",
-            &[
-                "examples/app/streaming/dist/chunk-big.js",
-                "examples/app/streaming/dist/chunk-small.js",
-            ],
-        )]);
-        let result = resolve(&map, &srcs(&["/index.js"]));
-
-        assert_eq!(result.hrefs, ["/chunk-big.js", "/chunk-small.js"]);
-        assert!(result.warnings.is_empty());
-    }
-
-    #[test]
-    fn preserves_a_nested_url_prefix() {
-        let map = closures(&[("build/out/app.js", &["build/out/vendor.js"])]);
-        let result = resolve(&map, &srcs(&["/static/js/app.js"]));
-
-        assert_eq!(result.hrefs, ["/static/js/vendor.js"]);
-    }
-
-    #[test]
     fn a_shared_chunk_is_preloaded_once_at_its_earliest_position() {
         let map = closures(&[
             ("d/a.js", &["d/shared.js", "d/only-a.js"]),

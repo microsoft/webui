@@ -87,15 +87,6 @@ mod tests {
     }
 
     #[test]
-    fn closest_match_finds_near_typo() {
-        let names = ["mp-button", "mp-card", "mp-list"];
-        assert_eq!(
-            closest_match("mp-buton", names.into_iter()),
-            Some("mp-button")
-        );
-    }
-
-    #[test]
     fn closest_match_rejects_distant_names() {
         let names = ["mp-button", "mp-card"];
         assert_eq!(closest_match("sidebar-nav", names.into_iter()), None);

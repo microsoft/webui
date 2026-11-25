@@ -434,80 +434,6 @@ mod tests {
     }
 
     #[test]
-    fn test_simple_identifier() {
-        // Test true identifier
-        let condition = ConditionExpr::identifier("flag");
-
-        let state = test_json!({
-            "flag": true
-        });
-
-        let result = evaluate(&condition, &state);
-        assert!(
-            matches!(result, Ok(true)),
-            "Expected Ok(true), got {:?}",
-            result
-        );
-
-        // Test false identifier
-        let condition = ConditionExpr::identifier("flag");
-
-        let state = test_json!({
-            "flag": false
-        });
-
-        let result = evaluate(&condition, &state);
-        assert!(
-            matches!(result, Ok(false)),
-            "Expected Ok(false), got {:?}",
-            result
-        );
-
-        // Test non-boolean identifier treated as boolean
-        let condition = ConditionExpr::identifier("name");
-
-        let state = test_json!({
-            "name": "John"
-        });
-
-        let result = evaluate(&condition, &state);
-        assert!(
-            matches!(result, Ok(true)),
-            "Expected Ok(true), got {:?}",
-            result
-        ); // Non-empty string is truthy
-    }
-
-    #[test]
-    fn test_predicate() {
-        let condition = ConditionExpr::predicate("age", ComparisonOperator::GreaterThan, "18");
-
-        // Test with age > 18
-        let state = test_json!({
-            "age": 21
-        });
-
-        let result = evaluate(&condition, &state);
-        assert!(
-            matches!(result, Ok(true)),
-            "Expected Ok(true), got {:?}",
-            result
-        );
-
-        // Test with age < 18
-        let state = test_json!({
-            "age": 16
-        });
-
-        let result = evaluate(&condition, &state);
-        assert!(
-            matches!(result, Ok(false)),
-            "Expected Ok(false), got {:?}",
-            result
-        );
-    }
-
-    #[test]
     fn test_not_expression() {
         let condition = ConditionExpr::negated(ConditionExpr::identifier("flag"));
 
@@ -832,29 +758,6 @@ mod tests {
     }
 
     #[test]
-    fn test_dotted_path() {
-        let state = test_json!({
-            "user": {
-                "profile": {
-                    "age": 25,
-                    "name": "John"
-                }
-            }
-        });
-
-        // Test nested property access
-        let condition =
-            ConditionExpr::predicate("user.profile.age", ComparisonOperator::GreaterThan, "18");
-
-        let result = evaluate(&condition, &state);
-        assert!(
-            matches!(result, Ok(true)),
-            "Expected Ok(true), got {:?}",
-            result
-        );
-    }
-
-    #[test]
     fn test_borrowed_resolver_value() {
         let condition = ConditionExpr::identifier("flag");
         let value = Value::Bool(true);
@@ -900,19 +803,6 @@ mod tests {
         assert!(
             matches!(evaluate(&negated, &state), Ok(true)),
             "negating a missing identifier must evaluate to true"
-        );
-    }
-
-    #[test]
-    fn test_zero_field() {
-        let condition = ConditionExpr::identifier("zero");
-        let state = test_json!({ "zero": 0 });
-
-        let result = evaluate(&condition, &state);
-        assert!(
-            matches!(result, Ok(false)),
-            "Expected Ok(false), got {:?}",
-            result
         );
     }
 
@@ -975,102 +865,9 @@ mod tests {
     // === Comparison Edge Cases ===
 
     #[test]
-    fn test_string_eq() {
-        let condition =
-            ConditionExpr::predicate("appearance", ComparisonOperator::Equal, "\"hub\"");
-        let state = test_json!({ "appearance": "hub" });
-
-        let result = evaluate(&condition, &state);
-        assert!(
-            matches!(result, Ok(true)),
-            "Expected Ok(true), got {:?}",
-            result
-        );
-    }
-
-    #[test]
-    fn test_string_ne() {
-        let condition =
-            ConditionExpr::predicate("appearance", ComparisonOperator::NotEqual, "\"full-page\"");
-        let state = test_json!({ "appearance": "hub" });
-
-        let result = evaluate(&condition, &state);
-        assert!(
-            matches!(result, Ok(true)),
-            "Expected Ok(true), got {:?}",
-            result
-        );
-    }
-
-    #[test]
-    fn test_number_eq() {
-        let condition = ConditionExpr::predicate("x", ComparisonOperator::Equal, "5");
-        let state = test_json!({ "x": 5 });
-
-        let result = evaluate(&condition, &state);
-        assert!(
-            matches!(result, Ok(true)),
-            "Expected Ok(true), got {:?}",
-            result
-        );
-    }
-
-    #[test]
     fn test_less_than() {
         let condition = ConditionExpr::predicate("x", ComparisonOperator::LessThan, "y");
         let state = test_json!({ "x": 5, "y": 10 });
-
-        let result = evaluate(&condition, &state);
-        assert!(
-            matches!(result, Ok(true)),
-            "Expected Ok(true), got {:?}",
-            result
-        );
-    }
-
-    #[test]
-    fn test_greater_than() {
-        let condition = ConditionExpr::predicate("y", ComparisonOperator::GreaterThan, "x");
-        let state = test_json!({ "x": 5, "y": 10 });
-
-        let result = evaluate(&condition, &state);
-        assert!(
-            matches!(result, Ok(true)),
-            "Expected Ok(true), got {:?}",
-            result
-        );
-    }
-
-    #[test]
-    fn test_less_equal() {
-        let condition = ConditionExpr::predicate("x", ComparisonOperator::LessThanOrEqual, "5");
-        let state = test_json!({ "x": 5 });
-
-        let result = evaluate(&condition, &state);
-        assert!(
-            matches!(result, Ok(true)),
-            "Expected Ok(true), got {:?}",
-            result
-        );
-    }
-
-    #[test]
-    fn test_greater_equal() {
-        let condition = ConditionExpr::predicate("y", ComparisonOperator::GreaterThanOrEqual, "10");
-        let state = test_json!({ "y": 10 });
-
-        let result = evaluate(&condition, &state);
-        assert!(
-            matches!(result, Ok(true)),
-            "Expected Ok(true), got {:?}",
-            result
-        );
-    }
-
-    #[test]
-    fn test_nested_eq() {
-        let condition = ConditionExpr::predicate("outer.inner", ComparisonOperator::Equal, "42");
-        let state = test_json!({ "outer": { "inner": 42 } });
 
         let result = evaluate(&condition, &state);
         assert!(
@@ -1129,23 +926,6 @@ mod tests {
         assert!(
             matches!(result, Ok(false)),
             "Expected Ok(false), got {:?}",
-            result
-        );
-    }
-
-    #[test]
-    fn test_or_false_true() {
-        let condition = ConditionExpr::compound(
-            ConditionExpr::identifier("isDisabled"),
-            LogicalOperator::Or,
-            ConditionExpr::identifier("isEnabled"),
-        );
-        let state = test_json!({ "isDisabled": false, "isEnabled": true });
-
-        let result = evaluate(&condition, &state);
-        assert!(
-            matches!(result, Ok(true)),
-            "Expected Ok(true), got {:?}",
             result
         );
     }

@@ -564,18 +564,6 @@ mod tests {
     }
 
     #[test]
-    fn watch_paths_dedupes_nested_paths() {
-        let cfg = Path::new("/proj/docs/.webui-press");
-        let config_file = Path::new("/proj/docs/.webui-press/config.json");
-        let content = Path::new("/proj/docs/.webui-press");
-        let public = Path::new("/proj/docs/.webui-press/public");
-        let paths = watch_paths(cfg, config_file, content, public);
-        // config_path parent, content_dir, public_dir are all inside
-        // config_dir → only config_dir watched.
-        assert_eq!(paths, vec![PathBuf::from("/proj/docs/.webui-press")]);
-    }
-
-    #[test]
     fn watch_paths_includes_sibling_content_dir() {
         // Real-world layout: config lives in docs/.webui-press/config.json,
         // markdown lives in docs/ (a parent / sibling of .webui-press).

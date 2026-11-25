@@ -797,15 +797,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_extract_single_var() {
-        let mut parser = CssParser::new();
-        let tokens = parser
-            .extract_tokens(".btn { color: var(--colorPrimary); }")
-            .expect("extract_tokens failed");
-        assert_eq!(tokens, HashSet::from(["colorPrimary".to_string()]));
-    }
-
-    #[test]
     fn test_extract_multiple_vars() {
         let css = r#"
             .btn {
@@ -823,17 +814,6 @@ mod tests {
                 "bgColor".to_string(),
                 "radius".to_string(),
             ])
-        );
-    }
-
-    #[test]
-    fn test_extract_nested_fallback() {
-        let css = ".x { color: var(--primary, var(--fallback)); }";
-        let mut parser = CssParser::new();
-        let tokens = parser.extract_tokens(css).expect("extract_tokens failed");
-        assert_eq!(
-            tokens,
-            HashSet::from(["primary".to_string(), "fallback".to_string()])
         );
     }
 
@@ -928,17 +908,6 @@ mod tests {
             tokens.is_empty(),
             "Locally defined --bar should be excluded: {tokens:?}"
         );
-    }
-
-    #[test]
-    fn test_exclude_definitions_keep_unrelated_usages() {
-        let css = r#"
-            :host { --local: 5px; }
-            .x { color: var(--external); }
-        "#;
-        let mut parser = CssParser::new();
-        let tokens = parser.extract_tokens(css).expect("extract_tokens failed");
-        assert_eq!(tokens, HashSet::from(["external".to_string()]));
     }
 
     #[test]

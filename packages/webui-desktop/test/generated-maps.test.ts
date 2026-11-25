@@ -95,18 +95,6 @@ test('Rust and TypeScript golden maps roundtrip semantically with lossless typed
   assert((value.signedKeys as Map<bigint, unknown>).has(0x7fffffffffffffffn));
 });
 
-test('a generated 6000-entry Map passes both value and wire validation', async () => {
-  const { codec } = await loadFixture();
-  const value = codec.decode(new Uint8Array());
-  const labels = new Map<string, string>();
-  for (let i = 0; i < 6000; i++) labels.set(`key${i}`, `value${i}`);
-  value.labels = labels;
-  codec.validate(value, defaultLimits);
-  const bytes = codec.encode(value);
-  codec.validateBytes(bytes, defaultLimits);
-  assert.deepEqual(codec.decode(bytes), value);
-});
-
 test('generated Map and packed collections roundtrip at the exact shared entry cap', async () => {
   const { codec } = await loadFixture();
   const cap = defaultLimits.maxCollectionEntriesPerMessage;

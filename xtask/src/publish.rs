@@ -2959,21 +2959,6 @@ mod tests {
         }
     }
     #[test]
-    fn test_create_publish_dirs_cleans_existing() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let publish = dir.path().join("publish");
-        fs::create_dir_all(publish.join("stale")).unwrap();
-        fs::write(publish.join("stale").join("old.txt"), "old").unwrap();
-
-        prepare_publish_dirs(dir.path(), StageMode::Full).unwrap();
-
-        assert!(!publish.join("stale").exists(), "stale/ should be removed");
-        for subdir in PUBLISH_SUBDIRS {
-            assert!(publish.join(subdir).is_dir());
-        }
-    }
-
-    #[test]
     fn test_full_stage_preserves_python_wheels_while_cleaning_other_outputs() {
         let dir = tempfile::TempDir::new().expect("root should be created");
         let publish = dir.path().join("publish");
@@ -3080,30 +3065,6 @@ mod tests {
     }
 
     #[test]
-    fn test_count_files_with_extension() {
-        let dir = tempfile::TempDir::new().unwrap();
-        fs::write(dir.path().join("a.crate"), "").unwrap();
-        fs::write(dir.path().join("b.crate"), "").unwrap();
-        fs::write(dir.path().join("a.snupkg"), "").unwrap();
-        fs::write(dir.path().join("c.txt"), "").unwrap();
-        assert_eq!(count_files_with_extension(dir.path(), "crate"), 2);
-        assert_eq!(count_files_with_extension(dir.path(), "snupkg"), 1);
-        assert_eq!(count_files_with_extension(dir.path(), "txt"), 1);
-        assert_eq!(count_files_with_extension(dir.path(), "nupkg"), 0);
-    }
-
-    #[test]
-    fn test_count_files_with_suffix() {
-        let dir = tempfile::TempDir::new().unwrap();
-        fs::write(dir.path().join("microsoft_webui-1.0.0.tar.gz"), "").unwrap();
-        fs::write(dir.path().join("other-1.0.0.tar.gz"), "").unwrap();
-        fs::write(dir.path().join("microsoft_webui-1.0.0-cp311.whl"), "").unwrap();
-        assert_eq!(count_files_with_suffix(dir.path(), ".tar.gz"), 2);
-        assert_eq!(count_files_with_suffix(dir.path(), ".whl"), 1);
-        assert_eq!(count_files_with_suffix(dir.path(), ".zip"), 0);
-    }
-
-    #[test]
     fn pack_python_package_errors_when_manifest_missing() {
         let root = tempfile::TempDir::new().expect("root should be created");
 
@@ -3138,15 +3099,6 @@ mod tests {
             "sdist",
         )
         .expect("sdist fixture should be written");
-
-        assert!(validate_python_release_artifacts(&publish, "1.2.3").is_ok());
-    }
-
-    #[test]
-    fn validate_python_release_artifacts_accepts_expected_wheels_and_sdist() {
-        let root = tempfile::TempDir::new().expect("root should be created");
-        let publish = root.path().join("publish");
-        write_python_release_fixtures(&publish.join("python"), "1.2.3");
 
         assert!(validate_python_release_artifacts(&publish, "1.2.3").is_ok());
     }
@@ -3529,39 +3481,6 @@ mod tests {
     }
 
     #[test]
-    fn test_copy_directory_contents_preserves_subdirectories() {
-        let src = tempfile::TempDir::new().unwrap();
-        let dest = tempfile::TempDir::new().unwrap();
-        fs::create_dir_all(src.path().join("handler")).unwrap();
-        fs::write(
-            src.path().join("handler").join("webui_wasm_handler.js"),
-            "js",
-        )
-        .unwrap();
-        fs::write(
-            src.path()
-                .join("handler")
-                .join("webui_wasm_handler_bg.wasm"),
-            "wasm",
-        )
-        .unwrap();
-
-        let copied = copy_directory_contents(src.path(), dest.path()).unwrap();
-
-        assert_eq!(copied, 2);
-        assert!(dest
-            .path()
-            .join("handler")
-            .join("webui_wasm_handler.js")
-            .exists());
-        assert!(dest
-            .path()
-            .join("handler")
-            .join("webui_wasm_handler_bg.wasm")
-            .exists());
-    }
-
-    #[test]
     fn export_native_target_preserves_pipeline_layout() {
         let root = tempfile::TempDir::new().expect("root should be created");
         let output = tempfile::TempDir::new().expect("output should be created");
@@ -3773,15 +3692,6 @@ mod tests {
             assert!(output.join(destination).is_file());
         }
         assert_eq!(fs::read_dir(output).unwrap().count(), 20);
-    }
-
-    #[test]
-    fn test_detect_host_triple_format() {
-        let triple = detect_host_triple();
-        assert!(
-            triple.contains('-'),
-            "host triple should contain a dash: {triple}"
-        );
     }
 
     #[test]

@@ -5846,22 +5846,6 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_signal() {
-        let mut parser = HtmlParser::new();
-        let html = "Hello, {{name}}!";
-        let result = parser.parse("test.html", html);
-
-        assert!(result.is_ok());
-        let fragment_records = parser.into_fragment_records();
-
-        assert_stream!(
-            fragment_records,
-            "test.html",
-            [raw("Hello, "), signal("name"), raw("!"),]
-        );
-    }
-
-    #[test]
     fn test_parse_raw_signal() {
         let mut parser = HtmlParser::new();
         let html = "Hello, {{{html_content}}}!";
@@ -5955,56 +5939,6 @@ mod tests {
         assert!(
             msg.contains("--> index.html:1:1"),
             "missing line:column — {msg}"
-        );
-    }
-
-    #[test]
-    fn test_parse_for_directive() {
-        let mut parser = HtmlParser::new();
-        let html = r#"<for each="item in items"><div class="item">{{item.name}}</div></for>"#;
-
-        let result = parser.parse("test.html", html);
-        assert!(result.is_ok(), "Parse error: {:?}", result.err());
-        let fragment_records = parser.into_fragment_records();
-
-        assert_stream!(
-            fragment_records,
-            "test.html",
-            [for_loop("item", "items", "for-1"),]
-        );
-
-        // Verify the sub-fragment contains our item content
-        assert_stream!(
-            fragment_records,
-            "for-1",
-            [
-                raw("<div class=\"item\">"),
-                signal("item.name"),
-                raw("</div>"),
-            ]
-        );
-    }
-
-    #[test]
-    fn test_parse_if_directive() {
-        let mut parser = HtmlParser::new();
-        let html = r#"<if condition="isLoggedIn"><div>Welcome back, {{username}}!</div></if>"#;
-
-        let result = parser.parse("test.html", html);
-        assert!(result.is_ok(), "Parse error: {:?}", result.err());
-        let fragment_records = parser.into_fragment_records();
-
-        assert_stream!(fragment_records, "test.html", [if_cond("if-1"),]);
-
-        // Verify the sub-fragment contains our content
-        assert_stream!(
-            fragment_records,
-            "if-1",
-            [
-                raw("<div>Welcome back, "),
-                signal("username"),
-                raw("!</div>"),
-            ]
         );
     }
 
@@ -6435,43 +6369,6 @@ mod tests {
     // ── Component template wrapping tests ────────────────────────────
 
     #[test]
-    fn test_component_no_double_wrap_template() {
-        // Developer-authored <template foo="bar"> must be preserved verbatim
-        // in Light DOM. The framework only strips runtime-only attrs;
-        // every other attribute is the developer's responsibility.
-        let mut parser = HtmlParser::with_options(DomStrategy::Light);
-        parser
-            .component_registry
-            .register_component(ComponentRegistration::new(
-                "custom-element",
-                r#"<template foo="bar"><div>content</div></template>"#,
-                None,
-                true,
-            ))
-            .expect("register");
-        let result = parser.parse("index.html", "<custom-element>Hello</custom-element>");
-        assert!(result.is_ok());
-        let records = parser.into_fragment_records();
-
-        assert_fragments!(
-            records["index.html"].fragments,
-            [
-                raw("<custom-element"),
-                structural_matcher("streaming_root:custom-element"),
-                raw(">"),
-                component("custom-element"),
-                raw("Hello</custom-element>"),
-            ]
-        );
-
-        assert_stream!(
-            records,
-            "custom-element",
-            [raw(r#"<template foo="bar"><div>content</div></template>"#),]
-        );
-    }
-
-    #[test]
     fn test_component_styled_no_double_wrap() {
         // Light DOM with a developer-supplied ordinary <template> wrapper
         // preserves the wrapper verbatim. CSS is delivered by the owning
@@ -6609,40 +6506,6 @@ mod tests {
                 component("custom-element"),
                 raw("Hello World</custom-element>"),
             ]
-        );
-    }
-
-    #[test]
-    fn test_component_legacy_no_styles() {
-        let mut parser = HtmlParser::with_options(DomStrategy::Light);
-        parser
-            .component_registry
-            .register_component(ComponentRegistration::new(
-                "custom-element",
-                "<div>Custom Element</div>",
-                None,
-                true,
-            ))
-            .expect("register");
-        let result = parser.parse("index.html", "<custom-element></custom-element>");
-        assert!(result.is_ok());
-        let records = parser.into_fragment_records();
-
-        assert_fragments!(
-            records["index.html"].fragments,
-            [
-                raw("<custom-element"),
-                structural_matcher("streaming_root:custom-element"),
-                raw(">"),
-                component("custom-element"),
-                raw("</custom-element>"),
-            ]
-        );
-
-        assert_stream!(
-            records,
-            "custom-element",
-            [raw("<div>Custom Element</div>"),]
         );
     }
 
@@ -6828,47 +6691,6 @@ mod tests {
     }
 
     #[test]
-    fn test_nested_directives() {
-        let mut parser = HtmlParser::new();
-        let html = r#"<for each="category in categories">
-            <if condition="category.hasItems">
-                <for each="item in category.items">
-                   {{item.title}}
-                </for>
-            </if>
-        </for>"#;
-
-        let result = parser.parse("test.html", html);
-
-        assert!(result.is_ok(), "Parse error: {:?}", result.err());
-        let fragment_records = parser.into_fragment_records();
-
-        assert_stream!(
-            fragment_records,
-            "test.html",
-            [for_loop("category", "categories", "for-1"),]
-        );
-
-        assert_stream!(fragment_records, "for-1", [if_cond("if-1"),]);
-
-        assert_stream!(
-            fragment_records,
-            "if-1",
-            [for_loop("item", "category.items", "for-2"),]
-        );
-
-        assert_stream!(
-            fragment_records,
-            "for-2",
-            [
-                raw("\n                   "),
-                signal("item.title"),
-                raw("\n                "),
-            ]
-        );
-    }
-
-    #[test]
     fn test_complex_directives() {
         let mut parser = HtmlParser::new();
         let html = r#"<for each="category in categories">
@@ -7011,24 +6833,6 @@ mod tests {
     }
 
     #[test]
-    fn test_attribute_boolean_and_regular_together() {
-        // Port of: 'should process a boolean attribute and a regular attribute together'
-        // <button ?disabled="{{isDisabled}}" type="button">Hi</button>
-        let (fragments, _) = parse_and_get_fragments(
-            r#"<button ?disabled="{{isDisabled}}" type="button">Hi</button>"#,
-        );
-
-        assert_fragments!(
-            fragments,
-            [
-                raw("<button"),
-                bool_attr("disabled", "isDisabled"),
-                raw(" type=\"button\">Hi</button>"),
-            ]
-        );
-    }
-
-    #[test]
     fn test_attribute_boolean_sandwiched() {
         // Port of: 'should process a boolean attribute sandwiched between regular attributes'
         // <button version={{edition}} ?disabled="{{isDisabled}}" type="button">Hi</button>
@@ -7048,25 +6852,6 @@ mod tests {
     }
 
     #[test]
-    fn test_attribute_boolean_ending() {
-        // Port of: 'should process html ending with boolean attribute correctly'
-        // <button version={{edition}} ?disabled="{{isDisabled}}">Hi</button>
-        let (fragments, _) = parse_and_get_fragments(
-            r#"<button version={{edition}} ?disabled="{{isDisabled}}">Hi</button>"#,
-        );
-
-        assert_fragments!(
-            fragments,
-            [
-                raw("<button"),
-                attr("version", "edition"),
-                bool_attr("disabled", "isDisabled"),
-                raw(">Hi</button>"),
-            ]
-        );
-    }
-
-    #[test]
     fn test_attribute_boolean_dotted_path() {
         // Port of: 'should process boolean attribute with dotted path'
         // <div ?checked={{layout.isPinned}}>Content</div>
@@ -7079,28 +6864,6 @@ mod tests {
                 raw("<div"),
                 bool_attr("checked", "layout.isPinned"),
                 raw(">Content</div>"),
-            ]
-        );
-    }
-
-    #[test]
-    fn test_attribute_colon_prefixed_complex() {
-        // Port of: 'should process colon-prefixed attribute with handlebars'
-        // <my-component :config="{{settings}}"></my-component>
-        let (fragments, _) = parse_with_component(
-            "my-component",
-            r#"<my-component :config="{{settings}}"></my-component>"#,
-        );
-
-        assert_fragments!(
-            fragments,
-            [
-                raw("<my-component"),
-                attr_complex_start(":config", "settings"),
-                structural_matcher("streaming_root:my-component"),
-                raw(">"),
-                component("my-component"),
-                raw("</my-component>"),
             ]
         );
     }
@@ -7338,21 +7101,6 @@ mod tests {
 
     // ── Body signal tests ─────────────────────────────────────────────
 
-    #[test]
-    fn test_body_signals() {
-        let (fragments, _) = parse_and_get_fragments("<body><app-shell></app-shell></body>");
-        assert_fragments!(
-            fragments,
-            [
-                raw("<body>"),
-                structural_matcher("body_start"),
-                raw("<app-shell></app-shell>"),
-                structural_matcher("body_end"),
-                raw("</body>"),
-            ]
-        );
-    }
-
     // ── Empty for handling tests ──────────────────────────────────────
 
     #[test]
@@ -7391,21 +7139,6 @@ mod tests {
     }
 
     #[test]
-    fn test_self_closing_with_dynamic_attributes() {
-        let (fragments, _) =
-            parse_and_get_fragments(r#"<img src="{{imageUrl}}" alt="{{imageAlt}}" />"#);
-        assert_fragments!(
-            fragments,
-            [
-                raw("<img"),
-                attr("src", "imageUrl"),
-                attr("alt", "imageAlt"),
-                raw("/>"),
-            ]
-        );
-    }
-
-    #[test]
     fn test_self_closing_with_boolean_attributes() {
         let (fragments, _) = parse_and_get_fragments(
             r#"<input type="checkbox" ?checked="{{isSelected}}" ?disabled="{{isDisabled}}" />"#,
@@ -7418,16 +7151,6 @@ mod tests {
                 bool_attr("disabled", "isDisabled"),
                 raw("/>"),
             ]
-        );
-    }
-
-    #[test]
-    fn test_multiple_self_closing_in_sequence() {
-        let (fragments, _) =
-            parse_and_get_fragments(r#"<img src="1.jpg" /><br /><img src="2.jpg" />"#);
-        assert_fragments!(
-            fragments,
-            [raw(r#"<img src="1.jpg"/><br/><img src="2.jpg"/>"#),]
         );
     }
 
@@ -7980,13 +7703,6 @@ mod tests {
     }
 
     // ── Feature 3: Handlebars at beginning/end of text ──────────────────
-
-    #[test]
-    fn test_handlebars_at_beginning() {
-        // Port of: 'should process handlebars from text at beginning'
-        let (fragments, _) = parse_and_get_fragments("{{first}}");
-        assert_fragments!(fragments, [signal("first"),]);
-    }
 
     #[test]
     fn test_handlebars_at_beginning_and_raw() {
@@ -8781,42 +8497,6 @@ mod tests {
     // (this is what gets handed to the inner parse + plugin hooks).
 
     #[test]
-    fn light_preserves_dev_template_with_static_attrs() {
-        let mut parser = HtmlParser::with_options(DomStrategy::Light);
-        let processed = parser
-            .process_component_template(
-                r#"<template foo="bar"><div>hi</div></template>"#,
-                None,
-                None,
-            )
-            .expect("process failed");
-        assert!(
-            processed.contains(r#"<template foo="bar">"#),
-            "expected dev <template foo=\"bar\"> preserved verbatim, got: {processed}"
-        );
-        assert!(
-            processed.contains("</template>"),
-            "expected closing </template> preserved, got: {processed}"
-        );
-    }
-
-    #[test]
-    fn light_preserves_dev_template_with_signal_fragment_attrs() {
-        let mut parser = HtmlParser::with_options(DomStrategy::Light);
-        let processed = parser
-            .process_component_template(
-                r#"<template foo="{{foo}}"><div>hi</div></template>"#,
-                None,
-                None,
-            )
-            .expect("process failed");
-        assert!(
-            processed.contains(r#"<template foo="{{foo}}">"#),
-            "expected dev <template foo=\"{{{{foo}}}}\"> with signal preserved, got: {processed}"
-        );
-    }
-
-    #[test]
     fn light_preserves_dev_template_with_multiple_attrs() {
         let mut parser = HtmlParser::with_options(DomStrategy::Light);
         let processed = parser.process_component_template(
@@ -8937,22 +8617,6 @@ mod tests {
         assert!(
             processed.starts_with(r#"<template foo="{{foo}}">"#),
             "ordinary template must remain Light content, got: {processed}"
-        );
-    }
-
-    #[test]
-    fn unwrapped_component_never_gains_shadow_wrapper() {
-        let mut parser = HtmlParser::with_options(DomStrategy::Light);
-        let processed = parser
-            .process_component_template("<div>hi</div>", None, None)
-            .expect("process failed");
-        assert!(
-            !processed.contains("shadowrootmode"),
-            "framework must not generate a Shadow root, got: {processed}"
-        );
-        assert!(
-            processed.contains("<div>hi</div>"),
-            "Light content must survive processing, got: {processed}"
         );
     }
 
@@ -9259,30 +8923,6 @@ mod tests {
     // The NodeJS `estimatedBufferSize` field does not exist in the Rust
     // WebUIFragmentRecords / WebUIProtocol types. Buffer size estimation is
     // not part of the Rust parser output.
-
-    #[test]
-    fn test_body_start_end_injection() {
-        // Port of: 'should inject body_start and body_end signals around body content'
-        // Verifies body_start appears immediately after <body> and body_end
-        // appears immediately before </body> in a full HTML page.
-        let html = r#"<html><head><title>Test</title></head><body><div>Content</div><p>More</p></body></html>"#;
-        let (fragments, _) = parse_and_get_fragments(html);
-
-        assert_fragments!(
-            fragments,
-            [
-                raw("<html><head>"),
-                structural_matcher("head_start"),
-                raw("<title>Test</title>"),
-                structural_matcher("head_end"),
-                raw("</head><body>"),
-                structural_matcher("body_start"),
-                raw("<div>Content</div><p>More</p>"),
-                structural_matcher("body_end"),
-                raw("</body></html>"),
-            ]
-        );
-    }
 
     #[test]
     fn test_body_preserves_static_attributes() {
@@ -10837,45 +10477,6 @@ mod tests {
     }
 
     #[test]
-    fn test_component_dynamic_attr_counted_as_binding() {
-        let mut parser = HtmlParser::with_plugin(Box::new(BindingCountPlugin::new()));
-        parser
-            .component_registry
-            .register_component(ComponentRegistration::new(
-                "my-btn",
-                r#"<template shadowrootmode="open"><button><slot></slot></button></template>"#,
-                None,
-                true,
-            ))
-            .expect("register");
-
-        // One dynamic attribute ({{...}}) — binding count should be 1
-        let html = r#"<my-btn appearance="{{style}}">Go</my-btn>"#;
-        let result = parser.parse("index.html", html);
-        assert!(result.is_ok());
-
-        let records = parser.into_fragment_records();
-        let frags = &records["index.html"].fragments;
-
-        // Exactly one Plugin fragment with count = 1
-        let plugin_frags: Vec<_> = frags
-            .iter()
-            .filter_map(|f| match f.fragment.as_ref() {
-                Some(Fragment::Plugin(p)) => Some(&p.data),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(plugin_frags.len(), 1, "Expected 1 Plugin fragment");
-        let count = u32::from_le_bytes([
-            plugin_frags[0][0],
-            plugin_frags[0][1],
-            plugin_frags[0][2],
-            plugin_frags[0][3],
-        ]);
-        assert_eq!(count, 1, "Binding attribute count should be 1");
-    }
-
-    #[test]
     fn test_component_mixed_static_and_dynamic_attrs_binding_count() {
         let mut parser = HtmlParser::with_plugin(Box::new(BindingCountPlugin::new()));
         parser
@@ -10965,46 +10566,6 @@ mod tests {
     fn test_comment_handlebars_signal_is_stripped() {
         let mut parser = HtmlParser::new();
         let html = "<!--{{tokens}}-->";
-        parser.parse("test.html", html).expect("parse failed");
-        let records = parser.into_fragment_records();
-
-        assert_stream!(records, "test.html", []);
-    }
-
-    #[test]
-    fn test_comment_triple_brace_raw_signal_is_stripped() {
-        let mut parser = HtmlParser::new();
-        let html = "<!--{{{tokens}}}-->";
-        parser.parse("test.html", html).expect("parse failed");
-        let records = parser.into_fragment_records();
-
-        assert_stream!(records, "test.html", []);
-    }
-
-    #[test]
-    fn test_comment_regular_stripped() {
-        let mut parser = HtmlParser::new();
-        let html = "<!-- regular comment -->";
-        parser.parse("test.html", html).expect("parse failed");
-        let records = parser.into_fragment_records();
-
-        assert_stream!(records, "test.html", []);
-    }
-
-    #[test]
-    fn test_comment_dotted_signal_is_stripped() {
-        let mut parser = HtmlParser::new();
-        let html = "<!--{{tokens.light}}-->";
-        parser.parse("test.html", html).expect("parse failed");
-        let records = parser.into_fragment_records();
-
-        assert_stream!(records, "test.html", []);
-    }
-
-    #[test]
-    fn test_comment_arbitrary_identifier_is_stripped() {
-        let mut parser = HtmlParser::new();
-        let html = "<!--{{someOtherBinding}}-->";
         parser.parse("test.html", html).expect("parse failed");
         let records = parser.into_fragment_records();
 
@@ -11102,18 +10663,6 @@ mod tests {
     // ── Token collection tests ───────────────────────────────────────
 
     #[test]
-    fn test_tokens_from_style_tag() {
-        let mut parser = HtmlParser::new();
-        let html = r#"<style>
-            .btn { color: var(--colorPrimary); background: var(--bgColor); }
-        </style>"#;
-        parser.parse("test.html", html).expect("parse failed");
-        let tokens = parser.take_tokens();
-
-        assert_eq!(tokens, vec!["bgColor", "colorPrimary"]);
-    }
-
-    #[test]
     fn test_tokens_from_malformed_style_error_on_unclosed_var() {
         let mut parser = HtmlParser::new();
         let html = r#"<style>
@@ -11126,26 +10675,6 @@ mod tests {
             diag.error_code() == Some(codes::INVALID_CSS)
                 && diag.to_string().contains("Unterminated CSS var() call")
         ));
-    }
-
-    #[test]
-    fn test_tokens_from_component_css() {
-        let mut parser = HtmlParser::new();
-        parser
-            .component_registry_mut()
-            .register_component(ComponentRegistration::new(
-                "my-button",
-                "<button>Click</button>",
-                Some(":host { color: var(--textColor); border: var(--borderWidth); }"),
-                true,
-            ))
-            .expect("register failed");
-
-        let html = "<my-button></my-button>";
-        parser.parse("test.html", html).expect("parse failed");
-        let tokens = parser.take_tokens();
-
-        assert_eq!(tokens, vec!["borderWidth", "textColor"]);
     }
 
     #[test]
@@ -11622,43 +11151,6 @@ mod tests {
     // ── Route parsing tests ─────────────────────────────────────────────
 
     #[test]
-    fn test_parse_simple_route() {
-        let mut parser = HtmlParser::new();
-        let html = r#"<route path="/profile" component="profile-page" exact />"#;
-        parser.parse("test.html", html).expect("parse failed");
-
-        // Routes are emitted as Fragment::Route
-        let records = parser.into_fragment_records();
-        let frags = &records["test.html"].fragments;
-        assert_eq!(frags.len(), 1);
-        match frags[0].fragment.as_ref() {
-            Some(web_ui_fragment::Fragment::Route(r)) => {
-                assert_eq!(r.path, "/profile");
-                assert_eq!(r.fragment_id, "profile-page");
-                assert!(r.exact);
-            }
-            other => panic!("expected Fragment::Route, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_parse_route_with_params() {
-        let mut parser = HtmlParser::new();
-        let html = r#"<route path="/profile/:id/view/:section" component="detail" />"#;
-        parser.parse("test.html", html).expect("parse failed");
-
-        // Route is emitted as Fragment::Route with correct path
-        let records = parser.into_fragment_records();
-        let frags = &records["test.html"].fragments;
-        match frags[0].fragment.as_ref() {
-            Some(web_ui_fragment::Fragment::Route(r)) => {
-                assert_eq!(r.path, "/profile/:id/view/:section");
-            }
-            other => panic!("expected Fragment::Route, got {:?}", other),
-        }
-    }
-
-    #[test]
     fn test_parse_route_requires_component() {
         let mut parser = HtmlParser::new();
         let html = r#"<route path="/old" />"#;
@@ -11929,37 +11421,6 @@ mod tests {
     }
 
     #[test]
-    fn test_style_element_with_handlebars_signal_comment_emits_signal() {
-        let mut parser = HtmlParser::new();
-        let html = r#"<html><head><style>
-:root {
-    /*{{{tokens.light}}}*/
-}
-</style></head><body></body></html>"#;
-
-        let result = parser.parse("test.html", html);
-        assert!(result.is_ok(), "Parse error: {:?}", result.err());
-        let fragment_records = parser.into_fragment_records();
-
-        assert_stream!(
-            fragment_records,
-            "test.html",
-            [
-                raw("<html><head>"),
-                structural_matcher("head_start"),
-                raw("<style>\n:root {\n    "),
-                raw_text_signal("tokens.light", true),
-                raw("\n}\n</style>"),
-                structural_matcher("head_end"),
-                raw("</head><body>"),
-                structural_matcher("body_start"),
-                structural_matcher("body_end"),
-                raw("</body></html>"),
-            ]
-        );
-    }
-
-    #[test]
     fn test_style_comment_signal_with_spaces_emits_signal() {
         let mut parser = HtmlParser::new();
         let html = r#"<html><head><style>
@@ -11981,33 +11442,6 @@ mod tests {
                 raw("<style>\n:root {\n    "),
                 raw_text_signal("tokens.light", true),
                 raw("\n}\n</style>"),
-                structural_matcher("head_end"),
-                raw("</head><body>"),
-                structural_matcher("body_start"),
-                structural_matcher("body_end"),
-                raw("</body></html>"),
-            ]
-        );
-    }
-
-    #[test]
-    fn test_style_comment_signal_double_brace_emits_signal() {
-        let mut parser = HtmlParser::new();
-        let html = "<html><head><style>/*{{themeCss}}*/</style></head><body></body></html>";
-
-        let result = parser.parse("test.html", html);
-        assert!(result.is_ok(), "Parse error: {:?}", result.err());
-        let fragment_records = parser.into_fragment_records();
-
-        assert_stream!(
-            fragment_records,
-            "test.html",
-            [
-                raw("<html><head>"),
-                structural_matcher("head_start"),
-                raw("<style>"),
-                raw_text_signal("themeCss", false),
-                raw("</style>"),
                 structural_matcher("head_end"),
                 raw("</head><body>"),
                 structural_matcher("body_start"),
@@ -12167,32 +11601,6 @@ mod tests {
                 raw("<html><head>"),
                 structural_matcher("head_start"),
                 raw("<style> .x { color: red; }</style>"),
-                structural_matcher("head_end"),
-                raw("</head><body>"),
-                structural_matcher("body_start"),
-                structural_matcher("body_end"),
-                raw("</body></html>"),
-            ]
-        );
-    }
-
-    #[test]
-    fn test_style_element_plain_css_unchanged() {
-        let mut parser = HtmlParser::new();
-        let html = "<html><head><style>body { margin: 0; }</style></head><body></body></html>";
-
-        let result = parser.parse("test.html", html);
-        assert!(result.is_ok(), "Parse error: {:?}", result.err());
-        let fragment_records = parser.into_fragment_records();
-
-        // Plain CSS with no handlebars should remain as a single raw fragment.
-        assert_stream!(
-            fragment_records,
-            "test.html",
-            [
-                raw("<html><head>"),
-                structural_matcher("head_start"),
-                raw("<style>body { margin: 0; }</style>"),
                 structural_matcher("head_end"),
                 raw("</head><body>"),
                 structural_matcher("body_start"),

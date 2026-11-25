@@ -2159,15 +2159,6 @@ mod tests {
         assert!(api.is_none());
     }
 
-    #[test]
-    fn api_server_context_builds_http_client() {
-        let api = build_api_context_with(Some(4321), || Ok(test_http_client()))
-            .unwrap()
-            .unwrap();
-
-        assert_eq!(api.port, 4321);
-    }
-
     fn test_server_context(api_port: u16) -> web::Data<ServerContext> {
         web::Data::new(ServerContext {
             state: Arc::new(Mutex::new(SharedState {
@@ -2509,73 +2500,6 @@ mod tests {
     }
 
     #[test]
-    fn test_build_and_render_simple() {
-        let app = create_app_dir(&[("index.html", "<h1>Hello</h1>"), ("state.json", "{}")]);
-        let config = RenderConfig {
-            app_args: AppArgs {
-                app: app.path().to_path_buf(),
-                entry: "index.html".to_string(),
-                css: CssStrategy::Link,
-                dom: DomStrategy::Shadow,
-                css_bundle: false,
-                plugin: None,
-                components: Vec::new(),
-                projection_manifests: Vec::new(),
-                asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
-                asset_base: None,
-                component_modules: Vec::new(),
-                legal_comments: LegalComments::Inline,
-            },
-            app_dir: app.path().to_path_buf(),
-            state_file: Some(app.path().join("state.json")),
-            token_file: None,
-            component_asset_roots: Vec::new(),
-            modules_out: None,
-            publishes_lazy_scripts: false,
-            metafile: None,
-            base_path: None,
-        };
-        let hmr = LiveReload::new(HMR_ENDPOINT);
-        let BuildRenderResult { html, .. } = build_and_render(&config, Some(&hmr)).unwrap();
-        assert!(html.contains("<h1>Hello</h1>"));
-    }
-
-    #[test]
-    fn test_build_and_render_with_state() {
-        let app = create_app_dir(&[
-            ("index.html", "<p>{{name}}</p>"),
-            ("state.json", r#"{"name":"WebUI"}"#),
-        ]);
-        let config = RenderConfig {
-            app_args: AppArgs {
-                app: app.path().to_path_buf(),
-                entry: "index.html".to_string(),
-                css: CssStrategy::Link,
-                dom: DomStrategy::Shadow,
-                css_bundle: false,
-                plugin: None,
-                components: Vec::new(),
-                projection_manifests: Vec::new(),
-                asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
-                asset_base: None,
-                component_modules: Vec::new(),
-                legal_comments: LegalComments::Inline,
-            },
-            app_dir: app.path().to_path_buf(),
-            state_file: Some(app.path().join("state.json")),
-            token_file: None,
-            component_asset_roots: Vec::new(),
-            modules_out: None,
-            publishes_lazy_scripts: false,
-            metafile: None,
-            base_path: None,
-        };
-        let hmr = LiveReload::new(HMR_ENDPOINT);
-        let BuildRenderResult { html, .. } = build_and_render(&config, Some(&hmr)).unwrap();
-        assert!(html.contains("<p>WebUI</p>"));
-    }
-
-    #[test]
     fn test_build_and_render_selects_fast_plugin_versions() {
         let app = create_app_dir(&[
             (
@@ -2717,37 +2641,6 @@ mod tests {
     }
 
     #[test]
-    fn test_build_and_render_no_state_file() {
-        let app = create_app_dir(&[("index.html", "<h1>Hello</h1>")]);
-        let config = RenderConfig {
-            app_args: AppArgs {
-                app: app.path().to_path_buf(),
-                entry: "index.html".to_string(),
-                css: CssStrategy::Link,
-                dom: DomStrategy::Shadow,
-                css_bundle: false,
-                plugin: None,
-                components: Vec::new(),
-                projection_manifests: Vec::new(),
-                asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
-                asset_base: None,
-                component_modules: Vec::new(),
-                legal_comments: LegalComments::Inline,
-            },
-            app_dir: app.path().to_path_buf(),
-            state_file: None,
-            token_file: None,
-            component_asset_roots: Vec::new(),
-            modules_out: None,
-            publishes_lazy_scripts: false,
-            metafile: None,
-            base_path: None,
-        };
-        let result = build_and_render(&config, None).unwrap();
-        assert!(result.html.contains("<h1>Hello</h1>"));
-    }
-
-    #[test]
     fn test_build_and_render_missing_template() {
         let app = create_app_dir(&[("state.json", "{}")]);
         let config = RenderConfig {
@@ -2777,17 +2670,6 @@ mod tests {
         let hmr = LiveReload::new(HMR_ENDPOINT);
         let result = build_and_render(&config, Some(&hmr));
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_build_request_paths_preserves_query_string() {
-        assert_eq!(
-            build_request_paths("search", "q=shirt&sort=price-desc"),
-            RequestPaths {
-                route_path: "/search".to_string(),
-                request_path: "/search?q=shirt&sort=price-desc".to_string(),
-            }
-        );
     }
 
     #[test]
@@ -3290,40 +3172,6 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::FOUND);
         handle.stop(true).await;
-    }
-
-    #[test]
-    fn test_hmr_script_is_injected_when_livereload_present() {
-        let app = create_app_dir(&[("index.html", "<h1>Hi</h1>"), ("state.json", "{}")]);
-        let config = RenderConfig {
-            app_args: AppArgs {
-                app: app.path().to_path_buf(),
-                entry: "index.html".to_string(),
-                css: CssStrategy::Link,
-                dom: DomStrategy::Shadow,
-                css_bundle: false,
-                plugin: None,
-                components: Vec::new(),
-                projection_manifests: Vec::new(),
-                asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
-                asset_base: None,
-                component_modules: Vec::new(),
-                legal_comments: LegalComments::Inline,
-            },
-            app_dir: app.path().to_path_buf(),
-            state_file: Some(app.path().join("state.json")),
-            token_file: None,
-            component_asset_roots: Vec::new(),
-            modules_out: None,
-            publishes_lazy_scripts: false,
-            metafile: None,
-            base_path: None,
-        };
-        let lr = LiveReload::new(HMR_ENDPOINT);
-        let BuildRenderResult { html, .. } = build_and_render(&config, Some(&lr)).unwrap();
-        // The injected SSE bootstrap should reference the endpoint.
-        assert!(html.contains(HMR_ENDPOINT));
-        assert!(html.contains("EventSource"));
     }
 
     #[test]

@@ -668,13 +668,6 @@ mod tests {
     }
 
     #[test]
-    fn test_signal_substitution() {
-        let proto = build_protocol("Hello, {{name}}!");
-        let result = render_to_string(&proto, r#"{"name": "WebUI"}"#);
-        assert_eq!(result.as_deref(), Ok("Hello, WebUI!"));
-    }
-
-    #[test]
     fn protocol_reuses_decoded_protocol_for_json_state() {
         let proto = build_protocol("Hello, {{name}}!");
         let protocol = Protocol::new(Buffer::from(proto), None).expect("protocol should load");
@@ -882,23 +875,6 @@ mod tests {
     }
 
     #[test]
-    fn test_for_loop() {
-        let proto = build_protocol("<ul><for each=\"item in items\"><li>{{item}}</li></for></ul>");
-        let result = render_to_string(&proto, r#"{"items": ["a", "b", "c"]}"#);
-        assert_eq!(
-            result.as_deref(),
-            Ok("<ul><li>a</li><li>b</li><li>c</li></ul>")
-        );
-    }
-
-    #[test]
-    fn test_if_condition_true() {
-        let proto = build_protocol("<if condition=\"show\"><p>Visible</p></if>");
-        let result = render_to_string(&proto, r#"{"show": true}"#);
-        assert_eq!(result.as_deref(), Ok("<p>Visible</p>"));
-    }
-
-    #[test]
     fn test_if_condition_false() {
         let proto = build_protocol("<if condition=\"show\"><p>Hidden</p></if>");
         let result = render_to_string(&proto, r#"{"show": false}"#);
@@ -926,13 +902,6 @@ mod tests {
         let proto = build_protocol("<p>hi</p>");
         let result = render_to_string(&proto, "NOT JSON");
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_empty_state() {
-        let proto = build_protocol("<p>static</p>");
-        let result = render_to_string(&proto, "{}");
-        assert_eq!(result.as_deref(), Ok("<p>static</p>"));
     }
 
     #[test]

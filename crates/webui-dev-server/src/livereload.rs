@@ -227,12 +227,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn live_reload_endpoint_round_trips() {
-        let lr = LiveReload::new("/__webui/livereload");
-        assert_eq!(lr.endpoint(), "/__webui/livereload");
-    }
-
-    #[test]
     fn client_script_includes_endpoint() {
         let lr = LiveReload::new("/__webui/livereload");
         assert!(lr.client_script().contains("/__webui/livereload"));

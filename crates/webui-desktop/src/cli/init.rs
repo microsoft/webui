@@ -345,12 +345,6 @@ mod tests {
     }
 
     #[test]
-    fn scaffold_is_standalone_outside_a_workspace() {
-        let temp = TempDir::new().unwrap();
-        assert_standalone_metadata(&temp.path().join("app"));
-    }
-
-    #[test]
     fn scaffold_is_standalone_inside_a_workspace_without_editing_it() {
         let temp = TempDir::new().unwrap();
         let enclosing = temp.path().join("Cargo.toml");

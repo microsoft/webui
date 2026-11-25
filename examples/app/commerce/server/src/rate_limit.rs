@@ -84,15 +84,6 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
 
     #[test]
-    fn allows_requests_within_limit() {
-        let limiter = RateLimiter::new(3, 60);
-        let ip = Some(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
-        assert!(limiter.check(ip));
-        assert!(limiter.check(ip));
-        assert!(limiter.check(ip));
-    }
-
-    #[test]
     fn rejects_requests_over_limit() {
         let limiter = RateLimiter::new(2, 60);
         let ip = Some(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)));

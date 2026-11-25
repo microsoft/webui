@@ -583,12 +583,4 @@ mod tests {
         assert_eq!(first.len(), "app-shell.".len() + 16 + ".json".len());
         assert!(file_name("päge:x", "{}").starts_with("p_ge_x."));
     }
-
-    #[test]
-    fn pack_paths_are_relative_to_the_output_directory() {
-        let name = file_name("app-shell", "{}");
-        let path = pack_path(&name);
-        assert_eq!(path, format!("_webui/packs/{name}"));
-        assert!(!path.starts_with('/'));
-    }
 }

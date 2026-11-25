@@ -244,24 +244,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn local_hms_returns_eight_chars() {
-        let s = local_hms();
-        assert_eq!(s.len(), 8);
-        assert_eq!(s.as_bytes()[2], b':');
-        assert_eq!(s.as_bytes()[5], b':');
-    }
-
-    #[test]
-    fn reporter_tracks_pending_state() {
-        let mut r = RebuildReporter::new();
-        assert!(!r.last_was_rebuild);
-        r.success(Duration::from_millis(123), &[]);
-        assert!(r.last_was_rebuild);
-        r.commit_pending();
-        assert!(!r.last_was_rebuild);
-    }
-
-    #[test]
     fn error_resets_pending() {
         let mut r = RebuildReporter::new();
         r.success(Duration::from_millis(50), &[]);

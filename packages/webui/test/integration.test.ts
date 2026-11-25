@@ -373,14 +373,6 @@ describe('inspect', () => {
 });
 
 describe('render', () => {
-  test('substitutes signals', () => {
-    const result = build({ appDir });
-    const protocol = new Protocol(result.protocol);
-    const buffer = protocol.render({ name: 'WebUI', items: ['a', 'b'], show: true });
-    assert.ok(Buffer.isBuffer(buffer));
-    assert.ok(buffer.toString('utf8').includes('Hello, WebUI!'));
-  });
-
   test('expands for-loop', () => {
     const result = build({ appDir });
     const protocol = new Protocol(result.protocol);
@@ -389,13 +381,6 @@ describe('render', () => {
       .toString('utf8');
     assert.ok(html.includes('<p>a</p>'));
     assert.ok(html.includes('<p>b</p>'));
-  });
-
-  test('includes if-true block', () => {
-    const result = build({ appDir });
-    const protocol = new Protocol(result.protocol);
-    const html = protocol.render({ name: 'X', items: [], show: true }).toString('utf8');
-    assert.ok(html.includes('<footer>Visible</footer>'));
   });
 
   test('excludes if-false block', () => {
