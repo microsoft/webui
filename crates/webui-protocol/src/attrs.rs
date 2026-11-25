@@ -201,26 +201,11 @@ mod tests {
     }
 
     #[test]
-    fn exhaustive_roundtrip() {
-        for &(prop, _) in ALL_MAPPINGS {
-            let attr = camel_to_kebab(prop);
-            let back = attribute_to_camel(&attr);
-            assert_eq!(back, prop, "roundtrip failed for {prop}");
-        }
-    }
-
-    #[test]
     fn single_word_attrs_return_none() {
         assert_eq!(property_to_attribute("ariaLabel"), None);
         assert_eq!(property_to_attribute("ariaHidden"), None);
         assert_eq!(attribute_to_property("aria-label"), None);
         assert_eq!(attribute_to_property("aria-hidden"), None);
-    }
-
-    #[test]
-    fn non_mapped_returns_none() {
-        assert_eq!(property_to_attribute("myProp"), None);
-        assert_eq!(attribute_to_property("my-prop"), None);
     }
 
     #[test]

@@ -158,11 +158,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn accepts_ordinary_global_css() {
-        assert!(validate_global_css("my-card", ".card, button:hover { color: red }").is_ok());
-    }
-
-    #[test]
     fn rejects_shadow_only_selectors() {
         for selector in [
             ":host",

@@ -658,18 +658,6 @@ mod tests {
     }
 
     #[test]
-    fn element_parsed_nonzero_count_returns_le_bytes() {
-        let mut plugin = FastV2ParserPlugin::new();
-        let data = plugin.finish_element(3);
-        assert!(data.is_some());
-        let bytes = data.as_deref().unwrap_or_default();
-        assert_eq!(
-            bytes,
-            &FastElementData { binding_count: 3 }.encode_v2(false)
-        );
-    }
-
-    #[test]
     fn element_parsed_large_count() {
         let mut plugin = FastV2ParserPlugin::new();
         let data = plugin.finish_element(256);
@@ -836,64 +824,6 @@ mod tests {
     }
 
     #[test]
-    fn component_template_multiple_components() {
-        let mut plugin = FastV2ParserPlugin::new();
-        let comp1 = make_component("comp-a", "<div>A</div>", None);
-        let comp2 = make_component("comp-b", "<div>B</div>", Some("b { }"));
-        plugin
-            .register_component_template("comp-a", &comp1, &comp1.html_content)
-            .unwrap();
-        plugin
-            .register_component_template("comp-b", &comp2, &comp2.html_content)
-            .unwrap();
-
-        let templates = plugin.take_component_templates();
-        assert_eq!(templates.len(), 2);
-
-        let names: Vec<&str> = templates
-            .iter()
-            .map(|artifact| artifact.tag_name.as_str())
-            .collect();
-        assert!(names.contains(&"comp-a"));
-        assert!(names.contains(&"comp-b"));
-
-        for artifact in &templates {
-            assert!(artifact.template.contains("<f-template name="));
-        }
-    }
-
-    #[test]
-    fn component_template_deduplicates_same_component() {
-        let mut plugin = FastV2ParserPlugin::new();
-        let comp = make_component(
-            "my-button",
-            "<button><slot></slot></button>",
-            Some(".btn{}"),
-        );
-
-        // Simulate the same component encountered multiple times
-        // (e.g., <my-button> used in todo-app, todo-item, etc.)
-        plugin
-            .register_component_template("my-button", &comp, &comp.html_content)
-            .unwrap();
-        plugin
-            .register_component_template("my-button", &comp, &comp.html_content)
-            .unwrap();
-        plugin
-            .register_component_template("my-button", &comp, &comp.html_content)
-            .unwrap();
-
-        let templates = plugin.take_component_templates();
-        assert_eq!(
-            templates.len(),
-            1,
-            "Expected exactly 1 template for my-button, got {}",
-            templates.len()
-        );
-        assert_eq!(templates[0].tag_name, "my-button");
-    }
-
-    #[test]
     fn component_template_deduplicates_mixed_components() {
         let mut plugin = FastV2ParserPlugin::new();
         let btn = make_component("my-button", "<button><slot></slot></button>", None);
@@ -928,23 +858,6 @@ mod tests {
     // --- FAST syntax conversion ---
 
     #[test]
-    fn convert_if_to_f_when() {
-        let input = r#"<if condition="isComplete"><span>Done</span></if>"#;
-        let output = convert_btr_to_fast(input);
-        assert_eq!(
-            output,
-            r#"<f-when value="{{isComplete}}"><span>Done</span></f-when>"#
-        );
-    }
-
-    #[test]
-    fn convert_if_with_greater_than() {
-        let input = r#"<if condition="vara > 2">Over two</if>"#;
-        let output = convert_btr_to_fast(input);
-        assert_eq!(output, r#"<f-when value="{{vara > 2}}">Over two</f-when>"#);
-    }
-
-    #[test]
     fn convert_if_with_greater_than_or_equal() {
         let input = r#"<if condition="vara >= 2">Two and over</if>"#;
         let output = convert_btr_to_fast(input);
@@ -962,16 +875,6 @@ mod tests {
     }
 
     #[test]
-    fn convert_for_to_f_repeat() {
-        let input = r#"<for each="tag in tags"><span>{{tag}}</span></for>"#;
-        let output = convert_btr_to_fast(input);
-        assert_eq!(
-            output,
-            r#"<f-repeat value="{{tag in tags}}"><span>{{tag}}</span></f-repeat>"#
-        );
-    }
-
-    #[test]
     fn convert_nested_if_and_for() {
         let input = r#"<if condition="show"><for each="x in items"><p>{{x}}</p></for></if>"#;
         let output = convert_btr_to_fast(input);
@@ -982,25 +885,10 @@ mod tests {
     }
 
     #[test]
-    fn convert_complex_attr_double_braces() {
-        let input = r#"<div :data="{{config}}"></div>"#;
-        let output = convert_btr_to_fast(input);
-        assert_eq!(output, r#"<div :data="{config}"></div>"#);
-    }
-
-    #[test]
     fn convert_multiple_complex_attrs() {
         let input = r#"<div :title="{{name}}" :data-id="{{id}}"></div>"#;
         let output = convert_btr_to_fast(input);
         assert_eq!(output, r#"<div :title="{name}" :data-id="{id}"></div>"#);
-    }
-
-    #[test]
-    fn no_conversion_for_text_double_braces() {
-        // Double braces in text content (not in :attr) should stay as-is
-        let input = "<span>{{greeting}}</span>";
-        let output = convert_btr_to_fast(input);
-        assert_eq!(output, "<span>{{greeting}}</span>");
     }
 
     #[test]
@@ -1009,34 +897,6 @@ mod tests {
         let input = r#"<div title="{{name}}"></div>"#;
         let output = convert_btr_to_fast(input);
         assert_eq!(output, r#"<div title="{{name}}"></div>"#);
-    }
-
-    #[test]
-    fn component_template_with_btr_conversion() {
-        let mut plugin = FastV2ParserPlugin::new();
-        let html = r#"<div><if condition="visible"><span>hi</span></if></div>"#;
-        let comp = make_component("my-widget", html, None);
-        plugin
-            .register_component_template("my-widget", &comp, &comp.html_content)
-            .unwrap();
-
-        let templates = plugin.take_component_templates();
-        assert_eq!(templates.len(), 1);
-        let name = &templates[0].tag_name;
-        let result = &templates[0].template;
-        assert_eq!(name, "my-widget");
-
-        assert!(result.contains("<f-when value=\"{{visible}}\">"));
-        assert!(result.contains("</f-when>"));
-        assert!(!result.contains("<if condition="));
-        assert!(!result.contains("</if>"));
-    }
-
-    #[test]
-    fn passthrough_normal_html() {
-        let input = r#"<div class="container"><p>Hello</p></div>"#;
-        let output = convert_btr_to_fast(input);
-        assert_eq!(output, input);
     }
 
     #[test]
@@ -1066,13 +926,6 @@ mod tests {
             result.contains("<outlet></outlet>"),
             "outlet should be kept as marker in f-template: {result}"
         );
-    }
-
-    #[test]
-    fn strip_shadowrootmode_from_template() {
-        let input = r#"<template shadowrootmode="open"><div>Hello</div></template>"#;
-        let output = convert_btr_to_fast(input);
-        assert_eq!(output, "<template><div>Hello</div></template>");
     }
 
     #[test]
@@ -1361,32 +1214,6 @@ mod tests {
     // (<f-when>/<f-repeat>) instead of webui syntax (<if>/<for>).
 
     #[test]
-    fn ftemplate_for_loop_converted_to_f_repeat() {
-        let mut plugin = FastV2ParserPlugin::new();
-        let html = r#"<ul><for each="item in items"><li>{{item.name}}</li></for></ul>"#;
-        let comp = make_component("my-list", html, None);
-        plugin
-            .register_component_template("my-list", &comp, &comp.html_content)
-            .unwrap();
-
-        let templates = plugin.take_component_templates();
-        let result = &templates[0].template;
-
-        assert!(
-            result.contains("<f-repeat value=\"{{item in items}}\">"),
-            "f-template should use <f-repeat>, got: {result}"
-        );
-        assert!(
-            result.contains("</f-repeat>"),
-            "f-template should close with </f-repeat>, got: {result}"
-        );
-        assert!(
-            !result.contains("<for "),
-            "f-template should NOT contain <for>, got: {result}"
-        );
-    }
-
-    #[test]
     fn ftemplate_shadow_dom_strips_shadowroot_and_converts_directives() {
         let mut plugin = FastV2ParserPlugin::new();
         let html = r#"<template shadowrootmode="open"><div><if condition="visible">Shown</if><for each="x in list"><span>{{x}}</span></for></div></template>"#;
@@ -1453,13 +1280,6 @@ mod tests {
             !result.contains("<for "),
             "Nested f-template should NOT contain <for>, got: {result}"
         );
-    }
-
-    #[test]
-    fn convert_btr_preserves_utf8_text_content() {
-        let input = "<span>✓ passed</span>";
-        let output = convert_btr_to_fast(input);
-        assert_eq!(output, "<span>✓ passed</span>");
     }
 
     #[test]

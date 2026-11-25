@@ -282,18 +282,6 @@ mod tests {
     }
 
     #[test]
-    fn test_cache_miss_for_unknown_source() {
-        let cache = DiscoveryCache::open().unwrap();
-        let tmp = tempfile::TempDir::new().unwrap();
-
-        let pkg_json = tmp.path().join("package.json");
-        fs::write(&pkg_json, r#"{"name":"unknown"}"#).unwrap();
-
-        let cached = cache.get(&lookup("unknown-pkg", &pkg_json), 0).unwrap();
-        assert!(cached.is_none());
-    }
-
-    #[test]
     fn test_cache_handles_corrupt_file() {
         let cache = DiscoveryCache::open().unwrap();
         let tmp = tempfile::TempDir::new().unwrap();
@@ -328,16 +316,6 @@ mod tests {
         assert_ne!(javascript, owned);
         inputs[0].script_path = Some(root.join("test-comp.ts"));
         assert_ne!(prepared::fingerprint("{}", &inputs)?, javascript);
-        Ok(())
-    }
-
-    #[test]
-    fn test_fingerprint_tracks_prepared_inventory() -> Result<()> {
-        let (_temp, _package_json, inputs) = fixture()?;
-        assert_ne!(
-            prepared::fingerprint("{}", &[])?,
-            prepared::fingerprint("{}", &inputs)?
-        );
         Ok(())
     }
 

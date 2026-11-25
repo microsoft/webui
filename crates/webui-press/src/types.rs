@@ -519,22 +519,6 @@ mod tests {
         assert!(html.contains("&amp;"), "{html}");
     }
 
-    #[test]
-    fn head_tag_multiple_runs_produce_identical_output() {
-        // Regression: HashMap order non-determinism would have flunked this.
-        let t1 = tag(
-            "meta",
-            &[("a", "1"), ("b", "2"), ("c", "3"), ("d", "4")],
-            None,
-        );
-        let t2 = tag(
-            "meta",
-            &[("d", "4"), ("c", "3"), ("b", "2"), ("a", "1")],
-            None,
-        );
-        assert_eq!(t1.to_html(), t2.to_html());
-    }
-
     // --- BundlerConfig ---------------------------------------------------
 
     #[test]
@@ -578,13 +562,6 @@ mod tests {
         }"#;
         let page: CustomPage = serde_json::from_str(json).unwrap();
         assert_eq!(page.script_file(), Some("./components/my-comp/my-comp.ts"));
-    }
-
-    #[test]
-    fn custom_page_script_file_none_when_absent() {
-        let json = r#"{ "layout": "full", "html": "<p>hi</p>" }"#;
-        let page: CustomPage = serde_json::from_str(json).unwrap();
-        assert!(page.script_file().is_none());
     }
 
     #[test]

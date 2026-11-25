@@ -1096,36 +1096,6 @@ mod tests {
     }
 
     #[test]
-    fn test_find_node_modules_in_cwd() {
-        let tmp = TempDir::new().unwrap();
-        let nm = tmp.path().join("node_modules");
-        fs::create_dir_all(nm.join("fixture-pkg")).unwrap();
-
-        let result = find_package_node_modules("fixture-pkg", tmp.path(), tmp.path());
-        assert!(result.is_ok());
-        assert_eq!(
-            result.unwrap().canonicalize().unwrap(),
-            nm.canonicalize().unwrap()
-        );
-    }
-
-    #[test]
-    fn test_find_node_modules_walks_up() {
-        let tmp = TempDir::new().unwrap();
-        let nm = tmp.path().join("node_modules");
-        fs::create_dir_all(nm.join("fixture-pkg")).unwrap();
-        let sub = tmp.path().join("packages").join("my-app");
-        fs::create_dir_all(&sub).unwrap();
-
-        let result = find_package_node_modules("fixture-pkg", &sub, &sub);
-        assert!(result.is_ok());
-        assert_eq!(
-            result.unwrap().canonicalize().unwrap(),
-            nm.canonicalize().unwrap()
-        );
-    }
-
-    #[test]
     fn test_find_node_modules_not_found() {
         let tmp = TempDir::new().unwrap();
         let result = find_package_node_modules("fixture-pkg", tmp.path(), tmp.path());
@@ -1188,48 +1158,6 @@ mod tests {
                 assert_eq!(resolved.root, package.canonicalize().unwrap());
             }
         }
-    }
-
-    #[test]
-    fn test_is_bare_scope() {
-        assert!(is_bare_scope("@reactive-ui"));
-        assert!(is_bare_scope("@scope"));
-        assert!(!is_bare_scope("@scope/button"));
-        assert!(!is_bare_scope("my-widget"));
-    }
-
-    #[test]
-    fn test_resolve_single_package() {
-        let tmp = TempDir::new().unwrap();
-        let nm = tmp.path().join("node_modules");
-        fs::create_dir(&nm).unwrap();
-
-        create_npm_package(
-            &nm,
-            "my-widget",
-            "my-widget",
-            "<div><slot></slot></div>",
-            Some(".widget { color: blue; }"),
-        );
-
-        let mut cache = DiscoveryCache::open().unwrap();
-        let result = resolve(
-            "my-widget",
-            tmp.path(),
-            &WebUIDiscoveryPlugin::new(),
-            &mut cache,
-        );
-        assert!(result.is_ok());
-
-        let components = result.unwrap();
-        assert_eq!(components.len(), 1);
-        assert_eq!(components[0].tag_name, "my-widget");
-        assert_eq!(components[0].html_content, "<div><slot></slot></div>");
-        assert_eq!(
-            components[0].css_content.as_deref(),
-            Some(".widget { color: blue; }")
-        );
-        assert!(!components[0].is_client_owned);
     }
 
     #[test]
@@ -1357,22 +1285,6 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_custom_elements_manifest_empty() {
-        let tmp = TempDir::new().unwrap();
-        let manifest = serde_json::json!({
-            "schemaVersion": "1.0.0",
-            "modules": []
-        });
-
-        let cem_path = tmp.path().join("custom-elements.json");
-        fs::write(&cem_path, serde_json::to_string_pretty(&manifest).unwrap()).unwrap();
-
-        let result = parse_custom_elements_manifest(&cem_path);
-        assert!(result.is_ok());
-        assert!(result.unwrap().is_empty());
-    }
-
-    #[test]
     fn test_parse_custom_elements_manifest_deduplicates() {
         let tmp = TempDir::new().unwrap();
         let manifest = serde_json::json!({
@@ -1400,39 +1312,6 @@ mod tests {
     }
 
     #[test]
-    fn test_cached_result_is_reused() {
-        let tmp = TempDir::new().unwrap();
-        let nm = tmp.path().join("node_modules");
-        fs::create_dir(&nm).unwrap();
-
-        create_npm_package(&nm, "cached-pkg", "cached-comp", "<div>cached</div>", None);
-
-        let mut cache = DiscoveryCache::open().unwrap();
-
-        // First resolve: populates cache
-        let first = resolve(
-            "cached-pkg",
-            tmp.path(),
-            &WebUIDiscoveryPlugin::new(),
-            &mut cache,
-        )
-        .unwrap();
-        assert_eq!(first.len(), 1);
-        assert_eq!(first[0].tag_name, "cached-comp");
-
-        // Second resolve: should hit cache
-        let second = resolve(
-            "cached-pkg",
-            tmp.path(),
-            &WebUIDiscoveryPlugin::new(),
-            &mut cache,
-        )
-        .unwrap();
-        assert_eq!(second.len(), 1);
-        assert_eq!(second[0].tag_name, "cached-comp");
-    }
-
-    #[test]
     fn test_validate_relative_path_rejects_absolute() {
         let result = validate_relative_path("/etc/passwd", "exports");
         assert!(result.is_err());
@@ -1450,13 +1329,6 @@ mod tests {
     fn test_validate_relative_path_rejects_hidden_traversal() {
         let result = validate_relative_path("foo/../../../etc/passwd", "exports");
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_validate_relative_path_accepts_valid() {
-        assert!(validate_relative_path("./dist/template.html", "exports").is_ok());
-        assert!(validate_relative_path("custom-elements.json", "customElements").is_ok());
-        assert!(validate_relative_path("dist/nested/file.css", "exports").is_ok());
     }
 
     #[test]

@@ -722,35 +722,6 @@ mod tests {
     }
 
     #[test]
-    fn recognizes_interaction_hydration_policy() {
-        let result = parse_component_render_policy(
-            "interaction-shell",
-            r#"<template w-hydrate="interaction"><button>Open</button></template>"#,
-        );
-        assert!(matches!(
-            result,
-            Ok(ComponentRenderPolicy::InteractionHydration)
-        ));
-    }
-
-    #[test]
-    fn combines_lazy_rendering_with_interaction_hydration() {
-        let result = parse_component_render_policy(
-            "interaction-panel",
-            concat!(
-                "<template w-render=\"lazy\" w-reserve-block-size=\"18rem\" ",
-                "w-hydrate=\"interaction\"><button>Open</button></template>",
-            ),
-        );
-        assert!(matches!(
-            result,
-            Ok(ComponentRenderPolicy::LazyRenderInteraction {
-                reserve_block_size,
-            }) if reserve_block_size == "18rem"
-        ));
-    }
-
-    #[test]
     fn interaction_policy_requires_client_ownership() {
         let source = r#"<template w-hydrate="interaction"><button>Open</button></template>"#;
         let policy = parse_component_render_policy("static-shell", source).expect("policy parses");

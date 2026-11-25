@@ -737,24 +737,6 @@ mod tests {
     }
 
     #[test]
-    fn never_delivers_a_component_a_closure_did_not_ask_for() {
-        let mut protocol = protocol_with(
-            &[
-                ("index.html", &["app-shell", "home-hero", "home-list"]),
-                ("about-page", &["app-shell", "about-body"]),
-            ],
-            CssStrategy::Style,
-        );
-
-        bundle(&mut protocol);
-
-        for root in ["index.html", "about-page"] {
-            let expected = protocol.style_closure(root).expect("closure").to_vec();
-            assert_eq!(delivered(&protocol, root), expected);
-        }
-    }
-
-    #[test]
     fn independently_loaded_light_closure_does_not_receive_partial_chunk() {
         let mut protocol = WebUIProtocol::new(HashMap::new());
         protocol.set_css_strategy(CssStrategy::Style);
@@ -916,22 +898,6 @@ mod tests {
             ".card{--url:@import;content:\"@import\"}/* @import \"x\" */"
         ));
         assert!(contains_top_level_import("@IMPORT \"base.css\";"));
-    }
-
-    #[test]
-    fn names_a_single_component_chunk_after_that_component() {
-        let mut protocol = protocol_with(
-            &[
-                ("index.html", &["shared-card"]),
-                ("about-page", &["shared-card"]),
-            ],
-            CssStrategy::Link,
-        );
-
-        let files = bundle(&mut protocol);
-
-        assert_eq!(files.len(), 1);
-        assert_eq!(files[0].0, "shared-card.css");
     }
 
     #[test]

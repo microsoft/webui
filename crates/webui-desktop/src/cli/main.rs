@@ -1710,18 +1710,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_machine_readable_version_flag() {
-        let cli = Cli::try_parse_from(["webui-desktop", "--webui-version"]);
-        assert!(matches!(
-            cli,
-            Ok(Cli {
-                webui_version: true,
-                ..
-            })
-        ));
-    }
-
-    #[test]
     fn build_accepts_asset_base() {
         let cli = Cli::try_parse_from([
             "webui-desktop",

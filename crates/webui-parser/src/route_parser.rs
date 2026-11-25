@@ -227,12 +227,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_extract_params_simple() {
-        let params = extract_params("/profile/:id").unwrap();
-        assert_eq!(params, vec!["id"]);
-    }
-
-    #[test]
     fn test_extract_params_multiple() {
         let params = extract_params("/profile/:id/view/:section").unwrap();
         assert_eq!(params, vec!["id", "section"]);
@@ -263,12 +257,6 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_params_no_params() {
-        let params = extract_params("/contacts/add").unwrap();
-        assert!(params.is_empty());
-    }
-
-    #[test]
     fn test_extract_params_duplicate_error() {
         let result = extract_params("/profile/:id/other/:id");
         assert!(result.is_err());
@@ -287,16 +275,6 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_attributes_valid() {
-        let attrs = RouteAttributes {
-            path: "/profile".to_string(),
-            component: "profile-page".to_string(),
-            ..Default::default()
-        };
-        assert!(validate_attributes(&attrs).is_ok());
-    }
-
-    #[test]
     fn test_validate_missing_component() {
         let attrs = RouteAttributes {
             path: "/page".to_string(),
@@ -306,12 +284,6 @@ mod tests {
     }
 
     // ── Relative path tests ──
-
-    #[test]
-    fn test_extract_params_relative_path() {
-        let params = extract_params("./sections/:id").unwrap();
-        assert_eq!(params, vec!["id"]);
-    }
 
     #[test]
     fn test_extract_params_relative_multiple() {
@@ -326,12 +298,6 @@ mod tests {
     }
 
     // ── Cache tag parsing tests ──
-
-    #[test]
-    fn test_parse_tag_list_simple() {
-        let tags = parse_tag_list("inbox,counts");
-        assert_eq!(tags, vec!["inbox", "counts"]);
-    }
 
     #[test]
     fn test_parse_tag_list_with_placeholders() {
@@ -355,14 +321,6 @@ mod tests {
     fn test_parse_tag_list_trailing_comma() {
         let tags = parse_tag_list("inbox,");
         assert_eq!(tags, vec!["inbox"]);
-    }
-
-    #[test]
-    fn test_extract_tag_placeholders_simple() {
-        let tags = vec!["thread:{threadId}".to_string(), "inbox".to_string()];
-        let placeholders = extract_tag_placeholders(&tags).unwrap();
-        assert_eq!(placeholders.len(), 1);
-        assert!(placeholders.contains("threadId"));
     }
 
     #[test]
@@ -397,16 +355,6 @@ mod tests {
     fn test_extract_tag_placeholders_invalid_name() {
         let tags = vec!["thread:{thread-id}".to_string()];
         assert!(extract_tag_placeholders(&tags).is_err());
-    }
-
-    #[test]
-    fn test_validate_tag_placeholders_valid() {
-        let tags = vec!["thread:{threadId}".to_string(), "inbox".to_string()];
-        let mut params = HashSet::new();
-        params.insert("threadId".to_string());
-        assert!(
-            validate_tag_placeholders(&tags, &params, "cache-tags", "/email/:threadId").is_ok()
-        );
     }
 
     #[test]

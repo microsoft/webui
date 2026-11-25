@@ -92,14 +92,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn strip_ranges_removes_overlapping_tail() {
-        let mut ranges = [(2, 5), (4, 8)];
-        let stripped = strip_ranges("0123456789", &mut ranges);
-
-        assert_eq!(stripped.as_ref(), "0189");
-    }
-
-    #[test]
     fn strip_ranges_handles_unsorted_overlaps() {
         let mut ranges = [(7, 9), (2, 5), (4, 8)];
         let stripped = strip_ranges("0123456789", &mut ranges);

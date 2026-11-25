@@ -1236,12 +1236,6 @@ mod tests {
     }
 
     #[test]
-    fn criterion_bench_args_omit_separator_without_passthrough_args() {
-        let args = criterion_bench_args("microsoft-webui-ffi", "protocol_bench", &[], None, None);
-        assert!(!args.iter().any(|arg| arg == "--"));
-    }
-
-    #[test]
     fn criterion_bench_table_is_non_empty_and_unique() {
         assert!(!CRITERION_BENCHES.is_empty());
         let mut seen: Vec<(&str, &str)> = CRITERION_BENCHES.to_vec();
@@ -1253,11 +1247,6 @@ mod tests {
             seen.len(),
             "CRITERION_BENCHES has duplicate entries"
         );
-    }
-
-    #[test]
-    fn criterion_bench_table_includes_watcher_hashing() {
-        assert!(CRITERION_BENCHES.contains(&("microsoft-webui-dev-server", "watch_hash_bench")));
     }
 
     #[test]

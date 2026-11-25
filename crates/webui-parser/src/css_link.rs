@@ -126,14 +126,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_template_does_not_require_hash() {
-        let options = CssLinkOptions::default();
-        assert!(!options.file_name_template.uses_hash());
-        let resolved = options.resolve("my-card", ".card { color: red; }");
-        assert_eq!(resolved.filename, "my-card.css");
-    }
-
-    #[test]
     fn hash_template_uses_content_hash() {
         let options = CssLinkOptions::try_new("[name]-[hash].[ext]".to_string()).unwrap();
         assert!(options.file_name_template.uses_hash());

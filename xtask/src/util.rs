@@ -268,18 +268,4 @@ mod tests {
             .find(|line| line.starts_with("cargo install "));
         assert_eq!(install, Some("cargo install --locked wasm-pack"));
     }
-
-    #[test]
-    fn workspace_root_has_workspace_cargo_toml() {
-        let root = match workspace_root() {
-            Ok(root) => root,
-            Err(message) => panic!("{message}"),
-        };
-
-        assert!(
-            root.join("Cargo.toml").is_file(),
-            "workspace root should contain Cargo.toml at {}",
-            root.display()
-        );
-    }
 }

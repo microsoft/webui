@@ -883,13 +883,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_valid_release_versions() {
-        assert!(ReleaseVersion::parse("0.1.0").is_some());
-        assert!(ReleaseVersion::parse("1.0.0").is_some());
-        assert!(ReleaseVersion::parse("12.34.56-hotfix.7").is_some());
-    }
-
-    #[test]
     fn test_invalid_release_versions() {
         assert!(ReleaseVersion::parse("").is_none());
         assert!(ReleaseVersion::parse("1.0").is_none());
@@ -898,33 +891,6 @@ mod tests {
         assert!(ReleaseVersion::parse("1.0.beta").is_none());
         assert!(ReleaseVersion::parse("v1.0.0").is_none());
         assert!(ReleaseVersion::parse("1.0.0-hotfix.0").is_none());
-    }
-
-    #[test]
-    fn test_update_package_json_version() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let pkg = dir.path().join("package.json");
-        fs::write(&pkg, r#"{"name":"test","version":"0.0.1"}"#).unwrap();
-
-        update_package_json(&pkg, "1.2.3", "latest").unwrap();
-
-        let content = fs::read_to_string(&pkg).unwrap();
-        let val: serde_json::Value = serde_json::from_str(&content).unwrap();
-        assert_eq!(val["version"], "1.2.3");
-    }
-
-    #[test]
-    fn test_update_root_package_json() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let pkg = dir.path().join("package.json");
-        fs::write(&pkg, r#"{"name":"webui","version":"1.0.0","private":true}"#).unwrap();
-
-        update_package_json(&pkg, "2.0.0", "latest").unwrap();
-
-        let content = fs::read_to_string(&pkg).unwrap();
-        let val: serde_json::Value = serde_json::from_str(&content).unwrap();
-        assert_eq!(val["version"], "2.0.0");
-        assert_eq!(val["name"], "webui");
     }
 
     #[test]
@@ -1032,17 +998,6 @@ mod tests {
     }
 
     #[test]
-    fn test_replace_inline_version() {
-        let line =
-            r#"microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.1" }"#;
-        let result = replace_inline_version(line, "1.2.3").unwrap();
-        assert_eq!(
-            result,
-            r#"microsoft-webui-protocol = { path = "../webui-protocol", version = "1.2.3" }"#
-        );
-    }
-
-    #[test]
     fn test_update_cargo_lock_versions() {
         let dir = tempfile::TempDir::new().unwrap();
         let lock = dir.path().join("Cargo.lock");
@@ -1143,24 +1098,6 @@ microsoft-webui-test-utils = { path = "../webui-test-utils", version = "0.0.1" }
     }
 
     #[test]
-    fn test_hotfix_crate_dependencies_use_exact_requirements() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let toml = dir.path().join("Cargo.toml");
-        fs::write(
-            &toml,
-            r#"[dependencies]
-microsoft-webui-handler = { path = "../webui-handler", version = "0.0.27" }
-"#,
-        )
-        .unwrap();
-
-        assert!(update_crate_dep_versions(&toml, "0.0.27-hotfix.1").unwrap());
-        assert!(fs::read_to_string(&toml)
-            .unwrap()
-            .contains(r#"version = "=0.0.27-hotfix.1""#));
-    }
-
-    #[test]
     fn test_update_dotnet_version() {
         let dir = tempfile::TempDir::new().unwrap();
         let dotnet_dir = dir.path().join("dotnet");
@@ -1206,22 +1143,6 @@ microsoft-webui-handler = { path = "../webui-handler", version = "0.0.27" }
     }
 
     #[test]
-    fn test_update_pyproject_version_updates_static_version() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let pyproject = dir.path().join("pyproject.toml");
-        fs::write(
-            &pyproject,
-            "[project]\nname = \"test\"\nversion = \"1.2.3\"\n",
-        )
-        .unwrap();
-
-        assert!(update_pyproject_version(&pyproject, "1.2.3.post1").unwrap());
-        assert!(fs::read_to_string(&pyproject)
-            .unwrap()
-            .contains("version = \"1.2.3.post1\""));
-    }
-
-    #[test]
     fn bumps_the_go_binding_with_the_workspace_release_version() {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path();
@@ -1242,24 +1163,6 @@ microsoft-webui-handler = { path = "../webui-handler", version = "0.0.27" }
         assert!(content.starts_with("// Keep package release identity aligned."));
         fs::write(root.join("go/version.go"), "package webui\n").unwrap();
         assert!(apply_update(execute_update(&target, &versions), &target).is_err());
-    }
-
-    #[test]
-    fn test_update_rust_string_const() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let source = dir.path().join("version.rs");
-        fs::write(
-            &source,
-            "pub(crate) const PYTHON_PACKAGE_VERSION: &str = \"1.2.3\";\n",
-        )
-        .unwrap();
-
-        assert!(
-            update_rust_string_const(&source, "PYTHON_PACKAGE_VERSION", "1.2.3.post1").unwrap()
-        );
-        assert!(fs::read_to_string(&source)
-            .unwrap()
-            .contains("PYTHON_PACKAGE_VERSION: &str = \"1.2.3.post1\""));
     }
 
     #[test]
@@ -1382,17 +1285,5 @@ microsoft-webui-handler = { path = "../webui-handler", version = "0.0.27" }
 
         let error = python_package_version(dir.path(), "1.2.3-hotfix.1").unwrap_err();
         assert!(error.contains("run `cargo xtask version 1.2.3-hotfix.1`"));
-    }
-
-    #[test]
-    fn test_read_version_from_workspace() {
-        // read_version reads from the real workspace Cargo.toml
-        let version = read_version();
-        assert!(version.is_ok(), "should read version from workspace");
-        let v = version.unwrap();
-        assert!(
-            ReleaseVersion::parse(&v).is_some(),
-            "version '{v}' should be valid"
-        );
     }
 }

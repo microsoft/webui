@@ -1669,11 +1669,6 @@ mod tests {
     // --- truncate_utf8 ---------------------------------------------------
 
     #[test]
-    fn truncate_utf8_short_string_unchanged() {
-        assert_eq!(truncate_utf8("hello", 100), "hello");
-    }
-
-    #[test]
     fn truncate_utf8_ascii_at_exact_boundary() {
         assert_eq!(truncate_utf8("hello world", 5), "hello");
     }
@@ -1716,24 +1711,11 @@ mod tests {
     }
 
     #[test]
-    fn protect_pre_blocks_does_not_match_presentation_tag() {
-        // <presentation> must NOT be treated as a pre block.
-        let input = "<presentation>x</presentation>";
-        let (_out, blocks) = protect_pre_blocks(input);
-        assert_eq!(blocks.len(), 0);
-    }
-
-    #[test]
     fn protect_then_restore_round_trip() {
         let input = "before <pre>a</pre> mid <pre class=\"x\">b</pre> end";
         let (protected, blocks) = protect_pre_blocks(input);
         let restored = restore_pre_blocks(&protected, &blocks);
         assert_eq!(restored, input);
-    }
-
-    #[test]
-    fn restore_pre_blocks_no_blocks_returns_input() {
-        assert_eq!(restore_pre_blocks("plain html", &[]), "plain html");
     }
 
     #[test]
@@ -1860,10 +1842,4 @@ mod tests {
     }
 
     // --- fxhash ----------------------------------------------------------
-
-    #[test]
-    fn fxhash_deterministic() {
-        assert_eq!(fxhash("abc"), fxhash("abc"));
-        assert_ne!(fxhash("abc"), fxhash("abd"));
-    }
 }

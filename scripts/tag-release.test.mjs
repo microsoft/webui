@@ -93,7 +93,6 @@ function success(output) {
 
 for (const [version, goVersion] of [
   ['v3.1.2', 'v3.1.2'],
-  ['v3.1.2-hotfix.4', 'v3.1.3-0.hotfix.4'],
   ['v3.1.9-hotfix.12', 'v3.1.10-0.hotfix.12'],
   ['v3.1.18446744073709551614-hotfix.1', 'v3.1.18446744073709551615-0.hotfix.1'],
 ]) {

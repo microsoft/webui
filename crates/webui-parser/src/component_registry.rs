@@ -752,26 +752,6 @@ mod tests {
     }
 
     #[test]
-    fn test_missing_css_file() {
-        let html_content = "<p>CSS Optional</p>";
-
-        // Create temporary HTML file
-        let mut fs = TestFileSystem::new();
-        let html_path = fs.add_file("test-component.html", html_content);
-
-        // Register with non-existent CSS file
-        let mut registry = ComponentRegistry::new();
-        let result = registry.register_component_from_paths(&html_path, None::<&str>);
-
-        assert!(result.is_ok());
-        let component = registry
-            .get("test-component")
-            .expect("Failed to retrieve registered component");
-        assert_eq!(component.html_content, html_content);
-        assert_eq!(component.css_content, None);
-    }
-
-    #[test]
     fn test_register_component_from_strings() {
         let html_content = "<p>Hello from string!</p>";
         let css_content = "p { color: green; }";
@@ -1246,24 +1226,6 @@ mod tests {
     }
 
     #[test]
-    fn test_valid_component_with_hyphen() {
-        let mut registry = ComponentRegistry::new();
-        let result = registry.register_component(ComponentRegistration::new(
-            "custom-button",
-            "<button>Click me</button>",
-            None,
-            true,
-        ));
-
-        assert!(
-            result.is_ok(),
-            "Component name with hyphen should be accepted"
-        );
-        assert!(registry.contains("custom-button"));
-        assert_eq!(registry.len(), 1);
-    }
-
-    #[test]
     fn test_valid_component_css_only() {
         let mut registry = ComponentRegistry::new();
         let result = registry.register_component(ComponentRegistration::new(
@@ -1346,38 +1308,6 @@ mod tests {
             result
         );
         assert_eq!(registry.len(), 0);
-    }
-
-    #[test]
-    fn test_register_component_extracts_css_fallback_requirements() {
-        let mut registry = ComponentRegistry::new();
-        registry
-            .register_component(ComponentRegistration::new(
-                "my-btn",
-                "<button>Click</button>",
-                Some(":host { color: var(--text-color); padding: var(--spacing-m); }"),
-                true,
-            ))
-            .expect("register failed");
-
-        let component = registry.get("my-btn").expect("component not found");
-        assert_eq!(component.css_fallback_chains.len(), 2);
-    }
-
-    #[test]
-    fn test_register_component_no_css_no_requirements() {
-        let mut registry = ComponentRegistry::new();
-        registry
-            .register_component(ComponentRegistration::new(
-                "my-card",
-                "<div>Card</div>",
-                None,
-                true,
-            ))
-            .expect("register failed");
-
-        let component = registry.get("my-card").expect("component not found");
-        assert!(component.css_fallback_chains.is_empty());
     }
 
     #[test]

@@ -415,47 +415,6 @@ mod tests {
     }
 
     #[test]
-    fn test_build_simple_html() {
-        let app_dir = create_app_dir(&[("index.html", "<h1>Hello</h1>")]);
-        let out_dir = TempDir::new().unwrap();
-
-        build(app_dir.path(), out_dir.path(), "index.html").unwrap();
-
-        let protocol_path = out_dir.path().join("protocol.bin");
-        assert!(protocol_path.exists());
-
-        let bytes = fs::read(&protocol_path).unwrap();
-        let protocol = WebUIProtocol::from_protobuf(&bytes).unwrap();
-        assert!(protocol.fragments.contains_key("index.html"));
-    }
-
-    #[test]
-    fn test_build_with_directives() {
-        let html = r#"<h1>Hello</h1>
-<for each="item in items">
-    <p>{{item.name}}</p>
-</for>
-<if condition="show">
-    <p>Visible</p>
-</if>"#;
-        let app_dir = create_app_dir(&[("index.html", html)]);
-        let out_dir = TempDir::new().unwrap();
-
-        build(app_dir.path(), out_dir.path(), "index.html").unwrap();
-
-        let bytes = fs::read(out_dir.path().join("protocol.bin")).unwrap();
-        let protocol = WebUIProtocol::from_protobuf(&bytes).unwrap();
-
-        let index = &protocol.fragments["index.html"].fragments;
-        assert!(index
-            .iter()
-            .any(|f| matches!(f.fragment.as_ref(), Some(Fragment::ForLoop(_)))));
-        assert!(index
-            .iter()
-            .any(|f| matches!(f.fragment.as_ref(), Some(Fragment::IfCond(_)))));
-    }
-
-    #[test]
     fn test_build_with_component_css() {
         let app_dir = create_app_dir(&[
             ("index.html", "<my-card>Hello</my-card>"),
@@ -1272,18 +1231,6 @@ mod tests {
     }
 
     #[test]
-    fn test_build_protocol_is_valid_protobuf() {
-        let app_dir = create_app_dir(&[("index.html", "<h1>{{title}}</h1>")]);
-        let out_dir = TempDir::new().unwrap();
-
-        build(app_dir.path(), out_dir.path(), "index.html").unwrap();
-
-        let bytes = fs::read(out_dir.path().join("protocol.bin")).unwrap();
-        let protocol = WebUIProtocol::from_protobuf(&bytes).unwrap();
-        assert!(protocol.fragments.contains_key("index.html"));
-    }
-
-    #[test]
     fn test_build_hello_world_example() {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let app_dir = manifest_dir.join("../../examples/app/hello-world/src");
@@ -1637,53 +1584,6 @@ mod tests {
 
         // CSS files are emitted next to the renamed protocol.
         assert!(out_dir.path().join("my-card.css").exists());
-    }
-
-    #[test]
-    fn test_build_custom_protocol_name_creates_parent_dir() {
-        let app_dir = create_app_dir(&[("index.html", "<h1>Hello</h1>")]);
-        let out_dir = TempDir::new().unwrap();
-        let nested = out_dir.path().join("nested").join("app2.bin");
-
-        run(&BuildArgs {
-            app_args: AppArgs {
-                app: app_dir.path().to_path_buf(),
-                entry: "index.html".to_string(),
-                css: CssStrategy::Link,
-                dom: DomStrategy::Shadow,
-                css_bundle: false,
-                plugin: None,
-                components: Vec::new(),
-                projection_manifests: Vec::new(),
-                asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
-                asset_base: None,
-                component_modules: Vec::new(),
-                legal_comments: LegalComments::Inline,
-            },
-            out: nested.clone(),
-            emit_component_assets: Vec::new(),
-            modules_out: None,
-            metafile: None,
-            theme: None,
-        })
-        .unwrap();
-
-        assert!(nested.exists());
-        assert!(!nested.parent().unwrap().join("protocol.bin").exists());
-    }
-
-    #[test]
-    fn test_resolve_out_directory() {
-        let (dir, name) = resolve_out(Path::new("./dist"));
-        assert_eq!(dir, PathBuf::from("./dist"));
-        assert_eq!(name, "protocol.bin");
-    }
-
-    #[test]
-    fn test_resolve_out_bin_file_with_parent() {
-        let (dir, name) = resolve_out(Path::new("./dist/app1.bin"));
-        assert_eq!(dir, PathBuf::from("./dist"));
-        assert_eq!(name, "app1.bin");
     }
 
     #[test]

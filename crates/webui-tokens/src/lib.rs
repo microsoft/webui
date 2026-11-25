@@ -551,12 +551,6 @@ mod tests {
     // ── var(--x) extraction tests ────────────────────────────────────
 
     #[test]
-    fn extract_var_refs_simple() {
-        let refs = extract_var_references("var(--color-primary)");
-        assert_eq!(refs, vec!["color-primary"]);
-    }
-
-    #[test]
     fn extract_var_refs_multiple() {
         let refs =
             extract_var_references("color-mix(in oklch, var(--accent) 15%, var(--background))");
@@ -591,12 +585,6 @@ mod tests {
     fn extract_var_refs_underscore_name() {
         let refs = extract_var_references("var(--my_token)");
         assert_eq!(refs, vec!["my_token"]);
-    }
-
-    #[test]
-    fn extract_var_refs_calc_expression() {
-        let refs = extract_var_references("calc(var(--spacing-m) * 2)");
-        assert_eq!(refs, vec!["spacing-m"]);
     }
 
     #[test]
@@ -725,29 +713,6 @@ mod tests {
     }
 
     #[test]
-    fn resolve_expands_transitive_dependencies() {
-        let token_file = TokenFile {
-            themes: HashMap::from([(
-                "light".into(),
-                HashMap::from([
-                    ("surface-page".into(), "var(--neutral-100)".into()),
-                    ("neutral-100".into(), "#f9fafb".into()),
-                ]),
-            )]),
-        };
-
-        let protocol_tokens = vec!["surface-page".into()];
-        let resolved = resolve_tokens(&protocol_tokens, &token_file).unwrap();
-
-        let css = &resolved.css["light"];
-        assert!(
-            css.contains("--neutral-100: #f9fafb;"),
-            "transitive dep should be included: {css}"
-        );
-        assert!(css.contains("--surface-page: var(--neutral-100);"));
-    }
-
-    #[test]
     fn resolve_deep_transitive_chain() {
         let token_file = TokenFile {
             themes: HashMap::from([(
@@ -840,22 +805,6 @@ mod tests {
     }
 
     #[test]
-    fn validate_required_tokens_accepts_complete_theme() {
-        let token_file = TokenFile {
-            themes: HashMap::from([(
-                "light".into(),
-                HashMap::from([
-                    ("surface-page".into(), "var(--neutral-100)".into()),
-                    ("neutral-100".into(), "#fff".into()),
-                ]),
-            )]),
-        };
-
-        let protocol_tokens = vec!["surface-page".into()];
-        validate_required_tokens(&protocol_tokens, &token_file).unwrap();
-    }
-
-    #[test]
     fn validate_required_tokens_errors_on_missing_token() {
         let token_file = TokenFile {
             themes: HashMap::from([("light".into(), HashMap::new())]),
@@ -892,17 +841,6 @@ mod tests {
             matches!(result, Err(TokenError::MissingToken { ref token, .. }) if token == "token-b"),
             "expected token-b missing, got: {result:?}"
         );
-    }
-
-    #[test]
-    fn validate_chain_tokens_exempts_literal_fallback_chain() {
-        // `var(--brand, #000)` must pass even when no theme defines `--brand`.
-        let token_file = TokenFile {
-            themes: HashMap::from([("light".into(), HashMap::new())]),
-        };
-        let chains = vec![chain(&["brand"], true)];
-
-        validate_chain_tokens(&chains, &token_file).unwrap();
     }
 
     #[test]

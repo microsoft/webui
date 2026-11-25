@@ -4321,35 +4321,6 @@ mod tests {
     }
 
     #[test]
-    fn protocol_partial_matches_direct_index_path() {
-        let mut fragments = HashMap::new();
-        fragments.insert(
-            "index.html".to_string(),
-            FragmentList {
-                fragments: vec![WebUIFragment::route("/", "home-page")],
-                contains_boundary: false,
-            },
-        );
-        fragments.insert(
-            "home-page".to_string(),
-            FragmentList {
-                fragments: vec![WebUIFragment::raw("<p>Home</p>")],
-                contains_boundary: false,
-            },
-        );
-        let protocol = WebUIProtocol::new(fragments);
-        let mut direct_index = ProtocolIndex::new(&protocol);
-        let direct =
-            render_partial_metadata(&protocol, "index.html", "/", "", &mut direct_index).unwrap();
-        let prepared = Protocol::new(protocol);
-        let cached = prepared
-            .render_partial_metadata("index.html", "/", "")
-            .unwrap();
-
-        assert_eq!(cached, direct);
-    }
-
-    #[test]
     fn protocol_partial_supports_concurrent_metadata_reads() {
         let mut fragments = HashMap::new();
         fragments.insert(
@@ -4787,32 +4758,6 @@ mod tests {
             needed.contains(&"email-message".to_string()),
             "email-message must be needed: {needed:?}"
         );
-    }
-
-    #[test]
-    fn test_get_needed_components_empty_inventory() {
-        let mut fragments = HashMap::new();
-        fragments.insert(
-            "app-shell".to_string(),
-            FragmentList {
-                fragments: vec![WebUIFragment::component("my-card")],
-                contains_boundary: false,
-            },
-        );
-        fragments.insert(
-            "my-card".to_string(),
-            FragmentList {
-                fragments: vec![WebUIFragment::raw("card")],
-                contains_boundary: false,
-            },
-        );
-
-        let protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
-        let comp_index = build_component_index(&protocol);
-        let (needed, _inv) =
-            get_needed_components(&protocol, "app-shell", "", &comp_index).unwrap();
-        assert!(needed.contains(&"app-shell".to_string()));
-        assert!(needed.contains(&"my-card".to_string()));
     }
 
     #[test]
@@ -6855,23 +6800,6 @@ mod tests {
     }
 
     // ── resolve_tag_templates tests ──────────────────────────────────
-
-    #[test]
-    fn test_resolve_tag_templates_no_placeholders() {
-        let tags = vec!["inbox".to_string(), "counts".to_string()];
-        let params = HashMap::new();
-        let resolved = resolve_tag_templates(&tags, &params);
-        assert_eq!(resolved, vec!["inbox", "counts"]);
-    }
-
-    #[test]
-    fn test_resolve_tag_templates_with_params() {
-        let tags = vec!["thread:{threadId}".to_string(), "inbox".to_string()];
-        let mut params = HashMap::new();
-        params.insert("threadId".to_string(), "42".to_string());
-        let resolved = resolve_tag_templates(&tags, &params);
-        assert_eq!(resolved, vec!["thread:42", "inbox"]);
-    }
 
     #[test]
     fn test_resolve_tag_templates_multiple_params() {

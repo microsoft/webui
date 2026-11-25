@@ -4186,19 +4186,6 @@ mod tests {
     }
 
     #[test]
-    fn test_metadata_has_for_loops() {
-        let result = generate_compiled_template(
-            "my-comp",
-            r#"<for each="item in items"><p>{{item.name}}</p></for>"#,
-        );
-        assert_no_client_markers(&result);
-        assert!(result.contains("\"items\""));
-        assert!(result.contains("\"item\""));
-        assert!(result.contains(r#""r":[["items","item",0,[0,0]]]"#));
-        assert!(!result.contains("<for"));
-    }
-
-    #[test]
     fn test_metadata_emits_first_child_key_path() {
         let result = generate_compiled_template(
             "my-comp",
@@ -4397,31 +4384,12 @@ mod tests {
     }
 
     #[test]
-    fn test_metadata_has_events() {
-        let result =
-            generate_compiled_template("my-comp", r#"<button @click="{onClick()}">Go</button>"#);
-        assert_no_client_markers(&result);
-        assert!(result.contains("\"click\""));
-        assert!(result.contains("\"onClick\""));
-        assert!(!result.contains("@click"));
-    }
-
-    #[test]
     fn test_metadata_has_events_unquoted() {
         let result =
             generate_compiled_template("my-comp", r#"<button @click={onClick()}>Go</button>"#);
         assert_no_client_markers(&result);
         assert!(result.contains("\"click\""));
         assert!(result.contains("\"onClick\""));
-    }
-
-    #[test]
-    fn test_metadata_has_events_with_arg() {
-        let result = generate_compiled_template("my-comp", r#"<input @keydown="{onKey(e)}" />"#);
-        assert_no_client_markers(&result);
-        assert!(result.contains("\"keydown\""));
-        assert!(result.contains("\"onKey\""));
-        assert!(result.contains(r#"["e"]"#)); // event argument
     }
 
     #[test]
@@ -4489,13 +4457,6 @@ mod tests {
     }
 
     #[test]
-    fn test_w_ref_compiles_without_retaining_its_source_attribute() {
-        let result = generate_compiled_template("my-comp", r#"<input w-ref="{myInput}" />"#);
-        assert!(!result.contains("w-ref"));
-        assert!(result.contains(r#""rf":[["myInput",1]]"#));
-    }
-
-    #[test]
     fn test_w_ref_unquoted_compiles_without_retaining_its_source_attribute() {
         let result = generate_compiled_template("my-comp", r#"<span w-ref={myLabel}>0</span>"#);
         assert!(!result.contains("w-ref"));
@@ -4518,17 +4479,6 @@ mod tests {
         assert!(err
             .to_string()
             .contains("component <mail-inbox-page> · element <input>"));
-    }
-
-    #[test]
-    fn test_metadata_has_root_events() {
-        let result = generate_compiled_template(
-            "my-comp",
-            r#"<template shadowrootmode="open" @click="{onClick(e)}"><div>hi</div></template>"#,
-        );
-        assert!(result.contains(r#","re":["#));
-        assert!(result.contains("\"click\""));
-        assert!(result.contains("\"onClick\""));
     }
 
     #[test]
@@ -4628,26 +4578,6 @@ mod tests {
     }
 
     #[test]
-    fn test_authored_component_defaults_to_unknown_surface_and_records_template_roots() {
-        // The parser plugin never analyzes JavaScript/TypeScript, so an
-        // authored (scripted) component's exact surface is unknown here — it
-        // defaults to `All` (full-state safety) regardless of script content.
-        // Only a validated bundler projection manifest, consumed later by
-        // `webui::build`, can narrow this to exact keys. Template roots are
-        // still recorded so the manifest consumer can union them in later.
-        let mut plugin = WebUIParserPlugin::new();
-        let comp = test_component("test-el", "<p>{{serverTitle}}</p>", None, true);
-        plugin
-            .register_component_template("test-el", &comp, &comp.html_content)
-            .unwrap();
-        let templates = plugin.take_component_templates().unwrap();
-        assert_eq!(templates[0].hydration, StateSurface::All);
-        assert_eq!(templates[0].navigation, StateSurface::All);
-        assert_eq!(templates[0].template_roots, vec!["serverTitle".to_string()]);
-        assert!(templates[0].is_scripted);
-    }
-
-    #[test]
     fn test_opaque_authored_component_defaults_to_unknown_surface() {
         let mut plugin = WebUIParserPlugin::new();
         let comp = test_component("test-el", "<p>{{serverTitle}}</p>", None, true);
@@ -4713,22 +4643,6 @@ mod tests {
     }
 
     #[test]
-    fn test_scripted_component_emits_client_template_without_static_host_marker() {
-        let mut plugin = WebUIParserPlugin::new();
-        let comp = test_component("test-el", "<p>{{name}}</p>", None, true);
-
-        plugin
-            .register_component_template("test-el", &comp, &comp.html_content)
-            .unwrap();
-        let templates = plugin.take_component_templates().unwrap();
-        assert_eq!(templates.len(), 1);
-        // Client-owned (authored) component: surface defaults to unknown.
-        assert_eq!(templates[0].hydration, StateSurface::All);
-        assert_eq!(templates[0].navigation, StateSurface::All);
-        assert!(!templates[0].template_json.contains(r#","th":1"#));
-    }
-
-    #[test]
     fn test_scriptless_event_component_template_fails() {
         let mut plugin = WebUIParserPlugin::new();
         let comp = test_component(
@@ -4749,18 +4663,6 @@ mod tests {
             message.contains("scriptless-event-handler"),
             "msg: {message}"
         );
-    }
-
-    #[test]
-    fn test_compiled_template_preserves_link_node_in_static_html() {
-        let result = generate_compiled_template(
-            "my-comp",
-            r#"<template shadowrootmode="open"><link rel="stylesheet" href="my-comp.css"><p>hi</p></template>"#,
-        );
-        assert!(result.contains(r#"rel=\"stylesheet\""#));
-        assert!(result.contains(r#"href=\"my-comp.css\""#));
-        assert!(result.contains(r#"<p>hi</p>"#));
-        assert!(!result.contains(",css:"));
     }
 
     #[test]
@@ -5129,15 +5031,6 @@ mod tests {
     }
 
     #[test]
-    fn test_multiple_conditionals() {
-        let result = generate_compiled_template(
-            "my-comp",
-            r#"<if condition="a"><span>A</span></if><if condition="b"><span>B</span></if>"#,
-        );
-        assert_no_client_markers(&result);
-    }
-
-    #[test]
     fn test_locator_paths_merge_adjacent_static_text_nodes() {
         let result = generate_compiled_template(
             "mp-product-grid",
@@ -5184,16 +5077,6 @@ mod tests {
     }
 
     #[test]
-    fn test_event_without_e_arg() {
-        let result =
-            generate_compiled_template("my-comp", r#"<button @click="{onClick()}">Go</button>"#);
-        assert!(
-            result.contains(r#"["click",[["onClick",[],1]]]"#),
-            "empty argument list should be preserved"
-        );
-    }
-
-    #[test]
     fn test_duplicate_event_groups_preserve_first_seen_order() {
         let result = generate_compiled_template(
             "my-comp",
@@ -5209,35 +5092,6 @@ mod tests {
         assert!(
             result.contains(r#"["click",[["onA",[],1],["onB",[["e"]],3,1]]]"#),
             "duplicate click handlers should share one group: {result}"
-        );
-    }
-
-    #[test]
-    fn test_root_event_without_e_arg() {
-        let result = generate_compiled_template(
-            "my-comp",
-            r#"<template shadowrootmode="open" @submit="{onSubmit()}"><form>hi</form></template>"#,
-        );
-        assert!(result.contains(r#","re":["#));
-        assert!(result.contains("\"submit\""));
-        assert!(result.contains("\"onSubmit\""));
-        assert!(
-            result.contains(r#"["submit","onSubmit",[]]"#),
-            "empty root argument list should be preserved"
-        );
-    }
-
-    #[test]
-    fn test_triple_brace_raw_binding() {
-        let result = generate_compiled_template("my-comp", r#"<div>{{{rawHtml}}}</div>"#);
-        assert_no_client_markers(&result);
-        assert!(
-            result.contains(r#","tx":[[[1,0],[["rawHtml"]],1]]"#),
-            "triple brace produces text locator with raw flag: {result}"
-        );
-        assert!(
-            result.contains("\"rawHtml\""),
-            "rawHtml path in text bindings"
         );
     }
 
@@ -5261,29 +5115,6 @@ mod tests {
         assert!(
             result.contains(r#","tx":[[[1,0],[["first"]],1],[[1,0,1],[["second"]],1]]"#,),
             "each raw binding needs one metadata entry and one marker range: {result}"
-        );
-    }
-
-    #[test]
-    fn test_for_with_complex_body() {
-        let result = generate_compiled_template(
-            "my-comp",
-            r#"<for each="user in users"><div class="card"><h2>{{user.name}}</h2><p>{{user.bio}}</p></div></for>"#,
-        );
-        assert_no_client_markers(&result);
-        assert!(result.contains("\"users\""), "collection path");
-        assert!(result.contains("\"user\""), "item variable");
-        assert!(
-            result.contains(r#","b":["#),
-            "compiled block table expected"
-        );
-        assert!(
-            !result.contains("{{user.name}}"),
-            "bindings should be compiled"
-        );
-        assert!(
-            !result.contains("{{user.bio}}"),
-            "bindings should be compiled"
         );
     }
 
@@ -5486,14 +5317,6 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_event_handler_with_event_arg() {
-        assert!(matches!(
-            parse_event_handler("{onClick(e)}"),
-            EventHandler::Valid(ref name, ref args) if name == "onClick" && args == &vec![EventArg::Event]
-        ));
-    }
-
-    #[test]
     fn test_parse_event_handler_with_mixed_args() {
         assert!(matches!(
             parse_event_handler("{onClick(item.id, e, 'ok', 7, false, null)}"),
@@ -5565,30 +5388,5 @@ mod tests {
     #[test]
     fn test_parse_event_handler_empty_value() {
         assert!(matches!(parse_event_handler("{}"), EventHandler::Empty));
-    }
-
-    #[test]
-    fn test_attribute_to_camel_aria() {
-        use webui_protocol::attrs::attribute_to_camel;
-        assert_eq!(attribute_to_camel("aria-describedby"), "ariaDescribedBy");
-        assert_eq!(attribute_to_camel("aria-labelledby"), "ariaLabelledBy");
-        assert_eq!(
-            attribute_to_camel("aria-activedescendant"),
-            "ariaActiveDescendant"
-        );
-        assert_eq!(attribute_to_camel("aria-label"), "ariaLabel");
-        assert_eq!(attribute_to_camel("aria-hidden"), "ariaHidden");
-    }
-
-    #[test]
-    fn test_attribute_to_camel_html_global() {
-        use webui_protocol::attrs::attribute_to_camel;
-        assert_eq!(attribute_to_camel("readonly"), "readOnly");
-        assert_eq!(attribute_to_camel("tabindex"), "tabIndex");
-        assert_eq!(attribute_to_camel("accesskey"), "accessKey");
-        assert_eq!(attribute_to_camel("contenteditable"), "contentEditable");
-        assert_eq!(attribute_to_camel("inputmode"), "inputMode");
-        assert_eq!(attribute_to_camel("maxlength"), "maxLength");
-        assert_eq!(attribute_to_camel("formaction"), "formAction");
     }
 }

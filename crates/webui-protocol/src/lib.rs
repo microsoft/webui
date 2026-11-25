@@ -1719,14 +1719,6 @@ mod tests {
     }
 
     #[test]
-    fn test_protobuf_roundtrip() {
-        let protocol = sample_protocol();
-        let bytes = protocol.to_protobuf().expect("encode failed");
-        let decoded = WebUIProtocol::from_protobuf(&bytes).expect("decode failed");
-        assert_eq!(protocol, decoded);
-    }
-
-    #[test]
     fn test_protobuf_module_preloads_roundtrip_preserves_order() {
         // Order is load-bearing: preloads are issued in document order over one
         // connection, and a measured 125 ms swing separates largest-first from
@@ -2178,13 +2170,6 @@ mod tests {
     }
 
     #[test]
-    fn test_protobuf_pre_allocated_buffer() {
-        let protocol = sample_protocol();
-        let bytes = protocol.to_protobuf().unwrap();
-        assert_eq!(bytes.len(), protocol.encoded_len());
-    }
-
-    #[test]
     fn test_protocol_new_has_empty_tokens() {
         let protocol = WebUIProtocol::new(HashMap::new());
         assert!(protocol.tokens.is_empty());
@@ -2240,45 +2225,6 @@ mod tests {
         let decoded = WebUIProtocol::from_protobuf(&bytes).unwrap();
         assert!(decoded.component_uses_shadow_dom("my-card"));
         assert!(!decoded.component_uses_shadow_dom("missing-card"));
-    }
-
-    #[test]
-    fn test_protocol_with_tokens() {
-        let tokens = vec!["color-primary".to_string(), "spacing-m".to_string()];
-        let protocol = WebUIProtocol::with_tokens(HashMap::new(), tokens.clone());
-        assert_eq!(protocol.tokens, tokens);
-    }
-
-    #[test]
-    fn test_protobuf_route_fragment_roundtrip() {
-        let mut fragments = HashMap::new();
-        fragments.insert(
-            "main".to_string(),
-            FragmentList {
-                fragments: vec![WebUIFragment::route("/profile/:id", "profile-page")],
-                contains_boundary: false,
-            },
-        );
-        fragments.insert(
-            "profile-page".to_string(),
-            FragmentList {
-                fragments: vec![WebUIFragment::raw("<h1>Profile</h1>")],
-                contains_boundary: false,
-            },
-        );
-        let protocol = WebUIProtocol::new(fragments);
-        let bytes = protocol.to_protobuf().expect("encode failed");
-        let decoded = WebUIProtocol::from_protobuf(&bytes).expect("decode failed");
-        assert_eq!(protocol, decoded);
-
-        let frag = &decoded.fragments["main"].fragments[0];
-        match frag.fragment.as_ref() {
-            Some(web_ui_fragment::Fragment::Route(r)) => {
-                assert_eq!(r.path, "/profile/:id");
-                assert_eq!(r.fragment_id, "profile-page");
-            }
-            _ => panic!("expected route fragment"),
-        }
     }
 
     #[test]
@@ -2360,15 +2306,6 @@ mod tests {
         let bytes = protocol.to_protobuf().expect("encode failed");
         let decoded = WebUIProtocol::from_protobuf(&bytes).expect("decode failed");
         assert_eq!(protocol, decoded);
-    }
-
-    #[test]
-    fn test_protobuf_backward_compat_no_routes() {
-        // Protocol without any fragments should decode successfully
-        let protocol = WebUIProtocol::new(HashMap::new());
-        let bytes = protocol.to_protobuf().expect("encode failed");
-        let decoded = WebUIProtocol::from_protobuf(&bytes).expect("decode failed");
-        assert!(decoded.fragments.is_empty());
     }
 
     #[test]

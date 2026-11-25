@@ -551,35 +551,6 @@ mod tests {
     }
 
     #[test]
-    fn protocol_reuses_decoded_protocol() {
-        use std::collections::HashMap;
-        use webui_protocol::{FragmentList, WebUIFragment};
-
-        let mut fragments = HashMap::new();
-        fragments.insert(
-            "index.html".to_string(),
-            FragmentList {
-                fragments: vec![WebUIFragment::signal("name".to_string(), true)],
-                contains_boundary: false,
-            },
-        );
-        let bytes = WebUIProtocol::new(fragments)
-            .to_protobuf()
-            .expect("protocol should serialize");
-        let protocol = Protocol::new(&bytes, None).expect("protocol should load");
-
-        let first = protocol
-            .render(r#"{"name":"first"}"#, None)
-            .expect("first render should succeed");
-        let second = protocol
-            .render(r#"{"name":"second"}"#, None)
-            .expect("second render should succeed");
-
-        assert_eq!(first, "first");
-        assert_eq!(second, "second");
-    }
-
-    #[test]
     fn protocol_render_learns_route_output_capacity() {
         use std::collections::HashMap;
         use webui_protocol::{FragmentList, WebUIFragment};

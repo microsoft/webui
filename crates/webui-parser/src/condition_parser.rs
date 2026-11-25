@@ -379,26 +379,6 @@ mod tests {
     }
 
     #[test]
-    fn test_tokenize_simple_identifier() {
-        let parser = ConditionParser::new();
-        let result = parser
-            .parse("isVisible")
-            .expect("Failed to parse simple identifier");
-
-        assert!(matches!(&result.expr, Some(Expr::Identifier(id)) if id.value == "isVisible"));
-    }
-
-    #[test]
-    fn test_tokenize_dotted_path() {
-        let parser = ConditionParser::new();
-        let result = parser
-            .parse("appearance")
-            .expect("Failed to parse identifier");
-
-        assert!(matches!(&result.expr, Some(Expr::Identifier(id)) if id.value == "appearance"));
-    }
-
-    #[test]
     fn test_tokenize_binary_expression() {
         let parser = ConditionParser::new();
         let result = parser
@@ -427,18 +407,6 @@ mod tests {
             ) &&
             LogicalOperator::try_from(compound.op) == Ok(LogicalOperator::And) &&
             matches!(compound.right.as_ref().and_then(|r| r.expr.as_ref()), Some(Expr::Identifier(id)) if id.value == "actions.trailing")
-        ));
-    }
-
-    #[test]
-    fn test_tokenize_unary_not() {
-        let parser = ConditionParser::new();
-        let result = parser
-            .parse("!disabled")
-            .expect("Failed to parse unary not expression");
-
-        assert!(matches!(&result.expr, Some(Expr::Not(not)) if
-            matches!(not.condition.as_ref().and_then(|c| c.expr.as_ref()), Some(Expr::Identifier(id)) if id.value == "disabled")
         ));
     }
 

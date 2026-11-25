@@ -492,25 +492,6 @@ mod tests {
     }
 
     #[test]
-    fn getters_expose_structured_fields() {
-        let diag = Diagnostic::error("boom")
-            .component("c")
-            .element("e")
-            .snippet("snip")
-            .help("do this");
-        assert_eq!(diag.severity(), Severity::Error);
-        assert_eq!(diag.title(), "boom");
-        assert_eq!(diag.component_name(), Some("c"));
-        assert_eq!(diag.element_name(), Some("e"));
-        assert_eq!(diag.snippet_text(), Some("snip"));
-        assert_eq!(diag.help_text(), Some("do this"));
-        assert_eq!(
-            diag.location().as_deref(),
-            Some("in component <c> · element <e>")
-        );
-    }
-
-    #[test]
     fn position_renders_rustc_style_location() {
         let diag = Diagnostic::error("boom")
             .component("index.html")

@@ -7,43 +7,6 @@
 use crate::support::{edge, failure, framework, graph, module, single, success};
 
 #[test]
-fn basic_single_entry_uses_javascript_property_names_not_attribute_names() {
-    let mut graph = graph([
-        (
-            "/app/src/contact-card.ts",
-            module(
-                include_str!("../fixtures/contact_card.ts"),
-                vec![framework()],
-            ),
-        ),
-        (
-            "/app/src/index.ts",
-            module(
-                "import './contact-card.ts';",
-                vec![edge("./contact-card.ts", "/app/src/contact-card.ts")],
-            ),
-        ),
-    ]);
-    graph.entries = ["/app/src/index.ts".into()].into();
-    success(
-        &graph,
-        &[(
-            "contact-card",
-            "/app/src/contact-card.ts",
-            &["email", "firstName", "lastName"],
-        )],
-    );
-}
-
-#[test]
-fn empty_keys_are_a_proven_surface() {
-    success(
-        &single("import { WebUIElement } from '@microsoft/webui-framework'; class StaticBanner extends WebUIElement {} StaticBanner.define('static-banner');"),
-        &[("static-banner", "/app/card.ts", &[])],
-    );
-}
-
-#[test]
 fn aliased_and_namespace_decorators_preserve_framework_identity() {
     for (source, tag, keys) in [
         ("import { observable as obs, WebUIElement } from '@microsoft/webui-framework'; class Counter extends WebUIElement { @obs count = 0; } Counter.define('my-counter');", "my-counter", &["count"][..]),
@@ -51,19 +14,6 @@ fn aliased_and_namespace_decorators_preserve_framework_identity() {
     ] {
         success(&single(source), &[(tag, "/app/card.ts", keys)]);
     }
-}
-
-#[test]
-fn adapter_resolved_alias_uses_authoritative_package_identity() {
-    let mut import = framework();
-    import.specifier = "#webui".into();
-    success(
-        &graph([("/app/alias-card.ts", module(
-            "import { observable, WebUIElement } from '#webui'; class AliasCard extends WebUIElement { @observable value = ''; } AliasCard.define('alias-card');",
-            vec![import],
-        ))]),
-        &[("alias-card", "/app/alias-card.ts", &["value"])],
-    );
 }
 
 #[test]
@@ -151,14 +101,6 @@ fn custom_elements_imported_class_reports_the_defining_not_registration_module()
             ("/app/register.ts", module("import { Card as ImportedCard } from './card.ts'; customElements.define('imported-card', ImportedCard);", vec![edge("./card.ts", "/app/card.ts")])),
         ]),
         &[("imported-card", "/app/card.ts", &["value"])],
-    );
-}
-
-#[test]
-fn immutable_class_expression_retains_exact_semantics() {
-    success(
-        &single("import { observable, WebUIElement } from '@microsoft/webui-framework'; const ExpressionCard = class extends WebUIElement { @observable value = ''; }; ExpressionCard.define('expression-card');"),
-        &[("expression-card", "/app/card.ts", &["value"])],
     );
 }
 

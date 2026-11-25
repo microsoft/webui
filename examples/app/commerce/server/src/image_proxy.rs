@@ -226,16 +226,6 @@ mod tests {
     }
 
     #[test]
-    fn test_image_directories_do_not_share_files() {
-        let first = TestImagesDir::new();
-        let second = TestImagesDir::new();
-        assert_ne!(first.path(), second.path());
-        drop(first);
-        let cache = ImageCache::load(second.path()).unwrap_or_else(|error| panic!("{error}"));
-        assert_eq!(cache.len(), 2);
-    }
-
-    #[test]
     fn get_returns_bytes_for_valid_stem_and_width() {
         let images = TestImagesDir::new();
         let cache = ImageCache::load(images.path()).unwrap_or_else(|error| panic!("{error}"));

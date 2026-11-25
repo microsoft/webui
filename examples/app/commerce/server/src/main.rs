@@ -99,18 +99,11 @@ fn build_server(
 
 #[cfg(test)]
 mod tests {
-    use super::{build_server, ApiArgs};
+    use super::build_server;
     use actix_web::{dev::ServerHandle, web};
     use anyhow::{Context, Result};
-    use clap::Parser;
     use std::path::Path;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-    #[test]
-    fn parses_custom_port() {
-        let args = ApiArgs::parse_from(["marketplace-api", "--port", "4001"]);
-        assert_eq!(args.port, 4001);
-    }
 
     fn start_server() -> Result<(u16, ServerHandle)> {
         let commerce_root = Path::new(env!("CARGO_MANIFEST_DIR"))

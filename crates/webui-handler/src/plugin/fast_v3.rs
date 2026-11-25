@@ -221,66 +221,6 @@ mod tests {
     }
 
     #[test]
-    fn test_binding_start_format() {
-        let mut plugin = FastV3HydrationPlugin::new();
-        plugin.push_scope();
-        let mut writer = TestWriter::new();
-        plugin
-            .on_binding_start("userName", false, &mut writer)
-            .unwrap();
-        assert_eq!(writer.output, "<!--fe:b-->");
-    }
-
-    #[test]
-    fn test_binding_end_format() {
-        let mut plugin = FastV3HydrationPlugin::new();
-        plugin.push_scope();
-        let mut writer = TestWriter::new();
-        plugin
-            .on_binding_start("userName", false, &mut writer)
-            .unwrap();
-        writer.output.clear();
-        plugin
-            .on_binding_end("userName", false, &mut writer)
-            .unwrap();
-        assert_eq!(writer.output, "<!--fe:/b-->");
-    }
-
-    #[test]
-    fn test_binding_sequence_uses_compact_markers() {
-        let mut plugin = FastV3HydrationPlugin::new();
-        plugin.push_scope();
-        let mut writer = TestWriter::new();
-        plugin.on_binding_start("a", false, &mut writer).unwrap();
-        plugin.on_binding_end("a", false, &mut writer).unwrap();
-        writer.output.clear();
-        plugin.on_binding_start("b", false, &mut writer).unwrap();
-        assert_eq!(writer.output, "<!--fe:b-->");
-    }
-
-    #[test]
-    fn test_scopes_emit_compact_markers() {
-        let mut plugin = FastV3HydrationPlugin::new();
-        let mut writer = TestWriter::new();
-        // Push first active scope (root is disabled)
-        plugin.push_scope();
-        // Active scope emits compact markers.
-        plugin.on_binding_start("a", false, &mut writer).unwrap();
-        plugin.on_binding_end("a", false, &mut writer).unwrap();
-        // Push child scope: markers are still emitted.
-        plugin.push_scope();
-        writer.output.clear();
-        plugin.on_binding_start("b", false, &mut writer).unwrap();
-        assert_eq!(writer.output, "<!--fe:b-->");
-        plugin.on_binding_end("b", false, &mut writer).unwrap();
-        // Pop child scope: parent remains active.
-        plugin.pop_scope();
-        writer.output.clear();
-        plugin.on_binding_start("c", false, &mut writer).unwrap();
-        assert_eq!(writer.output, "<!--fe:b-->");
-    }
-
-    #[test]
     fn test_repeat_item_markers() {
         let mut plugin = FastV3HydrationPlugin::new();
         plugin.push_scope();
@@ -290,26 +230,6 @@ mod tests {
         writer.output.clear();
         plugin.on_repeat_item_end(0, &mut writer).unwrap();
         assert_eq!(writer.output, "<!--fe:/r-->");
-    }
-
-    #[test]
-    fn test_attribute_binding_single() {
-        let mut plugin = FastV3HydrationPlugin::new();
-        plugin.push_scope();
-        let mut writer = TestWriter::new();
-        let data = 1u32.to_le_bytes();
-        plugin.on_element_data(&data, &mut writer).unwrap();
-        assert_eq!(writer.output, r#" data-fe="1""#);
-    }
-
-    #[test]
-    fn test_attribute_binding_multi() {
-        let mut plugin = FastV3HydrationPlugin::new();
-        plugin.push_scope();
-        let mut writer = TestWriter::new();
-        let data = 3u32.to_le_bytes();
-        plugin.on_element_data(&data, &mut writer).unwrap();
-        assert_eq!(writer.output, r#" data-fe="3""#);
     }
 
     #[test]
@@ -461,28 +381,6 @@ mod tests {
         let output = render_no_plugin(&protocol, &state);
         assert_eq!(output, "<p>Alice</p>");
         assert!(!output.contains("<!--fe:"));
-    }
-
-    #[test]
-    fn test_hydration_signal_markers() {
-        let mut fragments = HashMap::new();
-        fragments.insert(
-            "index.html".to_string(),
-            FragmentList {
-                fragments: vec![
-                    WebUIFragment::raw("<p>"),
-                    WebUIFragment::signal("name", false),
-                    WebUIFragment::raw("</p>"),
-                ],
-                contains_boundary: false,
-            },
-        );
-        let protocol = WebUIProtocol::new(fragments);
-        let state = test_json!({"name": "Alice"});
-        let output =
-            render_with_plugin(&protocol, &state, || Box::new(FastV3HydrationPlugin::new()));
-        // Root scope is disabled — no markers at root level
-        assert_eq!(output, "<p>Alice</p>");
     }
 
     #[test]

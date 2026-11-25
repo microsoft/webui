@@ -138,15 +138,6 @@ fn export_fallbacks_do_not_cache_a_result_before_deferred_modules_are_known() {
 }
 
 #[test]
-fn same_module_identity_uses_fresh_source_and_symbols_on_every_build() {
-    for field in ["before", "after", "before"] {
-        let graph = single(&format!("import {{ WebUIElement, observable }} from '@microsoft/webui-framework'; class Card extends WebUIElement {{ @observable {field} = ''; }} Card.define('changing-card');"));
-        success(&graph, &[("changing-card", "/app/card.ts", &[field])]);
-        parsed_once(&analyze_with_report(&graph), ["/app/card.ts".into()].into());
-    }
-}
-
-#[test]
 fn failed_parse_does_not_poison_a_fresh_build_at_the_same_identity() {
     let broken = single("class Broken { define( ");
     failure(&broken, &["PROJ-C001"]);

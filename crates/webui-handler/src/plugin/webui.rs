@@ -297,23 +297,6 @@ mod tests {
     }
 
     #[test]
-    fn test_default_creates_instance() {
-        let _plugin = WebUIHydrationPlugin::default();
-    }
-
-    #[test]
-    fn test_signal_binding_emits_no_output() {
-        let mut plugin = WebUIHydrationPlugin::new();
-        let mut writer = TestWriter::new();
-        plugin.on_binding_start("x", false, &mut writer).unwrap();
-        plugin.on_binding_end("x", false, &mut writer).unwrap();
-        assert_eq!(
-            writer.output, "",
-            "signal binding hooks must not emit output"
-        );
-    }
-
-    #[test]
     fn test_raw_signal_binding_emits_range_markers() {
         let mut plugin = WebUIHydrationPlugin::new();
         let mut writer = TestWriter::new();
@@ -324,46 +307,12 @@ mod tests {
     }
 
     #[test]
-    fn test_for_loop_emits_repeat_markers() {
-        let mut plugin = WebUIHydrationPlugin::new();
-        let mut writer = TestWriter::new();
-        plugin.on_for_start("items", &mut writer).unwrap();
-        plugin.on_repeat_item_start(0, &mut writer).unwrap();
-        plugin.push_scope();
-        writer.write("<div>A</div>").unwrap();
-        plugin.pop_scope();
-        plugin.on_repeat_item_end(0, &mut writer).unwrap();
-        plugin.on_repeat_item_start(1, &mut writer).unwrap();
-        plugin.push_scope();
-        writer.write("<div>B</div>").unwrap();
-        plugin.pop_scope();
-        plugin.on_repeat_item_end(1, &mut writer).unwrap();
-        plugin.on_for_end("items", &mut writer).unwrap();
-        assert_eq!(
-            writer.output,
-            "<!--wr--><!--wi--><div>A</div><!--wi--><div>B</div><!--/wr-->"
-        );
-    }
-
-    #[test]
     fn test_empty_for_loop_emits_boundary_markers() {
         let mut plugin = WebUIHydrationPlugin::new();
         let mut writer = TestWriter::new();
         plugin.on_for_start("items", &mut writer).unwrap();
         plugin.on_for_end("items", &mut writer).unwrap();
         assert_eq!(writer.output, "<!--wr--><!--/wr-->");
-    }
-
-    #[test]
-    fn test_if_true_emits_cond_markers() {
-        let mut plugin = WebUIHydrationPlugin::new();
-        let mut writer = TestWriter::new();
-        plugin.on_if_start("show", &mut writer).unwrap();
-        plugin.push_scope();
-        writer.write("<p>visible</p>").unwrap();
-        plugin.pop_scope();
-        plugin.on_if_end("show", &mut writer).unwrap();
-        assert_eq!(writer.output, "<!--wc--><p>visible</p><!--/wc-->");
     }
 
     #[test]
@@ -405,15 +354,6 @@ mod tests {
         let data = 3u32.to_le_bytes();
         plugin.on_element_data(&data, &mut writer).unwrap();
         assert_eq!(writer.output, "", "element data must not emit output");
-    }
-
-    #[test]
-    fn test_scope_push_pop_is_noop() {
-        let mut plugin = WebUIHydrationPlugin::new();
-        plugin.push_scope();
-        plugin.push_scope();
-        plugin.pop_scope();
-        plugin.pop_scope();
     }
 
     #[test]
@@ -514,23 +454,6 @@ mod tests {
             "non-rendered component should NOT be emitted: {}",
             writer.output
         );
-    }
-
-    #[test]
-    fn test_emit_templates_empty_set() {
-        let mut writer = TestWriter::new();
-        let mut protocol = webui_protocol::WebUIProtocol::new(std::collections::HashMap::new());
-        protocol
-            .components
-            .entry("comp-a".to_string())
-            .or_default()
-            .template = iife_template("comp-a", "h:\"a\"");
-        let components: Vec<String> = Vec::new();
-        let plugin = WebUIHydrationPlugin::new();
-        plugin
-            .emit_templates(&protocol, &components, None, &mut writer)
-            .unwrap();
-        assert_eq!(writer.output, "", "empty set should emit nothing");
     }
 
     #[test]

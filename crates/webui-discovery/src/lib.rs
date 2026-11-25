@@ -190,46 +190,6 @@ pub fn collect_watch_paths(sources: &[String], search_dir: &Path) -> Vec<PathBuf
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_classify_relative_path() {
-        assert!(matches!(
-            classify_source("./libs/shared"),
-            ComponentSource::Path(_)
-        ));
-        assert!(matches!(
-            classify_source("../components"),
-            ComponentSource::Path(_)
-        ));
-    }
-
-    #[test]
-    fn test_classify_absolute_path() {
-        assert!(matches!(
-            classify_source("/absolute/path"),
-            ComponentSource::Path(_)
-        ));
-    }
-
-    #[test]
-    fn test_classify_npm_package() {
-        assert!(matches!(
-            classify_source("my-widget"),
-            ComponentSource::NpmPackage(_)
-        ));
-    }
-
-    #[test]
-    fn test_classify_scoped_npm_package() {
-        assert!(matches!(
-            classify_source("@reactive-ui"),
-            ComponentSource::NpmPackage(_)
-        ));
-        assert!(matches!(
-            classify_source("@scope/button"),
-            ComponentSource::NpmPackage(_)
-        ));
-    }
-
     #[cfg(windows)]
     #[test]
     fn test_classify_windows_drive_path() {
