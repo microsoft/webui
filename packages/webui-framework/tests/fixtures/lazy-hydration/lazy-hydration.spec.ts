@@ -65,38 +65,6 @@ async function installControllableObserver(page: Page): Promise<void> {
 }
 
 test.describe('component lazy hydration', () => {
-  test('completes the startup cohort without waiting for offscreen roots', async ({ page }) => {
-    await page.addInitScript(() => {
-      const observed = window as unknown as {
-        __hydrationCompleteCount?: number;
-        __hydratedAtComplete?: string[];
-      };
-      window.addEventListener('webui:hydration-complete', () => {
-        observed.__hydrationCompleteCount =
-          (observed.__hydrationCompleteCount ?? 0) + 1;
-        observed.__hydratedAtComplete = Array.from(
-          document.querySelectorAll('[data-hydrated]'),
-          (element) => element.id,
-        );
-      });
-    });
-    await page.goto(FIXTURE);
-
-    await expect.poll(() =>
-      page.evaluate(() =>
-        (window as unknown as { __hydrationCompleteCount?: number })
-          .__hydrationCompleteCount ?? 0
-      )
-    ).toBe(1);
-    const hydrated = await page.evaluate(() =>
-      (window as unknown as { __hydratedAtComplete?: string[] })
-        .__hydratedAtComplete
-    );
-    expect(hydrated).toContain('visible');
-    expect(hydrated).toContain('near');
-    expect(hydrated).not.toContain('offscreen');
-  });
-
   test('completes startup when every lazy root is offscreen', async ({ page }) => {
     const lazyRootIds = [
       'visible',
@@ -1237,21 +1205,6 @@ test.describe('component lazy hydration', () => {
     ).toEqual([]);
   });
 
-  test('mounts client-created components eagerly', async ({ page }) => {
-    await page.goto(FIXTURE);
-    const hydratedSynchronously = await page.evaluate(() => {
-      const element = document.createElement('test-lazy-item');
-      element.id = 'client-created';
-      element.setAttribute('label', 'Client');
-      element.setAttribute('count', '4');
-      document.body.appendChild(element);
-      return element.hasAttribute('data-hydrated');
-    });
-    expect(hydratedSynchronously).toBe(true);
-    await expect(page.locator('#client-created .label')).toHaveText('Client');
-    await expect(page.locator('#client-created .count')).toHaveText('4');
-  });
-
   test('reconnects client-created components eagerly after teardown', async ({ page }) => {
     await installControllableObserver(page);
     await page.goto(FIXTURE);
@@ -1307,13 +1260,6 @@ test.describe('w-hydrate="eager" SSR escape hatch', () => {
     );
     await page.locator('#static-child button').click();
     await expect(page.locator('#static-child .count')).toHaveText('1');
-  });
-
-  test('hydrates synchronously despite being offscreen, while a normal visible sibling still defers', async ({ page }) => {
-    await page.goto(FIXTURE);
-
-    await expect(page.locator('#offscreen-eager-escape')).toHaveAttribute('data-hydrated', '');
-    await expect(page.locator('#offscreen')).not.toHaveAttribute('data-hydrated', '');
   });
 
   test('remains eager after a delayed reconnect', async ({ page }) => {

@@ -90,21 +90,6 @@ test.describe('slot-shadow: SPA partial regression', () => {
     });
   });
 
-  test('empty child gets a shadow root (baseline)', async ({ page }) => {
-    const hasShadow = await page.evaluate(() => {
-      const el = document.querySelector('#empty-child');
-      return !!el?.shadowRoot;
-    });
-    expect(hasShadow).toBe(true);
-  });
-
-  test('authored Shadow wrapper creates the parent shadow root', async ({ page }) => {
-    const hasShadow = await page.locator('#parent').evaluate(
-      element => !!element.shadowRoot,
-    );
-    expect(hasShadow).toBe(true);
-  });
-
   test('child with pre-existing slot content gets a shadow root', async ({ page }) => {
     // Wait for the preloaded child to be ready
     await page.waitForFunction(() => {

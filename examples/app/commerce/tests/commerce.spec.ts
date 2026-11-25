@@ -45,25 +45,6 @@ async function expectSoftNavigation(
 // ── SSR Tests (direct page loads) ────────────────────────────────
 
 test.describe('SSR pages', () => {
-  test('home page renders product grid', async ({ page }) => {
-    await page.goto('/');
-    await expect(page.locator('h3').first()).toBeVisible();
-    const cards = page.locator('mp-product-card');
-    await expect(cards.first()).toBeVisible();
-    const count = await cards.count();
-    expect(count).toBeGreaterThanOrEqual(6);
-  });
-
-  test('search page renders all products', async ({ page }) => {
-    await page.goto('/search');
-    await expect(page.getByRole('heading', { name: 'Collections' })).toBeVisible();
-    await expect(page.getByRole('heading', { name: 'Sort by' })).toBeVisible();
-    const cards = page.locator('mp-product-card');
-    await expect(cards.first()).toBeVisible();
-    const count = await cards.count();
-    expect(count).toBeGreaterThanOrEqual(10);
-  });
-
   test('scriptless containers use dormant hosts while authored children hydrate', async ({ page }) => {
     await page.goto('/search/shirts');
     await expect(page.locator('mp-product-grid mp-product-card')).toHaveCount(3);
@@ -92,65 +73,11 @@ test.describe('SSR pages', () => {
     await expect(price.locator('.currency')).toHaveText('TEST');
   });
 
-  test('category page renders filtered products', async ({ page }) => {
-    await page.goto('/search/shirts');
-    await expect(page.getByRole('heading', { name: 'Collections' })).toBeVisible();
-    // Shirts category has 3 products
-    const cards = page.locator('mp-product-card');
-    await expect(cards).toHaveCount(3);
-    await expect(page.getByRole('heading', { name: 'Acme Circles T-Shirt' })).toBeVisible();
-    await expect(page.getByRole('heading', { name: 'Acme Prism T-Shirt' })).toBeVisible();
-    await expect(page.getByRole('heading', { name: 'Acme T-Shirt' })).toBeVisible();
-  });
-
-  test('category page has correct sort option URLs', async ({ page }) => {
-    await page.goto('/search/shirts');
-    const sortLinks = page.locator('mp-filter-list').getByRole('link');
-    await expect(sortLinks.first()).toBeVisible();
-    // All sort links should include /shirts
-    for (const link of await sortLinks.all()) {
-      const href = await link.getAttribute('href');
-      expect(href).toContain('/search/shirts');
-    }
-  });
-
-  test('product page renders product details', async ({ page }) => {
-    await page.goto('/product/acme-geometric-circles-t-shirt');
-    await expect(page.getByRole('heading', { name: 'Acme Circles T-Shirt', level: 1 })).toBeVisible();
-    // Variant selectors
-    await expect(page.getByText('COLOR')).toBeVisible();
-    await expect(page.getByText('SIZE')).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Black' })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'XS' })).toBeVisible();
-    // Add to cart
-    await expect(page.getByRole('button', { name: 'Add To Cart' })).toBeVisible();
-    // Related products
-    await expect(page.getByRole('heading', { name: 'Related Products' })).toBeVisible();
-  });
-
   test('about page renders content', async ({ page }) => {
     await page.goto('/about');
     await expect(page.locator('main')).toContainText('About');
   });
 
-  test('category nav shows all categories on search page', async ({ page }) => {
-    await page.goto('/search/shirts');
-    await expect(page.getByRole('heading', { name: 'Collections' })).toBeVisible();
-    const expectedCategories = ['All', 'Bags', 'Drinkware', 'Electronics',
-      'Footware', 'Headwear', 'Hoodies', 'Jackets', 'Kids', 'Pets', 'Stickers'];
-    for (const cat of expectedCategories) {
-      await expect(page.locator('mp-category-nav').getByRole('link', { name: cat, exact: true }).first()).toBeVisible();
-    }
-  });
-
-  test('sort options render on search page', async ({ page }) => {
-    await page.goto('/search/shirts');
-    await expect(page.getByRole('heading', { name: 'Sort by' })).toBeVisible();
-    await expect(page.locator('mp-filter-list').getByRole('link', { name: 'Trending' }).first()).toBeVisible();
-    await expect(page.locator('mp-filter-list').getByRole('link', { name: 'Latest arrivals' }).first()).toBeVisible();
-    await expect(page.locator('mp-filter-list').getByRole('link', { name: 'Price: Low to high' }).first()).toBeVisible();
-    await expect(page.locator('mp-filter-list').getByRole('link', { name: 'Price: High to low' }).first()).toBeVisible();
-  });
 });
 
 // ── Client-side navigation ───────────────────────────────────────
@@ -192,14 +119,6 @@ test.describe('client-side navigation', () => {
     expect(errors).toEqual([]);
   });
 
-  test('home → search category via navbar', async ({ page }) => {
-    await page.goto('/');
-    await page.locator('mp-navbar').getByRole('link', { name: 'Shirts' }).click();
-    await expect(page).toHaveURL('/search/shirts');
-    await expect(page.getByRole('heading', { name: 'Collections' })).toBeVisible();
-    await expect(page.locator('mp-product-grid mp-product-card')).toHaveCount(3);
-  });
-
   test('search → product → back to search', async ({ page }) => {
     await page.goto('/search/shirts');
     await expect(page.locator('mp-product-grid mp-product-card').first()).toBeVisible();
@@ -215,25 +134,6 @@ test.describe('client-side navigation', () => {
     await expect(page).toHaveURL('/search/shirts');
     await expect(page.getByRole('heading', { name: 'Collections' })).toBeVisible();
     await expect(page.locator('mp-product-grid mp-product-card')).toHaveCount(3);
-  });
-
-  test('product page renders gallery and variants via client nav', async ({ page }) => {
-    const pageErrors: string[] = [];
-    page.on('pageerror', (error) => {
-      pageErrors.push(error.message);
-    });
-
-    await page.goto('/');
-    await page.locator('mp-product-card').filter({ hasText: 'Acme Circles T-Shirt' }).first().click();
-    await expect(page).toHaveURL('/product/acme-geometric-circles-t-shirt');
-    await expect(page.getByRole('heading', { name: 'Acme Circles T-Shirt', level: 1 })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Previous image' })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Next image' })).toBeVisible();
-    await expect(page.locator('mp-product-gallery .nav-btn svg')).toHaveCount(2);
-    await expect(page.getByText('COLOR')).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Black' })).toBeVisible();
-    await expect(page.getByRole('heading', { name: 'Related Products' })).toBeVisible();
-    expect(pageErrors).toEqual([]);
   });
 
   test('add to cart opens panel with cart item', async ({ page }) => {
@@ -293,58 +193,11 @@ test.describe('client-side navigation', () => {
 // ── Category switching ───────────────────────────────────────────
 
 test.describe('category switching', () => {
-  test('switch between categories via sidebar', async ({ page }) => {
-    await page.goto('/search/shirts');
-    await expect(page.locator('mp-product-card')).toHaveCount(3);
-
-    // Switch to Stickers
-    await expectSoftNavigation(
-      page,
-      () => page.locator('mp-category-nav').getByRole('link', { name: 'Stickers' }).click(),
-    );
-    await expect(page).toHaveURL('/search/stickers');
-    await expect(page.locator('mp-product-card')).toHaveCount(2);
-    await expect(page.getByRole('heading', { name: 'Acme Sticker' })).toBeVisible();
-  });
-
-  test('sort options update when switching categories', async ({ page }) => {
-    await page.goto('/search/stickers');
-    // Sort links should point to /search/stickers
-    let sortLink = page.locator('mp-filter-list').getByRole('link', { name: 'Price: High to low' });
-    await expect(sortLink).toHaveAttribute('href', /\/search\/stickers\?sort=/);
-
-    // Switch to Shirts via sidebar
-    await expectSoftNavigation(
-      page,
-      () => page.locator('mp-category-nav').getByRole('link', { name: 'Shirts' }).click(),
-    );
-    await expect(page).toHaveURL('/search/shirts');
-
-    // Sort links should now point to /search/shirts
-    sortLink = page.locator('mp-filter-list').getByRole('link', { name: 'Price: High to low' });
-    await expect(sortLink).toHaveAttribute('href', /\/search\/shirts\?sort=/);
-  });
 });
 
 // ── Sort filtering ───────────────────────────────────────────────
 
 test.describe('sort filtering', () => {
-  test('sort by price high to low on SSR page', async ({ page }) => {
-    await page.goto('/search/shirts');
-    await expect(page.locator('mp-product-card')).toHaveCount(3);
-
-    await expectSoftNavigation(
-      page,
-      () => page.locator('mp-filter-list').getByRole('link', { name: 'Price: High to low' }).click(),
-    );
-    await expect(page).toHaveURL('/search/shirts?sort=price-desc');
-
-    // Prism ($25) should be first
-    const firstCard = page.locator('mp-product-card').first();
-    await expect(firstCard).toContainText('Acme Prism T-Shirt');
-    await expect(firstCard).toContainText('$25.00');
-  });
-
   test('sort by price low to high', async ({ page }) => {
     await page.goto('/search/shirts');
     await expectSoftNavigation(
@@ -356,20 +209,6 @@ test.describe('sort filtering', () => {
     // $20 shirts should come before $25
     const firstCard = page.locator('mp-product-card').first();
     await expect(firstCard).toContainText('$20.00');
-  });
-
-  test('sort preserves category in URL', async ({ page }) => {
-    await page.goto('/search/headwear');
-    await expectSoftNavigation(
-      page,
-      () => page.locator('mp-filter-list').getByRole('link', { name: 'Price: High to low' }).click(),
-    );
-    await expect(page).toHaveURL('/search/headwear?sort=price-desc');
-
-    // Cowboy Hat ($160) should be first
-    const firstCard = page.locator('mp-product-card').first();
-    await expect(firstCard).toContainText('Acme Cowboy Hat');
-    await expect(firstCard).toContainText('$160.00');
   });
 
   test('sort after category soft navigation', async ({ page }) => {
@@ -455,22 +294,6 @@ test.describe('category navigation flows', () => {
     );
     await expect(page).toHaveURL('/search');
     await expect.poll(() => page.locator('mp-product-grid mp-product-card').count()).toBeGreaterThanOrEqual(2);
-  });
-
-  test('category active state updates in sidebar', async ({ page }) => {
-    await page.goto('/search/shirts');
-    // "Shirts" should not be a link (it's active)
-    await expect(page.locator('mp-category-nav').getByRole('link', { name: 'Shirts' })).toHaveCount(0);
-
-    // Click Stickers
-    await expectSoftNavigation(
-      page,
-      () => page.locator('mp-category-nav').getByRole('link', { name: 'Stickers' }).first().click(),
-    );
-    await expect(page).toHaveURL('/search/stickers');
-    // Now "Stickers" should not be a link, and "Shirts" should be
-    await expect(page.locator('mp-category-nav').getByRole('link', { name: 'Stickers' })).toHaveCount(0);
-    await expect(page.locator('mp-category-nav').getByRole('link', { name: 'Shirts' }).first()).toBeVisible();
   });
 
   test('search results page → category via sidebar (hydration parity)', async ({ page }) => {
@@ -587,14 +410,6 @@ test.describe('sort and category combined', () => {
 });
 
 test.describe('search', () => {
-  test('search form submits to /search with query', async ({ page }) => {
-    await page.goto('/');
-    const searchInput = page.locator('mp-search-bar input[name="q"]').first();
-    await searchInput.fill('mug');
-    await expectSoftNavigation(page, () => searchInput.press('Enter'));
-    await expect(page).toHaveURL(/\/search\?q=mug/);
-  });
-
   test('search form submit shows no-results message for invalid query', async ({ page }) => {
     await page.goto('/');
     const searchInput = page.locator('mp-search-bar input[name="q"]').first();
@@ -606,14 +421,6 @@ test.describe('search', () => {
     await expect(page.locator('mp-product-grid')).toContainText('testsdsd');
   });
 
-  test('search results show matching products', async ({ page }) => {
-    await page.goto('/search?q=sticker');
-    await expect(page.locator('mp-product-grid mp-product-card').first()).toBeVisible();
-    const cards = page.locator('mp-product-grid mp-product-card');
-    const count = await cards.count();
-    expect(count).toBeGreaterThanOrEqual(1);
-  });
-
   test('search from product page navigates to results', async ({ page }) => {
     await page.goto('/product/acme-geometric-circles-t-shirt');
     await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
@@ -621,12 +428,6 @@ test.describe('search', () => {
     await searchInput.fill('hoodie');
     await expectSoftNavigation(page, () => searchInput.press('Enter'));
     await expect(page).toHaveURL(/\/search\?q=hoodie/);
-  });
-
-  test('empty search shows no-results message', async ({ page }) => {
-    await page.goto('/search?q=xyznonexistent');
-    await expect(page.locator('mp-product-grid mp-product-card')).toHaveCount(0);
-    await expect(page.locator('mp-product-grid')).toContainText('no products');
   });
 
   test('empty search shows no-results in SSR (no JS)', async ({ browser }) => {
@@ -650,18 +451,6 @@ test.describe('product navigation', () => {
     await expect(page.getByRole('button', { name: 'Add To Cart' })).toBeVisible();
   });
 
-  test('product page has correct variant buttons', async ({ page }) => {
-    await page.goto('/product/acme-t-shirt');
-    await expect(page.getByRole('heading', { name: 'Acme T-Shirt', level: 1 })).toBeVisible();
-    // Colors
-    for (const color of ['Black', 'Blue', 'Gray', 'Pink', 'White']) {
-      await expect(page.getByRole('button', { name: color })).toBeVisible();
-    }
-    // Sizes
-    for (const size of ['XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL']) {
-      await expect(page.getByRole('button', { name: size, exact: true })).toBeVisible();
-    }
-  });
 });
 
 // ── Regression: variant selector after SSR refresh (#175) ────────

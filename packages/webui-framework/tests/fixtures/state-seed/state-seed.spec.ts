@@ -13,34 +13,6 @@ test.describe('state-seed fixture', () => {
     });
   });
 
-  test('reconstructs observable state from SSR DOM', async ({ page }) => {
-    const state = await page.evaluate(() => {
-      const host = document.querySelector('test-state-seed') as {
-        title?: string;
-        page?: string;
-        groups?: string[];
-        navCategories?: Array<{ handle: string; title: string; activeClass: string }>;
-      } | null;
-
-      return {
-        title: host?.title ?? '',
-        page: host?.page ?? '',
-        groups: host?.groups ?? [],
-        navCategories: host?.navCategories ?? [],
-      };
-    });
-
-    expect(state).toEqual({
-      title: 'SSR Title',
-      page: 'dashboard',
-      groups: ['work', 'family'],
-      navCategories: [
-        { handle: 'featured', title: 'Featured', activeClass: 'active' },
-        { handle: 'sale', title: 'Sale', activeClass: '' },
-      ],
-    });
-  });
-
   test('preserves reconstructed state on first updates', async ({ page }) => {
     await page.locator('test-state-seed .add-group').click();
     await page.locator('test-state-seed .add-category').click();

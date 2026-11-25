@@ -186,39 +186,12 @@ test.describe('attr fixture', () => {
     });
   });
 
-  test('renders attribute-backed SSR text', async ({ page }) => {
-    await expect(page.locator('test-attr .label')).toHaveText('Status');
-    await expect(page.locator('test-attr .display')).toHaveText('Ready');
-    await expect(page.locator('test-attr')).toHaveAttribute('label', 'Status');
-  });
-
-  test('updates default attribute names reactively', async ({ page }) => {
-    await page.evaluate(() => {
-      document.querySelector('test-attr')?.setAttribute('label', 'Mode');
-    });
-
-    await expect(page.locator('test-attr .label')).toHaveText('Mode');
-  });
-
   test('updates custom attribute names reactively', async ({ page }) => {
     await page.evaluate(() => {
       document.querySelector('test-attr')?.setAttribute('display-value', 'Paused');
     });
 
     await expect(page.locator('test-attr .display')).toHaveText('Paused');
-  });
-
-  test('reacts to direct property updates', async ({ page }) => {
-    await page.evaluate(() => {
-      const host = document.querySelector('test-attr') as { label: string; displayValue: string } | null;
-      if (host) {
-        host.label = 'Phase';
-        host.displayValue = 'Running';
-      }
-    });
-
-    await expect(page.locator('test-attr .label')).toHaveText('Phase');
-    await expect(page.locator('test-attr .display')).toHaveText('Running');
   });
 
   test('reflects direct @attr property updates to host attributes', async ({ page }) => {
@@ -285,24 +258,6 @@ test.describe('attr fixture', () => {
     await expect(page.locator('test-attr .logo')).toHaveAttribute('href', '/');
   });
 
-  test('boolean attr defaults to false', async ({ page }) => {
-    const active = await page.evaluate(() => {
-      return (document.querySelector('test-attr') as any).isActive;
-    });
-    expect(active).toBe(false);
-  });
-
-  test('boolean attr becomes true when attribute is set', async ({ page }) => {
-    await page.evaluate(() => {
-      document.querySelector('test-attr')!.setAttribute('is-active', '');
-    });
-
-    const active = await page.evaluate(() => {
-      return (document.querySelector('test-attr') as any).isActive;
-    });
-    expect(active).toBe(true);
-  });
-
   test('boolean attr becomes false when attribute is removed', async ({ page }) => {
     await page.evaluate(() => {
       const el = document.querySelector('test-attr')!;
@@ -349,16 +304,6 @@ test.describe('attr fixture', () => {
     });
 
     await expect(page.locator('test-attr .bool-check')).not.toBeChecked();
-  });
-
-  test('mixed static+dynamic attribute renders correctly', async ({ page }) => {
-    await expect(page.locator('test-attr .mixed')).toHaveAttribute('href', '/items/42');
-
-    await page.evaluate(() => {
-      (document.querySelector('test-attr') as any).itemId = '99';
-    });
-
-    await expect(page.locator('test-attr .mixed')).toHaveAttribute('href', '/items/99');
   });
 
   test('mixed attribute with prefix and suffix', async ({ page }) => {

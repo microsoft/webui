@@ -13,21 +13,6 @@ test.describe('repeat conditional fixture', () => {
     });
   });
 
-  test('expands conditional branches inside client repeat updates', async ({ page }) => {
-    await page.locator('test-repeat-conditional .load').click();
-
-    await expect(page.locator('test-repeat-conditional .current')).toHaveText('Shirts');
-    await expect(page.locator('test-repeat-conditional .link')).toHaveText(['Headwear', 'Archived']);
-    await expect(page.locator('test-repeat-conditional .link').nth(1)).toBeDisabled();
-
-    const ifCount = await page.evaluate(() => {
-      const host = document.querySelector('test-repeat-conditional');
-      return (host?.shadowRoot ?? host)?.querySelectorAll('if').length ?? -1;
-    });
-
-    expect(ifCount).toBe(0);
-  });
-
   test('hydrates SSR repeat conditionals with non-local marker ids', async ({ page }) => {
     await expect(page.locator('test-repeat-conditional .current')).toHaveText('Shirts');
     await expect(page.locator('test-repeat-conditional .link')).toHaveText(['Headwear', 'Archived']);

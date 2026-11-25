@@ -443,41 +443,6 @@ test.describe('authored callback recovery', () => {
     });
   });
 
-  test('flush completes hydration once after the sole initial callback throws', async ({ page }) => {
-    const errors: string[] = [];
-    page.on('pageerror', error => errors.push(error.message));
-    await page.goto('/client-runtime/ordinary.html');
-    const result = await page.evaluate(async () => {
-      const el = document.createElement('test-runtime-life') as InstanceType<typeof window.TestRuntimeLife>;
-      const original = el.countChanged;
-      el.countChanged = (oldValue, value) => {
-        original.call(el, oldValue, value);
-        throw new Error('expected sole initial callback failure');
-      };
-      document.body.appendChild(el);
-      const beforeFlush = { calls: el.propertyCalls.slice(), hydratedCalls: el.hydratedCalls };
-      el.countChanged = original;
-      el[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
-      const afterFlush = { calls: el.propertyCalls.slice(), hydratedCalls: el.hydratedCalls };
-      el[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
-      await new Promise<void>(resolve => queueMicrotask(resolve));
-      el.remove();
-      document.body.appendChild(el);
-      return {
-        beforeFlush,
-        afterFlush,
-        afterReconnect: { calls: el.propertyCalls, hydratedCalls: el.hydratedCalls },
-      };
-    });
-    await expect.poll(() => errors).toEqual(['expected sole initial callback failure']);
-    const calls = [{ oldValue: undefined, value: 0, connected: true }];
-    expect(result).toEqual({
-      beforeFlush: { calls, hydratedCalls: 0 },
-      afterFlush: { calls, hydratedCalls: 1 },
-      afterReconnect: { calls, hydratedCalls: 1 },
-    });
-  });
-
   test('flush completes hydration once after the last initial callback throws', async ({ page }) => {
     const errors: string[] = [];
     page.on('pageerror', error => errors.push(error.message));

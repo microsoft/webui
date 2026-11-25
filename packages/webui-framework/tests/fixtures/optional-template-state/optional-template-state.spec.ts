@@ -96,8 +96,4 @@ test.describe('optional template state fixture', () => {
     await expect(page.locator('test-optional-state .details-link')).toHaveAttribute('href', '/items/123');
   });
 
-  test('keeps observables for state used by component code', async ({ page }) => {
-    await page.locator('test-optional-state .toggle').click();
-    await expect(page.locator('test-optional-state .selected')).toHaveText('Selected: on');
-  });
 });

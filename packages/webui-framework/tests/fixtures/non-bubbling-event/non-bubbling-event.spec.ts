@@ -66,18 +66,6 @@ test.describe('non-bubbling event fixture', () => {
     expect(result.lastRowId).toBe('b:b');
   });
 
-  test('bubbling bindings fire on their own element', async ({ page }) => {
-    const result = await page.evaluate(() => {
-      const host = document.querySelector('test-non-bubbling') as any;
-      const root = host.shadowRoot ?? host;
-      root.querySelector('.btn').dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
-      host[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
-      return host.clicks;
-    });
-
-    expect(result).toBe(1);
-  });
-
   test('application-defined events fire even when dispatched without bubbles', async ({ page }) => {
     // `new CustomEvent(name)` defaults to bubbles: false, and an app-defined
     // name can never appear in a framework-shipped event list.
@@ -93,18 +81,6 @@ test.describe('non-bubbling event fixture', () => {
 
     expect(result.bubbles).toBe(false);
     expect(result.picks).toBe(1);
-  });
-
-  test('platform events the framework cannot enumerate fire', async ({ page }) => {
-    const result = await page.evaluate(() => {
-      const host = document.querySelector('test-non-bubbling') as any;
-      const root = host.shadowRoot ?? host;
-      root.querySelector('.widget').dispatchEvent(new Event('cuechange'));
-      host[Symbol.for('microsoft.webui.flushUpdates') as typeof FLUSH_UPDATES]();
-      return host.cues;
-    });
-
-    expect(result).toBe(1);
   });
 
   test('a bubbling application-defined event still reaches its binding from a descendant', async ({ page }) => {

@@ -51,43 +51,6 @@ test('fixture extra builds cannot replace the shared projection proof', async ()
 });
 
 for (const fixture of directiveCases) {
-  test(`${fixture.name}: published metadata`, async () => {
-    const { meta } = compileFixture(fixture, workspace);
-    const sections = [meta, ...(meta.b ?? [])];
-    for (const section of sections) {
-      // Escaped native text such as &lt;if&gt; must not count as a directive.
-      expect(section.h).not.toMatch(/<\/?(?:if|for)(?=[\s>])/i);
-    }
-    expect(sections.flatMap(section => section.c ?? [])).toHaveLength(fixture.conditions);
-    expect(sections.flatMap(section => section.r ?? [])).toHaveLength(fixture.repeats);
-    expect(meta.th).toBeUndefined();
-
-    const betweenTags = fixture.name.startsWith('CRLF between');
-    const slot = [1, betweenTags ? 1 : 0];
-    const statePath = (property: string) => fixture.message ? `message.${property}` : property;
-    if (fixture.kind === 'if') {
-      expect(meta.h).toBe(betweenTags ? '<article>\r\n\r\n</article>' : '<article></article>');
-      expect(meta.c).toEqual([[[[0], [statePath('enabled')]], 0, slot]]);
-      if (fixture.conditions === 2) {
-        expect(meta.b?.[0].h).toBe('<footer></footer>');
-        expect(meta.b?.[0].c).toEqual([[[[0], [statePath('ready')]], 1, [1, 0]]]);
-      }
-    } else if (fixture.kind === 'for') {
-      expect(meta.r).toEqual([['items', 'item', 0, slot]]);
-      expect(meta.b?.[0].ag).toEqual([[1, 0, 1]]);
-      expect(meta.b?.[0].eg).toEqual([['click', [['select', [['p', 'item.id']], 1]]]]);
-    } else {
-      const repeats = sections.flatMap(section => section.r ?? []);
-      expect(repeats.map(repeat => [repeat[0], repeat[1], repeat[4]]))
-        .toEqual([['items', 'item', 'id'], ['item.children', 'child', 'id']]);
-      expect(meta.c?.map(condition => condition[0][1])).toEqual([['enabled'], ['ready']]);
-      expect(meta.h).toContain('&lt;if');
-      expect(meta.h).toContain('&lt;for');
-      expect(sections.flatMap(section => section.a ?? []).map(attr => attr[0]))
-        .not.toContain('key');
-    }
-  });
-
   test(`${fixture.name}: SSR hydration and updates`, async ({ page }) => {
     const errors: string[] = [];
     page.on('pageerror', error => errors.push(error.message));

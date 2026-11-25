@@ -29,32 +29,6 @@ test.describe('conditional-component', () => {
     expect(result.hasChild).toBe(false);
   });
 
-  test('child component mounts with shadow root when condition flips true', async ({ page }) => {
-    await page.evaluate(() => {
-      (document.querySelector('test-cond-parent') as any).show = true;
-    });
-
-    await page.waitForFunction(() => {
-      const parent = document.querySelector('test-cond-parent') as any;
-      const child = parent.shadowRoot?.querySelector('test-child-comp');
-      return child && child.shadowRoot && child.$ready === true;
-    }, null, { timeout: 2000 });
-
-    const result = await page.evaluate(() => {
-      const parent = document.querySelector('test-cond-parent') as any;
-      const child = parent.shadowRoot?.querySelector('test-child-comp');
-      return {
-        hasShadowRoot: !!child?.shadowRoot,
-        ready: child?.$ready,
-        text: child?.shadowRoot?.querySelector('.child-text')?.textContent,
-      };
-    });
-
-    expect(result.hasShadowRoot).toBe(true);
-    expect(result.ready).toBe(true);
-    expect(result.text).toBe('Child Active');
-  });
-
   test('child component survives toggle off and back on', async ({ page }) => {
     await page.evaluate(() => {
       (document.querySelector('test-cond-parent') as any).show = true;

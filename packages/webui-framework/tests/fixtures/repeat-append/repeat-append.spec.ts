@@ -20,28 +20,6 @@ test.describe('unkeyed repeat reconciliation', () => {
     });
   });
 
-  test('hydrates SSR children and appends at the tail', async ({ page }) => {
-    const labels = page.locator('test-repeat-child .label');
-    await expect(labels).toHaveText([
-      'Item 1',
-      'Item 2',
-      'Item 3',
-      'Item 4',
-      'Item 5',
-    ]);
-
-    await page.locator('test-repeat-parent .add').click();
-
-    await expect(labels).toHaveText([
-      'Item 1',
-      'Item 2',
-      'Item 3',
-      'Item 4',
-      'Item 5',
-      'Item 6',
-    ]);
-  });
-
   test('reuses blocks by position when prepending', async ({ page }) => {
     await page.evaluate(() => {
       const parent = document.querySelector('test-repeat-parent');

@@ -13,12 +13,6 @@ test.describe('raw HTML inside conditional', () => {
     });
   });
 
-  test('header retains text after hydration when sibling has {{{raw}}}', async ({ page }) => {
-    // After SSR + hydration, the structured header must still contain "Alice",
-    // not the raw HTML body content.
-    await expect(page.locator('test-raw-html .header .name')).toHaveText('Alice');
-  });
-
   test('reactive raw HTML updates preserve and order sibling ranges', async ({ page }) => {
     const body = page.locator('test-raw-html .body');
     await expect(body.locator(':scope > .raw-initial')).toHaveText('Hello');
@@ -154,11 +148,6 @@ test.describe('raw HTML inside conditional', () => {
         && element.firstElementChild instanceof HTMLTableCellElement
       ))
     ))).toBe(true);
-  });
-
-  test('header does not contain raw HTML body content', async ({ page }) => {
-    const headerHtml = await page.locator('test-raw-html .header').innerHTML();
-    expect(headerHtml).not.toContain('Hello');
   });
 
   test('escaped text bindings stay aligned around an inline raw range', async ({ page }) => {

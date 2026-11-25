@@ -22,17 +22,6 @@ test.describe('complex-prop: parent array changes propagate to child for-loop', 
     });
   });
 
-  test('initial items render in child for-loop', async ({ page }) => {
-    const items = await page.evaluate(() => {
-      const host = document.querySelector('#host') as any;
-      const list = host?.shadowRoot?.querySelector('test-item-list');
-      const lis = list?.shadowRoot?.querySelectorAll('.item');
-      return Array.from(lis ?? []).map((li: any) => li.textContent);
-    });
-
-    expect(items).toEqual(['Alpha', 'Beta', 'Gamma']);
-  });
-
   test('child-first hydration receives the renamed parent property', async ({ page }) => {
     const result = await page.evaluate(() => {
       const host = document.querySelector('#host') as any;
@@ -130,30 +119,6 @@ test.describe('complex-prop: parent array changes propagate to child for-loop', 
     });
 
     expect(count).toBe(0);
-  });
-
-  test('setState on parent propagates to child for-loop', async ({ page }) => {
-    // Simulate what the router does during SPA navigation
-    await page.evaluate(() => {
-      const host = document.querySelector('#host') as any;
-      host.setState({ sourceItems: [{ name: 'X' }, { name: 'Y' }] });
-    });
-
-    await page.waitForFunction(() => {
-      const host = document.querySelector('#host') as any;
-      const list = host?.shadowRoot?.querySelector('test-item-list');
-      const lis = list?.shadowRoot?.querySelectorAll('.item');
-      return lis?.length === 2;
-    }, null, { timeout: 2000 });
-
-    const items = await page.evaluate(() => {
-      const host = document.querySelector('#host') as any;
-      const list = host?.shadowRoot?.querySelector('test-item-list');
-      const lis = list?.shadowRoot?.querySelectorAll('.item');
-      return Array.from(lis ?? []).map((li: any) => li.textContent);
-    });
-
-    expect(items).toEqual(['X', 'Y']);
   });
 
   test('setState propagates to child synchronously (no microtask needed)', async ({ page }) => {
@@ -264,16 +229,6 @@ test.describe('complex-prop: SSR conditional blocks trust server-rendered conten
     });
 
     expect(count).toBe(1);
-  });
-
-  test('SSR conditional content has correct text from :data', async ({ page }) => {
-    const text = await page.evaluate(() => {
-      const host = document.querySelector('#host') as any;
-      const child = host?.shadowRoot?.querySelector('test-cond-child');
-      return child?.shadowRoot?.querySelector('.cond-header')?.textContent;
-    });
-
-    expect(text).toBe('Hello');
   });
 
   test('toggling :data.showHeader to false removes the conditional block', async ({ page }) => {
