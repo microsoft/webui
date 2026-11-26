@@ -1,14 +1,20 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-//! Build-only state analysis over an adapter-owned module graph.
-//! Sources and resolutions belong to the completed bundler invocation; this
-//! crate must never perform independent filesystem or package resolution.
+//! Build-only state analysis over a completed bundle graph or the restricted
+//! source contract used by the template compiler.
 
 mod analysis;
 mod resolve;
+mod source;
+
+pub use source::analyze_sources;
 
 use std::collections::{BTreeMap, BTreeSet};
+
+const MAX_MODULES: usize = 65_535;
+const MAX_MODULE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_SOURCE_BYTES: usize = 64 * 1024 * 1024;
 
 /// One actionable, color-free state-analysis error.
 #[derive(Debug)]

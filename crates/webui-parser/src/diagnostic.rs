@@ -172,11 +172,6 @@ pub mod codes {
     /// `<webui-hydrate>` was written by an application author. It is reserved
     /// for the compiler/handler-generated runtime hydration sentinel.
     pub const AUTHORED_WEBUI_HYDRATE: &str = "authored-webui-hydrate";
-    /// A build declares `<boundary>` streaming checkpoints but has no
-    /// state-projection manifest, so every checkpoint serializes the whole
-    /// state object instead of its own components' keys.
-    /// Severity: warning.
-    pub const STREAMING_WITHOUT_PROJECTION: &str = "streaming-without-projection";
     /// More than one build output shares the file name of an authored
     /// `<script type="module" src>`, so its shared chunks cannot be preloaded
     /// without guessing which output the URL serves.

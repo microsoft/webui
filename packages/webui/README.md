@@ -120,10 +120,14 @@ usage with a literal fallback (e.g. `var(--brand, #000)`) is exempt. Missing
 required tokens fail the build with a structured `missing-theme-token` error.
 Misspelled literal-fallback tokens are returned as non-fatal warnings.
 
-### Optional state projection
+### Automatic state projection
 
-`bundleClient()` runs browser bundling and exact state projection in the native
-Rust compiler. No TypeScript or esbuild peer dependency is required.
+With `plugin: "webui"`, `build()` automatically projects state from
+component source. Keep your own browser bundler; no bundler plugin or manifest
+is required. Unproven components retain full state and report a build warning.
+
+If you choose `bundleClient()` for browser bundling, its generated proof can
+also provide bundle-aware projection and modulepreload hints:
 
 ```js
 import { bundleClient, build } from "@microsoft/webui/build.js";
@@ -141,25 +145,12 @@ const result = build({
 });
 ```
 
-The native compiler bundles once and emits both browser chunks and
-`webui-projection.json`; WebUI then embeds the exact initial/navigation
-surfaces into `protocol.bin`. Source capture, graph resolution, tree-shaken
-membership and final-byte hashing stay in Rust. `bundleClient()` is only the
-Node binding to that compiler, not a second projection pipeline.
-
 See the [Node integration guide](https://microsoft.github.io/webui/build/integrations/node#single-compilation-builds)
 for retaining one template compilation across generated-module bundling.
 
-With no manifest, WebUI performs no JavaScript analysis and preserves full
-state. Once any manifest is supplied, coverage is strict: every scripted
-component compiled into the protocol must have exactly one entry. Shared
-controls built as external bundles should emit their own manifest fragment,
-then all fragments should be passed through `projectionManifests`.
-
-Manifest keys are exact JavaScript `@observable` and `@attr` property names.
+Projected keys are JavaScript `@observable` and `@attr` property names.
 During hydration, an existing SSR host attribute wins over projected `@attr`
-state. Runtime rendering never runs the bundler, analyzes TypeScript, or reads
-the manifest.
+state.
 
 ### `new Protocol(protocol: Buffer, options?: ProtocolOptions)`
 

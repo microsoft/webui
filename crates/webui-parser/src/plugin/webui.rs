@@ -110,8 +110,8 @@ struct TrackedClientContext {
 /// The parser never analyzes JavaScript/TypeScript, so it only needs to know
 /// *whether* a component has a client module — a sibling script or an
 /// externally client-owned package without scannable source — not its
-/// content. Exact reactive keys for an authored component come solely from a
-/// validated bundler projection manifest, consumed later by `webui::build`.
+/// content. Build finalization can narrow authored state using source or
+/// managed-bundle evidence.
 enum ClientModule {
     None,
     Authored,
@@ -165,9 +165,8 @@ impl WebUIParserPlugin {
     ///
     /// Authored (scripted) components default to an unknown (`All`) hydration
     /// and navigation surface, since this plugin never analyzes JavaScript or
-    /// TypeScript. `webui::build` narrows a scripted component to an exact
-    /// `Keys` surface only after validating a bundler projection manifest for
-    /// its tag. Scriptless components keep an empty hydration surface, but
+    /// TypeScript. Build finalization narrows authored state when it can prove
+    /// the keys. Scriptless components keep an empty hydration surface, but
     /// retain template roots for client-created soft-navigation rendering
     /// through a compiler-owned dormant host. Each returned payload contains
     /// JSON-safe metadata plus a component-local closure array for condition
@@ -193,12 +192,8 @@ impl WebUIParserPlugin {
             // cannot prove an authored component's exact reactive key set.
             // Scripted components default to `All` (unknown surface, full
             // state preserved) for both hydration and partial navigation.
-            // Only a validated bundler projection manifest — consumed later by
-            // `webui::build` — can narrow a scripted component down to an
-            // exact `Keys` surface. Scriptless components have no script to
-            // analyze at all: their template roots already prove the complete
-            // safe surface, so they always get an exact (possibly empty) key
-            // set derived purely from the template.
+            // Finalization can narrow authored state using build-time proof.
+            // Scriptless components already have an exact template surface.
             let hydration = if is_authored {
                 StateSurface::All
             } else {
@@ -4632,9 +4627,8 @@ mod tests {
         // The parser plugin never analyzes JavaScript/TypeScript, so an
         // authored (scripted) component's exact surface is unknown here — it
         // defaults to `All` (full-state safety) regardless of script content.
-        // Only a validated bundler projection manifest, consumed later by
-        // `webui::build`, can narrow this to exact keys. Template roots are
-        // still recorded so the manifest consumer can union them in later.
+        // Finalization can narrow this surface using build-time proof. The
+        // build needs template roots to union with proven client keys.
         let mut plugin = WebUIParserPlugin::new();
         let comp = test_component("test-el", "<p>{{serverTitle}}</p>", None, true);
         plugin

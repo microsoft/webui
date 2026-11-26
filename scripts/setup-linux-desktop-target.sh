@@ -6,7 +6,8 @@
 set -euo pipefail
 
 target="${1:?pass a Linux Rust target triple}"
-if [[ "$target" == x86_64-unknown-linux-gnu ]]; then
+if [[ "$target" == x86_64-unknown-linux-gnu ||
+      ( "$target" == aarch64-unknown-linux-gnu && "$(dpkg --print-architecture)" == arm64 ) ]]; then
   sudo apt-get update -q
   sudo apt-get install -y -q protobuf-compiler pkg-config libgtk-4-dev libwebkitgtk-6.0-dev
 elif [[ "$target" == aarch64-unknown-linux-gnu ]]; then

@@ -9,11 +9,17 @@ pub(super) fn class_binding(
     result: &mut Analysis,
 ) {
     let mut properties = Vec::new();
+    let mut method_decorators = Vec::new();
     let mut valid_factory = class.decorators.is_empty();
+    let mut source_identity_preserved = valid_factory;
     for element in &class.body.body {
         match element {
             ClassElement::PropertyDefinition(property) => {
                 valid_factory &= !property.r#static;
+                if property.r#static {
+                    source_identity_preserved &=
+                        ordinary_static_member(&property.key) && property.decorators.is_empty();
+                }
                 if property.decorators.is_empty() {
                     continue;
                 }
@@ -34,8 +40,36 @@ pub(super) fn class_binding(
             }
             ClassElement::MethodDefinition(method) => {
                 valid_factory &= !method.r#static;
+                source_identity_preserved &=
+                    !method.r#static || ordinary_static_member(&method.key);
+                source_identity_preserved &= method
+                    .value
+                    .params
+                    .items
+                    .iter()
+                    .all(|param| param.decorators.is_empty());
+                if method.kind == MethodDefinitionKind::Method
+                    && !method.r#static
+                    && !method.computed
+                {
+                    method_decorators.extend(
+                        method
+                            .decorators
+                            .iter()
+                            .map(|decorator| decorator.expression.node_id()),
+                    );
+                } else {
+                    source_identity_preserved &= method.decorators.is_empty();
+                }
             }
-            ClassElement::StaticBlock(_) => valid_factory = false,
+            ClassElement::AccessorProperty(accessor) => {
+                source_identity_preserved &= accessor.decorators.is_empty()
+                    && (!accessor.r#static || ordinary_static_member(&accessor.key));
+            }
+            ClassElement::StaticBlock(_) => {
+                valid_factory = false;
+                source_identity_preserved = false;
+            }
             _ => {}
         }
     }
@@ -48,7 +82,9 @@ pub(super) fn class_binding(
                 .as_ref()
                 .map(|heritage| heritage.expression.node_id()),
             properties,
+            method_decorators,
             valid_factory,
+            source_identity_preserved,
         },
     );
     if let Some(symbol) = class.id.as_ref().and_then(|id| id.symbol_id.get()) {
@@ -61,6 +97,10 @@ pub(super) fn class_binding(
     }
 }
 
+fn ordinary_static_member(key: &PropertyKey<'_>) -> bool {
+    matches!(key, PropertyKey::StaticIdentifier(name) if name.name != "define")
+}
+
 pub(super) fn function_binding(
     function: &Function<'_>,
     semantic: &Semantic<'_>,
@@ -69,8 +109,11 @@ pub(super) fn function_binding(
     let Some(symbol) = function.id.as_ref().and_then(|id| id.symbol_id.get()) else {
         return;
     };
+    let id = function.node_id.get();
     let binding = if semantic.scoping().symbol_is_mutated(symbol) {
         Binding::Mutable
+    } else if matches!(result.values.get(&id), Some(Value::NeutralDecorator(_))) {
+        Binding::Value(id)
     } else {
         factory(function).map_or(Binding::Other, Binding::Factory)
     };

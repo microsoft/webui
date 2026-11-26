@@ -76,9 +76,12 @@ def test_discovers_resumes_updates_and_completes(streaming_renderer: Renderer) -
     assert b"greeting-tail" not in greeting_commit.bytes
     assert b'id="status"' not in greeting_commit.bytes
 
-    update = session.update(greeting.instance_id, {"name": "Grace"})
+    update = session.update(
+        greeting.instance_id, {"name": "Grace", "status": "unrelated update"}
+    )
     assert isinstance(update, bytes)
-    assert b"Grace" in update
+    assert b'{"name":"Grace"}' in update
+    assert b"unrelated update" not in update
 
     status_prefix = session.advance()
     assert b"greeting-tail" in status_prefix.bytes

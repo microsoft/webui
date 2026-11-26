@@ -36,9 +36,9 @@ cd todo-webui
   "type": "module",
   "scripts": {
     "build:client": "node build-client.mjs",
-    "build:protocol": "webui build ./src --out ./dist --plugin webui --projection-manifest ./dist/webui-projection.json",
+    "build:protocol": "webui build ./src --out ./dist --plugin webui",
     "build": "npm run build:client && npm run build:protocol",
-    "dev": "webui serve ./src --state ./data/state.json --plugin webui --servedir ./dist --projection-manifest ./dist/webui-projection.json"
+    "dev": "webui serve ./src --state ./data/state.json --plugin webui --servedir ./dist"
   }
 }
 ```

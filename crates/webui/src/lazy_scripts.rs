@@ -112,10 +112,16 @@ pub(crate) fn unknown_mapping_warnings(
 }
 
 /// Capture the module of every client-owned component.
-pub(crate) fn capture(registry: &ComponentRegistry) -> ComponentScripts {
+pub(crate) fn capture(
+    registry: &ComponentRegistry,
+    compiled: impl Fn(&str) -> bool,
+) -> ComponentScripts {
     registry
         .get_all()
-        .filter(|component| component.is_client_owned || component.script_path.is_some())
+        .filter(|component| {
+            (component.is_client_owned || component.script_path.is_some())
+                && compiled(&component.tag_name)
+        })
         .map(|component| (component.tag_name.clone(), component.script_path.clone()))
         .collect()
 }
