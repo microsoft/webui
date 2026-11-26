@@ -4,6 +4,21 @@
 use super::*;
 use std::path::PathBuf;
 
+struct DecoratorUse {
+    identity: Identity,
+    called: bool,
+    literal_arguments: bool,
+}
+
+impl DecoratorUse {
+    fn is_neutral(&self, method: bool) -> bool {
+        matches!(&self.identity, Identity::NeutralDecorator(effect)
+            if effect.factory == self.called
+                && (!self.called || self.literal_arguments)
+                && (method || !effect.method_only))
+    }
+}
+
 impl<'a> Compiler<'a> {
     pub(crate) fn source_component(
         &mut self,
@@ -155,7 +170,7 @@ impl<'a> Compiler<'a> {
                 errors.push(diagnostic(
                     &target.module,
                     "PROJ-C007",
-                    "Use a class with no custom class/member decorators, static blocks or define override.",
+                    "Avoid class, accessor, parameter and static decorators, static blocks, and define overrides in the projected class chain.",
                 ));
                 break;
             }
@@ -165,39 +180,45 @@ impl<'a> Compiler<'a> {
                 .iter()
                 .map(|property| (property.name.clone(), property.decorators.clone()))
                 .collect();
+            if source_only {
+                let methods = class.method_decorators.clone();
+                for decorator in methods {
+                    if !self
+                        .decorator_use(&target, decorator)
+                        .is_some_and(|used| used.is_neutral(true))
+                    {
+                        errors.push(unproven_decorator(&target.module));
+                    }
+                }
+            }
             for (name, decorators) in properties {
                 for decorator in decorators {
-                    let form =
-                        self.analyses.get(&target.module).and_then(|analysis| {
-                            match analysis.values.get(&decorator) {
-                                Some(Value::Call { callee, valid, .. })
-                                    if *valid || !source_only =>
-                                {
-                                    Some((*callee, true))
-                                }
-                                Some(Value::Symbol(_) | Value::Member(_, _) | Value::Global) => {
-                                    Some((decorator, false))
-                                }
-                                _ => None,
-                            }
-                        });
-                    let Some((callee, called)) = form else {
+                    let Some(used) = self.decorator_use(&target, decorator) else {
                         errors.push(diagnostic(&target.module, "PROJ-C007", "Use a bare framework decorator, namespace member or attr options call."));
                         continue;
                     };
-                    let identity = self.resolve(Query::Value(Target {
-                        value: callee,
-                        ..target.clone()
-                    }));
-                    match identity {
+                    if source_only && name.is_some() && used.is_neutral(false) {
+                        continue;
+                    }
+                    match used.identity {
                         Identity::Observable | Identity::Attr => {
                             is_webui |= !source_only;
-                            if called && identity == Identity::Observable {
-                                errors.push(diagnostic(&target.module, "PROJ-C007", "observable is not a decorator factory."));
+                            if used.called && used.identity == Identity::Observable {
+                                errors.push(diagnostic(
+                                    &target.module,
+                                    "PROJ-C007",
+                                    "observable is not a decorator factory.",
+                                ));
                                 continue;
                             }
-                            if let Some(name) = &name { keys.insert(name.clone()); } else {
-                                errors.push(diagnostic(&target.module, "PROJ-C007", "Reactive properties must use plain identifier names."));
+                            if let Some(name) = &name {
+                                keys.insert(name.clone());
+                            } else {
+                                errors.push(diagnostic(
+                                    &target.module,
+                                    "PROJ-C007",
+                                    "Reactive properties must use plain identifier names.",
+                                ));
                             }
                         }
                         Identity::Other | Identity::Factory(_, _) if !source_only => {}
@@ -206,7 +227,7 @@ impl<'a> Compiler<'a> {
                             "PROJ-C012",
                             "Remove circular decorator imports or re-exports.",
                         )),
-                        _ => errors.push(diagnostic(&target.module, "PROJ-C004", "Resolve decorators to framework observable/attr or a proven unrelated function.")),
+                        _ => errors.push(unproven_decorator(&target.module)),
                     }
                 }
             }
@@ -236,6 +257,41 @@ impl<'a> Compiler<'a> {
         }
         (is_webui, keys, errors)
     }
+
+    fn decorator_use(&mut self, target: &Target, decorator: NodeId) -> Option<DecoratorUse> {
+        let analysis = self.analyses.get(&target.module)?;
+        let (callee, called, literal_arguments) = match analysis.values.get(&decorator)? {
+            Value::Call {
+                callee,
+                valid,
+                literal_arguments,
+                ..
+            } if *valid || matches!(self.evidence, Evidence::Bundle(_)) => {
+                (*callee, true, *literal_arguments)
+            }
+            Value::Symbol(_) | Value::Member(_, _) | Value::Global => (decorator, false, false),
+            _ => return None,
+        };
+        let identity = self.resolve(Query::Value(Target {
+            value: callee,
+            ..target.clone()
+        }));
+        Some(DecoratorUse {
+            identity,
+            called,
+            literal_arguments,
+        })
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn unproven_decorator(module: &str) -> ProjectionDiagnostic {
+    diagnostic(
+        module,
+        "PROJ-C004",
+        "Resolve decorators to framework observable/attr or a statically proven state-neutral function.",
+    )
 }
 
 #[cold]

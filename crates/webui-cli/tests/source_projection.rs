@@ -40,7 +40,37 @@ fn plain_webui_build_projects_the_active_route_without_touching_browser_code() -
             "base.ts",
             r#"
           import { WebUIElement as Element, observable as state } from '@microsoft/webui-framework';
-          export class Base extends Element { @state count = 0; }
+          import { recordMember } from './metadata.js';
+          export class Base extends Element { @recordMember @state count = 0; }
+        "#,
+        ),
+        (
+            "metadata.ts",
+            r#"
+          const lastMember = new WeakMap<object, string>();
+          export function recordMember(target: object, key: string): void {
+            lastMember.set(target, key);
+          }
+          export function memberName(target: object) { return lastMember.get(target); }
+          export function describe(label: string) {
+            return (target: object, _key: string, descriptor: PropertyDescriptor) => {
+              lastMember.set(target, label);
+              return descriptor;
+            };
+          }
+        "#,
+        ),
+        (
+            "mixin.ts",
+            r#"
+          import { observable } from '@microsoft/webui-framework';
+          import { describe, recordMember } from './metadata.js';
+          export function withStatus(Base) {
+            return class extends Base {
+              @observable status = '';
+              @describe('retry') @recordMember retry() {}
+            };
+          }
         "#,
         ),
         ("cards/exact-card.html", "<p>{{title}}</p>"),
@@ -49,7 +79,8 @@ fn plain_webui_build_projects_the_active_route_without_touching_browser_code() -
             r#"
           import * as web from '@microsoft/webui-framework';
           import { Base as Inherited } from '../base.js';
-          class Card extends Inherited {
+          import { withStatus } from '../mixin.js';
+          class Card extends withStatus(Inherited) {
             @web.attr({ attribute: 'data-caption' }) caption = '';
           }
           const Definition = Card;
@@ -61,7 +92,8 @@ fn plain_webui_build_projects_the_active_route_without_touching_browser_code() -
             "empty-card.ts",
             r#"
           import { WebUIElement } from '@microsoft/webui-framework';
-          class Empty extends WebUIElement {}
+          import { recordMember } from './metadata.js';
+          class Empty extends WebUIElement { @recordMember internal = ''; }
           Empty.define('empty-card');
         "#,
         ),
@@ -71,10 +103,13 @@ fn plain_webui_build_projects_the_active_route_without_touching_browser_code() -
             r#"
           import { WebUIElement, observable } from '@microsoft/webui-framework';
           function reactive(target: object, key: string) { observable(target, key); }
-          class Unknown extends WebUIElement {
-            @reactive hidden = '';
-            @observable count = 0;
+          function withUnknown(Base) {
+            return class extends Base {
+              @reactive hidden = '';
+              @observable count = 0;
+            };
           }
+          class Unknown extends withUnknown(WebUIElement) {}
           Unknown.define('unknown-card');
         "#,
         ),
@@ -129,12 +164,12 @@ fn plain_webui_build_projects_the_active_route_without_touching_browser_code() -
     );
     let protocol = Protocol::new(compiled);
     let state = json!({
-        "caption": "Visible", "count": 7, "title": "Rendered title",
+        "caption": "Visible", "count": 7, "status": "Ready", "title": "Rendered title",
         "emptyTitle": "Unused route", "hidden": "runtime decorator", "unrelated": [1, 2, 3]
     });
     assert_eq!(
         bootstrap(&protocol, "/", &state)?,
-        json!({"caption":"Visible","count":7})
+        json!({"caption":"Visible","count":7,"status":"Ready"})
     );
     assert_eq!(bootstrap(&protocol, "/empty", &state)?, json!({}));
     assert_eq!(bootstrap(&protocol, "/unknown", &state)?, state);
@@ -144,10 +179,110 @@ fn plain_webui_build_projects_the_active_route_without_touching_browser_code() -
     };
     assert_eq!(
         partial("/")?,
-        json!({"caption":"Visible","count":7,"title":"Rendered title"})
+        json!({"caption":"Visible","count":7,"status":"Ready","title":"Rendered title"})
     );
     assert_eq!(partial("/empty")?, json!({"emptyTitle":"Unused route"}));
     assert_eq!(partial("/unknown")?, state);
+    Ok(())
+}
+
+#[test]
+fn ambiguous_decorators_keep_full_state_even_with_framework_fields() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path();
+    let diagnostics = [
+        (
+            "wrapped-field",
+            "function extra(target: object) { observable(target, 'extra'); }",
+            "@extra @observable known = '';",
+        ),
+        (
+            "wrapped-method",
+            "function extra(target: object) { observable(target, 'extra'); }",
+            "@extra connectedCallback() { super.connectedCallback(); }",
+        ),
+        (
+            "exported-map",
+            "const metadata = new WeakMap<object, string>(); export { metadata };
+             function record(target: object, key: string) { metadata.set(target, key); }",
+            "@record @observable known = '';",
+        ),
+        (
+            "overridden-map",
+            "const metadata = new WeakMap<object, string>();
+             metadata.set = function (target, key) { observable(target, key); return this; };
+             function record(target: object, key: string) { metadata.set(target, key); }",
+            "@record @observable known = '';",
+        ),
+        (
+            "evaluated-map",
+            "const metadata = new WeakMap<object, string>();
+             function readCache() { return eval('metadata'); }
+             function record(target: object, key: string) { metadata.set(target, key); }",
+            "@record @observable known = '';",
+        ),
+        (
+            "dynamic-options",
+            "function decorate(_value: string) { return () => {}; }
+             function option() { observable(Card.prototype, 'extra'); return ''; }",
+            "@decorate(option()) @observable known = '';",
+        ),
+    ];
+    let mut html = String::new();
+    for (tag, helpers, member) in diagnostics {
+        html.push_str(&format!("<{tag}></{tag}>"));
+        fs::write(root.join(format!("{tag}.html")), "<p>{{title}}</p>")?;
+        fs::write(
+            root.join(format!("{tag}.ts")),
+            format!(
+                "import {{ WebUIElement, observable }} from '@microsoft/webui-framework';
+                 {helpers}
+                 class Card extends WebUIElement {{ @observable safe = ''; {member} }}
+                 Card.define('{tag}');"
+            ),
+        )?;
+    }
+    fs::write(root.join("index.html"), html)?;
+    let output = cli(
+        root,
+        &[
+            "--format",
+            "json",
+            "build",
+            "--plugin=webui",
+            "--out",
+            "dist",
+        ],
+    )?;
+    let mut warned = std::collections::BTreeSet::new();
+    let stdout = String::from_utf8(output.stdout)?;
+    for line in stdout.lines() {
+        let warning: Value = serde_json::from_str(line)?;
+        assert_eq!(warning["code"], "PROJ-B003");
+        warned.insert(
+            warning["file"]
+                .as_str()
+                .context("warning owner")?
+                .to_owned(),
+        );
+    }
+    let protocol = WebUIProtocol::from_protobuf(&fs::read(root.join("dist/protocol.bin"))?)?;
+    for (tag, _, _) in diagnostics {
+        assert!(warned.remove(tag), "{tag} must warn");
+        let component = &protocol.components[tag];
+        assert_eq!(
+            component.hydration_mode(),
+            StateProjectionMode::All,
+            "{tag}"
+        );
+        assert_eq!(
+            component.navigation_mode(),
+            StateProjectionMode::All,
+            "{tag}"
+        );
+        assert!(component.hydration_keys.is_empty(), "{tag}");
+    }
+    assert!(warned.is_empty(), "unexpected warnings: {warned:?}");
     Ok(())
 }
 

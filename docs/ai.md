@@ -1442,9 +1442,10 @@ Use the [CLI reference](/reference/cli/) for CSS/DOM modes, component discovery,
 asset bases, generated assets, and shutdown options rather than guessing flags.
 `--plugin=webui` automatically projects state from the same-named component
 script and its `@observable` / `@attr` declarations. Keep your own bundler;
-no manifest or bundler plugin is required. Unproven component source keeps
-full state with a build warning. Rebuild the protocol and browser bundle
-together when component source changes. See
+no manifest or bundler plugin is required. Unproven component source,
+including custom decorators with unknown effects, keeps full state with a
+build warning. Build the protocol and browser outputs (including package
+`dist`) from matching source revisions. See
 [state projection](/build/hydration#build-time-state-projection).
 If the browser entry imports generated modules, use the
 [single-compilation build pipeline](/build/integrations/node#single-compilation-builds).

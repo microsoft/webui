@@ -2,7 +2,9 @@
 // Licensed under the MIT license.
 
 mod classes;
+mod decorators;
 use classes::{class_binding, function_binding};
+pub(super) use decorators::Effect as DecoratorEffect;
 
 use std::collections::HashMap;
 
@@ -24,8 +26,10 @@ pub(super) enum Value {
         callee: NodeId,
         arguments: Vec<NodeId>,
         valid: bool,
+        literal_arguments: bool,
     },
     Class,
+    NeutralDecorator(DecoratorEffect),
     Alias(NodeId),
     Other,
 }
@@ -68,6 +72,7 @@ pub(super) struct Property {
 pub(super) struct Class {
     pub base: Option<NodeId>,
     pub properties: Vec<Property>,
+    pub method_decorators: Vec<NodeId>,
     pub valid_factory: bool,
     pub source_identity_preserved: bool,
 }
@@ -103,6 +108,7 @@ pub(super) fn parse(
     module: &str,
     source: &str,
     syntax: Option<crate::ScriptSyntax>,
+    source_only: bool,
 ) -> Result<Analysis, ProjectionDiagnostic> {
     let allocator = Allocator::default();
     let inferred = SourceType::from_path(module).unwrap_or_default();
@@ -147,8 +153,11 @@ pub(super) fn parse(
     }
     let semantic = built.semantic;
     let mut result = Analysis::default();
+    let mut decorators = (source_only
+        && !semantic.scoping().root_scope_flags().contains_direct_eval())
+    .then(|| decorators::Proof::new(&semantic));
     for node in semantic.nodes().iter() {
-        let value = value(node.kind(), &semantic);
+        let value = value(node.kind(), &semantic, decorators.as_mut());
         if !matches!(value, Value::Other) {
             result.values.insert(node.id(), value);
         }
@@ -260,7 +269,11 @@ fn reference_symbol(
         .and_then(|id| semantic.scoping().get_reference(id).symbol_id())
 }
 
-fn value(kind: AstKind<'_>, semantic: &Semantic<'_>) -> Value {
+fn value<'a>(
+    kind: AstKind<'a>,
+    semantic: &Semantic<'a>,
+    decorators: Option<&mut decorators::Proof<'_, 'a>>,
+) -> Value {
     match kind {
         AstKind::IdentifierReference(reference) => {
             reference_symbol(reference, semantic).map_or(Value::Global, Value::Symbol)
@@ -276,6 +289,8 @@ fn value(kind: AstKind<'_>, semantic: &Semantic<'_>) -> Value {
                     .arguments
                     .iter()
                     .any(|arg| matches!(arg, Argument::SpreadElement(_))),
+            literal_arguments: decorators.is_some()
+                && call.arguments.iter().all(decorators::literal_argument),
         },
         AstKind::Class(_) => Value::Class,
         AstKind::ParenthesizedExpression(node) => Value::Alias(node.expression.node_id()),
@@ -284,7 +299,9 @@ fn value(kind: AstKind<'_>, semantic: &Semantic<'_>) -> Value {
         AstKind::TSNonNullExpression(node) => Value::Alias(node.expression.node_id()),
         AstKind::TSInstantiationExpression(node) => Value::Alias(node.expression.node_id()),
         AstKind::TSTypeAssertion(node) => Value::Alias(node.expression.node_id()),
-        _ => Value::Other,
+        _ => decorators
+            .and_then(|proof| proof.classify(kind))
+            .map_or(Value::Other, Value::NeutralDecorator),
     }
 }
 

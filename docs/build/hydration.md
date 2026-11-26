@@ -454,7 +454,10 @@ webui build ./src --out ./dist --plugin=webui
 
 No bundler plugin or projection file is needed. The build does not bundle or
 rewrite your JavaScript. Rebuild both the protocol and your browser bundle
-when you change component source, and deploy them together.
+when you change component source, and deploy them together. If a package
+ships separately compiled browser code, build that output from the same
+source revision WebUI analyzes. A stale package `dist` can need different
+state than the source declares.
 
 For automatic projection, put the class in the template's same-named `.ts` or
 `.js` file, not both. Register it once with a top-level `Class.define('tag')`
@@ -467,8 +470,12 @@ source when there is no competing JavaScript file.
 
 Use the same component source and preserve its registrations, inheritance,
 and decorators in the browser bundle. Declare reactive state on the class
-rather than adding it programmatically. A plain WebUI build does not evaluate
-bundler aliases, custom loaders, or registration code. If it cannot prove a
+rather than adding it programmatically. WebUI can project through a custom
+field or method decorator when it can prove that decorator leaves reactive
+state unchanged. For example, a decorator can record a member name in a
+private `WeakMap`, or return an unchanged method descriptor. A plain WebUI
+build doesn't execute decorators or infer the effects of arbitrary calls,
+aliases, custom loaders, or registration code. If it cannot prove a
 component's state needs, it warns (`PROJ-B003`) and retains full state for
 responses that need that component rather than dropping fields. A component
 with no state fields can still project to an empty object.

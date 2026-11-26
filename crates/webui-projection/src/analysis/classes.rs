@@ -9,6 +9,7 @@ pub(super) fn class_binding(
     result: &mut Analysis,
 ) {
     let mut properties = Vec::new();
+    let mut method_decorators = Vec::new();
     let mut valid_factory = class.decorators.is_empty();
     let mut source_identity_preserved = valid_factory;
     for element in &class.body.body {
@@ -39,8 +40,27 @@ pub(super) fn class_binding(
             }
             ClassElement::MethodDefinition(method) => {
                 valid_factory &= !method.r#static;
-                source_identity_preserved &= method.decorators.is_empty()
-                    && (!method.r#static || ordinary_static_member(&method.key));
+                source_identity_preserved &=
+                    !method.r#static || ordinary_static_member(&method.key);
+                source_identity_preserved &= method
+                    .value
+                    .params
+                    .items
+                    .iter()
+                    .all(|param| param.decorators.is_empty());
+                if method.kind == MethodDefinitionKind::Method
+                    && !method.r#static
+                    && !method.computed
+                {
+                    method_decorators.extend(
+                        method
+                            .decorators
+                            .iter()
+                            .map(|decorator| decorator.expression.node_id()),
+                    );
+                } else {
+                    source_identity_preserved &= method.decorators.is_empty();
+                }
             }
             ClassElement::AccessorProperty(accessor) => {
                 source_identity_preserved &= accessor.decorators.is_empty()
@@ -62,6 +82,7 @@ pub(super) fn class_binding(
                 .as_ref()
                 .map(|heritage| heritage.expression.node_id()),
             properties,
+            method_decorators,
             valid_factory,
             source_identity_preserved,
         },
@@ -88,8 +109,11 @@ pub(super) fn function_binding(
     let Some(symbol) = function.id.as_ref().and_then(|id| id.symbol_id.get()) else {
         return;
     };
+    let id = function.node_id.get();
     let binding = if semantic.scoping().symbol_is_mutated(symbol) {
         Binding::Mutable
+    } else if matches!(result.values.get(&id), Some(Value::NeutralDecorator(_))) {
+        Binding::Value(id)
     } else {
         factory(function).map_or(Binding::Other, Binding::Factory)
     };

@@ -37,6 +37,7 @@ enum Identity {
     Element,
     Observable,
     Attr,
+    NeutralDecorator(analysis::DecoratorEffect),
     Mutable,
     Other,
     Invalid(&'static str),
@@ -103,11 +104,11 @@ impl<'a> Compiler<'a> {
                 let Some(source) = input.source.as_deref() else {
                     return false;
                 };
-                analysis::parse(module, source, input.syntax)
+                analysis::parse(module, source, input.syntax, false)
             }
             Evidence::Source(evidence) => evidence
                 .read(module, self.attempted.len())
-                .and_then(|source| analysis::parse(module, &source, None)),
+                .and_then(|source| analysis::parse(module, &source, None, true)),
         };
         match parsed {
             Ok(analysis) => {
@@ -325,6 +326,7 @@ impl<'a> Compiler<'a> {
                     callee,
                     arguments,
                     valid: true,
+                    ..
                 }) => Step::Continue(
                     Query::Value(Target {
                         value: *callee,
@@ -333,6 +335,9 @@ impl<'a> Compiler<'a> {
                     Continuation::Call(target, arguments.clone()),
                 ),
                 Some(Value::Class) => Step::Done(Identity::Class(target)),
+                Some(Value::NeutralDecorator(effect)) => {
+                    Step::Done(Identity::NeutralDecorator(*effect))
+                }
                 Some(Value::Alias(value)) => Step::Next(Query::Value(Target {
                     value: *value,
                     ..target

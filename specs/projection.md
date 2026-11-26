@@ -13,9 +13,21 @@ components retained in the protocol. A same-named `.ts` and `.js` pair is
 ambiguous. An explicit `component_modules` override is not proof of a match.
 There must be one literal, top-level registration for the tag in the selected
 module, resolving to a class defined there. Analyzable bases must reach
-`WebUIElement`; all field decorators must resolve to the canonical framework
-symbols. Unsupported class/member decorators, static blocks, or potential
-static `define` overrides cannot prove identity.
+`WebUIElement`. Field decorators must resolve to the canonical framework
+symbols or to a proven state-neutral function. The same check applies
+through inherited and factory-produced classes, including their method
+decorators. Unsupported class, static, parameter, or accessor decorators,
+static blocks, or potential static `define` overrides cannot prove identity.
+
+A source-proven neutral decorator is a synchronous legacy field or instance
+method decorator with simple parameters. It may return without a value,
+return the original method descriptor unchanged, or record a member name
+or primitive in a private module-local `WeakMap`. The map must be freshly
+constructed, not exported or aliased, and used only through its native
+operations. Modules containing direct `eval` cannot prove a neutral
+decorator. A simple factory may directly return such a function and receive
+primitive literals. Computed arguments, arbitrary side effects and unknown
+bodies stay unproven. Neutral decorators never add state keys.
 
 Follow only explicit relative `.ts` and `.js` paths during dependency lookup.
 An explicit `.js` may identify `.ts` when it is the only candidate. Analysis
