@@ -2237,6 +2237,7 @@ mod tests {
                     r#"<for each="project in shell.nav.canvas_projects">"#,
                     r#"<button @click="{open(project.id)}">Project</button></for>"#,
                     r#"<button @click="{open(shell.title.length)}">Length</button>"#,
+                    r#"<button @click="{open(shell.full.length, shell.full)}">Full value</button>"#,
                     r#"<for each="name in shell.names">"#,
                     r#"<button @click="{open(name.length)}">Name length</button></for>"#,
                 ),
@@ -2257,10 +2258,7 @@ mod tests {
         let result = build(options).unwrap();
         let component = &result.protocol.components["demo-card"];
         assert!(component.hydration_keys.is_empty());
-        assert_eq!(
-            component.navigation_keys,
-            ["selection", "serverTitle", "shell"]
-        );
+        assert_eq!(component.navigation_keys, ["serverTitle", "shell"]);
 
         let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
         let protocol = Protocol::new(result.protocol);
@@ -2290,12 +2288,158 @@ mod tests {
         assert!(small.contains(
             r#""state":{"selection":{"id":"target"},"shell":{"names":["Alpha","Beta"],"nav":{"canvas_projects":[{"id":"canvas-1"}]},"title":"Example"}}"#
         ));
+        let mut long = state.clone();
+        let text = "a🌍".repeat(2048);
+        long["shell"]["title"] = serde_json::Value::String(text.clone());
+        long["shell"]["names"] = serde_json::json!(["short", text]);
+        let compact = render(&long);
+        assert!(!compact.contains(&text));
+        assert!(compact.contains(r#""title":{"length":10240}"#));
+        assert!(compact.contains(r#""names":["short",{"length":10240}]"#));
+        long["shell"]["full"] = serde_json::Value::String(text.clone());
+        assert!(render(&long).contains(&format!(r#""full":"{text}""#)));
         let unused = serde_json::Value::String("x".repeat(128 * 1024));
         let mut extra = state;
         extra["shell"]["unused"] = unused.clone();
         extra["shell"]["nav"]["unused"] = unused.clone();
         extra["shell"]["nav"]["canvas_projects"][0]["unused"] = unused;
         assert!(render(&extra) == small, "unused state changed the response");
+
+        // Navigation already needed the whole repeated shell. Only selection
+        // is new to navigation: the event requires its id, not its siblings.
+        extra["selection"]["unused"] = serde_json::Value::String("y".repeat(128 * 1024));
+        let raw = protocol
+            .render_partial_json(&extra.to_string(), "index.html", "/", "")
+            .unwrap();
+        let partial: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert!(
+            partial["state"]["selection"] == serde_json::json!({"id": "target"}),
+            "event-only selection returned {} bytes",
+            partial["state"]["selection"].to_string().len()
+        );
+        assert_eq!(partial["state"]["shell"], extra["shell"]);
+        let owned = protocol
+            .render_partial(extra.clone(), "index.html", "/", "")
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&owned).unwrap(),
+            partial
+        );
+        let prepared = protocol
+            .prepare_partial(extra, "index.html", "/", "")
+            .unwrap();
+        assert_eq!(serde_json::to_value(prepared).unwrap(), partial);
+    }
+
+    #[test]
+    fn event_only_navigation_uses_the_reachable_shape_with_no_whole_keys() {
+        let app = create_app_dir(&[
+            (
+                "index.html",
+                concat!(
+                    r#"<route path="/choose" component="action-card" exact />"#,
+                    r#"<route path="/read" component="read-card" exact />"#,
+                ),
+            ),
+            (
+                "action-card.html",
+                concat!(
+                    r#"<template shadowrootmode="open" @click="{choose(shell.id, shell.rows.1.id, "#,
+                    r#"shell.rows.3, shell.text.length, whole, whole.id, missing.id, $webui)}">"#,
+                    "<button>Choose</button></template>",
+                ),
+            ),
+            ("action-card.ts", "export {};"),
+            ("read-card.html", "<p>{{shell.title}}</p>"),
+        ]);
+        let manifest = projection::test_support::build_valid_manifest_json(
+            app.path(),
+            &[("action-card.ts", "source")],
+            &[("app.js", "output")],
+            &[("action-card", "action-card.ts", &["app.js"], &[], &[])],
+        );
+        let mut options = default_options(app.path());
+        options.plugin = Some(Plugin::WebUI);
+        options.projection_manifests = vec![projection::test_support::write_manifest(
+            app.path(),
+            "projection.json",
+            &manifest,
+        )
+        .into()];
+        let build = build(options).unwrap();
+        assert!(build.protocol.components["action-card"]
+            .navigation_keys
+            .is_empty());
+        let protocol = Protocol::from_protobuf(&build.protocol_bytes).unwrap();
+        let input = r#"{
+          "shell":{"id":0}, "s\u0068ell":{
+            "id":1,"\u0069d":2,
+            "rows":[0,{"id":"old"},2,3,4], "rows":[0,{"unused":1},2,{"whole":true},4],
+            "text":"a🌍","unused":"drop"
+          }, "whole":{ "n":1e2 }, "$webui":{"private":true}
+        }"#;
+        let state: serde_json::Value = serde_json::from_str(input).unwrap();
+        let expected = serde_json::json!({
+            "shell":{"id":2,"rows":[null,{},null,{"whole":true},null],"text":"a🌍"},
+            "whole":state["whole"]
+        });
+        let partial = |input, path, inv| {
+            let json = protocol
+                .render_partial_json(input, "index.html", path, inv)
+                .unwrap();
+            serde_json::from_str::<serde_json::Value>(&json).unwrap()
+        };
+        let first = partial(input, "/choose", "");
+        assert_eq!(first["state"], expected);
+        let cached = partial(input, "/choose", first["inventory"].as_str().unwrap());
+        assert_eq!(cached["templates"], serde_json::json!({}));
+        assert_eq!(cached["state"], expected);
+        let owned = protocol
+            .prepare_partial(state.clone(), "index.html", "/choose", "")
+            .unwrap();
+        assert!(owned.is_match());
+        assert_eq!(serde_json::to_value(owned).unwrap()["state"], expected);
+        assert_eq!(
+            partial(input, "/read", "")["state"],
+            serde_json::json!({"shell":state["shell"]})
+        );
+        assert!(protocol
+            .render_partial_json(input, "index.html", "/choose", "")
+            .unwrap()
+            .contains(r#""whole":{ "n":1e2 }"#));
+        for (input, expected) in [
+            (
+                r#"{"shell":{"text":{"length":0,"other":1}}}"#,
+                serde_json::json!({"shell":{"text":{"length":0}}}),
+            ),
+            (
+                r#"{"shell":{"text":null,"rows":"invalid"}}"#,
+                serde_json::json!({"shell":{"text":null,"rows":null}}),
+            ),
+            (r#"{"shell":"invalid"}"#, serde_json::json!({"shell":null})),
+            ("[]", serde_json::json!({})),
+        ] {
+            assert_eq!(partial(input, "/choose", "")["state"], expected);
+            let owned = protocol
+                .prepare_partial(
+                    serde_json::from_str(input).unwrap(),
+                    "index.html",
+                    "/choose",
+                    "",
+                )
+                .unwrap();
+            assert_eq!(serde_json::to_value(owned).unwrap()["state"], expected);
+        }
+        for invalid in [
+            r#"{"shell":{"id":1,"ignored":"\uD800"}}"#,
+            r#"{"shell":{"rows":[1e9999]},"shell":{}}"#,
+            r#"{"unselected": [}"#,
+        ] {
+            assert!(matches!(
+                protocol.render_partial_json(invalid, "index.html", "/choose", ""),
+                Err(webui_handler::HandlerError::InvalidState(_))
+            ));
+        }
     }
 
     #[test]
@@ -2303,17 +2447,18 @@ mod tests {
         let app = create_app_dir(&[
             (
                 "index.html",
-                "<html><head></head><body><action-card></action-card><read-card></read-card></body></html>",
+                "<html><head></head><body><action-card></action-card><read-card></read-card><other-card></other-card></body></html>",
             ),
             (
                 "action-card.html",
                 concat!(
-                    r#"<button @click="{open(shell.action.id, options)}">Action</button>"#,
-                    r#"<if condition="show" lazy><button @click="{open(preview.id)}">{{shell.preview.label}}</button></if>"#,
+                    r#"<button @click="{open(shell.action.id, options, body.length)}">Action</button>"#,
+                    r#"<if condition="show" lazy><button @click="{open(preview.id, body)}">{{shell.preview.label}}</button></if>"#,
                 ),
             ),
             ("action-card.ts", "export {};"),
             ("read-card.html", "<b>{{shell.shared.title}}</b>"),
+            ("other-card.html", "<p>{{unrelated.title}}</p>"),
         ]);
         let json = projection::test_support::build_valid_manifest_json(
             app.path(),
@@ -2333,6 +2478,8 @@ mod tests {
         options.plugin = Some(Plugin::WebUI);
         options.projection_manifests = vec![manifest.into()];
         let build = build(options).unwrap();
+        assert!(build.protocol.hydration_reads.contains_key("read-card"));
+        assert!(!build.protocol.hydration_reads.contains_key("other-card"));
         let protocol = Protocol::from_protobuf(&build.protocol_bytes).unwrap();
         let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
         let render = |show| {
@@ -2364,6 +2511,34 @@ mod tests {
         assert!(open.contains(
             r#""state":{"options":{"authored":{"whole":true}},"preview":{"id":"p"},"shell":{"action":{"id":"a"},"preview":{"label":"Preview"},"shared":{"title":"Visible"}}}"#
         ));
+        for show in [false, true] {
+            let text = "note".repeat(1024);
+            let state = serde_json::json!({
+                "show":show, "options":{"authored":"whole"}, "shell":{"action":{"id":"a"},"unused":"whole"},
+                "preview":{"id":"p","unused":"drop"}, "body": text
+            });
+            let mut page = StringWriter { buf: String::new() };
+            handler
+                .render(
+                    &protocol,
+                    &state,
+                    &RenderOptions::new("index.html", "/"),
+                    &mut page,
+                )
+                .unwrap();
+            assert!(page.buf.contains(&format!(r#""body":"{text}""#)));
+            let json = protocol
+                .render_partial_json(&state.to_string(), "index.html", "/", "")
+                .unwrap();
+            let partial: serde_json::Value = serde_json::from_str(&json).unwrap();
+            assert_eq!(partial["state"]["options"], state["options"]);
+            assert_eq!(partial["state"]["shell"], state["shell"]);
+            assert_eq!(partial["state"]["body"], state["body"]);
+            assert_eq!(
+                partial["state"].get("preview"),
+                show.then(|| serde_json::json!({"id":"p"})).as_ref()
+            );
+        }
     }
 
     #[test]

@@ -63,6 +63,7 @@ describe('dotWalk (allocation-free dotted path)', () => {
   test('reads string length as UTF-8 bytes without exposing other string properties', () => {
     assert.equal(dotWalk({ title: 'A\u{1F642}' }, 'title.length', 0), 5);
     assert.equal(dotWalk('\u{E9}\u{20AC}', 'length', 0), 5);
+    assert.equal(dotWalk('\uD800x\uDC00', 'item.length', 5), 7);
     assert.equal(dotWalk('Name', 'length', 0), 4);
     assert.equal(dotWalk('', 'length', 0), 0);
     assert.equal(dotWalk('abc', 'length.extra', 0), undefined);

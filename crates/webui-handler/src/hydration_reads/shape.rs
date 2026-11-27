@@ -10,7 +10,7 @@ use serde::{
 use serde_json::{Map, Value};
 use webui_protocol::{HydrationReadField, HydrationReadPath, HydrationReadPlan};
 
-use super::{invalid_plan, scope_is_active, ReadSelection, Selector};
+use super::{compact_string_length, invalid_plan, scope_is_active, ReadSelection, Selector};
 use crate::{write_script_safe_json_str, HandlerError, KeyView, ResponseWriter, Result};
 
 impl<'a> Selector<'a> {
@@ -38,6 +38,7 @@ impl<'a> ReadSelection<'a> {
         let mut walk = Walk {
             output: scratch,
             active_lazy: self.active_lazy.as_ref(),
+            compact_lengths: false,
             todo: Vec::new(),
             frames: Vec::new(),
             seen: HashSet::new(),
@@ -62,6 +63,7 @@ impl<'a> ReadSelection<'a> {
             if let Some(value) = source.get(name) {
                 write_field(walk.output, &mut first, name)?;
                 if let Some(selectors) = selectors {
+                    walk.compact_lengths = self.can_compact_strings(name);
                     walk.write_value(value, selectors)?;
                 } else {
                     json(walk.output, value)?;
@@ -112,11 +114,21 @@ impl<'a> Read<'a> {
     fn child(self) -> Self {
         Self::new(&self.path[1..], self.action)
     }
+
+    fn reads_length(&self) -> bool {
+        is_length_read(self.path) && matches!(self.action, Action::Value | Action::Truthy)
+    }
+}
+
+#[derive(Serialize)]
+struct StringLength {
+    length: usize,
 }
 
 struct Walk<'a, 's, 'o> {
     output: &'o mut Vec<u8>,
     active_lazy: Option<&'o HashSet<&'a str>>,
+    compact_lengths: bool,
     todo: Vec<Read<'a>>,
     frames: Vec<Frame<'s>>,
     seen: HashSet<(*const HydrationReadPlan, u32)>,
@@ -221,7 +233,14 @@ impl<'a, 's> Walk<'a, 's, '_> {
             Value::Array(items) => {
                 if let Some(fields) = flat_item_fields(reads, items)? {
                     self.todo.truncate(start);
-                    return json(self.output, &FlatItems { items, fields });
+                    return json(
+                        self.output,
+                        &FlatItems {
+                            items,
+                            fields,
+                            compact_lengths: self.compact_lengths && fields.len() == 1,
+                        },
+                    );
                 }
                 reads.sort_unstable_by_key(|read| read.array_slot());
                 let each_end = start + reads.partition_point(|read| read.path.is_empty());
@@ -233,15 +252,20 @@ impl<'a, 's> Walk<'a, 's, '_> {
                     index: 0,
                 }
             }
-            _ => {
-                let keep = truthy
-                    || (value.is_string()
-                        && reads.iter().any(|read| {
-                            is_length_read(read.path)
-                                && matches!(read.action, Action::Value | Action::Truthy)
-                        }));
+            Value::String(text) if !truthy && reads.iter().any(Read::reads_length) => {
+                let compact = self.compact_lengths
+                    && compact_string_length(text.len())
+                    && reads.iter().all(Read::reads_length);
                 self.todo.truncate(start);
-                return json(self.output, if keep { value } else { &Value::Null });
+                return if compact {
+                    json(self.output, &StringLength { length: text.len() })
+                } else {
+                    json(self.output, text)
+                };
+            }
+            _ => {
+                self.todo.truncate(start);
+                return json(self.output, if truthy { value } else { &Value::Null });
             }
         };
         self.frames.push(Frame { start, kind });
@@ -286,6 +310,7 @@ fn flat_item_fields<'a>(
 struct FlatItems<'a> {
     items: &'a [Value],
     fields: &'a [HydrationReadPath],
+    compact_lengths: bool,
 }
 
 impl Serialize for FlatItems<'_> {
@@ -297,6 +322,7 @@ impl Serialize for FlatItems<'_> {
                 item,
                 fields: self.fields,
                 keep_strings,
+                compact_lengths: self.compact_lengths,
             })?;
         }
         seq.end()
@@ -307,13 +333,20 @@ struct FlatFields<'a> {
     item: &'a Value,
     fields: &'a [HydrationReadPath],
     keep_strings: bool,
+    compact_lengths: bool,
 }
 
 impl Serialize for FlatFields<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
         let item = match self.item {
             Value::Object(item) => item,
-            Value::String(text) if self.keep_strings => return serializer.serialize_str(text),
+            Value::String(text) if self.keep_strings => {
+                return if self.compact_lengths && compact_string_length(text.len()) {
+                    StringLength { length: text.len() }.serialize(serializer)
+                } else {
+                    serializer.serialize_str(text)
+                };
+            }
             _ => return serializer.serialize_none(),
         };
         let mut map = serializer.serialize_map(None)?;

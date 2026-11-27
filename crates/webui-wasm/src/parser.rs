@@ -285,16 +285,6 @@ fn compile(
             )));
         }
     }
-    let needs_read_plans = projection.as_ref().is_some_and(|entries| {
-        templates.iter().any(|artifact| {
-            entries.get(&artifact.tag_name).is_some_and(|entry| {
-                artifact
-                    .hydration_reads
-                    .as_ref()
-                    .is_some_and(|plan| plan.needs_projection(&entry.hydration_keys))
-            })
-        })
-    });
     for artifact in templates {
         let manifest_entry = if artifact.is_scripted {
             projection
@@ -303,7 +293,7 @@ fn compile(
         } else {
             None
         };
-        if needs_read_plans {
+        if projection.is_some() {
             if let Some(plan) = artifact.hydration_reads {
                 protocol
                     .hydration_reads
@@ -331,6 +321,7 @@ fn compile(
             protocol.client_fragments.insert(fragment.id, data);
         }
     }
+    protocol.retain_projected_read_plans();
     apply_component_delivery(&mut protocol, component_delivery, entry);
     protocol.asset_base = asset_base;
 
@@ -512,7 +503,7 @@ mod tests {
                 concat!(
                     "<template shadowrootmode=\"open\"><p>{{name}}</p><p>{{serverTitle}}</p>",
                     r#"<for each="project in shell.nav.canvas_projects">"#,
-                    r#"<button @click="{select(project.id)}">Select</button></for></template>"#,
+                    r#"<button @click="{select(project.id, choice.id, label.name)}">Select</button></for></template>"#,
                 )
                 .to_string(),
             ),
@@ -574,6 +565,20 @@ mod tests {
             component.navigation_keys,
             ["label", "name", "serverTitle", "shell"]
         );
+        #[cfg(feature = "handler")]
+        {
+            let partial = webui_handler::Protocol::new(protocol).render_partial_json(
+                r#"{"choice":{"id":"c","drop":true},"label":{"name":"n","whole":true},"shell":{"whole":true}}"#,
+                "index.html", "/", "",
+            ).unwrap();
+            let partial: serde_json::Value = serde_json::from_str(&partial).unwrap();
+            assert_eq!(
+                partial["state"],
+                serde_json::json!({
+                    "choice":{"id":"c"}, "label":{"name":"n","whole":true}, "shell":{"whole":true}
+                })
+            );
+        }
     }
 
     #[test]

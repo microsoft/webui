@@ -3,6 +3,8 @@
 
 //! Request-local state shared by the continuation VM and wire serializer.
 
+use crate::hydration_reads::SnapshotInput;
+use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
 use webui_protocol::WebUIProtocol;
 
@@ -352,36 +354,16 @@ pub(super) fn increment_streaming_record_sequence(
     Ok(())
 }
 
-pub(crate) fn selected_state_snapshot(
-    state: &serde_json::Value,
-    keys: &[Box<str>],
-) -> serde_json::Value {
-    let serde_json::Value::Object(source) = state else {
-        return serde_json::Value::Object(serde_json::Map::new());
-    };
-    let mut selected = serde_json::Map::with_capacity(keys.len());
-    for key in keys {
-        if let Some(value) = source.get(key.as_ref()) {
-            selected.insert(key.to_string(), value.clone());
-        }
+impl SnapshotInput<'_> {
+    fn overlay(self, target: &mut Map<String, Value>, key: &str) -> bool {
+        let slot = match target.get_mut(key) {
+            Some(slot) if slot == self.value() => return false,
+            Some(slot) => slot,
+            None => target.entry(key).or_insert(Value::Null),
+        };
+        self.store(slot);
+        true
     }
-    serde_json::Value::Object(selected)
-}
-
-pub(crate) fn selected_state_snapshot_owned(
-    state: serde_json::Value,
-    keys: &[Box<str>],
-) -> serde_json::Value {
-    let serde_json::Value::Object(mut source) = state else {
-        return serde_json::Value::Object(serde_json::Map::new());
-    };
-    let mut selected = serde_json::Map::with_capacity(keys.len());
-    for key in keys {
-        if let Some(value) = source.remove(key.as_ref()) {
-            selected.insert(key.to_string(), value);
-        }
-    }
-    serde_json::Value::Object(selected)
 }
 
 /// Merge the caller's state for this step into the retained continuation
@@ -397,37 +379,30 @@ pub(crate) fn selected_state_snapshot_owned(
 /// tree for data the snapshot already holds. Keys that do change reuse their
 /// existing entry, letting [`serde_json::Value::clone_from`] reuse the previous
 /// value's buffers.
-pub(crate) fn overlay_selected_state(
-    frozen: &mut serde_json::Value,
-    state: &serde_json::Value,
-    keys: &[Box<str>],
+pub(super) fn overlay_selected_state(
+    target: &mut Map<String, Value>,
+    mut input: SnapshotInput<'_>,
+    plan: &super::vm::ContinuationStatePlan,
+    route_callback: bool,
 ) -> bool {
     let mut changed = false;
-    if !frozen.is_object() {
-        *frozen = serde_json::Value::Object(serde_json::Map::new());
-        changed = true;
+    for key in &plan.keys {
+        if let Some(value) = input.reborrow().child(key.as_ref()) {
+            changed |= value.overlay(target, key);
+        }
     }
-    let serde_json::Value::Object(source) = state else {
-        return changed;
-    };
-    let serde_json::Value::Object(target) = frozen else {
-        return changed;
-    };
-    for key in keys {
-        let Some(value) = source.get(key.as_ref()) else {
+    for root in &plan.events {
+        let Some(value) = input.reborrow().child(root.key.as_ref()) else {
             continue;
         };
-        match target.get_mut(key.as_ref()) {
-            Some(slot) => {
-                if slot != value {
-                    slot.clone_from(value);
-                    changed = true;
-                }
-            }
-            None => {
-                target.insert(key.to_string(), value.clone());
-                changed = true;
-            }
+        if route_callback || root.is_whole() {
+            changed |= value.overlay(target, &root.key);
+        } else if !target
+            .get(root.key.as_ref())
+            .is_some_and(|frozen| root.unchanged(value.value(), frozen))
+        {
+            target.insert(root.key.to_string(), root.snapshot(value));
+            changed = true;
         }
     }
     changed
@@ -463,46 +438,6 @@ pub(crate) fn overlay_full_state(
             }
             None => {
                 target.insert(key.clone(), value.clone());
-                changed = true;
-            }
-        }
-    }
-    changed
-}
-
-/// Move selected caller-owned values into the continuation snapshot.
-///
-/// Exact equality checks keep the state revision stable when a binding supplies
-/// the same complete state on every resume. Changed subtrees are moved rather
-/// than cloned.
-pub(crate) fn overlay_selected_state_owned(
-    frozen: &mut serde_json::Value,
-    state: serde_json::Value,
-    keys: &[Box<str>],
-) -> bool {
-    let serde_json::Value::Object(mut source) = state else {
-        return false;
-    };
-    if !frozen.is_object() {
-        *frozen = serde_json::Value::Object(serde_json::Map::new());
-    }
-    let serde_json::Value::Object(target) = frozen else {
-        return false;
-    };
-    let mut changed = false;
-    for key in keys {
-        let Some(value) = source.remove(key.as_ref()) else {
-            continue;
-        };
-        match target.get_mut(key.as_ref()) {
-            Some(slot) => {
-                if slot != &value {
-                    *slot = value;
-                    changed = true;
-                }
-            }
-            None => {
-                target.insert(key.to_string(), value);
                 changed = true;
             }
         }

@@ -36,7 +36,18 @@ previously committed bytes cannot be rolled back or repackaged as a
 successful response.
 
 The continuation retains only the reachable parent-state projection and
-lexical scope, not the entire original state on each resume. Resolution
+lexical scope, not the entire original state on each resume. Roots required
+by server rendering or by a whole-value hydration declaration stay intact.
+For roots needed only by template event arguments, the parked state keeps
+the selected fields, including paths a later resume can open in a deferred
+region. Passing a whole argument keeps its whole value. If a matched route can
+generate a host whose plugin reads state, the continuation preserves that
+plugin's existing whole-root view. An unmatched route does not widen the
+snapshot. The built-in WebUI plugin does not read route-host state.
+
+A resume replaces each supplied top-level root and keeps omitted roots. A
+state-only update is independent: it does not change the frozen inputs to a
+future resume or advance. Resolution
 within a resumed occurrence checks lexical locals, the supplied resume
 state, then frozen parent state. Independent host bindings return writable
 segments rather than requiring callers to own a Rust writer. A separate

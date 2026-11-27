@@ -171,26 +171,14 @@ fn apply_projection(raw: &mut RawBuildOutput, options: &BuildOptions) -> Result<
         .collect();
     projection::validate_coverage(&merged.components, &scripted_tags)?;
     raw.protocol.initial_state_strategy = webui_protocol::InitialStateStrategy::Components as i32;
-    let needs_read_plans = raw.component_templates.iter().any(|artifact| {
-        let Some(entry) = merged.components.get(&artifact.tag_name) else {
-            return false;
-        };
-        raw.protocol.components.contains_key(&artifact.tag_name)
-            && artifact
-                .hydration_reads
-                .as_ref()
-                .is_some_and(|plan| plan.needs_projection(&entry.hydration_keys))
-    });
     for artifact in &mut raw.component_templates {
         let Some(component) = raw.protocol.components.get_mut(&artifact.tag_name) else {
             continue;
         };
         if let Some(plan) = artifact.hydration_reads.take() {
-            if needs_read_plans {
-                raw.protocol
-                    .hydration_reads
-                    .insert(artifact.tag_name.clone(), plan);
-            }
+            raw.protocol
+                .hydration_reads
+                .insert(artifact.tag_name.clone(), plan);
         }
         if !artifact.is_scripted {
             continue;
@@ -204,6 +192,7 @@ fn apply_projection(raw: &mut RawBuildOutput, options: &BuildOptions) -> Result<
         component.navigation_keys =
             projection::union_keys(&entry.navigation_keys, &artifact.template_roots);
     }
+    raw.protocol.retain_projected_read_plans();
     let mut preloads = module_preload::resolve(&merged.entry_closures, &raw.module_entry_srcs);
     raw.protocol.module_preloads = preloads.hrefs;
     raw.warnings.append(&mut preloads.warnings);

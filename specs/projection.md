@@ -23,9 +23,10 @@ with producer and adapter identities, `root`, `analysisHash`, `buildId`,
 `inputs`, `outputs`, `components`, and optional `entryClosures`. Each component
 names its defining module, final output set, initial hydration keys, and
 navigation keys. Navigation keys include hydration keys; WebUI adds compiled
-template roots when building the protocol. Initial hydration additionally
-includes compiler-owned event reads. Literals and the event object contribute
-no state. A scriptless component needs no JavaScript analysis. Without a
+template rendering roots when building the protocol. Both initial hydration
+and partial navigation additionally include compiler-owned event reads.
+Literals and the event object contribute no state. A scriptless component
+needs no JavaScript analysis. Without a
 manifest, unknown client surfaces keep full
 state for correctness; **when manifests are supplied**, every compiled
 scripted component requires exactly one proven owner.
@@ -47,7 +48,7 @@ their compiled body roots. Preparation must not erase those roots through an
 intermediate full-state fallback. Packs and generated module content do not
 depend on projection; preparation and finalization share their original payloads.
 
-### Template-owned initial state
+### Template-owned event state
 
 The protobuf hydration read graph is separate from the JavaScript proof and
 the whole-root navigation surface. One node describes one lexical name in one
@@ -57,17 +58,31 @@ item name. Equivalent facts are not multiplied by combinations of outer
 scopes. A recursive edge participates in the same fixed point as any other
 edge. The compiler bounds graph construction and rejects excessive input.
 This bound covers the read graph, not the separate lexical name-set traversal
-that produces template root metadata.
+that produces template root metadata. The final protocol keeps an owner's plan
+only if it reads a root that an event can select outside authored whole keys.
+This includes display-only readers of the same root in other components.
 
 The handler chooses template-owned roots reachable from event reads, then
 unions the reads of selected roots across reachable components. This includes
 fields needed for text, attributes, conditions, and keyed reconciliation.
 Repeat arrays keep their positions; missing paths stay missing and reads of
-complete values keep those values. A string read through `.length` retains its
-string, and the browser reads its UTF-8 byte length just as SSR does. A manifest
-whole-root read takes precedence.
+complete values keep those values. String `.length` is the UTF-8 byte count in
+both SSR and the browser. When length is the only observable read of a long
+template-only string, the projected state may represent it as `{"length":N}`;
+this avoids transferring, retaining, or scanning the text on click. Keep the
+string if a consumer reads its value or truthiness, if lazy readers cannot be
+ruled out, or if a whole-root contract takes precedence. Short strings need no
+extra object. This representation is for projected state, never host input.
 Inactive lazy edges contribute no initial requirement. Stream updates can
 include explicitly provided event data for a newly opened lazy region.
+
+For partial navigation, the matched resources select state even if their
+templates are already in the client's inventory. Rendering and structural
+bindings, including repeats, keep their existing whole-root contract, as do
+authored navigation keys. Only roots introduced solely by reachable event
+arguments use their selected paths. For example, `choose(shell.id)` can add
+`{"shell":{"id":1}}`; if the route also renders `shell.title`, repeats over
+`shell.items`, or passes `shell` itself, navigation keeps the complete `shell`.
 
 The JSON stays in the existing `state` object. No client projection interpreter
 or new build manifest schema is required. Compilers producing the read graph

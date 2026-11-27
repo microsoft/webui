@@ -74,6 +74,9 @@ pub struct ClientTemplatePayload<'a> {
 /// A mapping of unique fragment identifiers to their corresponding fragment lists.
 pub type WebUIFragmentRecords = HashMap<String, FragmentList>;
 
+/// Host-only render state namespace. Never project this key into client state.
+pub const STATE_INJECT_KEY: &str = "$webui";
+
 impl ClientFragmentData {
     /// Combine this body's template-read keys with its owner's authored state contract.
     ///
@@ -99,13 +102,31 @@ impl ClientFragmentData {
     }
 }
 
-impl HydrationReadPlan {
-    /// Whether an event needs state outside the sorted authored whole keys.
-    #[must_use]
-    pub fn needs_projection(&self, whole: &[String]) -> bool {
-        self.roots
-            .iter()
-            .any(|root| root.reaches_event && whole.binary_search(&root.key).is_err())
+impl WebUiProtocol {
+    /// Discard build-time read plans that cannot contribute to projected hydration.
+    /// A non-event owner still contributes if it reads another owner's event root.
+    pub fn retain_projected_read_plans(&mut self) {
+        let mut selected = HashSet::new();
+        for (owner, plan) in &self.hydration_reads {
+            let Some(component) = self.components.get(owner) else {
+                continue;
+            };
+            if component.hydration_mode == StateProjectionMode::All as i32 {
+                continue;
+            }
+            for root in &plan.roots {
+                if root.reaches_event
+                    && root.key != STATE_INJECT_KEY
+                    && component.hydration_keys.binary_search(&root.key).is_err()
+                    && !selected.contains(&root.key)
+                {
+                    selected.insert(root.key.clone());
+                }
+            }
+        }
+        self.hydration_reads
+            .retain(|_, plan| plan.roots.iter().any(|root| selected.contains(&root.key)));
+        self.hydration_reads.shrink_to_fit();
     }
 }
 
@@ -2275,8 +2296,6 @@ mod tests {
         protocol
             .components
             .insert("my-card".into(), ComponentData::default());
-        protocol.assign_build_id().unwrap();
-        let old_id = protocol.build_id.clone();
         let mut plan = HydrationReadPlan {
             roots: vec![HydrationReadRoot {
                 key: "selection".into(),
@@ -2299,13 +2318,32 @@ mod tests {
         protocol
             .hydration_reads
             .insert("my-card".into(), plan.clone());
-        protocol.assign_build_id().unwrap();
-        assert_ne!(protocol.build_id, old_id);
+        #[cfg(feature = "content-identity")]
+        {
+            let mut without_reads = protocol.clone();
+            without_reads.hydration_reads.clear();
+            without_reads.assign_build_id().unwrap();
+            protocol.assign_build_id().unwrap();
+            assert_ne!(protocol.build_id, without_reads.build_id);
+        }
         let bytes = protocol.to_protobuf().unwrap();
         let decoded = WebUIProtocol::from_protobuf(&bytes).unwrap();
         assert_eq!(decoded.hydration_reads, protocol.hydration_reads);
-        assert!(plan.needs_projection(&[]));
-        assert!(!plan.needs_projection(&["selection".into()]));
+        protocol.retain_projected_read_plans();
+        assert!(protocol.hydration_reads.contains_key("my-card"));
+        protocol
+            .components
+            .get_mut("my-card")
+            .unwrap()
+            .hydration_keys = vec!["selection".into()];
+        protocol.retain_projected_read_plans();
+        assert!(protocol.hydration_reads.is_empty());
+
+        let mut reserved = plan.clone();
+        reserved.roots[0].key = "$webui".into();
+        protocol.hydration_reads.insert("my-card".into(), reserved);
+        protocol.retain_projected_read_plans();
+        assert!(protocol.hydration_reads.is_empty());
 
         plan.nodes[0].scopes.push(HydrationReadScope {
             node: 1,

@@ -167,13 +167,15 @@ its negated branch is shown. If data becomes ready at different times, use
 
 State projection does not change what the server renderer may read. Keep the
 request state complete for every SSR binding, condition, and loop. A validated
-bundler manifest only controls which top-level values are copied into the
-browser bootstrap block and later route partials.
+bundler manifest lets WebUI limit the state sent in the browser bootstrap
+block and later route partials.
 
 Without a projection manifest, WebUI sends full state. With one or more
 manifests, every scripted component compiled into the protocol must have exact
-coverage, and only its proven `@observable` plus `@attr` keys are eligible for
-initial bootstrap. See [Hydration](/build/hydration#build-time-state-projection).
+coverage. The initial bootstrap includes whole `@observable` and `@attr`
+values and the template fields needed by event arguments. For example, pass
+`project.id` rather than `project` if the handler only needs the ID.
+See [Hydration](/build/hydration#build-time-state-projection).
 
 Projection reduces the browser payload; it is not an access-control boundary.
 Never place credentials, private tokens, or other secrets in render state.

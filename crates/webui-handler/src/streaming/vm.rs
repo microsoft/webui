@@ -10,8 +10,8 @@ use std::sync::Arc;
 use serde_json::Value;
 use webui_protocol::{
     condition_expr, web_ui_fragment::Fragment, BoundaryPhase, ConditionExpr, InitialStateStrategy,
-    StateProjectionMode, WebUIFragment, WebUIFragmentBoundary, WebUIFragmentComponent,
-    WebUIFragmentFor, WebUIFragmentIf, WebUIProtocol, WebUiFragmentRoute,
+    PredicateOperand, StateProjectionMode, WebUIFragment, WebUIFragmentBoundary,
+    WebUIFragmentComponent, WebUIFragmentFor, WebUIFragmentIf, WebUIProtocol, WebUiFragmentRoute,
 };
 
 use super::checkpoint::RangeRecord;
@@ -126,7 +126,9 @@ pub(crate) struct ContinuationVm {
 /// cheap pointer clone, so no response walks the fragment graph merely to
 /// decide which top-level state keys its continuation retains.
 pub(crate) struct ContinuationStatePlan {
-    pub(crate) keys: Arc<[Box<str>]>,
+    pub(crate) keys: Box<[Box<str>]>,
+    pub(super) events: Box<[crate::hydration_reads::FrozenEventRoot]>,
+    pub(super) has_route_host: bool,
     pub(crate) requires_full_state: bool,
 }
 
@@ -138,7 +140,7 @@ pub(crate) struct ContinuationStatePlan {
 /// The failure is boxed so the memo table stores one small cell per compiled
 /// record instead of reserving the diagnostic's payload for every slot.
 pub(crate) struct PreparedContinuationStatePlan {
-    result: std::result::Result<ContinuationStatePlan, Box<ContinuationStatePlanError>>,
+    result: std::result::Result<Arc<ContinuationStatePlan>, Box<ContinuationStatePlanError>>,
 }
 
 enum ContinuationStatePlanError {
@@ -155,11 +157,12 @@ impl PreparedContinuationStatePlan {
                 entry_id,
                 super::session::MAX_FROZEN_STATE_KEYS,
             )
+            .map(Arc::new)
             .map_err(|error| Box::new(ContinuationStatePlanError::capture(error))),
         }
     }
 
-    pub(crate) fn resolve(&self) -> Result<&ContinuationStatePlan> {
+    pub(crate) fn resolve(&self) -> Result<&Arc<ContinuationStatePlan>> {
         self.result
             .as_ref()
             .map_err(|error| error.to_handler_error())
@@ -1064,11 +1067,7 @@ impl ContinuationVm {
         let Some(raw) = boundary.key.as_deref() else {
             return Ok(None);
         };
-        let trimmed = raw.trim();
-        let path = trimmed
-            .strip_prefix("{{")
-            .and_then(|value| value.strip_suffix("}}"))
-            .map_or(trimmed, str::trim);
+        let path = boundary_key_path(raw);
         let Some(value) = handler.resolve_value_owned(path, context) else {
             return Err(invalid_boundary_key_error(
                 boundary.declaration_id,
@@ -1424,6 +1423,7 @@ impl ContinuationVm {
         keys.insert(STATE_INJECT_KEY.to_string());
         let mut pending = vec![entry_id];
         let mut visited = HashSet::new();
+        let mut has_route_host = false;
         let mut requires_full_state =
             protocol.initial_state_strategy != InitialStateStrategy::Components as i32;
         while let Some(id) = pending.pop() {
@@ -1435,7 +1435,7 @@ impl ContinuationVm {
                 .get(id)
                 .ok_or_else(|| HandlerError::MissingFragment(id.to_string()))?;
             for fragment in &list.fragments {
-                Self::collect_fragment_keys(
+                has_route_host |= Self::collect_fragment_keys(
                     fragment,
                     protocol,
                     &mut keys,
@@ -1449,8 +1449,29 @@ impl ContinuationVm {
         }
         let mut keys: Vec<Box<str>> = keys.into_iter().map(String::into_boxed_str).collect();
         keys.sort_unstable();
+        let mut events = Box::default();
+        if !requires_full_state && !protocol.hydration_reads.is_empty() {
+            let whole = keys.iter().map(Box::as_ref).collect::<Vec<_>>();
+            if let Some(reads) = crate::hydration_reads::select_checked(
+                protocol,
+                visited.iter().copied(),
+                crate::KeyView::Borrowed(&whole),
+                true,
+                |count| {
+                    if count > limit.saturating_sub(keys.len()) {
+                        Err(state_key_limit_error(limit))
+                    } else {
+                        Ok(())
+                    }
+                },
+            )? {
+                events = reads.into_frozen()?;
+            }
+        }
         Ok(ContinuationStatePlan {
-            keys: Arc::from(keys),
+            keys: keys.into_boxed_slice(),
+            events,
+            has_route_host,
             requires_full_state,
         })
     }
@@ -1461,7 +1482,7 @@ impl ContinuationVm {
         keys: &mut HashSet<String>,
         pending: &mut Vec<&'a str>,
         requires_full_state: &mut bool,
-    ) {
+    ) -> bool {
         match fragment.fragment.as_ref() {
             Some(Fragment::Signal(signal)) => {
                 if structural_signal_value(signal).is_none() {
@@ -1500,14 +1521,15 @@ impl ContinuationVm {
             }
             Some(Fragment::Boundary(boundary)) => {
                 if let Some(key) = boundary.key.as_deref() {
-                    insert_top_level_key(keys, key);
+                    insert_top_level_key(keys, boundary_key_path(key));
                 }
             }
             Some(Fragment::Route(route)) => {
-                collect_route_keys(route, protocol, keys, pending, requires_full_state);
+                return collect_route_keys(route, protocol, keys, pending, requires_full_state);
             }
             _ => {}
         }
+        false
     }
 }
 
@@ -1517,9 +1539,13 @@ fn collect_route_keys<'a>(
     keys: &mut HashSet<String>,
     pending: &mut Vec<&'a str>,
     requires_full_state: &mut bool,
-) {
+) -> bool {
     let mut routes = vec![route];
+    let mut has_route_host = false;
     while let Some(current) = routes.pop() {
+        // Only the matched component is a server-generated host. Pending and
+        // error components are client resources; still collect their reads.
+        has_route_host |= !current.fragment_id.is_empty();
         if !current.content_fragment_id.is_empty() {
             pending.push(&current.content_fragment_id);
         }
@@ -1536,6 +1562,7 @@ fn collect_route_keys<'a>(
         }
         routes.extend(current.children.iter());
     }
+    has_route_host
 }
 
 fn collect_component_hydration_keys(
@@ -1561,26 +1588,22 @@ fn collect_component_hydration_keys(
     } else if mode != StateProjectionMode::None as i32 {
         *requires_full_state = true;
     }
-    if let Some(plan) = protocol.hydration_reads.get(component) {
-        keys.extend(
-            plan.roots
-                .iter()
-                .filter(|root| root.reaches_event)
-                .map(|root| root.key.clone()),
-        );
-    }
 }
 
 fn collect_condition_keys(condition: &ConditionExpr, keys: &mut HashSet<String>) {
     let mut pending = vec![condition];
     while let Some(current) = pending.pop() {
         match current.expr.as_ref() {
-            Some(condition_expr::Expr::Identifier(identifier)) => {
+            Some(condition_expr::Expr::Identifier(identifier))
+                if !matches!(identifier.value.as_str(), "true" | "false") =>
+            {
                 insert_top_level_key(keys, &identifier.value);
             }
             Some(condition_expr::Expr::Predicate(predicate)) => {
                 insert_top_level_key(keys, &predicate.left);
-                insert_top_level_key(keys, &predicate.right);
+                if let PredicateOperand::Path(path) = PredicateOperand::classify(&predicate.right) {
+                    insert_top_level_key(keys, path);
+                }
             }
             Some(condition_expr::Expr::Not(not)) => {
                 if let Some(inner) = not.condition.as_deref() {
@@ -1595,27 +1618,26 @@ fn collect_condition_keys(condition: &ConditionExpr, keys: &mut HashSet<String>)
                     pending.push(right);
                 }
             }
-            None => {}
+            _ => {}
         }
     }
 }
 
-fn insert_top_level_key(keys: &mut HashSet<String>, raw: &str) {
+fn boundary_key_path(raw: &str) -> &str {
     let trimmed = raw.trim();
-    let path = trimmed
+    trimmed
         .strip_prefix("{{")
         .and_then(|value| value.strip_suffix("}}"))
-        .map_or(trimmed, str::trim);
+        .map_or(trimmed, str::trim)
+}
+
+fn insert_top_level_key(keys: &mut HashSet<String>, path: &str) {
     let Some(first) = path.split('.').next() else {
         return;
     };
-    if first.is_empty()
-        || first.bytes().all(|byte| byte.is_ascii_digit())
-        || matches!(first, "true" | "false" | "null")
-    {
-        return;
+    if !first.is_empty() {
+        keys.insert(first.to_owned());
     }
-    keys.insert(first.to_string());
 }
 
 /// Resolve a compiled record ID to its dense slot for a continuation frame.

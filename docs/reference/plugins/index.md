@@ -336,6 +336,9 @@ pub trait HandlerPlugin: Send {
     /// Process opaque data from a Plugin protocol fragment.
     fn on_element_data(&mut self, data: &[u8], writer: &mut dyn ResponseWriter) -> Result<()>;
 
+    /// Return false only if the route component hook never reads state.
+    fn reads_route_component_state(&self) -> bool { true }
+
     /// Write framework-specific route component state attributes.
     fn write_route_component_state(
         &self,
@@ -344,6 +347,11 @@ pub trait HandlerPlugin: Send {
     ) -> Result<()>;
 }
 ```
+
+If `write_route_component_state` never reads its `state` argument, override
+`reads_route_component_state` to return `false`. This lets a paused stream
+discard fields that only template event arguments could use. The hook is
+still called. Leave the default in place if the hook can inspect state.
 
 ### Threading Contract
 

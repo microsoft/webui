@@ -391,7 +391,7 @@ pub struct RenderOptions<'a> {
 /// Malformed HTML members are ignored, but a present `assetBase` must pass
 /// [`webui_protocol::validate_asset_base`] or the render fails with
 /// [`HandlerError::InvalidState`].
-pub const STATE_INJECT_KEY: &str = "$webui";
+pub const STATE_INJECT_KEY: &str = webui_protocol::STATE_INJECT_KEY;
 
 /// Reserved member of [`STATE_INJECT_KEY`] that overrides the asset base.
 const ASSET_BASE_MEMBER: &str = "assetBase";

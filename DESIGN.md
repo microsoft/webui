@@ -273,8 +273,10 @@ state is required. Initial state includes whole values for proven authored obser
 properties. Template event arguments can additionally select paths. The compiler
 plans lexical reads across shared blocks without expanding each callsite, and
 the handler writes the selected shape from borrowed state. Values passed to
-handlers as whole objects remain whole. Navigation retains its separate
-whole-key surface, including the roots needed for client rendering.
+handlers as whole objects remain whole. Partial navigation keeps its own
+whole-key surface for authored state and client rendering. An event that
+needs an additional root uses the same lexical read plan rather than adding
+that entire value to the navigation response.
 Reachability follows the active route but conservatively includes conditional
 and loop branches it might render. Explicitly deferred edges are separate
 delivery roots: initial delivery follows the ones active in the request's actual

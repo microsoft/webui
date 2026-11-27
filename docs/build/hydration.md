@@ -513,6 +513,11 @@ rendering stay out of browser state unless a selected value is also needed for
 client rendering. Closed lazy regions do not add initial event state. Without
 manifests, WebUI preserves full state for compatibility and correctness.
 
+For example, `open(note.body.length)` can receive the UTF-8 byte count
+without sending the text of a long note. Pass `note.body` instead if the
+handler needs the text itself. Authored observable and attribute values
+are not replaced with lengths.
+
 Later soft navigations include the values needed to render the destination
 components. Inactive sibling routes do not enlarge either payload. If the
 initial page needs no client state, WebUI writes:

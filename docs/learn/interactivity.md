@@ -117,8 +117,10 @@ Write a custom element class only for authored behavior. `@observable` and
 the component's public API.
 
 The sibling `.ts` or `.js` file is the authored behavior boundary. With
-manifest-enabled projection, only `@observable` and `@attr` fields opt into
-initial state hydration; ordinary template roots remain in the trusted SSR DOM.
+manifest-enabled projection, `@observable` and `@attr` fields receive their
+whole values. Template event arguments also receive the fields they read:
+`open(project.id)` does not require declaring `project` as an observable.
+Display-only roots remain in the server-rendered DOM.
 Without a client module, bindings, conditionals, and loops still render on the
 server, but the component contributes no projected keys. If the framework is
 loaded, it can later activate the compiled template for browser-applied state or
