@@ -15,6 +15,18 @@ fn main() -> std::io::Result<()> {
         config.type_attribute("webui.ComponentData", "#[serde(deny_unknown_fields)]");
         config.type_attribute("webui.WebUIProtocol", "#[serde(deny_unknown_fields)]");
         config.type_attribute("webui.WebUIFragmentIf", "#[serde(deny_unknown_fields)]");
+        config.field_attribute(
+            "webui.WebUIProtocol.hydration_reads",
+            "#[serde(default, skip_serializing_if = \"::std::collections::HashMap::is_empty\")]",
+        );
+        for name in [
+            "HydrationReadPlan",
+            "HydrationReadNode",
+            "HydrationReadPath",
+            "HydrationReadRepeat",
+        ] {
+            config.type_attribute(format!("webui.{name}"), "#[derive(Eq)]");
+        }
 
         // Build into OUT_DIR first (prost-build requirement), then copy to src/.
         config.compile_protos(&["proto/webui.proto"], &["proto/"])?;

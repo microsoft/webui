@@ -54,15 +54,18 @@ export class UserCard extends WebUIElement {
 UserCard.define('user-card');
 ```
 
-Only `@observable` and `@attr` fields are eligible for exact initial state
-projection. Ordinary template values already exist in the rendered HTML and do
-not need to enter browser state just because the component has an event handler,
-`w-ref`, lifecycle method, or imperative API.
+Exact initial state projection includes `@observable` and `@attr` fields,
+and the template state needed by event arguments. For example, an argument
+`project.id` inside a repeat carries the ID and fields the client needs to keep
+that repeat working, not every field in each project. Passing `project`
+instead passes the whole item. Authored `@observable` and `@attr` values stay
+whole. Ordinary display-only roots already exist in the rendered HTML and do
+not enter initial state just because a component has interactivity.
 Moving the same hydrated component within one JavaScript turn preserves those
 rendered values and applies any pending reactive changes.
 
-An authored component with no decorators can therefore wire its behavior
-without adding any startup state.
+An authored component with no decorators or state-valued event arguments can
+therefore wire its behavior without adding any startup state.
 
 For a normal buffered page, load authored component definitions with a
 parser-inserted, non-async ES module script or a classic `defer` script. If a
@@ -504,10 +507,16 @@ when your browser entry imports generated lazy or component modules.
 ## State Sent to the Browser
 
 With validated projection manifests, the initial page includes only
-`@observable` and `@attr` values needed by authored components on the active
-route. Template values used only for server rendering stay out of browser
-state. Without manifests, WebUI preserves full state for compatibility and
-correctness.
+`@observable` and `@attr` values and template event argument state needed by
+authored components on the active route. Template values used only for server
+rendering stay out of browser state unless a selected value is also needed for
+client rendering. Closed lazy regions do not add initial event state. Without
+manifests, WebUI preserves full state for compatibility and correctness.
+
+For example, `open(note.body.length)` can receive the UTF-8 byte count
+without sending the text of a long note. Pass `note.body` instead if the
+handler needs the text itself. Authored observable and attribute values
+are not replaced with lengths.
 
 Later soft navigations include the values needed to render the destination
 components. Inactive sibling routes do not enlarge either payload. If the

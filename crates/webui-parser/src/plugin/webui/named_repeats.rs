@@ -224,6 +224,30 @@ mod tests {
     }
 
     #[test]
+    fn shared_repeat_events_retain_each_callsite_collection() {
+        let meta = compile_to_metadata(
+            "shared-events",
+            concat!(
+                r#"<for id="projects" each="project in first.projects">"#,
+                r#"<if condition="enabled"><button @click="{open(project.id)}">Open</button></if>"#,
+                "</for>",
+                r#"<for id="projects" each="project in second.projects"/>"#,
+            )
+            .into(),
+            Vec::new(),
+        )
+        .unwrap();
+        let plan = super::super::hydration_reads::compile("shared-events", &meta).unwrap();
+        let roots: Vec<_> = plan
+            .roots
+            .iter()
+            .filter(|root| root.reaches_event)
+            .map(|root| root.key.as_str())
+            .collect();
+        assert_eq!(roots, ["first", "second"]);
+    }
+
+    #[test]
     fn equivalent_visits_preserve_first_processed_root_order() {
         let source = r#"<for id="a" each="item in first"><if condition="item.visible"><b>{{alpha}}</b></if></for><for each="item in middle"><b>{{middleRoot}}</b></for><for id="a" each="item in last"/>"#;
         let meta = compile_to_metadata("test-tree", source.into(), Vec::new()).unwrap();

@@ -14,23 +14,13 @@ import type { TemplateMeta } from './template.js';
 
 /** Return true when a compiler-emitted root list contains `root`. */
 export function templateHasRoot(meta: TemplateMeta, root: string): boolean {
-  const roots = meta.tr;
-  if (!roots) return false;
-  for (let i = 0; i < roots.length; i++) {
-    if (roots[i] === root) return true;
-  }
-  return false;
+  return meta.tr?.includes(root) ?? false;
 }
 
 /** Return the template state root observed by one host attribute. */
 export function templateRootForAttribute(meta: TemplateMeta, attrName: string): string | undefined {
-  const roots = meta.tr;
-  const attrs = meta.ta;
-  if (!roots || !attrs) return undefined;
-  for (let i = 0; i < attrs.length && i < roots.length; i++) {
-    if (attrs[i] === attrName) return roots[i];
-  }
-  return undefined;
+  const index = meta.ta?.indexOf(attrName) ?? -1;
+  return index < 0 ? undefined : meta.tr?.[index];
 }
 
 /** Return true when the compiler owns a dormant TemplateElement host. */

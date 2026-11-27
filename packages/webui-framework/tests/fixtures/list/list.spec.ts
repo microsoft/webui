@@ -3,6 +3,7 @@
 
 import { expect, test } from '@playwright/test';
 import { hydrationRemovals, recordHydrationRemovals } from '../../hydration-removals.js';
+import type { TestList } from './element.js';
 
 test('hydrates multi-node repeat items in place', async ({ page }) => {
   await recordHydrationRemovals(page, 'test-list');
@@ -27,6 +28,50 @@ test.describe('list fixture', () => {
     await expect(page.locator('test-list-item .title')).toHaveText(['Alpha', 'Beta']);
     await expect(page.locator('test-list .count')).toHaveText('2');
     await expect(page.locator('test-list-item .done')).toHaveText(['Done']);
+  });
+
+  test('hydrates projected template-only repeat arguments', async ({ page }) => {
+    const host = page.locator('test-list');
+    const projects = host.locator('.project-link');
+    const original = await projects.first().elementHandle();
+    await projects.first().click();
+    await expect(host.locator('.last-loop-arg')).toHaveText(
+      'arg=canvas-1 typeof=string args.length=1',
+    );
+
+    await host.evaluate(node => {
+      (node as TestList).setState({ shell: { nav: { canvas_projects: [
+        { id: 'canvas-2', title: 'Second canvas' },
+        { id: 'canvas-1', title: 'Renamed canvas' },
+      ] } } });
+    });
+    await expect(projects).toHaveText(['Second canvas', 'Renamed canvas']);
+    expect(await projects.last().evaluate((node, initial) => node === initial, original)).toBe(true);
+    await projects.first().click();
+    await expect(host.locator('.last-loop-arg')).toHaveText(
+      'arg=canvas-2 typeof=string args.length=1',
+    );
+  });
+
+  test('keeps projected string lengths in event arguments and newly mounted content', async ({ page }) => {
+    const response = await page.request.get('/list/fixture.html');
+    expect(response.ok()).toBe(true);
+    const ssrLengths = Array.from(
+      (await response.text()).matchAll(/<span class="name-length-ssr">(\d+)<\/span>/g),
+      match => match[1],
+    );
+    expect(ssrLengths).toEqual(['4', '5', '0']);
+    const host = page.locator('test-list');
+    const lastArg = host.locator('.last-loop-arg');
+    await host.locator('.title-length').click();
+    await expect(lastArg).toHaveText('arg=5 typeof=number args.length=1');
+    await expect(host.locator('.visible-length')).toHaveCount(0);
+    await host.locator('.reveal-length').click();
+    await expect(host.locator('.visible-length')).toHaveText(ssrLengths);
+    for (const [index, length] of ssrLengths.entries()) {
+      await host.locator('.name-length').nth(index).click();
+      await expect(lastArg).toHaveText(`arg=${length} typeof=number args.length=1`);
+    }
   });
 
   test('keeps structural keys out of SSR and client-created DOM', async ({ page }) => {

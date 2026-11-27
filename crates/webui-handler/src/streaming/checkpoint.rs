@@ -175,12 +175,29 @@ impl WebUIHandler {
             checkpoint_tags.iter().copied(),
             &mut state_key_ids,
         );
+        let hydration_reads = if requires_full_state {
+            None
+        } else {
+            crate::hydration_reads::select(
+                context.protocol,
+                checkpoint_tags
+                    .iter()
+                    .filter_map(|&id| checkpoint_reachability.name(id)),
+                crate::KeyView::Ids(HydrationKeySelection {
+                    ids: &state_key_ids,
+                    index: checkpoint_reachability,
+                }),
+                false,
+            )?
+        };
+        let has_narrow_state = hydration_reads.is_some();
         let (
             record_sequence,
             state_revision,
             last_state_record_sequence,
             last_state_revision,
             last_state_full,
+            last_state_narrow,
             mut last_state_key_ids,
             mut state_delta_key_ids,
         ) = {
@@ -191,6 +208,7 @@ impl WebUIHandler {
                 streaming.last_state_record_sequence,
                 streaming.last_state_revision,
                 streaming.last_state_full,
+                streaming.last_state_narrow,
                 std::mem::take(&mut streaming.last_state_key_ids),
                 std::mem::take(&mut streaming.state_delta_key_ids),
             )
@@ -206,6 +224,14 @@ impl WebUIHandler {
         let state_ref = last_state_record_sequence.and_then(|sequence| {
             if !can_reference {
                 return None;
+            }
+            if has_narrow_state || last_state_narrow {
+                // Key-level deltas cannot merge two partial objects. Only
+                // identical read resources prove the same shape here.
+                return (has_narrow_state
+                    && last_state_narrow
+                    && checkpoint_tags == last_state_key_ids)
+                    .then_some((sequence, StateDelta::Empty));
             }
             if requires_full_state {
                 return Some((
@@ -347,6 +373,7 @@ impl WebUIHandler {
             }
             _ => WebUiBootstrapState::Complete {
                 value: context.state,
+                reads: hydration_reads,
                 selection: if requires_full_state {
                     StateSelection::Full
                 } else {
@@ -422,6 +449,7 @@ impl WebUIHandler {
             updatable: true, ..
         } = record
         {
+            let protocol = context.protocol;
             let streaming = streaming_state(context)?;
             if streaming.update_plans.len() <= target {
                 streaming.update_plans.resize_with(target + 1, || None);
@@ -434,18 +462,35 @@ impl WebUIHandler {
                 .unwrap_or(StateUpdatePlan {
                     requires_full_state,
                     key_ids: Vec::new(),
+                    read_resources: Vec::new(),
                 });
             plan.requires_full_state = requires_full_state;
             plan.key_ids.clear();
+            plan.read_resources.clear();
             if !requires_full_state {
                 plan.key_ids.extend_from_slice(&state_key_ids);
             }
+            if !requires_full_state
+                && (has_narrow_state
+                    || crate::hydration_reads::has_narrow_roots(
+                        protocol,
+                        checkpoint_tags
+                            .iter()
+                            .filter_map(|&id| checkpoint_reachability.name(id)),
+                        crate::KeyView::Ids(HydrationKeySelection {
+                            ids: &state_key_ids,
+                            index: checkpoint_reachability,
+                        }),
+                    ))
+            {
+                plan.read_resources.extend_from_slice(&checkpoint_tags);
+            }
             streaming.update_plans[target] = Some(plan);
         }
-        if requires_full_state {
-            last_state_key_ids.clear();
-        } else {
-            last_state_key_ids.clear();
+        last_state_key_ids.clear();
+        if has_narrow_state {
+            last_state_key_ids.extend_from_slice(&checkpoint_tags);
+        } else if !requires_full_state {
             last_state_key_ids.extend_from_slice(&state_key_ids);
         }
         state_delta_key_ids.clear();
@@ -454,6 +499,7 @@ impl WebUIHandler {
             streaming.last_state_record_sequence = Some(record_sequence);
             streaming.last_state_revision = state_revision;
             streaming.last_state_full = requires_full_state;
+            streaming.last_state_narrow = has_narrow_state;
             streaming.last_state_key_ids = last_state_key_ids;
             streaming.state_delta_key_ids = state_delta_key_ids;
         }
@@ -511,23 +557,46 @@ impl WebUIHandler {
             RECORD_KIND_STATE_UPDATE,
             boundary_id,
         )?;
-        let result = match context.streaming.as_ref() {
-            Some(streaming) if !plan.requires_full_state => write_selected_state(
-                context.writer,
-                &mut context.json_scratch,
-                context.state,
-                &StateSelection::KeyIds(HydrationKeySelection {
+        let result = (|| match context.streaming.as_ref() {
+            Some(streaming) if !plan.requires_full_state => {
+                let index = streaming.component_reachability;
+                let keys = HydrationKeySelection {
                     ids: &plan.key_ids,
-                    index: streaming.component_reachability,
-                }),
-            ),
+                    index,
+                };
+                let reads = if plan.read_resources.is_empty() {
+                    None
+                } else {
+                    crate::hydration_reads::select(
+                        context.protocol,
+                        plan.read_resources.iter().filter_map(|&id| index.name(id)),
+                        crate::KeyView::Ids(keys),
+                        true,
+                    )?
+                };
+                if let Some(reads) = reads {
+                    reads.write(
+                        context.writer,
+                        &mut context.json_scratch,
+                        context.state,
+                        crate::KeyView::Ids(keys),
+                    )
+                } else {
+                    write_selected_state(
+                        context.writer,
+                        &mut context.json_scratch,
+                        context.state,
+                        &StateSelection::KeyIds(keys),
+                    )
+                }
+            }
             _ => write_selected_state(
                 context.writer,
                 &mut context.json_scratch,
                 context.state,
                 &StateSelection::Full,
             ),
-        };
+        })();
         // Restore the plan before propagating a write failure so a poisoned
         // response still owns its buffers instead of leaking their capacity.
         if let Some(slot) = context

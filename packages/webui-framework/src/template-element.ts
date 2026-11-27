@@ -841,7 +841,7 @@ export class TemplateElement extends HTMLElement {
           // streamed boundary from falling back to a later boundary's global
           // state.
           if (this.$shouldApplySSRBootstrapState()) {
-            this.$applySSRState(
+            this.$applyInitialState(
               hasBoundaryState ? ssrState : window.__webui?.state,
             );
           }
@@ -1315,7 +1315,7 @@ export class TemplateElement extends HTMLElement {
    */
   protected $primeSSRStateForDeferral(): void {
     if (this.$shouldApplySSRBootstrapState()) {
-      this.$applySSRState(window.__webui?.state);
+      this.$applyInitialState(window.__webui?.state);
     }
     this.$applyPendingParentState(true);
   }
@@ -1508,28 +1508,31 @@ export class TemplateElement extends HTMLElement {
    * `window.__webui.state` (the consolidated SSR bootstrap block), while a
    * streamed activation passes its boundary-local state directly so a late
    * activation sees the state that was live when its *own* boundary committed
-   * rather than whatever the global handoff currently holds. The build-time
-   * hydration keys contain only explicit `@observable`/`@attr` properties;
-   * template-only roots remain absent because their initial values are already
-   * represented by the trusted SSR DOM.
+   * rather than whatever the global handoff currently holds. Authored state
+   * is supplied whole; template-only state may contain only the fields needed
+   * for event arguments and to reconcile those bindings.
    *
-   * Writes directly to the backing field (`_prop`) to avoid triggering
-   * reactive updates before bindings are wired.
+   * Parent bindings take precedence over page state and also initialize plain
+   * properties. Neither source schedules updates before bindings are wired.
    */
-  private $applySSRState(state: Record<string, unknown> | undefined): void {
+  private $applyInitialState(state: Record<string, unknown> | undefined, fromParent = false): void {
     if (!state || typeof state !== 'object') return;
     const observableNames = this.$observableNames();
-    const deferredWrites = this.$deferredWrites;
+    const deferredWrites = fromParent ? undefined : this.$deferredWrites;
     const keys = Object.keys(state);
     for (let i = 0; i < keys.length; i++) {
       const key = keys[i];
       if (deferredWrites?.has(key)) continue;
       if (observableNames.has(key)) {
-        if (!this.$shouldApplySSRState(key)) continue;
-        // Write to backing field directly — no reactive update yet
-        (this as Record<string, unknown>)[`_${key}`] = state[key];
-      } else if (this.$usesTemplateState(key) && this.$shouldApplyTemplateStateFromSSR(key)) {
-        this.$writeTemplateState(key, state[key]);
+        if (fromParent || this.$shouldApplySSRState(key)) {
+          (this as Record<string, unknown>)[`_${key}`] = state[key];
+        }
+      } else if (this.$usesTemplateState(key)) {
+        if (fromParent || this.$shouldApplyTemplateStateFromSSR(key)) {
+          this.$writeTemplateState(key, state[key]);
+        }
+      } else if (fromParent) {
+        (this as Record<string, unknown>)[key] = state[key];
       }
     }
   }
@@ -1542,19 +1545,7 @@ export class TemplateElement extends HTMLElement {
     const pending = consumePendingParentState(this);
     if (!pending) return;
 
-    const state = pending.values;
-    const observableNames = this.$observableNames();
-    const keys = Object.keys(state);
-    for (let i = 0; i < keys.length; i++) {
-      const key = keys[i];
-      if (observableNames.has(key)) {
-        (this as Record<string, unknown>)[`_${key}`] = state[key];
-      } else if (this.$usesTemplateState(key)) {
-        this.$writeTemplateState(key, state[key]);
-      } else {
-        (this as Record<string, unknown>)[key] = state[key];
-      }
-    }
+    this.$applyInitialState(pending.values, true);
     const replay = pending.replay;
     if (replayAfterHydration && replay) {
       const deferredWrites = this.$deferredWrites;
@@ -1609,9 +1600,7 @@ export class TemplateElement extends HTMLElement {
 
   private $recordDeferredWrite(path: string): void {
     blockRenderWork(this, 'hydration is deferred');
-    const dot = path.indexOf('.');
-    const root = dot === -1 ? path : path.slice(0, dot);
-    (this.$deferredWrites ??= new Set()).add(root);
+    (this.$deferredWrites ??= new Set()).add(pathRoot(path));
   }
 
   private $markDirty(path: string): void {
@@ -1731,7 +1720,7 @@ export class TemplateElement extends HTMLElement {
   // `hydration-mismatch.ts` (see that module for the full rationale); this
   // class only records the writes and supplies a resolver context.
   //
-  // Note: `$applySSRState` (in `$mount`) has already overwritten the backing
+  // Note: `$applyInitialState` (in `$mount`) has already overwritten the backing
   // field of every observable present in the SSR state before this runs, so
   // those reconcile to the server value and cannot disagree. In practice the
   // diagnostic only fires for observables omitted from the SSR state.
@@ -2268,8 +2257,7 @@ export class TemplateElement extends HTMLElement {
       path: string, kind: Kind, binding: PathBindingTypes[Kind],
     ): void => {
       if (findScope(path, binding.scope)) return;
-      const dot = path.indexOf('.');
-      const root = dot === -1 ? path : path.slice(0, dot);
+      const root = pathRoot(path);
       const key = observableNames.has(root) || this.$usesTemplateState(root) ? root : '*';
       let entry = index.get(key);
       if (!entry) {
@@ -2449,16 +2437,10 @@ export class TemplateElement extends HTMLElement {
 
   $resolveValue(path: string, scope?: ScopeFrame): unknown;
   $resolveValue(path: string, scope?: unknown): unknown {
-    // Check scope frames first (repeat item variables)
     const frame = findScope(path, scope as ScopeFrame | undefined);
-    if (frame) return path === frame.name
-      ? frame.value
-      : dotWalk(frame.value, path, frame.name.length + 1);
-    // Resolve against component — fast path for single-segment (no dot)
-    const dot = path.indexOf('.');
-    const instance = this as Record<string, unknown>;
-    if (dot === -1) return resolveComponentRoot(instance, this.$templateState, path);
-    return dotWalk(resolveComponentRoot(instance, this.$templateState, path.substring(0, dot)), path, dot + 1);
+    const root = frame?.name ?? pathRoot(path);
+    const value = frame ? frame.value : resolveComponentRoot(this as Record<string, unknown>, this.$templateState, root);
+    return path.length === root.length ? value : dotWalk(value, path, root.length + 1);
   }
 
   private $conditionResolver(): (path: string, scope?: unknown) => unknown {
@@ -2472,8 +2454,7 @@ export class TemplateElement extends HTMLElement {
     const frame = findScope(path, scope);
     if (frame) return frame.known !== false;
 
-    const dot = path.indexOf('.');
-    const root = dot === -1 ? path : path.substring(0, dot);
+    const root = pathRoot(path);
     return hasAuthoredMember(this, root)
       || (this.$templateState !== null
         && Object.hasOwn(this.$templateState, root));
@@ -2925,6 +2906,11 @@ function invalidateRawValues(root: TemplateInstance): void {
       for (let j = 0; j < children.length; j++) stack.push(children[j]);
     }
   }
+}
+
+function pathRoot(path: string): string {
+  const dot = path.indexOf('.');
+  return dot === -1 ? path : path.slice(0, dot);
 }
 
 function findScope(path: string, scope?: ScopeFrame): ScopeFrame | undefined {

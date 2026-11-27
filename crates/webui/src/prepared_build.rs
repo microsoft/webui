@@ -171,14 +171,19 @@ fn apply_projection(raw: &mut RawBuildOutput, options: &BuildOptions) -> Result<
         .collect();
     projection::validate_coverage(&merged.components, &scripted_tags)?;
     raw.protocol.initial_state_strategy = webui_protocol::InitialStateStrategy::Components as i32;
-    for artifact in &raw.component_templates {
+    for artifact in &mut raw.component_templates {
+        let Some(component) = raw.protocol.components.get_mut(&artifact.tag_name) else {
+            continue;
+        };
+        if let Some(plan) = artifact.hydration_reads.take() {
+            raw.protocol
+                .hydration_reads
+                .insert(artifact.tag_name.clone(), plan);
+        }
         if !artifact.is_scripted {
             continue;
         }
         let Some(entry) = merged.components.get(&artifact.tag_name) else {
-            continue;
-        };
-        let Some(component) = raw.protocol.components.get_mut(&artifact.tag_name) else {
             continue;
         };
         component.hydration_mode = webui_protocol::StateProjectionMode::Keys as i32;
@@ -187,6 +192,7 @@ fn apply_projection(raw: &mut RawBuildOutput, options: &BuildOptions) -> Result<
         component.navigation_keys =
             projection::union_keys(&entry.navigation_keys, &artifact.template_roots);
     }
+    raw.protocol.retain_projected_read_plans();
     let mut preloads = module_preload::resolve(&merged.entry_closures, &raw.module_entry_srcs);
     raw.protocol.module_preloads = preloads.hrefs;
     raw.warnings.append(&mut preloads.warnings);

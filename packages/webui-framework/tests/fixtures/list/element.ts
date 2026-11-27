@@ -33,6 +33,7 @@ export class TestList extends WebUIElement {
   ];
   @observable lastLoopArg = '';
   @observable afterRepeat = '';
+  @observable showTitleLength = false;
   nextId = 3;
 
   addItem(): void {
@@ -75,7 +76,11 @@ export class TestList extends WebUIElement {
     this.afterRepeat = 'After';
   }
 
-  selectItem(id: string): void {
+  revealTitleLength(): void {
+    this.showTitleLength = true;
+  }
+
+  selectItem(id: string | number): void {
     this.lastLoopArg = `arg=${id} typeof=${typeof id} args.length=${arguments.length}`;
   }
 

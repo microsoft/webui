@@ -57,6 +57,79 @@ pub struct ComponentData {
     #[prost(enumeration = "ComponentWorkPolicy", tag = "11")]
     pub work_policy: i32,
 }
+/// A graph over one lexical value at a time. Scope edges keep that value;
+/// repeat edges descend to collection items. Only scope edges can be gated.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct HydrationReadPlan {
+    #[prost(message, repeated, tag = "1")]
+    pub roots: ::prost::alloc::vec::Vec<HydrationReadRoot>,
+    #[prost(message, repeated, tag = "2")]
+    pub nodes: ::prost::alloc::vec::Vec<HydrationReadNode>,
+    #[prost(bool, tag = "3")]
+    pub has_lazy_edges: bool,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct HydrationReadRoot {
+    #[prost(string, tag = "1")]
+    pub key: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "2")]
+    pub node: u32,
+    #[prost(bool, tag = "3")]
+    pub reaches_event: bool,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct HydrationReadNode {
+    #[prost(message, repeated, tag = "1")]
+    pub values: ::prost::alloc::vec::Vec<HydrationReadPath>,
+    #[prost(message, repeated, tag = "2")]
+    pub repeats: ::prost::alloc::vec::Vec<HydrationReadRepeat>,
+    #[prost(message, repeated, tag = "3")]
+    pub scopes: ::prost::alloc::vec::Vec<HydrationReadScope>,
+    #[prost(bool, tag = "4")]
+    pub reads_event: bool,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct HydrationReadPath {
+    /// Relative path. Empty selects the value itself.
+    #[prost(message, repeated, tag = "1")]
+    pub path: ::prost::alloc::vec::Vec<HydrationReadField>,
+    /// An identifier condition needs only the input's truthiness, not its data.
+    #[prost(bool, tag = "2")]
+    pub truthy: bool,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct HydrationReadRepeat {
+    #[prost(message, repeated, tag = "1")]
+    pub collection: ::prost::alloc::vec::Vec<HydrationReadField>,
+    #[prost(uint32, tag = "2")]
+    pub item: u32,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct HydrationReadField {
+    #[prost(string, tag = "1")]
+    pub key: ::prost::alloc::string::String,
+    #[prost(uint32, optional, tag = "2")]
+    pub array_index: ::core::option::Option<u32>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct HydrationReadScope {
+    #[prost(uint32, tag = "1")]
+    pub node: u32,
+    /// Absent/empty for ordinary structural edges.
+    #[prost(string, tag = "2")]
+    pub lazy_fragment: ::prost::alloc::string::String,
+}
 /// Link stylesheet metadata for one static component asset root.
 ///
 /// Shadow builds publish this finite manifest so the framework can begin CSS
@@ -160,6 +233,13 @@ pub struct WebUiProtocol {
     /// application's own scripts, which stay where the application put them.
     #[prost(string, tag = "15")]
     pub asset_base: ::prost::alloc::string::String,
+    /// Initial-state read plans by component tag, absent without projected events.
+    #[prost(map = "string, message", tag = "16")]
+    #[serde(default, skip_serializing_if = "::std::collections::HashMap::is_empty")]
+    pub hydration_reads: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        HydrationReadPlan,
+    >,
 }
 /// Compile-time component style resources for one CSS tree.
 #[derive(serde::Serialize, serde::Deserialize)]

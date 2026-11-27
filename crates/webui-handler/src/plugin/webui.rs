@@ -85,6 +85,10 @@ impl Default for WebUIHydrationPlugin {
 }
 
 impl HandlerPlugin for WebUIHydrationPlugin {
+    fn reads_route_component_state(&self) -> bool {
+        false
+    }
+
     fn push_scope(&mut self) {}
 
     fn pop_scope(&mut self) {}
@@ -419,6 +423,7 @@ mod tests {
     #[test]
     fn test_route_component_state_emits_no_output() {
         let plugin = WebUIHydrationPlugin::new();
+        assert!(!plugin.reads_route_component_state());
         let mut writer = TestWriter::new();
         let state = serde_json::json!({
             "title": "Hello",

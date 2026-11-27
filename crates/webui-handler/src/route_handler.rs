@@ -16,7 +16,9 @@ use serde::ser::SerializeMap;
 use serde::Serialize;
 use serde_json::{value::RawValue, Map, Value};
 
+mod event_json;
 mod raw_json;
+use crate::hydration_reads::{self, ReadSelection};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -472,7 +474,7 @@ impl Protocol {
             inventory_hex,
             &mut index,
         )?;
-        let state = select_owned_state(state, &state_selection);
+        let state = select_owned_state(state, &state_selection)?;
         let response = PartialResponseWithState::new(response, state)?;
         Ok(PartialNavigation { response, matched })
     }
@@ -1842,9 +1844,12 @@ pub(crate) fn get_needed_components_for_request(
 fn serialize_partial_response(
     response: Value,
     state_json: &str,
-    state_selection: &StateSelection<'_>,
+    state_selection: &NavigationState<'_>,
 ) -> Result<String, HandlerError> {
-    let state = select_raw_state(state_json, state_selection)?;
+    if let Some(events) = &state_selection.events {
+        return serialize_event_partial(response, state_json, &state_selection.whole, events);
+    }
+    let state = select_raw_state(state_json, &state_selection.whole)?;
     let response = PartialResponseWithState::new(response, state)?;
     serde_json::to_string(&response).map_err(|error| partial_serialize_error(&error.to_string()))
 }
@@ -1935,9 +1940,26 @@ impl Serialize for ProjectedRawState<'_> {
     }
 }
 
+fn serialize_event_partial(
+    response: Value,
+    state_json: &str,
+    selection: &StateSelection<'_>,
+    events: &ReadSelection<'_>,
+) -> Result<String, HandlerError> {
+    let StateSelection::Keys(whole) = selection else {
+        return Err(unexpected_key_id_selection());
+    };
+    let raw = project_raw_state(state_json, whole.len(), |key| {
+        whole.binary_search(&key).is_ok() || events.contains(key)
+    })?;
+    let response = PartialResponseWithState::new(response, raw)?;
+    event_json::serialize(response, events)
+}
+
 fn project_raw_state<'de>(
     state_json: &'de str,
-    state_keys: &[&str],
+    capacity: usize,
+    contains: impl Fn(&str) -> bool,
 ) -> Result<ProjectedRawState<'de>, HandlerError> {
     let is_object = state_json
         .as_bytes()
@@ -1952,13 +1974,15 @@ fn project_raw_state<'de>(
     }
 
     let mut deserializer = serde_json::Deserializer::from_str(state_json);
-    let mut state = ProjectedRawStateSeed { state_keys }
-        .deserialize(&mut deserializer)
-        .and_then(|state| {
-            deserializer.end()?;
-            Ok(state)
-        })
-        .map_err(|error| invalid_state_json(&error.to_string()))?;
+    let mut state = serde::Deserializer::deserialize_map(
+        &mut deserializer,
+        ProjectedRawStateVisitor { capacity, contains },
+    )
+    .and_then(|state| {
+        deserializer.end()?;
+        Ok(state)
+    })
+    .map_err(|error| invalid_state_json(&error.to_string()))?;
     state.entries.sort_unstable_by(|left, right| {
         left.0.as_ref().as_bytes().cmp(right.0.as_ref().as_bytes())
     });
@@ -1990,7 +2014,10 @@ pub(crate) fn select_raw_state<'de>(
             return Err(unexpected_key_id_selection());
         }
     };
-    project_raw_state(state_json, state_keys).map(SelectedRawState::Keys)
+    project_raw_state(state_json, state_keys.len(), |key| {
+        state_keys.binary_search(&key).is_ok()
+    })
+    .map(SelectedRawState::Keys)
 }
 
 /// Detect literal or Unicode-escaped spellings of the top-level reserved key.
@@ -2152,28 +2179,12 @@ impl<'de> Visitor<'de> for ReservedFilteredRawStateVisitor {
     }
 }
 
-struct ProjectedRawStateSeed<'a> {
-    state_keys: &'a [&'a str],
+struct ProjectedRawStateVisitor<F> {
+    capacity: usize,
+    contains: F,
 }
 
-impl<'de> DeserializeSeed<'de> for ProjectedRawStateSeed<'_> {
-    type Value = ProjectedRawState<'de>;
-
-    fn deserialize<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        deserializer.deserialize_map(ProjectedRawStateVisitor {
-            state_keys: self.state_keys,
-        })
-    }
-}
-
-struct ProjectedRawStateVisitor<'a> {
-    state_keys: &'a [&'a str],
-}
-
-impl<'de> Visitor<'de> for ProjectedRawStateVisitor<'_> {
+impl<'de, F: Fn(&str) -> bool> Visitor<'de> for ProjectedRawStateVisitor<F> {
     type Value = ProjectedRawState<'de>;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -2184,12 +2195,9 @@ impl<'de> Visitor<'de> for ProjectedRawStateVisitor<'_> {
     where
         A: MapAccess<'de>,
     {
-        let mut entries: Vec<(Cow<'de, str>, &'de RawValue)> =
-            Vec::with_capacity(self.state_keys.len());
+        let mut entries: Vec<(Cow<'de, str>, &'de RawValue)> = Vec::with_capacity(self.capacity);
         while let Some(key) = map.next_key_seed(BorrowedString)? {
-            if key.as_ref() == crate::STATE_INJECT_KEY
-                || self.state_keys.binary_search(&key.as_ref()).is_err()
-            {
+            if key.as_ref() == crate::STATE_INJECT_KEY || !(self.contains)(&key) {
                 map.next_value_seed(ValidJson)?;
                 continue;
             }
@@ -3328,7 +3336,7 @@ fn render_partial(
     let response = response
         .as_object_mut()
         .ok_or_else(partial_response_not_object)?;
-    response.insert("state".into(), select_owned_state(state, &state_selection));
+    response.insert("state".into(), select_owned_state(state, &state_selection)?);
     Ok(Value::Object(std::mem::take(response)))
 }
 
@@ -3344,19 +3352,29 @@ fn render_partial_indexed(
         .map(|(response, _, _)| response)
 }
 
+struct NavigationState<'a> {
+    whole: StateSelection<'a>,
+    events: Option<ReadSelection<'a>>,
+}
+
 fn render_partial_indexed_with_state<'a>(
     protocol: &'a WebUIProtocol,
     entry_id: &str,
     request_path: &str,
     inventory_hex: &str,
     index: &mut RequestProtocolIndex<'_>,
-) -> Result<(Value, StateSelection<'a>, bool), HandlerError> {
+) -> Result<(Value, NavigationState<'a>, bool), HandlerError> {
     // Single-pass walk: collect both inventory components and route chain.
     let (component_ids, mut chain) =
         collect_inventory_and_chain(protocol, entry_id, request_path, index);
     let matched = route_chain_matches(&chain, request_path);
-    let state_selection =
-        crate::collect_navigation_state(protocol, component_ids.iter().map(String::as_str));
+    let tags = component_ids.iter().map(String::as_str);
+    let whole = crate::collect_navigation_state(protocol, tags.clone());
+    let events = match whole.key_view() {
+        Some(keys) => hydration_reads::select(protocol, tags, keys, false)?,
+        None => None,
+    };
+    let state_selection = NavigationState { whole, events };
 
     let filtered =
         filter_components_with_inventory(&component_ids, inventory_hex, index.component_index)?;
@@ -3446,23 +3464,26 @@ fn route_chain_matches(chain: &[RouteChainEntry], request_path: &str) -> bool {
     }
 }
 
-pub(crate) fn select_owned_state(state: Value, selection: &StateSelection<'_>) -> Value {
-    let state_keys = match selection {
+fn select_owned_state(
+    state: Value,
+    selection: &NavigationState<'_>,
+) -> Result<Value, HandlerError> {
+    let state_keys = match &selection.whole {
         StateSelection::Full => {
             let mut state = state;
             if let Value::Object(state) = &mut state {
                 state.remove(crate::STATE_INJECT_KEY);
             }
-            return state;
+            return Ok(state);
         }
         StateSelection::Keys(keys) => keys.as_slice(),
         // Streaming's key-ID projection never reaches partial navigation.
         StateSelection::KeyIds(_) | StateSelection::FullExceptKeyIds(_) => {
-            return Value::Object(Map::new());
+            return Err(unexpected_key_id_selection());
         }
     };
     let Value::Object(mut source) = state else {
-        return Value::Object(Map::new());
+        return Ok(Value::Object(Map::new()));
     };
     let mut projected = Map::with_capacity(state_keys.len().min(source.len()));
     for &key in state_keys {
@@ -3473,7 +3494,10 @@ pub(crate) fn select_owned_state(state: Value, selection: &StateSelection<'_>) -
             projected.insert(key.to_owned(), value);
         }
     }
-    Value::Object(projected)
+    if let Some(events) = &selection.events {
+        events.take_present(&mut source, &mut projected)?;
+    }
+    Ok(Value::Object(projected))
 }
 
 /// Produce a JSON response for a POST mutation action.
@@ -3732,6 +3756,9 @@ pub struct RouteChainEntry {
 pub(crate) struct RouteChainPlan {
     pub(crate) entries: Vec<RouteChainEntry>,
     pub(crate) document_style_targets: Vec<bool>,
+    // A componentless matched route has no chain entry, but its inline
+    // content can render a generated host in a hand-built protocol.
+    pub(crate) matched_inline_content: bool,
 }
 
 impl RouteChainEntry {
@@ -3816,6 +3843,7 @@ pub(crate) fn collect_route_chain_plan(
 ) -> RouteChainPlan {
     let mut chain = Vec::new();
     let mut document_style_targets = Vec::new();
+    let mut matched_inline_content = false;
     let mut visited_fragments = HashSet::new();
     let mut stack = vec![RouteChainWork {
         id: entry_id.to_string(),
@@ -3916,6 +3944,8 @@ pub(crate) fn collect_route_chain_plan(
                                 },
                             );
                         }
+                    } else if is_selected && !route_frag.content_fragment_id.is_empty() {
+                        matched_inline_content = true;
                     }
                 }
                 _ => {}
@@ -3926,6 +3956,7 @@ pub(crate) fn collect_route_chain_plan(
     RouteChainPlan {
         entries: chain,
         document_style_targets,
+        matched_inline_content,
     }
 }
 

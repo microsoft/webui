@@ -48,6 +48,50 @@ message ComponentData {
   ComponentWorkPolicy work_policy = 11;
 }
 
+// A graph over one lexical value at a time. Scope edges keep that value;
+// repeat edges descend to collection items. Only scope edges can be gated.
+message HydrationReadPlan {
+  repeated HydrationReadRoot roots = 1;
+  repeated HydrationReadNode nodes = 2;
+  bool has_lazy_edges = 3;
+}
+
+message HydrationReadRoot {
+  string key = 1;
+  uint32 node = 2;
+  bool reaches_event = 3;
+}
+
+message HydrationReadNode {
+  repeated HydrationReadPath values = 1;
+  repeated HydrationReadRepeat repeats = 2;
+  repeated HydrationReadScope scopes = 3;
+  bool reads_event = 4;
+}
+
+message HydrationReadPath {
+  // Relative path. Empty selects the value itself.
+  repeated HydrationReadField path = 1;
+  // An identifier condition needs only the input's truthiness, not its data.
+  bool truthy = 2;
+}
+
+message HydrationReadRepeat {
+  repeated HydrationReadField collection = 1;
+  uint32 item = 2;
+}
+
+message HydrationReadField {
+  string key = 1;
+  optional uint32 array_index = 2;
+}
+
+message HydrationReadScope {
+  uint32 node = 1;
+  // Absent/empty for ordinary structural edges.
+  string lazy_fragment = 2;
+}
+
 // Per-component client work scheduling policy.
 enum ComponentWorkPolicy {
   COMPONENT_WORK_POLICY_EAGER = 0;
@@ -154,6 +198,8 @@ message WebUIProtocol {
   // `$webui.assetBase`. Module preload hints are never prefixed: they name the
   // application's own scripts, which stay where the application put them.
   string asset_base = 15;
+  // Initial-state read plans by component tag, absent without projected events.
+  map<string, HydrationReadPlan> hydration_reads = 16;
 }
 
 // Compile-time component style resources for one CSS tree.

@@ -126,6 +126,16 @@ pub trait HandlerPlugin: Send {
     /// Called when parser-produced element metadata is encountered.
     fn on_element_data(&mut self, data: &[u8], writer: &mut dyn ResponseWriter) -> Result<()>;
 
+    /// Whether [`Self::write_route_component_state`] can read its state argument.
+    ///
+    /// Defaults to `true` so existing plugins keep their whole-root view.
+    /// Return `false` only if the hook never reads state for this plugin
+    /// instance. A streaming session may then discard unused event fields
+    /// between host calls. This declaration does not suppress the hook.
+    fn reads_route_component_state(&self) -> bool {
+        true
+    }
+
     /// Called when emitting a matched route component's opening tag.
     /// Plugins can write framework-specific attributes before the closing `>`.
     /// The default is a no-op.

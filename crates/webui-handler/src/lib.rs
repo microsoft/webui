@@ -8,6 +8,7 @@
 
 pub mod css_module;
 pub(crate) mod html_encode;
+mod hydration_reads;
 mod lazy;
 mod lazy_pack;
 #[cfg(feature = "packs")]
@@ -390,7 +391,7 @@ pub struct RenderOptions<'a> {
 /// Malformed HTML members are ignored, but a present `assetBase` must pass
 /// [`webui_protocol::validate_asset_base`] or the render fails with
 /// [`HandlerError::InvalidState`].
-pub const STATE_INJECT_KEY: &str = "$webui";
+pub const STATE_INJECT_KEY: &str = webui_protocol::STATE_INJECT_KEY;
 
 /// Reserved member of [`STATE_INJECT_KEY`] that overrides the asset base.
 const ASSET_BASE_MEMBER: &str = "assetBase";
@@ -1509,6 +1510,7 @@ pub(crate) enum WebUiBootstrapState<'a> {
     Complete {
         value: &'a Value,
         selection: StateSelection<'a>,
+        reads: Option<hydration_reads::ReadSelection<'a>>,
     },
     Reference {
         record_sequence: usize,
@@ -1950,6 +1952,16 @@ pub(crate) enum StateSelection<'a> {
     FullExceptKeyIds(HydrationKeySelection<'a>),
 }
 
+impl StateSelection<'_> {
+    fn key_view(&self) -> Option<KeyView<'_>> {
+        match self {
+            Self::Keys(keys) => Some(KeyView::Borrowed(keys)),
+            Self::KeyIds(selection) => Some(KeyView::Ids(*selection)),
+            Self::Full | Self::FullExceptKeyIds(_) => None,
+        }
+    }
+}
+
 /// A projection expressed as interned hydration key IDs.
 #[derive(Clone, Copy)]
 pub(crate) struct HydrationKeySelection<'a> {
@@ -2224,9 +2236,17 @@ pub(crate) fn write_webui_bootstrap<ComponentStyles: Serialize + ?Sized>(
         write_json_field(writer, scratch, &mut wrote_field, "nonce", nonce)?;
     }
     match bootstrap.state {
-        WebUiBootstrapState::Complete { value, selection } => {
+        WebUiBootstrapState::Complete {
+            value,
+            selection,
+            reads,
+        } => {
             write_json_field_name(writer, &mut wrote_field, "state")?;
-            write_selected_state(writer, scratch, value, &selection)?;
+            if let (Some(reads), Some(keys)) = (reads, selection.key_view()) {
+                reads.write(writer, scratch, value, keys)?;
+            } else {
+                write_selected_state(writer, scratch, value, &selection)?;
+            }
         }
         WebUiBootstrapState::Reference {
             record_sequence,
@@ -3917,6 +3937,16 @@ impl WebUIHandler {
                 };
                 let state_selection =
                     collect_hydration_state(context.protocol, reachable.iter().map(String::as_str));
+                let hydration_reads = if let Some(keys) = state_selection.key_view() {
+                    hydration_reads::select(
+                        context.protocol,
+                        reachable.iter().map(String::as_str),
+                        keys,
+                        false,
+                    )?
+                } else {
+                    None
+                };
 
                 // Emit CSS module importmaps for reachable-but-unrendered
                 // components so the framework can adopt them when an `<if>`
@@ -4056,6 +4086,7 @@ impl WebUIHandler {
                         state: WebUiBootstrapState::Complete {
                             value: context.state,
                             selection: state_selection,
+                            reads: hydration_reads,
                         },
                         chain: &chain_json,
                         inventory: &inventory_hex,

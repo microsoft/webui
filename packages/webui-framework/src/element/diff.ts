@@ -13,17 +13,31 @@ import type {
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
-/** Resolve a dotted path from a start offset without allocating. */
+/** Walk a dotted path without building a segment array. */
 export function dotWalk(cursor: unknown, path: string, from: number): unknown {
   let start = from;
   for (let i = from; i <= path.length; i++) {
     if (i === path.length || path.charCodeAt(i) === 46 /* . */) {
-      if (cursor == null || typeof cursor !== 'object') return undefined;
+      if (cursor == null || typeof cursor !== 'object') {
+        return typeof cursor === 'string' && i === path.length && path.slice(start) === 'length'
+          ? utf8Length(cursor)
+          : undefined;
+      }
       cursor = (cursor as Record<string, unknown>)[path.slice(start, i)];
       start = i + 1;
     }
   }
   return cursor;
+}
+
+function utf8Length(value: string): number {
+  let bytes = value.length;
+  let point: number | undefined;
+  for (let i = 0; (point = value.codePointAt(i)) !== undefined; i++) {
+    if (point >= 0x80) bytes += point < 0x800 ? 1 : 2;
+    if (point >= 0x10000) i++;
+  }
+  return bytes;
 }
 
 /** Build a scope frame for a repeat item. */

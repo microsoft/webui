@@ -1,15 +1,26 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-use super::{compile_to_metadata, generate_compiled_template_with_root_source, Result};
+use super::{
+    compile_to_metadata, generate_compiled_template_with_root_source, Result,
+    TemplatePayloadOptions,
+};
 
 const IF_CONTROL: &str =
     "<article><if condition=\"enabled\"><button>{{label}}</button></if></article>";
 
+fn test_payload_options() -> TemplatePayloadOptions<'static> {
+    TemplatePayloadOptions {
+        owner: "test-whitespace",
+        shadow_dom: false,
+        emit_static_host: false,
+        projected_events: false,
+    }
+}
+
 fn assert_same_metadata(source: &str, control: &str) -> Result<()> {
-    let compile = |html| {
-        generate_compiled_template_with_root_source("test-whitespace", html, html, false, false)
-    };
+    let compile =
+        |html| generate_compiled_template_with_root_source(html, html, test_payload_options());
     let actual = compile(source)?;
     let expected = compile(control)?;
     assert_eq!(
@@ -214,13 +225,8 @@ fn boundary_formatting_follows_ssr_whitespace_rules() -> Result<()> {
     }
     assert_same_metadata("<p>{{label}}</p>\n", "<p>{{label}}</p>")?;
     let component = " <p>{{label}}</p>\t";
-    let compiled = generate_compiled_template_with_root_source(
-        "test-whitespace",
-        component,
-        component,
-        false,
-        false,
-    )?;
+    let compiled =
+        generate_compiled_template_with_root_source(component, component, test_payload_options())?;
     assert!(
         compiled.template_json.contains(r#""h":" <p></p>\t""#),
         "{}",

@@ -75,12 +75,15 @@ pub struct ComponentTemplateArtifact {
     /// Partial-navigation state surface derived by the producing plugin.
     pub navigation: StateSurface,
     /// Compiled template roots — the reactive property names referenced
-    /// directly by the template (e.g. `{{name}}`) independent of any
+    /// for rendering (e.g. `{{name}}`) independent of any
     /// authored client script. Always populated (possibly empty), even when
     /// `hydration`/`navigation` collapse to [`StateSurface::All`], so a
     /// bundler-neutral manifest consumer can union exact client keys with
-    /// these Rust-derived roots without re-deriving them.
+    /// these Rust-derived roots without re-deriving them. Event-only
+    /// arguments use the separate read plan rather than selecting whole keys.
     pub template_roots: Vec<String>,
+    /// Compiler-owned initial state reads, independent of authored state keys.
+    pub hydration_reads: Option<webui_protocol::HydrationReadPlan>,
     /// Whether this component has an authored client module (sibling script
     /// or an externally client-owned package), as opposed to a scriptless
     /// compiled template. Bundler manifest coverage validation only requires
@@ -113,6 +116,7 @@ impl ComponentTemplateArtifact {
             hydration: StateSurface::None,
             navigation: StateSurface::None,
             template_roots: Vec::new(),
+            hydration_reads: None,
             is_scripted: false,
             uses_shadow_dom,
             lazy_templates: Vec::new(),
@@ -132,6 +136,7 @@ impl ComponentTemplateArtifact {
             hydration: StateSurface::None,
             navigation: StateSurface::None,
             template_roots: Vec::new(),
+            hydration_reads: None,
             is_scripted: false,
             uses_shadow_dom,
             lazy_templates: Vec::new(),

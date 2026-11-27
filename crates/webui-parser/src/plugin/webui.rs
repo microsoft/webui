@@ -79,6 +79,7 @@ use std::ops::Range;
 use webui_protocol::{ConditionExpr, WebUIElementData};
 
 mod condition_plan;
+mod hydration_reads;
 mod lazy_templates;
 mod named_repeats;
 mod reactive_plan;
@@ -179,14 +180,21 @@ impl WebUIParserPlugin {
     /// contains an invalid `@event` handler or a non-braced `w-ref` binding.
     fn take_component_templates(&self) -> Result<Vec<ComponentTemplateArtifact>> {
         let mut out = Vec::with_capacity(self.components.len());
+        let projected_events = self
+            .components
+            .iter()
+            .any(|c| c.client_module.is_authored() && c.root_event_source.contains('@'));
         for c in &self.components {
             let is_authored = c.client_module.is_authored();
             let mut payload = generate_compiled_template_with_root_source(
-                &c.tag_name,
                 &c.template_html,
                 &c.root_event_source,
-                c.uses_shadow_dom,
-                !is_authored,
+                TemplatePayloadOptions {
+                    owner: &c.tag_name,
+                    shadow_dom: c.uses_shadow_dom,
+                    emit_static_host: !is_authored,
+                    projected_events,
+                },
             )?;
             append_render_policy(&mut payload.template_json, &c.render_policy);
             // The parser plugin performs no JavaScript/TypeScript analysis: it
@@ -204,7 +212,7 @@ impl WebUIParserPlugin {
             } else {
                 StateSurface::None
             };
-            let navigation = navigation_surface(&payload.hydration_roots, &hydration);
+            let navigation = navigation_surface(&payload.navigation_roots, &hydration);
             let mut artifact = ComponentTemplateArtifact::webui(
                 c.tag_name.clone(),
                 payload.template_json,
@@ -212,9 +220,10 @@ impl WebUIParserPlugin {
             )
             .with_hydration(hydration)
             .with_navigation(navigation)
-            .with_template_roots(payload.hydration_roots.clone())
+            .with_template_roots(payload.navigation_roots)
             .scripted(is_authored);
             artifact.lazy_templates = payload.lazy_templates;
+            artifact.hydration_reads = payload.hydration_reads;
             out.push(artifact);
         }
         Ok(out)
@@ -711,9 +720,10 @@ enum CompiledAttrPart {
 
 struct CompiledTemplatePayload {
     template_json: String,
-    /// Template reactive roots used when client navigation creates or updates
-    /// a component whose initial DOM was not server rendered.
-    hydration_roots: Vec<String>,
+    // Render and structural roots retain the established whole-key navigation
+    // contract. Event-only roots belong to the read plan, not this allowlist.
+    navigation_roots: Vec<String>,
+    hydration_reads: Option<webui_protocol::HydrationReadPlan>,
     lazy_templates: Vec<super::LazyTemplateArtifact>,
 }
 
@@ -738,17 +748,48 @@ fn union_state_keys(roots: &[String], attrs: &[String]) -> Vec<String> {
     keys
 }
 
+#[derive(Default)]
 struct TemplateBuildMetadata {
     roots: Vec<String>,
+    // A lazily extended mask, indexed in browser root order. Rendering or
+    // repeating a root anywhere promotes it to the whole navigation surface.
+    event_only: Vec<bool>,
     has_events: bool,
     #[cfg(test)]
     scope_count: usize,
+}
+
+impl TemplateBuildMetadata {
+    fn record(&mut self, key: &str, event: bool) {
+        if let Some(i) = self.roots.iter().position(|root| root == key) {
+            if !event {
+                if let Some(only) = self.event_only.get_mut(i) {
+                    *only = false;
+                }
+            }
+        } else {
+            if event {
+                self.event_only.resize(self.roots.len(), false);
+                self.event_only.push(true);
+            }
+            self.roots.push(key.to_owned());
+        }
+    }
+
+    fn into_navigation_roots(mut self) -> Vec<String> {
+        if !self.event_only.is_empty() {
+            let mut mask = self.event_only.into_iter();
+            self.roots.retain(|_| mask.next() != Some(true));
+        }
+        self.roots
+    }
 }
 
 struct TemplatePayloadOptions<'a> {
     shadow_dom: bool,
     emit_static_host: bool,
     owner: &'a str,
+    projected_events: bool,
 }
 
 struct RootScope<'a> {
@@ -796,22 +837,24 @@ struct RootVisit<'a> {
 /// or an invalid, duplicate, unresolved, or item-incompatible named repeat.
 pub fn generate_compiled_template(tag_name: &str, html_content: &str) -> Result<String> {
     Ok(generate_compiled_template_with_root_source(
-        tag_name,
         html_content,
         html_content,
-        false,
-        false,
+        TemplatePayloadOptions {
+            owner: tag_name,
+            shadow_dom: false,
+            emit_static_host: false,
+            projected_events: false,
+        },
     )?
     .template_json)
 }
 
 fn generate_compiled_template_with_root_source(
-    tag_name: &str,
     html_content: &str,
     root_event_source: &str,
-    shadow_dom: bool,
-    scriptless: bool,
+    options: TemplatePayloadOptions<'_>,
 ) -> Result<CompiledTemplatePayload> {
+    let tag_name = options.owner;
     let source = TemplateSource::from(html_content);
     let trimmed = html_content.trim();
     let shadow_body = shadow_template_body_range(trimmed);
@@ -836,34 +879,41 @@ fn generate_compiled_template_with_root_source(
         },
     );
     let meta = compile_to_metadata(tag_name, body, root_events)?;
-    let build_meta = collect_template_build_metadata(&meta);
-    if scriptless && build_meta.has_events {
+    let mut build_meta = collect_template_build_metadata(&meta);
+    if options.emit_static_host && build_meta.has_events {
         return Err(scriptless_component_events(tag_name).into());
     }
-    Ok(emit_compiled_template_payload(
-        html_content,
-        &meta,
-        &build_meta,
-        TemplatePayloadOptions {
-            shadow_dom,
-            emit_static_host: scriptless,
-            owner: tag_name,
-        },
-    ))
+    let read_plan = if options.projected_events && !build_meta.roots.is_empty() {
+        let plan = hydration_reads::compile(tag_name, &meta)?;
+        for root in plan.roots.iter().filter(|root| root.reaches_event) {
+            build_meta.record(&root.key, true);
+        }
+        (!plan.roots.is_empty()).then_some(plan)
+    } else {
+        None
+    };
+    let (template_json, lazy_templates) =
+        emit_compiled_template_payload(html_content, &meta, &build_meta.roots, options);
+    Ok(CompiledTemplatePayload {
+        template_json,
+        navigation_roots: build_meta.into_navigation_roots(),
+        hydration_reads: read_plan,
+        lazy_templates,
+    })
 }
 
 fn emit_compiled_template_payload(
     html_content: &str,
     meta: &TemplateMeta,
-    build_meta: &TemplateBuildMetadata,
+    browser_roots: &[String],
     options: TemplatePayloadOptions,
-) -> CompiledTemplatePayload {
+) -> (String, Vec<super::LazyTemplateArtifact>) {
     let lazy_plan = lazy_templates::Plan::new(options.owner, meta);
     let mut out = String::with_capacity(512 + html_content.len());
     out.push('{');
 
     emit_json_template_section(&meta.root, &mut out, lazy_plan.as_ref());
-    if let Some(root) = reactive_plan::single_root(&meta.root, &build_meta.roots) {
+    if let Some(root) = reactive_plan::single_root(&meta.root, browser_roots) {
         out.push_str(",\"rp\":");
         emit_js_string(root, &mut out);
     }
@@ -895,16 +945,16 @@ fn emit_compiled_template_payload(
         out.push(']');
     }
 
-    if !build_meta.roots.is_empty() {
+    if !browser_roots.is_empty() {
         out.push_str(",\"tr\":[");
-        for (i, root) in build_meta.roots.iter().enumerate() {
+        for (i, root) in browser_roots.iter().enumerate() {
             if i > 0 {
                 out.push(',');
             }
             emit_js_string(root, &mut out);
         }
         out.push_str("],\"ta\":[");
-        for (i, root) in build_meta.roots.iter().enumerate() {
+        for (i, root) in browser_roots.iter().enumerate() {
             if i > 0 {
                 out.push(',');
             }
@@ -935,11 +985,10 @@ fn emit_compiled_template_payload(
 
     out.push_str(TEMPLATE_META_VERSION_FIELD);
     out.push('}');
-    CompiledTemplatePayload {
-        template_json: out,
-        hydration_roots: build_meta.roots.clone(),
-        lazy_templates: lazy_plan.map_or_else(Vec::new, |plan| plan.emit(options.owner, meta)),
-    }
+    (
+        out,
+        lazy_plan.map_or_else(Vec::new, |plan| plan.emit(options.owner, meta)),
+    )
 }
 
 fn emit_js_string(s: &str, out: &mut String) {
@@ -1120,7 +1169,7 @@ fn emit_json_attr_binding(binding: &CompiledAttrBinding, out: &mut String) {
 
 #[inline]
 fn collect_template_build_metadata(meta: &TemplateMeta) -> TemplateBuildMetadata {
-    if meta.has_named_repeats {
+    let mut result = if meta.has_named_repeats {
         collect_template_roots::<true, false>(
             &meta.root,
             &meta.blocks,
@@ -1132,7 +1181,9 @@ fn collect_template_build_metadata(meta: &TemplateMeta) -> TemplateBuildMetadata
             &meta.blocks,
             !meta.root_events.is_empty(),
         )
-    }
+    };
+    add_event_roots(&mut result, &meta.root_events, &[], None);
+    result
 }
 
 #[inline(never)]
@@ -1141,10 +1192,12 @@ fn collect_template_roots<const SHARED: bool, const STOP_LAZY: bool>(
     blocks: &[TemplateSectionMeta],
     root_events: bool,
 ) -> TemplateBuildMetadata {
-    let mut roots = Vec::new();
+    let mut roots = TemplateBuildMetadata {
+        has_events: root_events,
+        ..Default::default()
+    };
     let mut scopes = Vec::<RootScope<'_>>::new();
     let mut stack = Vec::with_capacity(1 + blocks.len());
-    let mut has_events = root_events;
     let mut visits = SHARED.then(crate::scoped_visits::ScopedVisits::default);
     stack.push(RootVisit {
         block: root,
@@ -1160,7 +1213,10 @@ fn collect_template_roots<const SHARED: bool, const STOP_LAZY: bool>(
         }
         let block = visit.block;
         if !block.events.is_empty() {
-            has_events = true;
+            roots.has_events = true;
+            if !STOP_LAZY {
+                add_event_roots(&mut roots, &block.events, &scopes, visit.scope);
+            }
         }
 
         for (_, parts, _) in &block.text_runs {
@@ -1216,11 +1272,27 @@ fn collect_template_roots<const SHARED: bool, const STOP_LAZY: bool>(
         }
     }
 
-    TemplateBuildMetadata {
-        roots,
-        has_events,
-        #[cfg(test)]
-        scope_count: scopes.len(),
+    #[cfg(test)]
+    {
+        roots.scope_count = scopes.len();
+    }
+    roots
+}
+
+fn add_event_roots(
+    roots: &mut TemplateBuildMetadata,
+    events: &[EventBinding],
+    scopes: &[RootScope<'_>],
+    scope: Option<usize>,
+) {
+    for (_, _, args) in events {
+        for arg in args {
+            if let EventArg::Path(path) = arg {
+                if !path.is_empty() && !is_scoped_path(path, scopes, scope) {
+                    roots.record(path_root(path), true);
+                }
+            }
+        }
     }
 }
 
@@ -1246,19 +1318,20 @@ fn is_scoped_path(path: &str, scopes: &[RootScope<'_>], scope: Option<usize>) ->
     false
 }
 
-fn add_root(roots: &mut Vec<String>, path: &str, scopes: &[RootScope<'_>], scope: Option<usize>) {
+fn add_root(
+    roots: &mut TemplateBuildMetadata,
+    path: &str,
+    scopes: &[RootScope<'_>],
+    scope: Option<usize>,
+) {
     if path.is_empty() || is_scoped_path(path, scopes, scope) {
         return;
     }
-    let root = path_root(path);
-    if roots.iter().any(|existing| existing == root) {
-        return;
-    }
-    roots.push(root.to_string());
+    roots.record(path_root(path), false);
 }
 
 fn add_part_roots(
-    roots: &mut Vec<String>,
+    roots: &mut TemplateBuildMetadata,
     parts: &[CompiledAttrPart],
     scopes: &[RootScope<'_>],
     scope: Option<usize>,
@@ -1271,7 +1344,7 @@ fn add_part_roots(
 }
 
 fn add_condition_roots(
-    roots: &mut Vec<String>,
+    roots: &mut TemplateBuildMetadata,
     condition: &ConditionExpr,
     scopes: &[RootScope<'_>],
     scope: Option<usize>,
@@ -3653,12 +3726,42 @@ mod tests {
     }
 
     #[test]
+    fn event_arguments_retain_global_and_nested_repeat_state_only() {
+        let meta = compile_to_metadata(
+            "event-roots",
+            concat!(
+                "<p>{{serverTitle}}</p>",
+                r#"<button @click="{open(selection.id, e, 'literal', 1, true, null)}">Open</button>"#,
+                r#"<for each="project in shell.nav.canvas_projects">"#,
+                r#"<for each="action in actions">"#,
+                r#"<button @click="{open(action.id, project.id)}">Action</button>"#,
+                "</for></for>",
+            )
+            .into(),
+            vec![(
+                "click".into(),
+                "open".into(),
+                vec![EventArg::Path("host.id".into())],
+            )],
+        )
+        .unwrap();
+        let plan = hydration_reads::compile("event-roots", &meta).unwrap();
+        let roots: Vec<_> = plan
+            .roots
+            .iter()
+            .filter(|root| root.reaches_event)
+            .map(|root| root.key.as_str())
+            .collect();
+        assert_eq!(roots, ["actions", "host", "selection", "shell"]);
+    }
+
+    #[test]
     fn condition_roots_exclude_literals_and_preserve_path_order() {
         let payload = generate_compiled_template_payload(
             "condition-roots",
             r#"<if condition="true && !false && count > limits.max && ready"><span>Ready</span></if>"#,
         );
-        assert_eq!(payload.hydration_roots, ["ready", "count", "limits"]);
+        assert_eq!(payload.navigation_roots, ["ready", "count", "limits"]);
     }
 
     #[test]
@@ -3814,11 +3917,14 @@ mod tests {
         html_content: &str,
     ) -> CompiledTemplatePayload {
         super::generate_compiled_template_with_root_source(
-            tag_name,
             html_content,
             html_content,
-            false,
-            false,
+            super::TemplatePayloadOptions {
+                owner: tag_name,
+                shadow_dom: false,
+                emit_static_host: false,
+                projected_events: false,
+            },
         )
         .expect("valid template compiles")
     }

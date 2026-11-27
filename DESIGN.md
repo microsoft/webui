@@ -269,8 +269,14 @@ This retained compilation is build-time ownership only, never request-time state
 
 Initial hydration and partial navigation have separate state surfaces.
 `None` means proven empty, `Keys` means an exact set, and `All` means full
-state is required. Initial state includes proven authored observable/attribute
-properties; navigation additionally includes compiled template roots.
+state is required. Initial state includes whole values for proven authored observable/attribute
+properties. Template event arguments can additionally select paths. The compiler
+plans lexical reads across shared blocks without expanding each callsite, and
+the handler writes the selected shape from borrowed state. Values passed to
+handlers as whole objects remain whole. Partial navigation keeps its own
+whole-key surface for authored state and client rendering. An event that
+needs an additional root uses the same lexical read plan rather than adding
+that entire value to the navigation response.
 Reachability follows the active route but conservatively includes conditional
 and loop branches it might render. Explicitly deferred edges are separate
 delivery roots: initial delivery follows the ones active in the request's actual

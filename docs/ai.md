@@ -1143,7 +1143,9 @@ identifier is falsy, so `path` is false and `!path` is true. No error.
 
 **Route-scoped state.** Each route handler should return only the keys that
 route's template binds to. Sending full app state on every route wastes
-bandwidth and render time.
+bandwidth and render time. With exact projection, event-only arguments such as
+`choose(shell.id)` need not send the whole `shell`. Authored navigation keys
+and roots used to render the route still carry their whole values.
 
 ### Reserved `$webui` state
 

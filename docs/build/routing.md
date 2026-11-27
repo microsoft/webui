@@ -897,6 +897,11 @@ its component template binds to - not the full application state.
 Route-scoped state reduces one part of the navigation payload. Partials also
 carry the route chain and any needed template or style data.
 
+With exact state projection, an event such as `choose(shell.id)` can receive
+the ID without transferring the rest of `shell`. If the route also renders or
+repeats data from `shell`, declares it as an observable or attribute, or passes
+`shell` itself to a handler, the partial keeps the whole value.
+
 ## Styling Route Outlets
 
 `<webui-route>` elements rendered by `<outlet />` are bare custom elements

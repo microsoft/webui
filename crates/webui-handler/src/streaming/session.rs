@@ -12,12 +12,11 @@ use serde_json::{Number, Value};
 use super::error::{boundary_order_error, state_update_type_error};
 use super::state::{
     increment_state_revision, increment_streaming_record_sequence, overlay_full_state,
-    overlay_full_state_owned, overlay_selected_state, overlay_selected_state_owned,
-    selected_state_snapshot, selected_state_snapshot_owned, StreamingProgress,
-    StreamingRenderState,
+    overlay_full_state_owned, overlay_selected_state, StreamingProgress, StreamingRenderState,
 };
-use super::vm::{ContinuationVm, StepGoal};
+use super::vm::{ContinuationStatePlan, ContinuationVm, StepGoal};
 use super::StreamingSink;
+use crate::hydration_reads::SnapshotInput;
 use crate::plugin::HandlerPlugin;
 use crate::route_handler::Protocol;
 use crate::{
@@ -251,10 +250,7 @@ impl<W: FlushWriter + ?Sized> StreamingResponse<'_, W> {
         state: impl Into<StreamingState<'state>>,
     ) -> Result<StreamStatus> {
         let (core, call) = self.parts();
-        match state.into() {
-            StreamingState::Borrowed(state) => core.start(call, state),
-            StreamingState::Owned(state) => core.start_owned(call, state),
-        }
+        core.start(call, state)
     }
 
     /// Commit the pending occurrence through its checkpoint, then stop.
@@ -276,10 +272,7 @@ impl<W: FlushWriter + ?Sized> StreamingResponse<'_, W> {
         mode: BoundaryMode,
     ) -> Result<StreamStatus> {
         let (core, call) = self.parts();
-        match state.into() {
-            StreamingState::Borrowed(state) => core.resume(call, instance_id, state, mode),
-            StreamingState::Owned(state) => core.resume_owned(call, instance_id, state, mode),
-        }
+        core.resume(call, instance_id, state, mode)
     }
 
     /// Commit the pending occurrence against the retained state snapshot.
@@ -349,8 +342,8 @@ impl<W: FlushWriter + ?Sized> StreamingResponse<'_, W> {
 
 pub(crate) struct SessionCore {
     pub(crate) vm: ContinuationVm,
-    frozen_keys: Arc<[Box<str>]>,
-    requires_full_state: bool,
+    state_plan: Arc<ContinuationStatePlan>,
+    route_callback: bool,
     frozen_state: Value,
     started: bool,
     pub(crate) done: bool,
@@ -394,8 +387,8 @@ impl SessionCore {
         let state_plan = protocol.continuation_state_plan(entry_id)?.resolve()?;
         Ok(Self {
             vm: ContinuationVm::new(entry_id, protocol)?,
-            frozen_keys: Arc::clone(&state_plan.keys),
-            requires_full_state: state_plan.requires_full_state,
+            state_plan: Arc::clone(state_plan),
+            route_callback: false,
             frozen_state: Value::Object(serde_json::Map::new()),
             started: false,
             done: false,
@@ -427,10 +420,10 @@ impl SessionCore {
         })
     }
 
-    pub(crate) fn start(
+    pub(crate) fn start<'s>(
         &mut self,
         call: SessionCall<'_, '_>,
-        state: &Value,
+        state: impl Into<StreamingState<'s>>,
     ) -> Result<StreamStatus> {
         self.require_usable("start")?;
         if self.started {
@@ -439,13 +432,36 @@ impl SessionCore {
                 "the streaming response has already started",
             ));
         }
+        if self.state_plan.has_route_host
+            && !self.state_plan.events.is_empty()
+            && self
+                .plugin
+                .as_ref()
+                .is_some_and(|p| p.reads_route_component_state())
+        {
+            // Resume can open a different condition, but cannot change the
+            // request's route. Reuse this matched plan at the first checkpoint.
+            let routes = crate::route_handler::collect_route_chain_plan(
+                call.protocol.protocol(),
+                call.options.entry_id,
+                call.options.request_path,
+                call.protocol.route_index(),
+            );
+            self.route_callback = !routes.entries.is_empty() || routes.matched_inline_content;
+            self.route_chain = Some(routes.entries);
+            self.route_document_style_targets = routes.document_style_targets;
+        }
         // The value is moved into each render context and back, so protocols
         // requiring full projection pay for exactly one response-local clone.
-        self.frozen_state = if self.requires_full_state {
-            state.clone()
+        let state = state.into();
+        if self.state_plan.requires_full_state {
+            self.frozen_state = match state {
+                StreamingState::Borrowed(value) => value.clone(),
+                StreamingState::Owned(value) => value,
+            };
         } else {
-            selected_state_snapshot(state, &self.frozen_keys)
-        };
+            self.overlay_selected(state)?;
+        }
         self.started = true;
         self.run_step(call, StepGoal::NextBoundary, None)
     }
@@ -455,36 +471,31 @@ impl SessionCore {
         call: SessionCall<'_, '_>,
         state: Value,
     ) -> Result<StreamStatus> {
-        self.require_usable("start")?;
-        if self.started {
-            return Err(boundary_order_error(
-                "start",
-                "the streaming response has already started",
-            ));
-        }
-        self.frozen_state = if self.requires_full_state {
-            state
-        } else {
-            selected_state_snapshot_owned(state, &self.frozen_keys)
-        };
-        self.started = true;
-        self.run_step(call, StepGoal::NextBoundary, None)
+        self.start(call, state)
     }
 
-    pub(crate) fn resume(
+    pub(crate) fn resume<'s>(
         &mut self,
         call: SessionCall<'_, '_>,
         instance_id: BoundaryInstanceId,
-        state: &Value,
+        state: impl Into<StreamingState<'s>>,
         mode: BoundaryMode,
     ) -> Result<StreamStatus> {
         self.require_resumable()?;
         self.vm.validate_resume(instance_id)?;
         self.vm.validate_resume_mode(mode)?;
-        let changed = if self.requires_full_state {
-            overlay_full_state(&mut self.frozen_state, state)
+        let state = state.into();
+        let changed = if self.state_plan.requires_full_state {
+            match state {
+                StreamingState::Borrowed(value) => {
+                    overlay_full_state(&mut self.frozen_state, value)
+                }
+                StreamingState::Owned(value) => {
+                    overlay_full_state_owned(&mut self.frozen_state, value)
+                }
+            }
         } else {
-            overlay_selected_state(&mut self.frozen_state, state, &self.frozen_keys)
+            self.overlay_selected(state)?
         };
         self.record_state_change(changed)?;
         self.run_step(call, StepGoal::CommitBoundary, Some((instance_id, mode)))
@@ -497,16 +508,23 @@ impl SessionCore {
         state: Value,
         mode: BoundaryMode,
     ) -> Result<StreamStatus> {
-        self.require_resumable()?;
-        self.vm.validate_resume(instance_id)?;
-        self.vm.validate_resume_mode(mode)?;
-        let changed = if self.requires_full_state {
-            overlay_full_state_owned(&mut self.frozen_state, state)
-        } else {
-            overlay_selected_state_owned(&mut self.frozen_state, state, &self.frozen_keys)
+        self.resume(call, instance_id, state, mode)
+    }
+
+    fn overlay_selected(&mut self, mut state: StreamingState<'_>) -> Result<bool> {
+        let target = self.frozen_state.as_object_mut().ok_or_else(|| {
+            HandlerError::Invariant("selected continuation snapshot is not an object".to_owned())
+        })?;
+        let source = match &mut state {
+            StreamingState::Borrowed(value) => SnapshotInput::Borrowed(value),
+            StreamingState::Owned(value) => SnapshotInput::Owned(value),
         };
-        self.record_state_change(changed)?;
-        self.run_step(call, StepGoal::CommitBoundary, Some((instance_id, mode)))
+        Ok(overlay_selected_state(
+            target,
+            source,
+            &self.state_plan,
+            self.route_callback,
+        ))
     }
 
     pub(crate) fn resume_current(
@@ -956,6 +974,571 @@ mod tests {
 
     fn options<'a>() -> RenderOptions<'a> {
         RenderOptions::new("index.html", "/")
+    }
+
+    #[allow(clippy::disallowed_methods)]
+    fn event_protocol(entry: &str, template: &str, whole: &[&str]) -> Protocol {
+        use webui_parser::plugin::{webui::WebUIParserPlugin, ParserPluginArtifacts};
+
+        let mut parser = HtmlParser::with_plugin(Box::new(WebUIParserPlugin::new()));
+        parser
+            .component_registry_mut()
+            .register_component(ComponentRegistration::new(ISLAND_TAG, template, None, true))
+            .unwrap();
+        parser.parse("index.html", entry).unwrap();
+        let ParserPluginArtifacts::ComponentTemplates(templates) =
+            parser.take_plugin_artifacts().unwrap()
+        else {
+            panic!("expected compiled WebUI template");
+        };
+        let mut document = WebUIProtocol::new(parser.into_fragment_records());
+        document.initial_state_strategy = InitialStateStrategy::Components as i32;
+        for artifact in templates {
+            let data = ComponentData {
+                uses_shadow_dom: artifact.uses_shadow_dom,
+                template_json: artifact.template_json,
+                hydration_mode: StateProjectionMode::Keys as i32,
+                hydration_keys: whole.iter().map(|key| (*key).to_owned()).collect(),
+                ..Default::default()
+            };
+            for mut lazy in artifact.lazy_templates {
+                lazy.data.inherit_owner_state(&data);
+                document.client_fragments.insert(lazy.id, lazy.data);
+            }
+            document
+                .hydration_reads
+                .insert(artifact.tag_name.clone(), artifact.hydration_reads.unwrap());
+            document.components.insert(artifact.tag_name, data);
+        }
+        document.populate_style_closures(&["index.html"]);
+        Protocol::new(document)
+    }
+
+    #[test]
+    #[allow(clippy::disallowed_methods)]
+    fn parked_streams_freeze_event_reads_not_their_unused_siblings() -> Result<()> {
+        const STREAMS: usize = 16;
+        let protocol = event_protocol(
+            concat!(
+                "<html><head></head><body>",
+                r#"<boundary name="a"><state-island></state-island></boundary>"#,
+                r#"<boundary name="b"><state-island></state-island></boundary>"#,
+                "</body></html>",
+            ),
+            r#"<button @click="{open(selection.target.id)}">Select</button>"#,
+            &[],
+        );
+        let handler = WebUIHandler::with_plugin(|| {
+            Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
+        });
+        let options = options();
+        let measure = |unused_bytes| -> Result<(usize, String)> {
+            let mut sinks = std::array::from_fn::<_, STREAMS, _>(|_| SharedSink::default());
+            let output = sinks[0].clone();
+            let mut streams = Vec::with_capacity(STREAMS);
+            for (index, sink) in sinks.iter_mut().enumerate() {
+                let mut stream = handler.stream_response(&protocol, &options, sink)?;
+                let input = test_json!({
+                    "selection": { "target": { "id": "selected", "unused": "x".repeat(unused_bytes) } }
+                });
+                let first = if index % 2 == 0 {
+                    stream.start(&input)?
+                } else {
+                    stream.start(input)?
+                };
+                let first = first.boundary.unwrap();
+                stream.resume_current(first.instance_id, BoundaryMode::Updatable)?;
+                assert!(stream.advance()?.boundary.is_some());
+                streams.push(stream);
+            }
+            // Actual live String allocations under the affected root, not its
+            // serialized length, process RSS, or the writer's capacity.
+            let retained = streams
+                .iter()
+                .map(|stream| {
+                    let target = &stream.core.frozen_state["selection"]["target"];
+                    assert_eq!(target["id"], "selected");
+                    target
+                        .as_object()
+                        .unwrap()
+                        .values()
+                        .map(|value| match value {
+                            Value::String(text) => text.capacity(),
+                            _ => 0,
+                        })
+                        .sum::<usize>()
+                })
+                .sum();
+            let wire = output.0.borrow().clone();
+            Ok((retained, wire))
+        };
+        let (small, small_wire) = measure(0)?;
+        let (large, large_wire) = measure(256 * 1024)?;
+        assert!(small_wire.contains(r#""state":{"selection":{"target":{"id":"selected"}}}"#));
+        assert!(large_wire == small_wire);
+        eprintln!(
+            "parked={STREAMS} frozen_string_bytes={small}/{large} wire_bytes={}",
+            small_wire.len()
+        );
+        assert_eq!(large, small, "an unread sibling grew the parked streams");
+        Ok(())
+    }
+
+    #[test]
+    #[allow(clippy::disallowed_methods)]
+    fn owned_event_snapshot_reuses_root_and_nested_array_buffers() -> Result<()> {
+        const ROWS: usize = 1_000_000;
+        let protocol = event_protocol(
+            r#"<html><head></head><body><boundary name="a"><state-island></state-island></boundary></body></html>"#,
+            r#"<button @click="{open(rows.0.id, rows.10, rows.2.id, rows.0.absent, rows.0.empty, rows.length, meta.grid.1.2.length, meta.grid.1.10, meta.grid.1.10.id)}">Open</button>"#,
+            &[],
+        );
+        let mut input = test_json!({"meta":{"grid":[42, null], "unused":true}});
+        let mut rows = vec![Value::Null; ROWS];
+        rows[0] = test_json!({"id":1,"unused":3,"empty":null});
+        rows[2] = test_json!({"id":2,"unused":4});
+        rows[10] = test_json!({"keep":"whole row"});
+        rows[ROWS - 1] = test_json!({"discard":true});
+        let mut inner = vec![Value::Null; 12];
+        inner[2] = test_json!("word");
+        inner[10] = test_json!({"id":10,"keep":"whole argument"});
+        input["rows"] = Value::Array(rows);
+        input["meta"]["grid"][1] = Value::Array(inner);
+        let buffers = |value: &Value| {
+            [
+                &value["rows"],
+                &value["meta"]["grid"],
+                &value["meta"]["grid"][1],
+            ]
+            .map(|array| {
+                let slots = array.as_array().unwrap();
+                (slots.as_ptr().addr(), slots.len())
+            })
+        };
+        let original = buffers(&input);
+        let handler = WebUIHandler::new();
+        let options = options();
+        let mut borrowed_sink = SharedSink::default();
+        let mut borrowed = handler.stream_response(&protocol, &options, &mut borrowed_sink)?;
+        assert!(borrowed.start(&input)?.boundary.is_some());
+        let mut owned_sink = SharedSink::default();
+        let mut owned = handler.stream_response(&protocol, &options, &mut owned_sink)?;
+        assert!(owned.start(input)?.boundary.is_some());
+        let frozen = &owned.core.frozen_state;
+        assert!(
+            frozen == &borrowed.core.frozen_state,
+            "owned and borrowed projections differ"
+        );
+        assert_eq!(frozen["rows"][0], test_json!({"id":1,"empty":null}));
+        assert_eq!(frozen["rows"][2], test_json!({"id":2}));
+        assert_eq!(frozen["rows"][10], test_json!({"keep":"whole row"}));
+        assert!(frozen["rows"][ROWS - 1].is_null());
+        assert_eq!(frozen["meta"]["grid"][1][2], "word");
+        assert_eq!(
+            frozen["meta"]["grid"][1][10],
+            test_json!({"id":10,"keep":"whole argument"})
+        );
+        let retained = buffers(frozen);
+        assert_eq!(retained, original, "must reuse every owned array backing");
+        let reused_slots: usize = retained.iter().map(|(_, len)| *len).sum();
+        eprintln!(
+            "reused {} array buffers, {reused_slots} slots, {} bytes of element storage",
+            retained.len(),
+            reused_slots * std::mem::size_of::<Value>()
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[allow(clippy::disallowed_methods)]
+    fn length_only_stream_snapshot_compacts_long_strings_and_compares_byte_lengths() -> Result<()> {
+        let protocol = event_protocol(
+            concat!(
+                "<html><head></head><body>",
+                r#"<boundary name="a"><state-island></state-island></boundary>"#,
+                r#"<boundary name="b"><state-island></state-island></boundary>"#,
+                r#"<boundary name="c"><state-island></state-island></boundary>"#,
+                "</body></html>",
+            ),
+            concat!(
+                r#"<button @click="{open(payload.body.length, payload.short.length, payload.whole, payload.whole.length, payload.mix.length, payload.mix.other, payload.list.length, payload.rows.0.length, server.length, guard.length, overlap.length, overlap.length.child)}">Open</button>"#,
+                r#"<if condition="guard"><em>truthy</em></if>"#,
+                "<b>{{server}}</b>",
+            ),
+            &[],
+        );
+        let text = "🦀".repeat(1024);
+        let input = test_json!({
+            "payload":{"body":text, "short":"abc", "whole":text, "mix":text, "list":[1,2], "rows":[text]},
+            "server":text, "guard":text, "overlap":text,
+        });
+        let selection = crate::hydration_reads::select(
+            protocol.protocol(),
+            std::iter::once(ISLAND_TAG),
+            crate::KeyView::Borrowed(&[]),
+            false,
+        )?
+        .unwrap();
+        let mut projected = serde_json::Map::new();
+        selection.take_present(&mut input.as_object().unwrap().clone(), &mut projected)?;
+        let present = Value::Object(projected);
+        let handler = WebUIHandler::new();
+        let options = options();
+        for owned in [false, true] {
+            let mut sink = SharedSink::default();
+            let bytes = sink.clone();
+            let mut stream = handler.stream_response(&protocol, &options, &mut sink)?;
+            let start = if owned {
+                stream.start(input.clone())?
+            } else {
+                stream.start(&input)?
+            };
+            let a = start.boundary.unwrap();
+            let frozen = &stream.core.frozen_state;
+            assert!(
+                frozen == &present,
+                "owned present roots and frozen snapshot must agree"
+            );
+            assert_eq!(frozen["payload"]["body"], test_json!({"length":text.len()}));
+            assert_eq!(frozen["payload"]["short"], "abc");
+            assert_eq!(frozen["payload"]["whole"], text);
+            assert_eq!(frozen["payload"]["mix"], text);
+            assert_eq!(frozen["payload"]["list"], test_json!([null, null]));
+            assert_eq!(
+                frozen["payload"]["rows"][0],
+                test_json!({"length":text.len()})
+            );
+            assert_eq!(frozen["server"], text);
+            assert_eq!(frozen["guard"], text);
+            assert_eq!(frozen["overlap"], text);
+            stream.resume_current(a.instance_id, BoundaryMode::Final)?;
+            assert!(bytes.0.borrow().contains(&format!("<b>{text}</b>")));
+
+            let b = stream.advance()?.boundary.unwrap();
+            let mut equal = input.clone();
+            equal["payload"]["body"] = Value::String("é".repeat(text.len() / 2));
+            stream.resume(b.instance_id, equal, BoundaryMode::Final)?;
+            assert!(bytes.0.borrow().contains(r#""stateRef":0"#));
+            let c = stream.advance()?.boundary.unwrap();
+            stream.resume(
+                c.instance_id,
+                test_json!({"payload":{"body":"x".repeat(text.len()+1)}}),
+                BoundaryMode::Final,
+            )?;
+            assert_eq!(
+                stream.core.frozen_state["payload"],
+                test_json!({"body":{"length":text.len()+1}})
+            );
+            assert_eq!(stream.core.frozen_state["server"], text);
+            assert!(stream.advance()?.done);
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[allow(clippy::disallowed_methods)]
+    fn resumed_event_snapshot_preserves_whole_roots_and_deferred_reads() -> Result<()> {
+        let protocol = event_protocol(
+            concat!(
+                "<html><head></head><body>",
+                r#"<boundary name="a"><state-island></state-island></boundary>"#,
+                r#"<boundary name="b"><state-island></state-island></boundary>"#,
+                r#"<boundary name="c"><state-island></state-island></boundary>"#,
+                r#"<boundary name="d"><state-island></state-island></boundary>"#,
+                "</body></html>",
+            ),
+            concat!(
+                "<b>{{server.title}}</b>",
+                r#"<if condition="flags"><i>nonempty flags</i></if>"#,
+                r#"<button @click="{open(selection.args.id, selection.args, selection.rows.1.id, selection.name.length, server.id, flags.enabled, authored.id, deferredText.length)}">A</button>"#,
+                r#"<if condition="show" lazy><button @click="{open(preview.id)}">B</button></if>"#,
+            ),
+            &["authored"],
+        );
+        let handler = WebUIHandler::with_plugin(|| {
+            Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
+        });
+        let mut sink = SharedSink::default();
+        let bytes = sink.clone();
+        let mut response = handler.stream_response(&protocol, &options(), &mut sink)?;
+        let args = test_json!({"id": 1, "description": "x".repeat(8192)});
+        let input = test_json!({
+            "selection": {"args": args, "rows": [{"unused": 9}, {"id": 2, "unused": 1}], "name": "abc"},
+            "flags": {"other": true},
+            "server": {"title": "SSR", "id": 5, "other": 10},
+            "authored": {"id": 1, "other": 7},
+            "preview": {"id":"original", "unused": 3},
+            "deferredText": "é".repeat(2048),
+            "show": false,
+        });
+        let address = input["selection"]["args"]["description"]
+            .as_str()
+            .unwrap()
+            .as_ptr();
+        let a = response.start(input)?.boundary.unwrap().instance_id;
+        let frozen = &response.core.frozen_state;
+        assert_eq!(
+            frozen["selection"]["args"]["description"]
+                .as_str()
+                .unwrap()
+                .as_ptr(),
+            address
+        );
+        assert_eq!(frozen["selection"]["rows"], test_json!([null, {"id":2}]));
+        assert_eq!(frozen["selection"]["name"], "abc");
+        assert_eq!(frozen["preview"], test_json!({"id":"original"}));
+        assert_eq!(frozen["deferredText"].as_str().map(str::len), Some(4096));
+        assert_eq!(frozen["flags"]["other"], true);
+        assert_eq!(frozen["server"]["other"], 10);
+        assert_eq!(frozen["authored"]["other"], 7);
+        response.resume_current(a, BoundaryMode::Updatable)?;
+        assert!(bytes.0.borrow().contains("nonempty flags"));
+        assert!(!bytes.0.borrow().contains(r#""id":"original""#));
+        response.update(a, &test_json!({"preview":{"id":"patch", "unused":3}}))?;
+        assert!(bytes
+            .0
+            .borrow()
+            .contains(r#"[1,2,0,{"preview":{"id":"patch"}}]"#));
+        let b = response.advance()?.boundary.unwrap().instance_id;
+        response.resume(b, test_json!({"show":true}), BoundaryMode::Final)?;
+        assert!(bytes.0.borrow().contains(r#""preview":{"id":"original"}"#));
+
+        let c = response.advance()?.boundary.unwrap().instance_id;
+        let same = test_json!({"selection":{"args":args, "rows":[42, {"id":2}], "name":"abc", "unused":"new"}});
+        response.resume(c, &same, BoundaryMode::Final)?;
+        assert!(bytes.0.borrow().contains(r#""stateRef":2"#));
+        assert_eq!(
+            response.core.frozen_state["selection"]["args"]["description"]
+                .as_str()
+                .unwrap()
+                .as_ptr(),
+            address
+        );
+
+        let d = response.advance()?.boundary.unwrap().instance_id;
+        response.resume(
+            d,
+            test_json!({"selection":{"args":null}, "flags":{}}),
+            BoundaryMode::Final,
+        )?;
+        assert_eq!(
+            response.core.frozen_state["selection"],
+            test_json!({"args":null})
+        );
+        assert_eq!(
+            response.core.frozen_state["preview"],
+            test_json!({"id":"original"})
+        );
+        assert!(bytes.0.borrow().contains(r#""selection":{"args":null}"#));
+        assert!(response.advance()?.done);
+        Ok(())
+    }
+
+    #[test]
+    #[allow(clippy::disallowed_methods)]
+    fn streamed_signal_roots_named_like_literals_match_buffered_html() -> Result<()> {
+        let protocol = event_protocol(
+            concat!(
+                "<html><head></head><body>",
+                r#"<boundary name="a"><state-island></state-island></boundary>"#,
+                "<p>{{true.label}}/{{false.label}}/{{null.label}}/{{123.label}}</p>",
+                r#"<if condition="role == 'editor'"><i>editor</i></if></body></html>"#,
+            ),
+            r#"<button @click="{open(true.id, false.id, null.id)}">Open</button>"#,
+            &[],
+        );
+        let input = test_json!({
+            "true": {"id": 1, "label": "first"},
+            "false": {"id": 2, "label": "second"},
+            "null": {"id": 3, "label": "third"},
+            "123": {"label": "numeric"},
+            "role": "editor",
+            "'editor'": "not a state lookup",
+        });
+        let handler = WebUIHandler::new();
+        let options = options();
+        let mut buffered = TestSink {
+            output: String::new(),
+        };
+        handler.render(&protocol, &input, &options, &mut buffered)?;
+        let expected = "<p>first/second/third/numeric</p>";
+        assert!(buffered.output.contains(expected));
+        let mut streamed = TestSink {
+            output: String::new(),
+        };
+        let mut stream = handler.stream_response(&protocol, &options, &mut streamed)?;
+        let a = stream.start(input)?.boundary.unwrap();
+        assert!(!stream
+            .core
+            .frozen_state
+            .as_object()
+            .unwrap()
+            .contains_key("'editor'"));
+        stream.resume_current(a.instance_id, BoundaryMode::Final)?;
+        assert!(stream.advance()?.done);
+        drop(stream);
+        assert!(
+            streamed.output.contains(expected),
+            "missing SSR text: {}",
+            streamed.output
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[allow(clippy::disallowed_methods)]
+    fn unmatched_route_callback_does_not_change_event_snapshot_or_state_ref() -> Result<()> {
+        let protocol = event_protocol(
+            concat!(
+                "<html><head></head><body>",
+                r#"<boundary name="a"><state-island></state-island></boundary>"#,
+                r#"<boundary name="b"><state-island></state-island></boundary>"#,
+                r#"<route path="/other/:id" component="state-island"></route></body></html>"#,
+            ),
+            r#"<template shadowrootmode="open" @click="{open(selection.id)}"><p>Open</p></template>"#,
+            &[],
+        );
+        let handler = WebUIHandler::with_plugin(|| {
+            Box::new(crate::plugin::fast_v2::FastV2HydrationPlugin::new())
+        });
+        let mut sink = SharedSink::default();
+        let bytes = sink.clone();
+        let mut stream = handler.stream_response(&protocol, &options(), &mut sink)?;
+        let a = stream
+            .start(test_json!({"selection":{"id":1, "unused":"x".repeat(256 * 1024)}}))?
+            .boundary
+            .unwrap();
+        let held = stream.core.frozen_state["selection"]["unused"]
+            .as_str()
+            .map_or(0, str::len);
+        stream.resume_current(a.instance_id, BoundaryMode::Final)?;
+        let b = stream.advance()?.boundary.unwrap();
+        stream.resume(
+            b.instance_id,
+            test_json!({"selection":{"id":1, "unused":"changed"}}),
+            BoundaryMode::Final,
+        )?;
+        assert!(stream.advance()?.done);
+        let wire = bytes.0.borrow();
+        assert_eq!(wire.matches(r#""state":{"selection":{"id":1}}"#).count(), 1);
+        assert_eq!(wire.matches(r#""stateRef":0"#).count(), 1);
+        assert_eq!(
+            held, 0,
+            "unmatched routes must not retain an unread sibling"
+        );
+        assert_eq!(stream.core.frozen_state["selection"], test_json!({"id":1}));
+        Ok(())
+    }
+
+    #[test]
+    #[allow(clippy::disallowed_methods)]
+    fn matched_inline_route_content_can_call_a_nested_route_plugin() -> Result<()> {
+        use webui_protocol::{web_ui_fragment::Fragment, FragmentList, WebUIFragment};
+
+        // The authoring parser requires a route component, but decoded and
+        // hand-built protocol routes can link directly to a content record.
+        let protocol = event_protocol(
+            r#"<html><head></head><body><route path="/users/:id" component="state-island"></route></body></html>"#,
+            r#"<boundary name="a"><button @click="{open(selection.id)}">Select</button></boundary>"#,
+            &[],
+        );
+        let mut document = protocol.protocol().clone();
+        let parent = document
+            .fragments
+            .get_mut("index.html")
+            .unwrap()
+            .fragments
+            .iter_mut()
+            .find_map(|f| match &mut f.fragment {
+                Some(Fragment::Route(route)) => Some(route),
+                _ => None,
+            })
+            .unwrap();
+        parent.fragment_id.clear();
+        parent.content_fragment_id = "inline".into();
+        document.fragments.insert(
+            "inline".into(),
+            FragmentList {
+                contains_boundary: true,
+                fragments: vec![WebUIFragment::route("detail", ISLAND_TAG)],
+            },
+        );
+        let protocol = Protocol::new(document);
+        let handler = WebUIHandler::with_plugin(|| {
+            Box::new(crate::plugin::fast_v2::FastV2HydrationPlugin::new())
+        });
+        for (path, should_call) in [("/users/42/detail", true), ("/", false)] {
+            let mut sink = SharedSink::default();
+            let bytes = sink.clone();
+            let mut stream = handler.stream_response(
+                &protocol,
+                &RenderOptions::new("index.html", path),
+                &mut sink,
+            )?;
+            let step = stream.start(test_json!({"selection":"callback-visible"}))?;
+            assert!(stream.core.route_chain.as_ref().unwrap().is_empty());
+            assert_eq!(step.boundary.is_some(), should_call);
+            assert_eq!(
+                bytes
+                    .0
+                    .borrow()
+                    .contains(r#"<state-island selection="callback-visible""#),
+                should_call
+            );
+            assert_eq!(
+                stream.core.frozen_state["selection"].is_string(),
+                should_call
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[allow(clippy::disallowed_methods)]
+    fn routed_streams_freeze_event_paths_unless_the_plugin_reads_route_state() -> Result<()> {
+        let protocol = event_protocol(
+            r#"<html><head></head><body><route path="/users/:id" component="state-island"></route></body></html>"#,
+            r#"<boundary name="a"><button @click="{open(selection.id)}">Select</button></boundary>"#,
+            &[],
+        );
+        let options = RenderOptions::new("index.html", "/users/42");
+        let handler = WebUIHandler::with_plugin(|| {
+            Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
+        });
+        let mut sink = SharedSink::default();
+        let bytes = sink.clone();
+        let mut stream = handler.stream_response(&protocol, &options, &mut sink)?;
+        let boundary = stream
+            .start(test_json!({
+                "selection": {"id": "routed", "unused": "x".repeat(256 * 1024)}
+            }))?
+            .boundary
+            .unwrap();
+        assert_eq!(
+            stream.core.frozen_state["selection"],
+            test_json!({"id":"routed"})
+        );
+        stream.resume_current(boundary.instance_id, BoundaryMode::Final)?;
+        assert!(stream.advance()?.done);
+        assert!(bytes.0.borrow().contains(r#""selection":{"id":"routed"}"#));
+
+        // FAST's route hook writes primitive state on the generated host.
+        // The checkpoint's selection.id cannot observe this primitive at all.
+        let handler = WebUIHandler::with_plugin(|| {
+            Box::new(crate::plugin::fast_v2::FastV2HydrationPlugin::new())
+        });
+        let mut sink = SharedSink::default();
+        let bytes = sink.clone();
+        let mut response = handler.stream_response(&protocol, &options, &mut sink)?;
+        assert!(response
+            .start(test_json!({"selection":"callback-visible"}))?
+            .boundary
+            .is_some());
+        assert!(bytes
+            .0
+            .borrow()
+            .contains(r#"<state-island selection="callback-visible""#));
+        Ok(())
     }
 
     #[test]

@@ -293,6 +293,13 @@ fn compile(
         } else {
             None
         };
+        if projection.is_some() {
+            if let Some(plan) = artifact.hydration_reads {
+                protocol
+                    .hydration_reads
+                    .insert(artifact.tag_name.clone(), plan);
+            }
+        }
         let component = protocol.components.entry(artifact.tag_name).or_default();
         component.template = artifact.template;
         component.template_json = artifact.template_json;
@@ -314,6 +321,7 @@ fn compile(
             protocol.client_fragments.insert(fragment.id, data);
         }
     }
+    protocol.retain_projected_read_plans();
     apply_component_delivery(&mut protocol, component_delivery, entry);
     protocol.asset_base = asset_base;
 
@@ -492,7 +500,12 @@ mod tests {
             ),
             (
                 "my-card.html".to_string(),
-                "<template shadowrootmode=\"open\"><p>{{name}}</p></template>".to_string(),
+                concat!(
+                    "<template shadowrootmode=\"open\"><p>{{name}}</p><p>{{serverTitle}}</p>",
+                    r#"<for each="project in shell.nav.canvas_projects">"#,
+                    r#"<button @click="{select(project.id, choice.id, label.name)}">Select</button></for></template>"#,
+                )
+                .to_string(),
             ),
             ("my-card.ts".to_string(), "export {};".to_string()),
         ]);
@@ -543,7 +556,29 @@ mod tests {
             InitialStateStrategy::Components as i32
         );
         assert_eq!(component.hydration_keys, ["name"]);
-        assert_eq!(component.navigation_keys, ["label", "name"]);
+        let plan = &protocol.hydration_reads["my-card"];
+        assert!(plan
+            .roots
+            .iter()
+            .any(|root| root.key == "shell" && root.reaches_event));
+        assert_eq!(
+            component.navigation_keys,
+            ["label", "name", "serverTitle", "shell"]
+        );
+        #[cfg(feature = "handler")]
+        {
+            let partial = webui_handler::Protocol::new(protocol).render_partial_json(
+                r#"{"choice":{"id":"c","drop":true},"label":{"name":"n","whole":true},"shell":{"whole":true}}"#,
+                "index.html", "/", "",
+            ).unwrap();
+            let partial: serde_json::Value = serde_json::from_str(&partial).unwrap();
+            assert_eq!(
+                partial["state"],
+                serde_json::json!({
+                    "choice":{"id":"c"}, "label":{"name":"n","whole":true}, "shell":{"whole":true}
+                })
+            );
+        }
     }
 
     #[test]
