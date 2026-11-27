@@ -51,6 +51,13 @@ Compile metadata        Inject SSR markers         existing DOM,
 7. **Stale markers are removed.** Item markers (`<!--wi-->`) and closing markers (`<!--/wc-->`, `<!--/wr-->`) are deleted; start markers (`<!--wc-->`, `<!--wr-->`) stay as anchors for runtime updates.
 8. **Path index is built lazily on the first reactive change.** Subsequent updates are O(affected bindings).
 
+Compiled client HTML preserves `<noscript>` bodies as literal text, matching
+scripting-enabled SSR parsing. Its fallback markup contributes no descendant
+elements, bindings, or event targets to the client topology. Client template
+fragments parse with scripting disabled, so the compiler encodes this text for
+that parsing context. Server HTML retains the original fallback markup for
+scripting-disabled documents.
+
 Authored decorated setters store construction and pre-connection values
 without invoking user callbacks or reflecting host attributes. On connected
 hydration, own refs and DOM are wired before the initial authored

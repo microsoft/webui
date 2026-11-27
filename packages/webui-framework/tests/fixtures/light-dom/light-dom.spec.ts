@@ -3,6 +3,17 @@
 
 import { expect, test } from '@playwright/test';
 
+test('noscript fallback remains real HTML when scripting is disabled', async ({ browser }) => {
+  const context = await browser.newContext({ javaScriptEnabled: false });
+  try {
+    const page = await context.newPage();
+    await page.goto('/light-dom/fixture.html');
+    await expect(page.locator('#light-root noscript input').first()).toHaveValue('docked');
+  } finally {
+    await context.close();
+  }
+});
+
 test.describe('light-dom pipeline', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/light-dom/fixture.html');
@@ -67,6 +78,22 @@ test.describe('light-dom pipeline', () => {
       'rgb(34, 139, 34)',
     );
     expect(await resourceIds()).toEqual(['test-light-dom', 'test-light-child']);
+  });
+
+  test('client-created noscript fallback does not submit duplicate scalar fields', async ({ page }) => {
+    await page.locator('#light-root').evaluate(host => {
+      const spawn = Reflect.get(host, 'spawnChild');
+      if (typeof spawn !== 'function') throw new Error('Missing spawnChild()');
+      Reflect.apply(spawn, host, []);
+    });
+    const child = page.locator('.client-children > test-light-child');
+    await expect(child).toHaveJSProperty('$ready', true);
+    expect(await child.locator('form').evaluate(form => {
+      if (!(form instanceof HTMLFormElement)) throw new Error('Expected form');
+      return new FormData(form).getAll('density');
+    })).toEqual(['minimal']);
+    await expect(child.locator('noscript input')).toHaveCount(0);
+    await expect(child.locator('.after-fallback')).toHaveText('After fallback');
   });
 
   test('global Light CSS reaches nested Light hosts and internals', async ({ page }) => {

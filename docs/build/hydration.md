@@ -26,6 +26,11 @@ collapsing and CSS such as `white-space: pre-wrap` determine their appearance.
 Native HTML rules still apply, including ignoring the first newline immediately
 after an opening `<pre>` or `<textarea>` tag.
 
+Use `<noscript>` for ordinary no-JavaScript fallback HTML, including form
+controls. Its body remains inert literal text in hydrated and client-created
+components; do not put client bindings or event handlers inside it. Server
+HTML preserves the fallback markup for documents with scripting disabled.
+
 ## HTML-Only Components
 
 HTML-only components can use bindings, attributes, `<if>`, and `<for>`. Their

@@ -936,6 +936,11 @@ not a general alternative to declarative composition.
 
 ### Hydration entry point
 
+Keep `<noscript>` bodies as ordinary no-JavaScript fallback HTML, without
+client bindings or events. They remain inert literal text in hydrated and
+client-created components; SSR preserves their markup for scripting-disabled
+documents. See [Hydration](/build/hydration).
+
 ```typescript
 // index.ts
 import { startRuntime } from '@microsoft/webui-framework/runtime.js';

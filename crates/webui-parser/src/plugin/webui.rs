@@ -352,9 +352,13 @@ fn is_raw_text_or_rcdata_element(tag_name: &str) -> bool {
             && crate::boundary_parent_scope(tag_name).is_some())
 }
 
-fn raw_text_element_end(source: &str, tag_name: &str, mut cursor: usize) -> usize {
+fn raw_text_element_end(source: &str, tag_name: &str, cursor: usize) -> usize {
+    raw_text_element_bounds(source, tag_name, cursor).1
+}
+
+fn raw_text_element_bounds(source: &str, tag_name: &str, mut cursor: usize) -> (usize, usize) {
     if tag_name.eq_ignore_ascii_case("plaintext") {
-        return source.len();
+        return (source.len(), source.len());
     }
 
     while cursor < source.len() {
@@ -363,11 +367,11 @@ fn raw_text_element_end(source: &str, tag_name: &str, mut cursor: usize) -> usiz
         };
         cursor += relative;
         if let Some(close_len) = raw_text_closing_tag_len(&source[cursor..], tag_name) {
-            return cursor + close_len;
+            return (cursor, cursor + close_len);
         }
         cursor += 1;
     }
-    source.len()
+    (source.len(), source.len())
 }
 
 #[inline]
@@ -1678,7 +1682,16 @@ fn compile_section(
                 parse_regular_tag(component, remaining, &mut meta, repeat_key)?
             {
                 meta.html.push_str(&tag_html);
-                i += consumed;
+                let end = if let Some(tag) =
+                    opening_tag.filter(|tag| tag.name.eq_ignore_ascii_case("noscript"))
+                {
+                    let end = raw_text_element_end(remaining, tag.name, consumed);
+                    meta.html.push_str(&remaining[consumed..end]);
+                    end
+                } else {
+                    consumed
+                };
+                i += end;
                 last_markup_end = i;
                 continue;
             }
@@ -2447,6 +2460,20 @@ fn parse_fragment_nodes(input: &str, text_marker_offsets: &[usize]) -> Vec<Fragm
             if let Some((mut element, consumed)) = parse_fragment_start_tag(remaining) {
                 if element.self_closing {
                     push_fragment_node(&mut roots, &mut stack, FragmentNode::Element(element));
+                } else if element.tag_name.eq_ignore_ascii_case("noscript") {
+                    let (close_start, close_end) =
+                        raw_text_element_bounds(remaining, &element.tag_name, consumed);
+                    if consumed < close_start {
+                        // Template fragments parse with scripting disabled. Encode the
+                        // fallback as text so client mounts match scripting-enabled SSR.
+                        element.children.push(FragmentNode::Text(
+                            html_escape::encode_text(&remaining[consumed..close_start])
+                                .into_owned(),
+                        ));
+                    }
+                    push_fragment_node(&mut roots, &mut stack, FragmentNode::Element(element));
+                    index += close_end;
+                    continue;
                 } else if element.tag_name.eq_ignore_ascii_case("style") {
                     if let Some((content_offset, close_offset, close_end)) =
                         style_element_bounds(remaining)
@@ -3650,6 +3677,31 @@ mod tests {
             condition_plan::emit(&condition, &mut output);
             assert_eq!(output, format!("[[7,0,{value}],[]]"));
         }
+    }
+
+    #[test]
+    fn noscript_client_metadata_preserves_fallback_as_literal_text() {
+        let meta = compile_to_metadata(
+            "noscript-fallback",
+            concat!(
+                r#"<NOSCRIPT><input name="density" value="docked">"#,
+                r#"<if condition="fallback"><button @click="{fake()}">{{label}} &amp;</button></if>"#,
+                "</NOSCRIPT>",
+                r#"<button @click="{open()}">{{label}}</button>"#,
+            )
+            .into(),
+            Vec::new(),
+        )
+        .unwrap();
+        assert!(meta
+            .root
+            .html
+            .contains(r#"<NOSCRIPT>&lt;input name="density" value="docked"&gt;"#));
+        assert!(meta.root.html.contains("{{label}} &amp;amp;"));
+        assert_eq!(meta.root.events.len(), 1);
+        assert_eq!(meta.root.event_targets, [2]);
+        assert_eq!(meta.root.text_runs.len(), 1);
+        assert!(meta.blocks.is_empty());
     }
 
     #[test]
