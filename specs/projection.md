@@ -23,8 +23,10 @@ with producer and adapter identities, `root`, `analysisHash`, `buildId`,
 `inputs`, `outputs`, `components`, and optional `entryClosures`. Each component
 names its defining module, final output set, initial hydration keys, and
 navigation keys. Navigation keys include hydration keys; WebUI adds compiled
-template roots when building the protocol. A scriptless component needs no
-JavaScript analysis. Without a manifest, unknown client surfaces keep full
+template roots when building the protocol. Initial hydration additionally
+includes compiler-owned event reads. Literals and the event object contribute
+no state. A scriptless component needs no JavaScript analysis. Without a
+manifest, unknown client surfaces keep full
 state for correctness; **when manifests are supplied**, every compiled
 scripted component requires exactly one proven owner.
 
@@ -44,6 +46,33 @@ Deferred fragments inherit the finalized owner's state contract while retaining
 their compiled body roots. Preparation must not erase those roots through an
 intermediate full-state fallback. Packs and generated module content do not
 depend on projection; preparation and finalization share their original payloads.
+
+### Template-owned initial state
+
+The protobuf hydration read graph is separate from the JavaScript proof and
+the whole-root navigation surface. One node describes one lexical name in one
+compiled template section. A scope edge passes the same value into another
+section; a repeat edge passes the items of its collection path and shadows the
+item name. Equivalent facts are not multiplied by combinations of outer
+scopes. A recursive edge participates in the same fixed point as any other
+edge. The compiler bounds graph construction and rejects excessive input.
+This bound covers the read graph, not the separate lexical name-set traversal
+that produces template root metadata.
+
+The handler chooses template-owned roots reachable from event reads, then
+unions the reads of selected roots across reachable components. This includes
+fields needed for text, attributes, conditions, and keyed reconciliation.
+Repeat arrays keep their positions; missing paths stay missing and reads of
+complete values keep those values. A string read through `.length` retains its
+string, and the browser reads its UTF-8 byte length just as SSR does. A manifest
+whole-root read takes precedence.
+Inactive lazy edges contribute no initial requirement. Stream updates can
+include explicitly provided event data for a newly opened lazy region.
+
+The JSON stays in the existing `state` object. No client projection interpreter
+or new build manifest schema is required. Compilers producing the read graph
+must be deployed with a handler that consumes it. Native and WASM compilation
+use the same parser graph.
 
 ### Shared native analysis
 

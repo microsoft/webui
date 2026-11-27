@@ -1561,6 +1561,14 @@ fn collect_component_hydration_keys(
     } else if mode != StateProjectionMode::None as i32 {
         *requires_full_state = true;
     }
+    if let Some(plan) = protocol.hydration_reads.get(component) {
+        keys.extend(
+            plan.roots
+                .iter()
+                .filter(|root| root.reaches_event)
+                .map(|root| root.key.clone()),
+        );
+    }
 }
 
 fn collect_condition_keys(condition: &ConditionExpr, keys: &mut HashSet<String>) {

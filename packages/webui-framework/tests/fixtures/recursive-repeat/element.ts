@@ -38,6 +38,11 @@ export class TestRecursiveForward extends WebUIElement {
 
 export class TestRecursiveIndependent extends WebUIElement {
   @observable independentItems: TreeNode[] = [];
+  @observable selectedGroup = '';
+
+  selectGroup(id: string): void {
+    this.selectedGroup = id;
+  }
 }
 
 export class TestRecursiveMutual extends WebUIElement {

@@ -34,5 +34,7 @@
       ] }
     ] }
   ],
-  "none": []
+  "none": [],
+  "branchGroup": { "id": "global-group" },
+  "branchGroups": [{ "id": "nested-group" }]
 }

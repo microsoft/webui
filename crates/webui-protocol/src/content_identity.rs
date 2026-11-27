@@ -4,7 +4,7 @@
 use crate::ProtocolError;
 use crate::{
     ClientFragmentData, ComponentAssetStylePreload, ComponentData, ComponentStyleClosure,
-    FragmentList, StyleChunk, WebUIProtocol,
+    FragmentList, HydrationReadPlan, StyleChunk, WebUIProtocol,
 };
 use serde::{ser::SerializeMap, Serialize, Serializer};
 use sha2::{Digest, Sha256};
@@ -21,6 +21,10 @@ impl<'a, T> SortedMap<'a, T> {
             .collect();
         entries.sort_unstable_by_key(|(name, _)| *name);
         Self(entries)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 }
 
@@ -50,6 +54,8 @@ struct Content<'a> {
     // Omitted when unset, so builds without an asset base keep their identity.
     #[serde(skip_serializing_if = "is_empty")]
     asset_base: &'a str,
+    #[serde(skip_serializing_if = "SortedMap::is_empty")]
+    hydration_reads: SortedMap<'a, HydrationReadPlan>,
 }
 
 fn is_empty(value: &&str) -> bool {
@@ -71,6 +77,7 @@ impl<'a> Content<'a> {
             component_asset_style_preloads: &protocol.component_asset_style_preloads,
             client_fragments: SortedMap::new(&protocol.client_fragments),
             asset_base: &protocol.asset_base,
+            hydration_reads: SortedMap::new(&protocol.hydration_reads),
         }
     }
 }

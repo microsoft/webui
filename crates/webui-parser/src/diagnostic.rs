@@ -154,6 +154,8 @@ pub mod codes {
     pub const INVALID_BOUNDARY_KEY: &str = "invalid-boundary-key";
     /// The protocol-wide boundary declaration identity space was exhausted.
     pub const TOO_MANY_BOUNDARIES: &str = "too-many-boundaries";
+    /// Compiled hydration read graph exceeded its bounded size.
+    pub const HYDRATION_READ_LIMIT: &str = "hydration-read-limit";
     /// A `<boundary>` is nested inside another `<boundary>`.
     pub const NESTED_BOUNDARY: &str = "nested-boundary";
     /// A `<boundary>` would cut through component host content or an

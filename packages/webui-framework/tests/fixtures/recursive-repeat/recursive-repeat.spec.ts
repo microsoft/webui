@@ -121,6 +121,14 @@ test('forward references, mutual references and component-local names stay indep
   )).toEqual(['left', 'right', 'left']);
 });
 
+test('recursive named repeats hydrate an event path from its nearest scope', async ({ page }) => {
+  const tree = page.locator('test-recursive-independent');
+  await tree.locator('.select-group').first().click();
+  await expect(tree.locator('.selected-group')).toHaveText('global-group');
+  await tree.locator('.select-group').last().click();
+  await expect(tree.locator('.selected-group')).toHaveText('nested-group');
+});
+
 test('client-created instances render recursion and react without SSR markers', async ({ page }) => {
   await page.evaluate(() => {
     const tree = document.createElement('test-recursive-tree') as TestRecursiveTree;

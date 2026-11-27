@@ -243,11 +243,12 @@ mod tests {
     }
 
     #[test]
-    fn test_length_on_string_matches_nodejs() {
-        // NodeJS: 'string_value.length' on "test" → 4
-        let data = test_json!({ "string_value": "test" });
-        let value = find_value_by_dotted_path("string_value.length", &data);
-        assert_eq!(value, Some(Value::Number(serde_json::Number::from(4))));
+    fn test_string_length_counts_utf8_bytes() {
+        for (text, bytes) in [("Name", 4), ("A\u{1f642}", 5), ("", 0)] {
+            let data = test_json!({ "string_value": text });
+            let value = find_value_by_dotted_path("string_value.length", &data);
+            assert_eq!(value, Some(Value::Number(serde_json::Number::from(bytes))));
+        }
     }
 
     #[test]

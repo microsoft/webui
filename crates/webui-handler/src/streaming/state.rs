@@ -57,6 +57,8 @@ pub(crate) struct StreamingRenderState<'data> {
     pub(super) last_state_record_sequence: Option<usize>,
     pub(super) last_state_revision: usize,
     pub(super) last_state_full: bool,
+    pub(super) last_state_narrow: bool,
+    // Holds the prior resource IDs instead of key IDs when last_state_narrow.
     pub(super) last_state_key_ids: Vec<u32>,
     /// Reusable `current - prior` projection scratch.
     pub(super) state_delta_key_ids: Vec<u32>,
@@ -104,6 +106,7 @@ pub(crate) struct StreamingRenderState<'data> {
 pub(super) struct StateUpdatePlan {
     pub(super) requires_full_state: bool,
     pub(super) key_ids: Vec<u32>,
+    pub(super) read_resources: Vec<u32>,
 }
 
 /// Owned state retained between calls by borrowed and host-owned sessions.
@@ -119,6 +122,7 @@ pub(crate) struct StreamingProgress {
     pub(super) last_state_record_sequence: Option<usize>,
     pub(super) last_state_revision: usize,
     pub(super) last_state_full: bool,
+    pub(super) last_state_narrow: bool,
     pub(super) last_state_key_ids: Vec<u32>,
     pub(super) state_delta_key_ids: Vec<u32>,
     pub(super) bootstrap_sent: bool,
@@ -159,6 +163,7 @@ impl StreamingProgress {
             last_state_record_sequence: None,
             last_state_revision: 0,
             last_state_full: false,
+            last_state_narrow: false,
             last_state_key_ids: Vec::new(),
             state_delta_key_ids: Vec::new(),
             bootstrap_sent: false,
@@ -205,6 +210,7 @@ impl<'data> StreamingRenderState<'data> {
             last_state_record_sequence: progress.last_state_record_sequence,
             last_state_revision: progress.last_state_revision,
             last_state_full: progress.last_state_full,
+            last_state_narrow: progress.last_state_narrow,
             last_state_key_ids: progress.last_state_key_ids,
             state_delta_key_ids: progress.state_delta_key_ids,
             bootstrap_sent: progress.bootstrap_sent,
@@ -239,6 +245,7 @@ impl<'data> StreamingRenderState<'data> {
             last_state_record_sequence: self.last_state_record_sequence,
             last_state_revision: self.last_state_revision,
             last_state_full: self.last_state_full,
+            last_state_narrow: self.last_state_narrow,
             last_state_key_ids: self.last_state_key_ids,
             state_delta_key_ids: self.state_delta_key_ids,
             bootstrap_sent: self.bootstrap_sent,

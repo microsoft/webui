@@ -1508,10 +1508,9 @@ export class TemplateElement extends HTMLElement {
    * `window.__webui.state` (the consolidated SSR bootstrap block), while a
    * streamed activation passes its boundary-local state directly so a late
    * activation sees the state that was live when its *own* boundary committed
-   * rather than whatever the global handoff currently holds. The build-time
-   * hydration keys contain only explicit `@observable`/`@attr` properties;
-   * template-only roots remain absent because their initial values are already
-   * represented by the trusted SSR DOM.
+   * rather than whatever the global handoff currently holds. Authored state
+   * is supplied whole; template-only state may contain only the fields needed
+   * for event arguments and to reconcile those bindings.
    *
    * Writes directly to the backing field (`_prop`) to avoid triggering
    * reactive updates before bindings are wired.

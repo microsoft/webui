@@ -96,6 +96,10 @@ Other delivery paths continue to require full definitions.
 A range payload may use `stateRef` pointing to the **exact preceding range
 record** plus a top-level `stateDelta`, instead of a full `state`, only when
 the prior projection is a proven subset under the same server-state revision.
+Records with shaped template event state can reuse a prior range only when
+their compiled resource selection and state revision match exactly. Other
+selections send complete projected state: top-level deltas cannot merge
+partially selected objects.
 The browser resolves a new state object before activation; missing, forward,
 stale, or malformed references fail the stream. Updates are independent patches
 and never become the next range-state reference base. Boundary state is not

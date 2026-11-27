@@ -81,6 +81,8 @@ pub struct ComponentTemplateArtifact {
     /// bundler-neutral manifest consumer can union exact client keys with
     /// these Rust-derived roots without re-deriving them.
     pub template_roots: Vec<String>,
+    /// Compiler-owned initial state reads, independent of authored state keys.
+    pub hydration_reads: Option<webui_protocol::HydrationReadPlan>,
     /// Whether this component has an authored client module (sibling script
     /// or an externally client-owned package), as opposed to a scriptless
     /// compiled template. Bundler manifest coverage validation only requires
@@ -113,6 +115,7 @@ impl ComponentTemplateArtifact {
             hydration: StateSurface::None,
             navigation: StateSurface::None,
             template_roots: Vec::new(),
+            hydration_reads: None,
             is_scripted: false,
             uses_shadow_dom,
             lazy_templates: Vec::new(),
@@ -132,6 +135,7 @@ impl ComponentTemplateArtifact {
             hydration: StateSurface::None,
             navigation: StateSurface::None,
             template_roots: Vec::new(),
+            hydration_reads: None,
             is_scripted: false,
             uses_shadow_dom,
             lazy_templates: Vec::new(),

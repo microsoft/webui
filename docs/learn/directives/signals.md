@@ -72,9 +72,10 @@ You can access nested properties using dot notation:
 
 ## Special Values
 
-Use `.length` to read a collection size:
+Use `.length` to read an array or string size:
 
 - `array.length` - Returns the number of items in the array
+- `string.length` - Returns the number of UTF-8 bytes in the string
 
 Example:
 ```html

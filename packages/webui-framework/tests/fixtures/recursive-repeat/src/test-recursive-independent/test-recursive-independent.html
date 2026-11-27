@@ -1,6 +1,12 @@
 <section>
   <for id="tree-item" each="child in independentItems">
-    <strong class="independent-name">{{child.name}}</strong>
-    <for id="tree-item" each="child in child.children" />
+    <strong key="{{child.id}}" class="independent-name">{{child.name}}</strong>
+    <button class="select-group" @click="{selectGroup(branchGroup.id)}">Select group</button>
+    <if condition="child.children.length">
+      <for each="branchGroup in branchGroups">
+        <for id="tree-item" each="child in child.children" />
+      </for>
+    </if>
   </for>
 </section>
+<output class="selected-group">{{selectedGroup}}</output>

@@ -15,20 +15,39 @@ import type {
 
 /** Resolve a dotted path from a start offset without allocating. */
 export function dotWalk(cursor: unknown, path: string, from: number): unknown {
-  let start = from;
-  for (let i = from; i <= path.length; i++) {
-    if (i === path.length || path.charCodeAt(i) === 46 /* . */) {
-      if (cursor == null || typeof cursor !== 'object') return undefined;
-      cursor = (cursor as Record<string, unknown>)[path.slice(start, i)];
-      start = i + 1;
+  while (from <= path.length) {
+    const dot = path.indexOf('.', from);
+    const key = path.slice(from, dot < 0 ? undefined : dot);
+    if (cursor == null || typeof cursor !== 'object') {
+      return dot < 0 && key === 'length' && typeof cursor === 'string'
+        ? utf8Length(cursor)
+        : undefined;
     }
+    cursor = (cursor as Record<string, unknown>)[key];
+    if (dot < 0) break;
+    from = dot + 1;
   }
   return cursor;
 }
 
-/** Build a scope frame for a repeat item. */
-function itemScope(rep: RepeatBinding, item: unknown): ScopeFrame {
-  return { name: rep.itemVar, value: item, parent: rep.scope, known: true };
+function utf8Length(value: string): number {
+  let bytes = value.length;
+  let point: number | undefined;
+  for (let i = 0; (point = value.codePointAt(i)) !== undefined; i++) {
+    if (point >= 0x80) bytes += point < 0x800 ? 1 : 2;
+    if (point >= 0x10000) i++;
+  }
+  return bytes;
+}
+
+function createRepeatItem(
+  host: RepeatHost,
+  rep: RepeatBinding,
+  item: unknown,
+  container: ParentNode & Node,
+): TemplateInstance | null {
+  const scope: ScopeFrame = { name: rep.itemVar, value: item, parent: rep.scope, known: true };
+  return host.$createBlockInstance(rep.blockIndex, scope, rep.owner, container);
 }
 
 /** Allocate keyed scratch state only for explicitly keyed repeats. */
@@ -59,6 +78,24 @@ function setItemScope(instance: TemplateInstance, item: unknown): void {
   instance.scope.known = true;
 }
 
+function placeInstances(
+  host: RepeatHost,
+  rep: RepeatBinding,
+  container: ParentNode & Node,
+  start: number,
+  end: number,
+): void {
+  const instances = rep.instances;
+  let cursor: Node | null = rep.start;
+  if (start) {
+    const nodes = instances[start - 1].nodes;
+    cursor = nodes[nodes.length - 1] ?? cursor;
+  }
+  for (let i = start; i < end; i++) {
+    cursor = host.$insertInstanceAfter(cursor, container, instances[i]);
+  }
+}
+
 function syncPositional(
   host: RepeatHost,
   rep: RepeatBinding,
@@ -69,22 +106,14 @@ function syncPositional(
   const oldLength = instances.length;
   const reuseCount = Math.min(oldLength, items.length);
   let nextCount = reuseCount;
-  let created = false;
 
   for (let i = 0; i < reuseCount; i += 1) {
     setItemScope(instances[i], items[i]);
   }
   for (let i = reuseCount; i < items.length; i += 1) {
-    const instance = host.$createBlockInstance(
-      rep.blockIndex,
-      itemScope(rep, items[i]),
-      rep.owner,
-      container,
-    );
+    const instance = createRepeatItem(host, rep, items[i], container);
     if (instance) {
-      instances[nextCount] = instance;
-      nextCount += 1;
-      created = true;
+      instances[nextCount++] = instance;
     }
   }
   for (let i = reuseCount; i < oldLength; i += 1) {
@@ -93,19 +122,11 @@ function syncPositional(
   instances.length = nextCount;
   const removed = oldLength > reuseCount;
 
-  let cursor: Node | null = rep.start;
-  const placed = rep.fixed ? reuseCount : 0;
-  if (placed) {
-    const nodes = instances[placed - 1].nodes;
-    cursor = nodes[nodes.length - 1] ?? cursor;
-  }
-  for (let i = placed; i < instances.length; i += 1) {
-    cursor = host.$insertInstanceAfter(cursor, container, instances[i]);
-  }
+  placeInstances(host, rep, container, rep.fixed ? reuseCount : 0, nextCount);
   for (let i = 0; i < reuseCount; i += 1) {
     host.$updateInstance(instances[i]);
   }
-  if (created || removed) host.$changeStructure(removed ? rep.owner : undefined);
+  if (nextCount > reuseCount || removed) host.$changeStructure(removed ? rep.owner : undefined);
 }
 
 function collectRepeatKeys(items: unknown[], state: RepeatKeyState): 0 | 1 | 2 {
@@ -152,15 +173,6 @@ export function clearRepeatKeyState(state: RepeatKeyState): void {
   state.map.clear();
 }
 
-function warnKeyFallback(rep: RepeatBinding, state: RepeatKeyState): void {
-  if (state.warned) return;
-  state.warned = true;
-  const key = state.path ? `${rep.itemVar}.${state.path}` : rep.itemVar;
-  console.warn(
-    `[webui] repeat "${rep.collection}" produced duplicate or invalid values for child key="${key}"; using positional reconciliation`,
-  );
-}
-
 function reconcileByKey(
   host: RepeatHost,
   rep: RepeatBinding,
@@ -171,8 +183,7 @@ function reconcileByKey(
   const instances = rep.instances;
   const map = state.map;
   let nextCount = 0;
-  let created = false;
-  let removed = false;
+  let reused = 0;
 
   for (let i = 0; i < items.length; i += 1) {
     const key = state.nextKeys[i];
@@ -180,14 +191,9 @@ function reconcileByKey(
     if (instance) {
       map.set(key, null);
       setItemScope(instance, items[i]);
+      reused++;
     } else {
-      instance = host.$createBlockInstance(
-        rep.blockIndex,
-        itemScope(rep, items[i]),
-        rep.owner,
-        container,
-      ) ?? undefined;
-      if (instance) created = true;
+      instance = createRepeatItem(host, rep, items[i], container);
     }
     if (instance) {
       instances[nextCount] = instance;
@@ -197,18 +203,15 @@ function reconcileByKey(
   }
   state.nextKeys.length = nextCount;
 
-  for (const instance of map.values()) {
-    if (instance) {
-      host.$removeInstance(instance);
-      removed = true;
+  const removed = reused < map.size;
+  if (removed) {
+    for (const instance of map.values()) {
+      if (instance) host.$removeInstance(instance);
     }
   }
-  let cursor: Node | null = rep.start;
+  placeInstances(host, rep, container, 0, nextCount);
   for (let i = 0; i < nextCount; i += 1) {
-    cursor = host.$insertInstanceAfter(cursor, container, instances[i]);
-  }
-  for (let i = 0; i < nextCount; i += 1) {
-    if (map.get(state.nextKeys[i]) === null) {
+    if (map.has(state.nextKeys[i])) {
       host.$updateInstance(instances[i]);
     }
   }
@@ -216,7 +219,7 @@ function reconcileByKey(
 
   instances.length = nextCount;
   commitKeyIdentity(state);
-  if (created || removed) host.$changeStructure(removed ? rep.owner : undefined);
+  if (reused < nextCount || removed) host.$changeStructure(removed ? rep.owner : undefined);
 }
 
 function syncKeyed(
@@ -228,26 +231,27 @@ function syncKeyed(
 ): void {
   const order = collectRepeatKeys(items, state);
   if (!order) {
-    warnKeyFallback(rep, state);
+    if (!state.warned) {
+      state.warned = true;
+      console.warn('[webui] Invalid repeat key; using positions:', rep.collection, state.path);
+    }
     clearRepeatKeyState(state);
-    syncPositional(host, rep, items, container);
+  } else if (order === 2 && state.keys.length === rep.instances.length) {
+    for (let i = 0; i < state.keys.length; i += 1) {
+      state.map.set(state.keys[i], rep.instances[i]);
+    }
+    reconcileByKey(host, rep, items, container, state);
     return;
   }
 
-  if (state.keys.length !== rep.instances.length || order === 1) {
-    syncPositional(host, rep, items, container);
+  syncPositional(host, rep, items, container);
+  if (order) {
     if (rep.instances.length === items.length) {
       commitKeyIdentity(state);
     } else {
       clearRepeatKeyState(state);
     }
-    return;
   }
-
-  for (let i = 0; i < state.keys.length; i += 1) {
-    state.map.set(state.keys[i], rep.instances[i]);
-  }
-  reconcileByKey(host, rep, items, container, state);
 }
 
 // ── Reconciliation ──────────────────────────────────────────────────

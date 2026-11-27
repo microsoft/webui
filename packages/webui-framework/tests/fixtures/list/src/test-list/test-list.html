@@ -16,4 +16,18 @@
     {{afterRepeat}}<span class="after-repeat-tail">Tail</span>
   </div>
   <div class="last-loop-arg">{{lastLoopArg}}</div>
+  <for each="project in shell.nav.canvas_projects">
+    <button key="{{project.id}}" class="project-link" @click="{selectItem(project.id)}">{{project.title}}</button>
+  </for>
+  <button class="title-length" @click="{selectItem(shell.title.length)}">Read title length</button>
+  <button class="reveal-length" @click="{revealTitleLength()}">Reveal title length</button>
+  <if condition="showTitleLength">
+    <b class="visible-length">{{shell.tip.length}}</b>
+    <b class="visible-length">{{shell.astralTip.length}}</b>
+    <b class="visible-length">{{shell.emptyTip.length}}</b>
+  </if>
+  <for each="name in shell.names">
+    <span class="name-length-ssr">{{name.length}}</span>
+    <button class="name-length" @click="{selectItem(name.length)}">Read name length</button>
+  </for>
 </template>

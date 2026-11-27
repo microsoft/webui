@@ -60,6 +60,15 @@ describe('dotWalk (allocation-free dotted path)', () => {
     assert.equal(dotWalk({ '0': 'first' }, '0', 0), 'first');
   });
 
+  test('reads string length as UTF-8 bytes without exposing other string properties', () => {
+    assert.equal(dotWalk({ title: 'A\u{1F642}' }, 'title.length', 0), 5);
+    assert.equal(dotWalk('\u{E9}\u{20AC}', 'length', 0), 5);
+    assert.equal(dotWalk('Name', 'length', 0), 4);
+    assert.equal(dotWalk('', 'length', 0), 0);
+    assert.equal(dotWalk('abc', 'length.extra', 0), undefined);
+    assert.equal(dotWalk('abc', '0', 0), undefined);
+  });
+
   test('walks from a start offset (skips the scope-var prefix)', () => {
     // Simulates resolving `item.name` against the `item` scope variable.
     assert.equal(dotWalk({ name: 'A' }, 'item.name', 5), 'A');

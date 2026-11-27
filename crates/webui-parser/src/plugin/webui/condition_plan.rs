@@ -137,22 +137,29 @@ pub(super) fn emit(condition: &ConditionExpr, out: &mut String) {
 
 /// Visit condition dependencies in hydration-root order, stopping if the callback returns false.
 pub(super) fn visit_paths(condition: &ConditionExpr, mut visit: impl FnMut(&str) -> bool) -> bool {
+    visit_read_paths(condition, |path, _| visit(path))
+}
+
+pub(super) fn visit_read_paths<'a>(
+    condition: &'a ConditionExpr,
+    mut visit: impl FnMut(&'a str, bool) -> bool,
+) -> bool {
     let mut pending = Vec::new();
     let mut next = Some(condition);
     while let Some(current) = next.or_else(|| pending.pop()) {
         next = None;
         match &current.expr {
             Some(Expr::Identifier(id)) if boolean_literal(&id.value).is_none() => {
-                if !visit(&id.value) {
+                if !visit(&id.value, true) {
                     return false;
                 }
             }
             Some(Expr::Predicate(predicate)) => {
-                if !visit(&predicate.left) {
+                if !visit(&predicate.left, false) {
                     return false;
                 }
                 if let PredicateOperand::Path(path) = PredicateOperand::classify(&predicate.right) {
-                    if !visit(path) {
+                    if !visit(path, false) {
                         return false;
                     }
                 }

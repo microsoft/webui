@@ -99,6 +99,16 @@ impl ClientFragmentData {
     }
 }
 
+impl HydrationReadPlan {
+    /// Whether an event needs state outside the sorted authored whole keys.
+    #[must_use]
+    pub fn needs_projection(&self, whole: &[String]) -> bool {
+        self.roots
+            .iter()
+            .any(|root| root.reaches_event && whole.binary_search(&root.key).is_err())
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum ProtocolError {
     #[error("IO error: {0}")]
@@ -846,6 +856,7 @@ impl WebUiProtocol {
             build_id: String::new(),
             client_fragments: HashMap::new(),
             asset_base: String::new(),
+            hydration_reads: HashMap::new(),
         }
     }
 
@@ -865,6 +876,7 @@ impl WebUiProtocol {
             build_id: String::new(),
             client_fragments: HashMap::new(),
             asset_base: String::new(),
+            hydration_reads: HashMap::new(),
         }
     }
 }
@@ -939,6 +951,9 @@ impl WebUiProtocol {
         if let Some(err) = invalid_ref {
             return Err(err);
         }
+        if !protocol.hydration_reads.is_empty() {
+            protocol.validate_hydration_reads()?;
+        }
 
         let mut declaration_ids = HashSet::new();
         let mut owner_names = HashSet::new();
@@ -984,6 +999,34 @@ impl WebUiProtocol {
         }
 
         Ok(protocol)
+    }
+
+    fn validate_hydration_reads(&self) -> Result<()> {
+        for (owner, plan) in &self.hydration_reads {
+            let valid_node = |node: u32| (node as usize) < plan.nodes.len();
+            let valid_owner = self.components.contains_key(owner);
+            let sorted_roots = plan.roots.windows(2).all(|pair| pair[0].key < pair[1].key);
+            let valid_roots = plan.roots.iter().all(|root| {
+                !root.key.is_empty() && !root.key.contains('.') && valid_node(root.node)
+            });
+            let valid_edges = plan.nodes.iter().all(|node| {
+                node.repeats.iter().all(|edge| valid_node(edge.item))
+                    && node.scopes.iter().all(|edge| {
+                        valid_node(edge.node)
+                            && (edge.lazy_fragment.is_empty()
+                                || (plan.has_lazy_edges
+                                    && self.client_fragments.get(&edge.lazy_fragment).is_some_and(
+                                        |fragment| fragment.entry && fragment.owner == *owner,
+                                    )))
+                    })
+            });
+            if !valid_owner || !sorted_roots || !valid_roots || !valid_edges {
+                return Err(ProtocolError::Validation(format!(
+                    "invalid compiled hydration read plan for component '{owner}'"
+                )));
+            }
+        }
+        Ok(())
     }
 
     fn validate_route_references(
@@ -2223,6 +2266,57 @@ mod tests {
             Some(StateProjectionMode::All as i32)
         );
         assert!(component.navigation_keys.is_empty());
+    }
+
+    #[test]
+    fn hydration_read_plan_is_versioned_by_build_identity_and_checks_edges() {
+        let mut protocol = WebUIProtocol::new(HashMap::new());
+        protocol.initial_state_strategy = InitialStateStrategy::Components as i32;
+        protocol
+            .components
+            .insert("my-card".into(), ComponentData::default());
+        protocol.assign_build_id().unwrap();
+        let old_id = protocol.build_id.clone();
+        let mut plan = HydrationReadPlan {
+            roots: vec![HydrationReadRoot {
+                key: "selection".into(),
+                node: 0,
+                reaches_event: true,
+            }],
+            nodes: vec![HydrationReadNode {
+                values: vec![HydrationReadPath {
+                    path: vec![HydrationReadField {
+                        key: "id".into(),
+                        array_index: None,
+                    }],
+                    truthy: false,
+                }],
+                reads_event: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        protocol
+            .hydration_reads
+            .insert("my-card".into(), plan.clone());
+        protocol.assign_build_id().unwrap();
+        assert_ne!(protocol.build_id, old_id);
+        let bytes = protocol.to_protobuf().unwrap();
+        let decoded = WebUIProtocol::from_protobuf(&bytes).unwrap();
+        assert_eq!(decoded.hydration_reads, protocol.hydration_reads);
+        assert!(plan.needs_projection(&[]));
+        assert!(!plan.needs_projection(&["selection".into()]));
+
+        plan.nodes[0].scopes.push(HydrationReadScope {
+            node: 1,
+            lazy_fragment: String::new(),
+        });
+        protocol.hydration_reads.insert("my-card".into(), plan);
+        let bytes = protocol.to_protobuf().unwrap();
+        assert!(matches!(
+            WebUIProtocol::from_protobuf(&bytes),
+            Err(ProtocolError::Validation(message)) if message.contains("invalid compiled hydration read plan")
+        ));
     }
 
     #[test]
