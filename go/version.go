@@ -4,4 +4,4 @@
 package webui
 
 // Version is the WebUI release required by this binding's native SDK.
-const Version = "3.2.1"
+const Version = "3.2.2"
