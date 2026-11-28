@@ -936,6 +936,10 @@ not a general alternative to declarative composition.
 
 ### Hydration entry point
 
+Use `<noscript>` for ordinary HTML fallbacks without client bindings or event
+handlers. The fallback stays inert when scripting is enabled, even on a
+client-side mount. See [Hydration](/build/hydration).
+
 ```typescript
 // index.ts
 import { startRuntime } from '@microsoft/webui-framework/runtime.js';

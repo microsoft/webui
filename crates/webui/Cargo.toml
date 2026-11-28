@@ -32,12 +32,12 @@ browser-build = [
 ]
 
 [dependencies]
-microsoft-webui-parser = { path = "../webui-parser", version = "3.2.1" }
-microsoft-webui-protocol = { path = "../webui-protocol", version = "3.2.1", features = ["projection-manifest", "content-identity"] }
-microsoft-webui-handler = { path = "../webui-handler", version = "3.2.1", features = ["packs"] }
-microsoft-webui-discovery = { path = "../webui-discovery", version = "3.2.1" }
-microsoft-webui-tokens = { path = "../webui-tokens", version = "3.2.1" }
-microsoft-webui-projection = { path = "../webui-projection", version = "3.2.1", optional = true }
+microsoft-webui-parser = { path = "../webui-parser", version = "3.2.2" }
+microsoft-webui-protocol = { path = "../webui-protocol", version = "3.2.2", features = ["projection-manifest", "content-identity"] }
+microsoft-webui-handler = { path = "../webui-handler", version = "3.2.2", features = ["packs"] }
+microsoft-webui-discovery = { path = "../webui-discovery", version = "3.2.2" }
+microsoft-webui-tokens = { path = "../webui-tokens", version = "3.2.2" }
+microsoft-webui-projection = { path = "../webui-projection", version = "3.2.2", optional = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -71,8 +71,8 @@ actix-web = { workspace = true }
 reqwest = { workspace = true }
 futures-util = { workspace = true }
 libc = { workspace = true }
-microsoft-webui-handler = { path = "../webui-handler", version = "3.2.1" }
-microsoft-webui-protocol = { path = "../webui-protocol", version = "3.2.1", features = ["projection-manifest"] }
+microsoft-webui-handler = { path = "../webui-handler", version = "3.2.2" }
+microsoft-webui-protocol = { path = "../webui-protocol", version = "3.2.2", features = ["projection-manifest"] }
 
 [[test]]
 name = "browser_build"
